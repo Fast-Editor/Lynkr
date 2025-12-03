@@ -1,4 +1,4 @@
-# Claude Code Proxy
+# Lynkr
 
 > Drop-in HTTP proxy that lets Claude Code CLI talk to non-Anthropic backends, manage local tools, and compose Model Context Protocol (MCP) servers with prompt caching, repo intelligence, and Git-aware automation.
 
