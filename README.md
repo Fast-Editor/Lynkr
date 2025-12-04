@@ -156,8 +156,8 @@ The result is a self-hosted alternative that stays close to Anthropic’s ergono
 ### Installation
 
 ```bash
-git clone https://github.com/<your-org>/claude-code-proxy.git
-cd claude-code-proxy
+git clone https://github.com/vishalveerareddy123/Lynkr.git
+cd Lynkr
 npm install
 ```
 

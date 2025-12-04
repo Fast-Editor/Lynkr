@@ -259,7 +259,6 @@ function removeMatchingAssistantToolUse(cleanMessages, toolUseId) {
 }
 
 const WEB_SEARCH_NORMALIZED = new Set(["websearch", "web_search", "web-search"]);
-const WEB_FETCH_NORMALIZED = new Set(["webfetch", "web_fetch", "web-fetch"]);
 
 function normaliseToolIdentifier(name = "") {
   return String(name).toLowerCase().replace(/[^a-z0-9]/g, "");

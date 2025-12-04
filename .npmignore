@@ -1,0 +1,13 @@
+.DS_Store
+.git
+.claude/
+data/
+tmp/
+node_modules/
+*.log
+.env
+.env.*
+Dockerfile
+docker/
+docker-compose.yml
+src/orchestrator/index.js.backup
