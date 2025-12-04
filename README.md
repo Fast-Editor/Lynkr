@@ -1,6 +1,6 @@
 # Lynkr
 
-> Drop-in HTTP proxy that lets Claude Code CLI talk to non-Anthropic backends, manage local tools, and compose Model Context Protocol (MCP) servers with prompt caching, repo intelligence, and Git-aware automation.
+> It is a Cli tool which acts like a HTTP proxy that lets Claude Code CLI talk to non-Anthropic backends, manage local tools, and compose Model Context Protocol (MCP) servers with prompt caching, repo intelligence, and Git-aware automation.
 
 ## Table of Contents
 
@@ -156,6 +156,11 @@ The result is a self-hosted alternative that stays close to Anthropic’s ergono
 ### Installation
 
 ```bash
+# from npm (recommended)
+npm install -g lynkr
+lynkr start
+
+# or clone the repo
 git clone https://github.com/vishalveerareddy123/Lynkr.git
 cd Lynkr
 npm install
@@ -234,14 +239,15 @@ See `src/config/index.js` for the full configuration matrix, including sandbox m
 ### Launching the Proxy
 
 ```bash
-# Development: auto-restarts on file changes (requires nodemon)
-npm run dev
+# global install
+lynkr start
 
-# Production
-npm start
+# local checkout
+npm run dev    # development: auto-restarts on file changes
+npm start      # production
 ```
 
-Logs stream to stdout. The server listens on `PORT` and exposes `/v1/messages` in the Anthropic-compatible shape.
+Logs stream to stdout. The server listens on `PORT` and exposes `/v1/messages` in the Anthropic-compatible shape. If you installed via npm globally, `lynkr start` reads the same environment variables described above.
 
 ### Connecting Claude Code CLI
 
