@@ -185,9 +185,20 @@ module.exports = McpClient;
 function normaliseError(error) {
   if (error instanceof Error) return error;
   if (typeof error === "object" && error !== null) {
-    const err = new Error(error.message ?? "MCP request failed");
+    const message =
+      typeof error.message === "string" && error.message.length > 0
+        ? error.message
+        : "MCP request failed";
+    const err = new Error(message);
+    if (typeof error.name === "string" && error.name.length > 0) {
+      err.name = error.name;
+    }
     if (error.code !== undefined) err.code = error.code;
     if (error.data !== undefined) err.data = error.data;
+    if (typeof error.stack === "string" && error.stack.length > 0) {
+      err.stack = error.stack;
+    }
+    err.cause = error;
     return err;
   }
   return new Error(typeof error === "string" ? error : "MCP request failed");
