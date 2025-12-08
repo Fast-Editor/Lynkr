@@ -14,10 +14,10 @@
  */
 
 const { performance } = require("perf_hooks");
-const { MetricsCollector } = require("./src/observability/metrics");
-const { LoadShedder } = require("./src/api/middleware/load-shedding");
-const { CircuitBreaker } = require("./src/clients/circuit-breaker");
-const { validateObject } = require("./src/api/middleware/validation");
+const { MetricsCollector } = require("../src/observability/metrics");
+const { LoadShedder } = require("../src/api/middleware/load-shedding");
+const { CircuitBreaker } = require("../src/clients/circuit-breaker");
+const { validateObject } = require("../src/api/middleware/validation");
 
 // Color utilities
 function colorize(text, color) {

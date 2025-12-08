@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vishalveerareddy123/Lynkr)
 [![Databricks Supported](https://img.shields.io/badge/Databricks-Supported-orange)](https://www.databricks.com/)
+[![Ollama Compatible](https://img.shields.io/badge/Ollama-Compatible-brightgreen)](https://ollama.ai/)
 [![IndexNow Enabled](https://img.shields.io/badge/IndexNow-Enabled-success?style=flat-square)](https://www.indexnow.org/)
 [![DevHunt](https://img.shields.io/badge/DevHunt-Lynkr-orange)](https://devhunt.org/tool/lynkr)
 
@@ -32,6 +33,8 @@
 7. [Runtime Operations](#runtime-operations)
    - [Launching the Proxy](#launching-the-proxy)
    - [Connecting Claude Code CLI](#connecting-claude-code-cli)
+   - [Using Ollama Models](#using-ollama-models)
+   - [Hybrid Routing with Automatic Fallback](#hybrid-routing-with-automatic-fallback)
    - [Using Built-in Workspace Tools](#using-built-in-workspace-tools)
    - [Working with Prompt Caching](#working-with-prompt-caching)
    - [Integrating MCP Servers](#integrating-mcp-servers)
@@ -52,7 +55,7 @@ This repository contains a Node.js service that emulates the Anthropic Claude Co
 Key highlights:
 
 - **Production-ready architecture** – 14 production hardening features including circuit breakers, load shedding, graceful shutdown, comprehensive metrics (Prometheus format), and Kubernetes-ready health checks. Minimal overhead (~7μs per request) with 140K req/sec throughput.
-- **Claude provider adapters** – Works with Databricks (default) and Azure-hosted Anthropic endpoints; requests are normalized to each provider while returning Claude-flavored responses.
+- **Multi-provider support** – Works with Databricks (default), Azure-hosted Anthropic endpoints, and local Ollama models; requests are normalized to each provider while returning Claude-flavored responses.
 - **Enterprise observability** – Real-time metrics collection, structured logging with request ID correlation, latency percentiles (p50, p95, p99), token usage tracking, and cost attribution. Multiple export formats (JSON, Prometheus).
 - **Resilience & reliability** – Exponential backoff with jitter for retries, circuit breaker protection against cascading failures, automatic load shedding during overload, and zero-downtime deployments via graceful shutdown.
 - **Workspace awareness** – Local repo indexing, `CLAUDE.md` summaries, language-aware navigation, and Git helpers mirror core Claude Code workflows.
@@ -62,7 +65,7 @@ Key highlights:
 
 The result is a production-ready, self-hosted alternative that stays close to Anthropic's ergonomics while providing enterprise-grade reliability, observability, and performance.
 
-> **Compatibility note:** Claude models hosted on Databricks work out of the box. Set `MODEL_PROVIDER=azure-anthropic` (and related credentials) to target the Azure-hosted Anthropic `/anthropic/v1/messages` endpoint. Additional providers will require future adapters.
+> **Compatibility note:** Claude models hosted on Databricks work out of the box. Set `MODEL_PROVIDER=azure-anthropic` (and related credentials) to target the Azure-hosted Anthropic `/anthropic/v1/messages` endpoint. Set `MODEL_PROVIDER=ollama` to use locally-running Ollama models (qwen2.5-coder, llama3, mistral, etc.).
 
 Further documentation and usage notes are available on [DeepWiki](https://deepwiki.com/vishalveerareddy123/Lynkr).
 
@@ -298,19 +301,19 @@ For detailed performance analysis, benchmarks, and deployment guidance, see [PER
 │ MCP Registry   │          │ Provider Adapters              │      │ Sandbox      │
 │ (manifest ->   │──RPC─────│ • Databricks (circuit-breaker) │──┐   │ Runtime      │
 │ JSON-RPC client│          │ • Azure Anthropic (retry logic)│  │   │ (Docker)     │
-└────────────────┘          │ • HTTP Connection Pooling      │  │   └──────────────┘
+└────────────────┘          │ • Ollama (local models)        │  │   └──────────────┘
+                            │ • HTTP Connection Pooling      │  │
                             │ • Exponential Backoff + Jitter │  │
                             └────────────┬───────────────────┘  │
                                          │                      │
-                             ┌───────────▼────────┐             │
-                             │ Databricks Serving │─────────────┘
-                             │ Endpoint (REST)    │
-                             └────────────────────┘
-                                         │
-                             ┌───────────▼────────────┐
-                             │ Azure Anthropic        │
-                             │ /anthropic/v1/messages │
-                             └────────────────────────┘
+                        ┌────────────────┼────────────┐         │
+                        │                │            │         │
+              ┌─────────▼────────┐  ┌───▼────────┐  ┌▼─────────────┐
+              │ Databricks       │  │ Azure      │  │ Ollama API   │───────┘
+              │ Serving Endpoint │  │ Anthropic  │  │ (localhost)  │
+              │ (REST)           │  │ /anthropic │  │ qwen2.5-coder│
+              └──────────────────┘  │ /v1/messages│  └──────────────┘
+                                    └────────────┘
                                          │
                                 ┌────────▼──────────┐
                                 │ External MCP tools│
@@ -350,24 +353,126 @@ For detailed performance analysis, benchmarks, and deployment guidance, see [PER
 
 ### Installation
 
-```bash
-# from npm (recommended)
-npm install -g lynkr
-lynkr start
+Lynkr offers multiple installation methods to fit your workflow:
 
-# via Homebrew tap
+#### Option 1: Simple Databricks Setup (Quickest)
+
+**No Ollama needed** - Just use Databricks APIs directly:
+
+```bash
+# Install Lynkr
+npm install -g lynkr
+
+# Configure Databricks credentials
+export DATABRICKS_API_BASE=https://your-workspace.cloud.databricks.com
+export DATABRICKS_API_KEY=dapi1234567890abcdef
+
+# Start Lynkr
+lynkr
+```
+
+That's it! Lynkr will use Databricks Claude models for all requests.
+
+**Or use a .env file:**
+```env
+MODEL_PROVIDER=databricks
+DATABRICKS_API_BASE=https://your-workspace.cloud.databricks.com
+DATABRICKS_API_KEY=dapi1234567890abcdef
+PORT=8080
+```
+
+#### Option 2: Hybrid Setup with Ollama (Cost Savings)
+
+For 40% faster responses and 65% cost savings on simple requests:
+
+```bash
+# Install Lynkr
+npm install -g lynkr
+
+# Run setup wizard (installs Ollama + downloads model)
+lynkr-setup
+
+# Start Lynkr
+lynkr
+```
+
+**The `lynkr-setup` wizard will:**
+- ✅ Check if Ollama is installed (auto-installs if missing on macOS/Linux)
+- ✅ Start Ollama service
+- ✅ Download qwen2.5-coder model (~4.7GB)
+- ✅ Create `.env` configuration file
+- ✅ Guide you through Databricks credential setup
+
+**Note**: On Windows, you'll need to manually install Ollama from https://ollama.ai/download, then run `lynkr-setup`.
+
+#### Option 3: Docker Compose (Bundled)
+
+For a complete bundled experience with Ollama included:
+
+```bash
+# Clone repository
+git clone https://github.com/vishalveerareddy123/Lynkr.git
+cd Lynkr
+
+# Copy environment template
+cp .env.example .env
+
+# Edit .env with your Databricks credentials
+nano .env
+
+# Start both services (Lynkr + Ollama)
+docker-compose up -d
+
+# Pull model (first time only)
+docker exec ollama ollama pull qwen2.5-coder:latest
+
+# Verify it's running
+curl http://localhost:8080/health
+```
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for advanced deployment options (Kubernetes, systemd, etc.).
+
+#### Option 4: Homebrew (macOS)
+
+```bash
 brew tap vishalveerareddy123/lynkr
 brew install vishalveerareddy123/lynkr/lynkr
 
-# or clone the repo
-git clone https://github.com/vishalveerareddy123/Lynkr.git
-cd Lynkr
-npm install
+# Configure Databricks (Ollama optional)
+export DATABRICKS_API_BASE=https://your-workspace.cloud.databricks.com
+export DATABRICKS_API_KEY=dapi1234567890abcdef
+
+# Start Lynkr
+lynkr
 ```
 
-Populate an `.env` file (or export environment variables) before starting:
+**Optional**: Install Ollama for hybrid routing:
+```bash
+brew install ollama
+ollama serve
+ollama pull qwen2.5-coder:latest
+```
+
+#### Option 5: From Source
+
+```bash
+# Clone repository
+git clone https://github.com/vishalveerareddy123/Lynkr.git
+cd Lynkr
+
+# Install dependencies
+npm install
+
+# Start server
+npm start
+```
+
+#### Configuration
+
+After installation, configure Lynkr by creating a `.env` file or exporting environment variables:
 
 ```env
+# For Databricks-only setup (no Ollama)
 MODEL_PROVIDER=databricks
 DATABRICKS_API_BASE=https://<your-workspace>.cloud.databricks.com
 DATABRICKS_API_KEY=<personal-access-token>
@@ -376,6 +481,8 @@ WORKSPACE_ROOT=/path/to/your/repo
 PROMPT_CACHE_ENABLED=true
 ```
 
+For hybrid routing with Ollama + cloud fallback, see [Hybrid Routing](#hybrid-routing-with-automatic-fallback) section below.
+
 You can copy `.env.example` if you maintain one, or rely on shell exports.
 
 #### Selecting a model provider
@@ -383,9 +490,10 @@ You can copy `.env.example` if you maintain one, or rely on shell exports.
 Set `MODEL_PROVIDER` to select the upstream endpoint:
 
 - `MODEL_PROVIDER=databricks` (default) – expects `DATABRICKS_API_BASE`, `DATABRICKS_API_KEY`, and optionally `DATABRICKS_ENDPOINT_PATH`.
-- `MODEL_PROVIDER=azure-anthropic` – routes requests to Azure’s `/anthropic/v1/messages` endpoint and uses the headers Azure expects.
+- `MODEL_PROVIDER=azure-anthropic` – routes requests to Azure's `/anthropic/v1/messages` endpoint and uses the headers Azure expects.
+- `MODEL_PROVIDER=ollama` – connects to a locally-running Ollama instance for models like qwen2.5-coder, llama3, mistral, etc.
 
-For Azure-hosted Anthropic, supply the Azure-specific credentials:
+**Azure-hosted Anthropic configuration:**
 
 ```env
 MODEL_PROVIDER=azure-anthropic
@@ -396,6 +504,31 @@ PORT=8080
 WORKSPACE_ROOT=/path/to/your/repo
 ```
 
+**Ollama configuration:**
+
+```env
+MODEL_PROVIDER=ollama
+OLLAMA_ENDPOINT=http://localhost:11434  # default Ollama endpoint
+OLLAMA_MODEL=qwen2.5-coder:latest       # model to use
+OLLAMA_TIMEOUT_MS=120000                # request timeout
+PORT=8080
+WORKSPACE_ROOT=/path/to/your/repo
+```
+
+Before starting Lynkr with Ollama, ensure Ollama is running:
+
+```bash
+# Start Ollama (in a separate terminal)
+ollama serve
+
+# Pull your desired model
+ollama pull qwen2.5-coder:latest
+# Or: ollama pull llama3, mistral, etc.
+
+# Verify model is available
+ollama list
+```
+
 ---
 
 ## Configuration Reference
@@ -404,7 +537,7 @@ WORKSPACE_ROOT=/path/to/your/repo
 |----------|-------------|---------|
 | `PORT` | HTTP port for the proxy server. | `8080` |
 | `WORKSPACE_ROOT` | Filesystem path exposed to workspace tools and indexer. | `process.cwd()` |
-| `MODEL_PROVIDER` | Selects the model backend (`databricks`, `azure-anthropic`). | `databricks` |
+| `MODEL_PROVIDER` | Selects the model backend (`databricks`, `azure-anthropic`, `ollama`). | `databricks` |
 | `MODEL_DEFAULT` | Overrides the default model/deployment name sent to the provider. | Provider-specific default |
 | `DATABRICKS_API_BASE` | Base URL of your Databricks workspace (required when `MODEL_PROVIDER=databricks`). | – |
 | `DATABRICKS_API_KEY` | Databricks PAT used for the serving endpoint (required for Databricks). | – |
@@ -412,6 +545,9 @@ WORKSPACE_ROOT=/path/to/your/repo
 | `AZURE_ANTHROPIC_ENDPOINT` | Full HTTPS endpoint for Azure-hosted Anthropic `/anthropic/v1/messages` (required when `MODEL_PROVIDER=azure-anthropic`). | – |
 | `AZURE_ANTHROPIC_API_KEY` | API key supplied via the `x-api-key` header for Azure Anthropic. | – |
 | `AZURE_ANTHROPIC_VERSION` | Anthropic API version header for Azure Anthropic calls. | `2023-06-01` |
+| `OLLAMA_ENDPOINT` | Ollama API endpoint URL (required when `MODEL_PROVIDER=ollama`). | `http://localhost:11434` |
+| `OLLAMA_MODEL` | Ollama model name to use (e.g., `qwen2.5-coder:latest`, `llama3`, `mistral`). | `qwen2.5-coder:7b` |
+| `OLLAMA_TIMEOUT_MS` | Request timeout for Ollama API calls in milliseconds. | `120000` (2 minutes) |
 | `PROMPT_CACHE_ENABLED` | Toggle the prompt cache system. | `true` |
 | `PROMPT_CACHE_TTL_MS` | Milliseconds before cached prompts expire. | `300000` (5 minutes) |
 | `PROMPT_CACHE_MAX_ENTRIES` | Maximum number of cached prompts retained. | `64` |
@@ -476,6 +612,219 @@ Logs stream to stdout. The server listens on `PORT` and exposes `/v1/messages` i
    ```
 3. Launch `claude` CLI within `WORKSPACE_ROOT`.
 4. Invoke commands as normal; the CLI will route requests through the proxy.
+
+### Using Ollama Models
+
+Lynkr can connect to locally-running Ollama models for fast, offline AI assistance. This is ideal for development environments, air-gapped systems, or cost optimization.
+
+**Quick Start with Ollama:**
+
+```bash
+# Terminal 1: Start Ollama
+ollama serve
+
+# Terminal 2: Pull and verify model
+ollama pull qwen2.5-coder:latest
+ollama list
+
+# Terminal 3: Start Lynkr with Ollama
+export MODEL_PROVIDER=ollama
+export OLLAMA_ENDPOINT=http://localhost:11434
+export OLLAMA_MODEL=qwen2.5-coder:latest
+npm start
+
+# Terminal 4: Connect Claude CLI
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_API_KEY=dummy
+claude
+```
+
+**Supported Ollama Models:**
+
+Lynkr works with any Ollama model. Popular choices:
+
+- **qwen2.5-coder:latest** – Optimized for code generation (7B parameters, 4.7GB)
+- **llama3:latest** – General-purpose conversational model (8B parameters, 4.7GB)
+- **mistral:latest** – Fast, efficient model (7B parameters, 4.1GB)
+- **codellama:latest** – Meta's code-focused model (7B-34B variants)
+
+**Performance Characteristics:**
+
+- **Latency**: ~100-500ms first token (depending on model size and hardware)
+- **Throughput**: ~20-50 tokens/sec on M1/M2 Macs, ~10-30 tokens/sec on typical CPUs
+- **Memory**: 8GB RAM minimum recommended for 7B models, 16GB for 13B models
+- **Disk**: 4-10GB per model (quantized)
+
+**Ollama Health Check:**
+
+```bash
+# Basic health check
+curl http://localhost:8080/health/ready
+
+# Deep health check (includes Ollama connectivity)
+curl "http://localhost:8080/health/ready?deep=true" | jq .checks.ollama
+```
+
+**Tool Calling Support:**
+
+Lynkr now supports **native tool calling** for compatible Ollama models:
+
+- ✅ **Supported models**: llama3.1, llama3.2, qwen2.5, qwen2.5-coder, mistral, mistral-nemo, firefunction-v2
+- ✅ **Automatic detection**: Lynkr detects tool-capable models and enables tools automatically
+- ✅ **Format conversion**: Transparent conversion between Anthropic and Ollama tool formats
+- ❌ **Unsupported models**: llama3, older models (tools are filtered out automatically)
+
+See [OLLAMA-TOOL-CALLING.md](OLLAMA-TOOL-CALLING.md) for implementation details.
+
+**Limitations:**
+
+- Tool choice parameter is not supported (Ollama always uses "auto" mode)
+- Some advanced Claude features (extended thinking, prompt caching) are not available with Ollama
+
+### Hybrid Routing with Automatic Fallback
+
+Lynkr supports **intelligent hybrid routing** that automatically routes requests between Ollama (local/fast) and cloud providers (Databricks/Azure) based on request complexity, with transparent fallback when Ollama is unavailable.
+
+**Why Hybrid Routing?**
+
+- 🚀 **40-87% faster** for simple requests (local Ollama)
+- 💰 **65-100% cost savings** for requests that stay on Ollama
+- 🛡️ **Automatic fallback** ensures reliability when Ollama fails
+- 🔒 **Privacy-preserving** for simple queries (never leave your machine)
+
+**Quick Start:**
+
+```bash
+# Terminal 1: Start Ollama
+ollama serve
+ollama pull qwen2.5-coder:latest
+
+# Terminal 2: Start Lynkr with hybrid routing
+export PREFER_OLLAMA=true
+export OLLAMA_ENDPOINT=http://localhost:11434
+export OLLAMA_MODEL=qwen2.5-coder:latest
+export DATABRICKS_API_KEY=your_key           # Fallback provider
+export DATABRICKS_API_BASE=your_base_url     # Fallback provider
+npm start
+
+# Terminal 3: Connect Claude CLI (works transparently)
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_API_KEY=dummy
+claude
+```
+
+**How It Works:**
+
+Lynkr intelligently routes each request:
+
+1. **Simple requests (0-2 tools)** → Try Ollama first
+   - ✅ If Ollama succeeds: Fast, local response (100-500ms)
+   - ❌ If Ollama fails: Automatic transparent fallback to cloud
+
+2. **Complex requests (3+ tools)** → Route directly to cloud
+   - Ollama isn't attempted (saves time on requests better suited for cloud)
+
+3. **Tool-incompatible models** → Route directly to cloud
+   - Requests requiring tools with non-tool-capable Ollama models skip Ollama
+
+**Configuration:**
+
+```bash
+# Required
+PREFER_OLLAMA=true                    # Enable hybrid routing mode
+
+# Optional (with defaults)
+OLLAMA_FALLBACK_ENABLED=true          # Enable automatic fallback (default: true)
+OLLAMA_MAX_TOOLS_FOR_ROUTING=3        # Max tools to route to Ollama (default: 3)
+OLLAMA_FALLBACK_PROVIDER=databricks   # Cloud provider for fallback (default: databricks)
+```
+
+**Example Scenarios:**
+
+```bash
+# Scenario 1: Simple code generation (no tools)
+User: "Write a hello world function in Python"
+→ Routes to Ollama (fast, local, free)
+→ Response in ~300ms
+
+# Scenario 2: Complex workflow with multiple tools
+User: "Search the codebase, read 5 files, and refactor them"
+→ Routes directly to cloud (5+ tools, better suited for Databricks)
+→ Response in ~2000ms
+
+# Scenario 3: Ollama unavailable
+User: "What is 2+2?"
+→ Tries Ollama (connection refused)
+→ Automatic fallback to Databricks
+→ Response in ~1500ms (user sees no error)
+```
+
+**Circuit Breaker Protection:**
+
+After 5 consecutive Ollama failures, the circuit breaker opens:
+- Subsequent requests skip Ollama entirely (fail-fast)
+- Fallback happens in <100ms instead of waiting for timeout
+- Circuit auto-recovers after 60 seconds
+
+**Monitoring:**
+
+Track routing performance via `/metrics/observability`:
+
+```bash
+curl http://localhost:8080/metrics/observability | jq '.routing, .fallback, .cost_savings'
+```
+
+Example output:
+```json
+{
+  "routing": {
+    "by_provider": {"ollama": 100, "databricks": 20},
+    "successes_by_provider": {"ollama": 85, "databricks": 20},
+    "failures_by_provider": {"ollama": 15}
+  },
+  "fallback": {
+    "attempts_total": 15,
+    "successes_total": 13,
+    "failures_total": 2,
+    "success_rate": "86.67%",
+    "reasons": {
+      "circuit_breaker": 8,
+      "timeout": 4,
+      "service_unavailable": 3
+    }
+  },
+  "cost_savings": {
+    "ollama_savings_usd": "1.2345",
+    "ollama_latency_ms": { "mean": 450, "p95": 1200 }
+  }
+}
+```
+
+**Rollback:**
+
+Disable hybrid routing anytime:
+
+```bash
+# Option 1: Disable entirely (use static MODEL_PROVIDER)
+export PREFER_OLLAMA=false
+npm start
+
+# Option 2: Ollama-only mode (no fallback)
+export PREFER_OLLAMA=true
+export OLLAMA_FALLBACK_ENABLED=false
+npm start
+```
+
+**Performance Comparison:**
+
+| Metric | Cloud Only | Hybrid Routing | Improvement |
+|--------|-----------|----------------|-------------|
+| **Simple requests** | 1500-2500ms | 300-600ms | 70-87% faster ⚡ |
+| **Complex requests** | 1500-2500ms | 1500-2500ms | No change (routes to cloud) |
+| **Cost per simple request** | $0.002-0.005 | $0.00 | 100% savings 💰 |
+| **Fallback latency** | N/A | <100ms | Transparent to user |
+
+See [HYBRID-ROUTING-ANALYSIS.md](HYBRID-ROUTING-ANALYSIS.md) for detailed performance analysis.
 
 ### Using Built-in Workspace Tools
 
@@ -744,9 +1093,10 @@ Replace `<workspace>` and `<endpoint-name>` with your Databricks workspace host 
 
 ### Provider-specific behaviour
 
-- **Databricks** – Mirrors Anthropic’s hosted behaviour. Automatic policy web fallbacks (`needsWebFallback`) can trigger an extra `web_fetch`, and the upstream service executes dynamic pages on your behalf.
-- **Azure Anthropic** – Requests are normalised to Azure’s payload shape. The proxy disables automatic `web_fetch` fallbacks to avoid duplicate tool executions; instead, the assistant surfaces a diagnostic message and you can trigger the tool manually if required.
-- In both cases, `web_search` and `web_fetch` run locally. They do not execute JavaScript, so pages that render data client-side (Google Finance, etc.) will return scaffolding only. Prefer JSON/CSV quote APIs (e.g. Yahoo chart API) when you need live financial data.
+- **Databricks** – Mirrors Anthropic's hosted behaviour. Automatic policy web fallbacks (`needsWebFallback`) can trigger an extra `web_fetch`, and the upstream service executes dynamic pages on your behalf.
+- **Azure Anthropic** – Requests are normalised to Azure's payload shape. The proxy disables automatic `web_fetch` fallbacks to avoid duplicate tool executions; instead, the assistant surfaces a diagnostic message and you can trigger the tool manually if required.
+- **Ollama** – Connects to locally-running Ollama models. Tool definitions are filtered out since Ollama doesn't support native tool calling. System prompts are merged into the first user message. Response format is converted from Ollama's format to Anthropic-compatible content blocks. Best used for simple text generation tasks or as a cost-effective development environment.
+- In all cases, `web_search` and `web_fetch` run locally. They do not execute JavaScript, so pages that render data client-side (Google Finance, etc.) will return scaffolding only. Prefer JSON/CSV quote APIs (e.g. Yahoo chart API) when you need live financial data.
 
 ---
 
@@ -874,7 +1224,7 @@ A: Functionally they overlap on core workflows (chat, tool calls, repo ops), but
 
 | Capability | Anthropic Hosted Backend | Claude Code Proxy |
 |------------|-------------------------|-------------------|
-| Claude models | Anthropic-operated Sonnet/Opus | Adapters for Databricks (default) and Azure Anthropic |
+| Claude models | Anthropic-operated Sonnet/Opus | Adapters for Databricks (default), Azure Anthropic, and Ollama (local models) |
 | Prompt cache | Managed, opaque | Local LRU cache with configurable TTL/size |
 | Git & workspace tools | Anthropic-managed hooks | Local Node handlers (`src/tools/`) with policy gate |
 | Web search/fetch | Hosted browsing agent, JS-capable | Local HTTP fetch (no JS) plus optional policy fallback |
@@ -892,8 +1242,17 @@ A: Functionally similar. Identical messages (model, messages, tools, sampling pa
 **Q: Can I connect multiple MCP servers?**  
 A: Yes. Place multiple manifests in `MCP_MANIFEST_DIRS`. Each server is launched and its tools are namespaced.
 
-**Q: How do I change the workspace root?**  
+**Q: How do I change the workspace root?**
 A: Set `WORKSPACE_ROOT` before starting the proxy. The indexer and filesystem tools operate relative to that path.
+
+**Q: Can I use Ollama models with Lynkr?**
+A: Yes! Set `MODEL_PROVIDER=ollama` and ensure Ollama is running locally (`ollama serve`). Lynkr supports any Ollama model (qwen2.5-coder, llama3, mistral, etc.). Note that Ollama models don't support native tool calling, so tool definitions are filtered out. Best for text generation and simple workflows.
+
+**Q: Which Ollama model should I use?**
+A: For code generation, use `qwen2.5-coder:latest` (7B, optimized for code). For general conversations, `llama3:latest` (8B) or `mistral:latest` (7B) work well. Larger models (13B+) provide better quality but require more RAM and are slower.
+
+**Q: What are the performance differences between providers?**
+A: **Databricks/Azure Anthropic**: ~500ms-2s latency, cloud-hosted, pay-per-token, supports tools. **Ollama**: ~100-500ms first token, runs locally, free, no tool support. Choose Databricks/Azure for production workflows with tools; choose Ollama for fast iteration, offline development, or cost optimization.
 
 **Q: Where are session transcripts stored?**
 A: In SQLite at `data/sessions.db` (configurable via `SESSION_DB_PATH`).

@@ -65,14 +65,25 @@ async function readinessCheck(req, res) {
     allHealthy = false;
   }
 
-  // Optional: Check Databricks (can be slow)
+  // Optional: Check provider (can be slow)
   if (req.query.deep === "true") {
-    try {
-      checks.databricks = await checkDatabricks();
-      if (!checks.databricks.healthy) allHealthy = false;
-    } catch (err) {
-      checks.databricks = { healthy: false, error: err.message };
-      allHealthy = false;
+    const provider = config.modelProvider?.type || "databricks";
+    if (provider === "ollama") {
+      try {
+        checks.ollama = await checkOllama();
+        if (!checks.ollama.healthy) allHealthy = false;
+      } catch (err) {
+        checks.ollama = { healthy: false, error: err.message };
+        allHealthy = false;
+      }
+    } else if (provider === "databricks" || provider === "azure-anthropic") {
+      try {
+        checks.provider = await checkDatabricks();
+        if (!checks.provider.healthy) allHealthy = false;
+      } catch (err) {
+        checks.provider = { healthy: false, error: err.message };
+        allHealthy = false;
+      }
     }
   }
 
@@ -135,6 +146,52 @@ async function checkDatabricks() {
     };
   } catch (err) {
     logger.error({ err }, "Databricks health check failed");
+    return {
+      healthy: false,
+      error: err.message,
+      lastCheck: Date.now(),
+    };
+  }
+}
+
+/**
+ * Check Ollama API connectivity
+ */
+async function checkOllama() {
+  try {
+    if (!config.ollama?.endpoint) {
+      return { healthy: true, note: "No Ollama endpoint configured" };
+    }
+
+    const endpoint = `${config.ollama.endpoint}/api/tags`;
+    const response = await fetch(endpoint, {
+      method: "GET",
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      return {
+        healthy: false,
+        error: `Ollama returned status ${response.status}`,
+        lastCheck: Date.now(),
+      };
+    }
+
+    const data = await response.json();
+    const hasModel = config.ollama.model
+      ? data.models?.some((m) => m.name === config.ollama.model)
+      : data.models?.length > 0;
+
+    return {
+      healthy: hasModel,
+      modelLoaded: hasModel,
+      modelCount: data.models?.length || 0,
+      configuredModel: config.ollama.model,
+      lastCheck: Date.now(),
+      error: hasModel ? null : `Model ${config.ollama.model} not found`,
+    };
+  } catch (err) {
+    logger.error({ err }, "Ollama health check failed");
     return {
       healthy: false,
       error: err.message,

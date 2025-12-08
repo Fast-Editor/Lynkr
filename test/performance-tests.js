@@ -188,7 +188,7 @@ async function testPromptCache() {
   log('\n📊 Testing Prompt Cache Implementation...', 'cyan');
 
   // Load the cache module
-  const promptCache = require('./src/cache/prompt.js');
+  const promptCache = require('../src/cache/prompt.js');
 
   // Test 1: Check if persistent storage is enabled
   const stats = promptCache.stats();
@@ -258,7 +258,7 @@ async function testRegexCaching() {
   log('\n📊 Testing Regex Caching Implementation...', 'cyan');
 
   // Read indexer file to verify implementation
-  const indexerCode = fs.readFileSync(path.join(__dirname, 'src', 'indexer', 'index.js'), 'utf8');
+  const indexerCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'indexer', 'index.js'), 'utf8');
 
   const hasRegexCache = indexerCode.includes('regexCache') && indexerCode.includes('getCachedRegex');
   const hasCacheLimit = indexerCode.includes('MAX_REGEX_CACHE_SIZE');
@@ -319,7 +319,7 @@ async function testLazyLoading() {
   log('\n📊 Testing Lazy Loading Implementation...', 'cyan');
 
   // Check parser.js for lazy loading
-  const parserCode = fs.readFileSync(path.join(__dirname, 'src', 'indexer', 'parser.js'), 'utf8');
+  const parserCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'indexer', 'parser.js'), 'utf8');
 
   const hasLazyLoading = parserCode.includes('let Parser = null') &&
                          parserCode.includes('getTreeSitterParser') &&
@@ -350,7 +350,7 @@ async function testHTTPPooling() {
   log('\n📊 Testing HTTP Pooling Implementation...', 'cyan');
 
   // Check databricks client for connection pooling
-  const clientCode = fs.readFileSync(path.join(__dirname, 'src', 'clients', 'databricks.js'), 'utf8');
+  const clientCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'clients', 'databricks.js'), 'utf8');
 
   const hasPooling = clientCode.includes('httpAgent') &&
                      clientCode.includes('httpsAgent') &&
@@ -381,7 +381,7 @@ async function testCompression() {
   log('\n📊 Testing Compression Implementation...', 'cyan');
 
   // Check server.js for compression middleware
-  const serverCode = fs.readFileSync(path.join(__dirname, 'src', 'server.js'), 'utf8');
+  const serverCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'server.js'), 'utf8');
 
   const hasCompression = serverCode.includes("require('compression')") ||
                          serverCode.includes('require("compression")');
@@ -391,7 +391,7 @@ async function testCompression() {
   log(`${usesCompression ? '✅' : '❌'} Compression middleware enabled`, usesCompression ? 'green' : 'red');
 
   // Check package.json
-  const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+  const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
   const compressionInstalled = packageJson.dependencies && packageJson.dependencies.compression;
 
   log(`${compressionInstalled ? '✅' : '❌'} Compression dependency installed`, compressionInstalled ? 'green' : 'red');

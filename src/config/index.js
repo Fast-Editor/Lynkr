@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 const modelProvider = SUPPORTED_MODEL_PROVIDERS.has(rawModelProvider)
   ? rawModelProvider
@@ -75,6 +75,19 @@ const azureAnthropicEndpoint = process.env.AZURE_ANTHROPIC_ENDPOINT ?? null;
 const azureAnthropicApiKey = process.env.AZURE_ANTHROPIC_API_KEY ?? null;
 const azureAnthropicVersion = process.env.AZURE_ANTHROPIC_VERSION ?? "2023-06-01";
 
+const ollamaEndpoint = process.env.OLLAMA_ENDPOINT ?? "http://localhost:11434";
+const ollamaModel = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+const ollamaTimeout = Number.parseInt(process.env.OLLAMA_TIMEOUT_MS ?? "120000", 10);
+
+// Hybrid routing configuration
+const preferOllama = process.env.PREFER_OLLAMA === "true";
+const ollamaFallbackEnabled = process.env.OLLAMA_FALLBACK_ENABLED !== "false"; // default true
+const ollamaMaxToolsForRouting = Number.parseInt(
+  process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING ?? "3",
+  10
+);
+const ollamaFallbackProvider = (process.env.OLLAMA_FALLBACK_PROVIDER ?? "databricks").toLowerCase();
+
 if (modelProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
   throw new Error("Set DATABRICKS_API_BASE and DATABRICKS_API_KEY before starting the proxy.");
 }
@@ -83,6 +96,43 @@ if (modelProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnt
   throw new Error(
     "Set AZURE_ANTHROPIC_ENDPOINT and AZURE_ANTHROPIC_API_KEY before starting the proxy.",
   );
+}
+
+if (modelProvider === "ollama") {
+  try {
+    new URL(ollamaEndpoint);
+  } catch (err) {
+    throw new Error("OLLAMA_ENDPOINT must be a valid URL (default: http://localhost:11434)");
+  }
+}
+
+// Validate hybrid routing configuration
+if (preferOllama) {
+  if (!ollamaEndpoint) {
+    throw new Error("PREFER_OLLAMA is set but OLLAMA_ENDPOINT is not configured");
+  }
+  if (ollamaFallbackEnabled && !SUPPORTED_MODEL_PROVIDERS.has(ollamaFallbackProvider)) {
+    throw new Error(
+      `OLLAMA_FALLBACK_PROVIDER must be one of: ${Array.from(SUPPORTED_MODEL_PROVIDERS).join(", ")}`
+    );
+  }
+  if (ollamaFallbackEnabled && ollamaFallbackProvider === "ollama") {
+    throw new Error("OLLAMA_FALLBACK_PROVIDER cannot be 'ollama' (circular fallback)");
+  }
+
+  // Ensure fallback provider is properly configured
+  if (ollamaFallbackEnabled) {
+    if (ollamaFallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
+      throw new Error(
+        "PREFER_OLLAMA with databricks fallback requires DATABRICKS_API_BASE and DATABRICKS_API_KEY"
+      );
+    }
+    if (ollamaFallbackProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
+      throw new Error(
+        "PREFER_OLLAMA with azure-anthropic fallback requires AZURE_ANTHROPIC_ENDPOINT and AZURE_ANTHROPIC_API_KEY"
+      );
+    }
+  }
 }
 
 const endpointPath =
@@ -236,9 +286,19 @@ const config = {
     apiKey: azureAnthropicApiKey,
     version: azureAnthropicVersion,
   },
+  ollama: {
+    endpoint: ollamaEndpoint,
+    model: ollamaModel,
+    timeout: Number.isNaN(ollamaTimeout) ? 120000 : ollamaTimeout,
+  },
   modelProvider: {
     type: modelProvider,
     defaultModel,
+    // Hybrid routing settings
+    preferOllama,
+    ollamaFallbackEnabled,
+    ollamaMaxToolsForRouting,
+    ollamaFallbackProvider,
   },
   server: {
     jsonLimit: process.env.REQUEST_JSON_LIMIT ?? "1gb",

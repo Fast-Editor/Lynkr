@@ -153,11 +153,35 @@ function normaliseTools(tools) {
   return tools.map((tool) => ({
     type: "function",
     function: {
-      name: tool.name,
-      description: tool.description,
+      name: tool.name || "unnamed_tool",
+      description: tool.description || tool.name || "No description provided",
       parameters: tool.input_schema ?? {},
     },
   }));
+}
+
+/**
+ * Ensure tools are in Anthropic format for Databricks/Claude API
+ * Databricks expects: {name, description, input_schema}
+ * NOT OpenAI format: {type: "function", function: {...}}
+ */
+function ensureAnthropicToolFormat(tools) {
+  if (!Array.isArray(tools) || tools.length === 0) return undefined;
+  return tools.map((tool) => {
+    // Ensure input_schema has required 'type' field
+    let input_schema = tool.input_schema || { type: "object", properties: {} };
+
+    // If input_schema exists but missing 'type', add it
+    if (input_schema && !input_schema.type) {
+      input_schema = { type: "object", ...input_schema };
+    }
+
+    return {
+      name: tool.name || "unnamed_tool",
+      description: tool.description || tool.name || "No description provided",
+      input_schema,
+    };
+  });
 }
 
 function stripPlaceholderWebSearchContent(message) {
@@ -515,6 +539,55 @@ function normaliseToolChoice(choice) {
   return undefined;
 }
 
+function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
+  // Ollama response format:
+  // { model, created_at, message: { role, content, tool_calls }, done, total_duration, ... }
+  // { eval_count, prompt_eval_count, ... }
+
+  const message = ollamaResponse?.message ?? {};
+  const content = message.content || "";
+  const toolCalls = message.tool_calls || [];
+
+  // Build content blocks
+  const contentItems = [];
+
+  // Add text content if present
+  if (typeof content === "string" && content.trim()) {
+    contentItems.push({ type: "text", text: content });
+  }
+
+  // Add tool calls if present
+  if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+    const { buildAnthropicResponseFromOllama } = require("../clients/ollama-utils");
+    // Use the utility function for tool call conversion
+    return buildAnthropicResponseFromOllama(ollamaResponse, requestedModel);
+  }
+
+  if (contentItems.length === 0) {
+    contentItems.push({ type: "text", text: "" });
+  }
+
+  // Ollama uses different token count fields
+  const inputTokens = ollamaResponse.prompt_eval_count ?? 0;
+  const outputTokens = ollamaResponse.eval_count ?? 0;
+
+  return {
+    id: `msg_${Date.now()}`,
+    type: "message",
+    role: "assistant",
+    model: requestedModel,
+    content: contentItems,
+    stop_reason: ollamaResponse.done ? "end_turn" : "max_tokens",
+    stop_sequence: null,
+    usage: {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    },
+  };
+}
+
 function toAnthropicResponse(openai, requestedModel, wantsThinking) {
   const choice = openai?.choices?.[0];
   const message = choice?.message ?? {};
@@ -663,6 +736,74 @@ function sanitizePayload(payload) {
         ? config.modelProvider.defaultModel.trim()
         : "claude-opus-4-5";
     clean.model = azureDefaultModel;
+  } else if (providerType === "ollama") {
+    // Ollama format conversion
+    // Check if model supports tools
+    const { modelNameSupportsTools } = require("../clients/ollama-utils");
+    const modelSupportsTools = modelNameSupportsTools(config.ollama?.model);
+
+    if (!modelSupportsTools) {
+      // Filter out tool_result content blocks for models without tool support
+      clean.messages = clean.messages
+        .map((msg) => {
+          if (Array.isArray(msg.content)) {
+            // Filter out tool_use and tool_result blocks
+            const textBlocks = msg.content.filter(
+              (block) => block.type === "text" && block.text
+            );
+            if (textBlocks.length > 0) {
+              // Convert to simple string format for Ollama
+              return {
+                role: msg.role,
+                content: textBlocks.map((b) => b.text).join("\n"),
+              };
+            }
+            return null;
+          }
+          return msg;
+        })
+        .filter(Boolean);
+    } else {
+      // Keep tool blocks for tool-capable models
+      // But flatten content to simple string for better compatibility
+      clean.messages = clean.messages.map((msg) => {
+        if (Array.isArray(msg.content)) {
+          const textBlocks = msg.content.filter(
+            (block) => block.type === "text" && block.text
+          );
+          if (textBlocks.length > 0) {
+            return {
+              role: msg.role,
+              content: textBlocks.map((b) => b.text).join("\n"),
+            };
+          }
+        }
+        return msg;
+      });
+    }
+
+    // Flatten system messages into the first user message
+    const systemChunks = [];
+    clean.messages = clean.messages.filter((msg) => {
+      if (msg?.role === "system") {
+        if (typeof msg.content === "string" && msg.content.trim().length > 0) {
+          systemChunks.push(msg.content.trim());
+        }
+        return false;
+      }
+      return true;
+    });
+
+    // Prepend system content to first user message if present
+    if (systemChunks.length > 0 && clean.messages.length > 0) {
+      const systemContent = systemChunks.join("\n\n");
+      const firstMsg = clean.messages[0];
+      if (firstMsg.role === "user") {
+        firstMsg.content = `${systemContent}\n\n${firstMsg.content}`;
+      }
+    }
+
+    delete clean.system;
   } else {
     delete clean.system;
   }
@@ -684,6 +825,23 @@ function sanitizePayload(payload) {
             input_schema: JSON.parse(JSON.stringify(tool.input_schema)),
           }));
     delete clean.tool_choice;
+  } else if (providerType === "ollama") {
+    // Check if model supports tools
+    const { modelNameSupportsTools } = require("../clients/ollama-utils");
+    const modelSupportsTools = modelNameSupportsTools(config.ollama?.model);
+
+    if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
+      // Keep tools for tool-capable models (will be converted in client)
+      logger.debug({
+        model: config.ollama?.model,
+        toolCount: clean.tools.length,
+      }, "Ollama model supports tools, keeping them");
+      // Keep clean.tools as-is
+    } else {
+      // Remove tools for models without tool support
+      delete clean.tools;
+      delete clean.tool_choice;
+    }
   } else if (Array.isArray(clean.tools)) {
     delete clean.tools;
   }
@@ -692,6 +850,16 @@ function sanitizePayload(payload) {
     const toolChoice = normaliseToolChoice(clean.tool_choice);
     if (toolChoice !== undefined) clean.tool_choice = toolChoice;
     else delete clean.tool_choice;
+  } else if (providerType === "ollama") {
+    // Tool choice handling
+    const { modelNameSupportsTools } = require("../clients/ollama-utils");
+    const modelSupportsTools = modelNameSupportsTools(config.ollama?.model);
+
+    if (!modelSupportsTools) {
+      delete clean.tool_choice;
+    }
+    // For tool-capable models, Ollama doesn't support tool_choice, so remove it
+    delete clean.tool_choice;
   } else if (clean.tool_choice === undefined || clean.tool_choice === null) {
     delete clean.tool_choice;
   }
@@ -1135,11 +1303,20 @@ async function runAgentLoop({
     }
 
     let anthropicPayload;
-    if (providerType === "azure-anthropic") {
+    // Use actualProvider from invokeModel for hybrid routing support
+    const actualProvider = databricksResponse.actualProvider || providerType;
+
+    if (actualProvider === "azure-anthropic") {
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
       }
+    } else if (actualProvider === "ollama") {
+      anthropicPayload = ollamaToAnthropicResponse(
+        databricksResponse.json,
+        requestedModel,
+      );
+      anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     } else {
       anthropicPayload = toAnthropicResponse(
         databricksResponse.json,
@@ -1149,7 +1326,9 @@ async function runAgentLoop({
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     }
 
-    const fallbackCandidate = anthropicPayload.content.find(
+    // Ensure content is an array before calling .find()
+    const content = Array.isArray(anthropicPayload.content) ? anthropicPayload.content : [];
+    const fallbackCandidate = content.find(
       (item) => item.type === "text" && needsWebFallback(item.text),
     );
 

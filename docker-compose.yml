@@ -1,18 +1,86 @@
 version: "3.9"
 
 services:
-  claude-proxy:
+  # Lynkr proxy service
+  lynkr:
     build: .
-    container_name: claude-proxy
+    container_name: lynkr
     ports:
       - "8080:8080"
       - "8888:8888"
     environment:
+      # Ollama configuration (points to ollama service)
+      PREFER_OLLAMA: ${PREFER_OLLAMA:-true}
+      OLLAMA_ENDPOINT: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:latest}
+      OLLAMA_FALLBACK_PROVIDER: ${OLLAMA_FALLBACK_PROVIDER:-databricks}
+      OLLAMA_FALLBACK_ENABLED: ${OLLAMA_FALLBACK_ENABLED:-true}
+      OLLAMA_MAX_TOOLS_FOR_ROUTING: ${OLLAMA_MAX_TOOLS_FOR_ROUTING:-3}
+
+      # Databricks fallback configuration
       DATABRICKS_API_BASE: ${DATABRICKS_API_BASE:-https://example.cloud.databricks.com}
       DATABRICKS_API_KEY: ${DATABRICKS_API_KEY:-replace-with-databricks-pat}
+
+      # Optional: Azure Anthropic fallback
+      AZURE_ANTHROPIC_ENDPOINT: ${AZURE_ANTHROPIC_ENDPOINT:-}
+      AZURE_ANTHROPIC_API_KEY: ${AZURE_ANTHROPIC_API_KEY:-}
+
+      # Server configuration
+      PORT: ${PORT:-8080}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       WEB_SEARCH_ENDPOINT: ${WEB_SEARCH_ENDPOINT:-http://localhost:8888/search}
-      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/workspace}
+      WORKSPACE_ROOT: /workspace
     volumes:
-      - ./data:/app/data
-      - .:/workspace
+      - ./data:/app/data  # Persist SQLite databases
+      - .:/workspace      # Mount workspace
+    depends_on:
+      - ollama
     restart: unless-stopped
+    networks:
+      - lynkr-network
+
+  # Ollama service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama  # Persist downloaded models
+    restart: unless-stopped
+    networks:
+      - lynkr-network
+    # Uncomment for NVIDIA GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # Optional: Ollama Web UI (if you want a visual interface)
+  # ollama-webui:
+  #   image: ghcr.io/open-webui/open-webui:main
+  #   container_name: ollama-webui
+  #   ports:
+  #     - "3000:8080"
+  #   environment:
+  #     OLLAMA_BASE_URL: http://ollama:11434
+  #   volumes:
+  #     - ollama-webui-data:/app/backend/data
+  #   depends_on:
+  #     - ollama
+  #   restart: unless-stopped
+  #   networks:
+  #     - lynkr-network
+
+volumes:
+  ollama-data:
+    driver: local
+  # ollama-webui-data:
+  #   driver: local
+
+networks:
+  lynkr-network:
+    driver: bridge

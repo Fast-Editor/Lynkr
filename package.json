@@ -4,13 +4,19 @@
   "description": "Self-hosted Claude Code proxy with Databricks and Azure Anthropic adapters, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
-    "lynkr": "./bin/cli.js"
+    "lynkr": "./bin/cli.js",
+    "lynkr-setup": "./scripts/setup.js"
   },
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
     "lint": "eslint src index.js",
-    "test": "echo \"No automated tests configured\" && exit 0"
+    "test": "npm run test:unit && npm run test:performance",
+    "test:unit": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js test/hybrid-routing-integration.test.js",
+    "test:performance": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/hybrid-routing-performance.test.js && DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-tests.js",
+    "test:benchmark": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-benchmark.js",
+    "test:quick": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js",
+    "test:all": "npm run test:unit && npm run test:performance && npm run test:benchmark"
   },
   "keywords": [
     "claude",

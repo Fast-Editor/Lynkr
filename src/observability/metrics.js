@@ -41,6 +41,18 @@ class MetricsCollector {
     this.startTime = Date.now();
     this.lastResetTime = Date.now();
 
+    // Routing metrics
+    this.providerRoutingCounts = new Map(); // provider -> count
+    this.providerSuccesses = new Map();     // provider -> count
+    this.providerFailures = new Map();      // provider -> count
+    this.fallbackAttempts = 0;
+    this.fallbackSuccesses = 0;
+    this.fallbackFailures = 0;
+    this.fallbackReasons = new Map();       // reason -> count
+    this.ollamaLatencies = [];
+    this.fallbackLatencies = [];
+    this.estimatedCostSavings = 0;
+
     // Histogram buckets for latency (in ms)
     this.latencyBuckets = [10, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
 
@@ -115,6 +127,67 @@ class MetricsCollector {
   }
 
   /**
+   * Record provider routing decision
+   */
+  recordProviderRouting(provider) {
+    const count = this.providerRoutingCounts.get(provider) || 0;
+    this.providerRoutingCounts.set(provider, count + 1);
+  }
+
+  /**
+   * Record provider success
+   */
+  recordProviderSuccess(provider, latencyMs) {
+    const count = this.providerSuccesses.get(provider) || 0;
+    this.providerSuccesses.set(provider, count + 1);
+
+    if (provider === "ollama" && this.ollamaLatencies.length < 10000) {
+      this.ollamaLatencies.push(latencyMs);
+    }
+  }
+
+  /**
+   * Record provider failure
+   */
+  recordProviderFailure(provider) {
+    const count = this.providerFailures.get(provider) || 0;
+    this.providerFailures.set(provider, count + 1);
+  }
+
+  /**
+   * Record fallback attempt
+   */
+  recordFallbackAttempt(fromProvider, toProvider, reason) {
+    this.fallbackAttempts++;
+    const count = this.fallbackReasons.get(reason) || 0;
+    this.fallbackReasons.set(reason, count + 1);
+  }
+
+  /**
+   * Record fallback success
+   */
+  recordFallbackSuccess(latencyMs) {
+    this.fallbackSuccesses++;
+    if (this.fallbackLatencies.length < 10000) {
+      this.fallbackLatencies.push(latencyMs);
+    }
+  }
+
+  /**
+   * Record fallback failure
+   */
+  recordFallbackFailure() {
+    this.fallbackFailures++;
+  }
+
+  /**
+   * Record cost savings from using Ollama
+   */
+  recordCostSavings(savingsUsd) {
+    this.estimatedCostSavings += savingsUsd;
+  }
+
+  /**
    * Get current metrics snapshot
    */
   getMetrics() {
@@ -161,14 +234,41 @@ class MetricsCollector {
       uptime_seconds: Math.floor(uptime / 1000),
       memory_usage: process.memoryUsage(),
       cpu_usage: process.cpuUsage(),
+
+      // Routing
+      routing: {
+        by_provider: Object.fromEntries(this.providerRoutingCounts),
+        successes_by_provider: Object.fromEntries(this.providerSuccesses),
+        failures_by_provider: Object.fromEntries(this.providerFailures),
+      },
+
+      // Fallback
+      fallback: {
+        attempts_total: this.fallbackAttempts,
+        successes_total: this.fallbackSuccesses,
+        failures_total: this.fallbackFailures,
+        success_rate: this.fallbackAttempts > 0
+          ? ((this.fallbackSuccesses / this.fallbackAttempts * 100).toFixed(2) + '%')
+          : 'N/A',
+        reasons: Object.fromEntries(this.fallbackReasons),
+        latency_ms: this.calculateLatencyStats(this.fallbackLatencies),
+      },
+
+      // Cost savings
+      cost_savings: {
+        ollama_savings_usd: this.estimatedCostSavings.toFixed(4),
+        ollama_latency_ms: this.calculateLatencyStats(this.ollamaLatencies),
+      },
     };
   }
 
   /**
    * Calculate latency statistics (lazy)
    */
-  calculateLatencyStats() {
-    if (this.requestLatencies.length === 0) {
+  calculateLatencyStats(latencies = null) {
+    const data = latencies || this.requestLatencies;
+
+    if (data.length === 0) {
       return {
         min: 0,
         max: 0,
@@ -179,7 +279,7 @@ class MetricsCollector {
       };
     }
 
-    const sorted = [...this.requestLatencies].sort((a, b) => a - b);
+    const sorted = [...data].sort((a, b) => a - b);
     const count = sorted.length;
 
     return {
@@ -250,6 +350,16 @@ class MetricsCollector {
     this.databricksRequests = 0;
     this.databricksErrors = 0;
     this.databricksRetries = 0;
+    this.providerRoutingCounts.clear();
+    this.providerSuccesses.clear();
+    this.providerFailures.clear();
+    this.fallbackAttempts = 0;
+    this.fallbackSuccesses = 0;
+    this.fallbackFailures = 0;
+    this.fallbackReasons.clear();
+    this.ollamaLatencies = [];
+    this.fallbackLatencies = [];
+    this.estimatedCostSavings = 0;
     this.lastResetTime = Date.now();
   }
 }

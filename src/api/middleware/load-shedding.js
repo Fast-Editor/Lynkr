@@ -94,7 +94,16 @@ let instance = null;
 
 function getLoadShedder(options) {
   if (!instance) {
-    instance = new LoadShedder(options);
+    // Read from environment variables if not provided
+    const defaultOptions = {
+      heapThreshold: Number.parseFloat(process.env.LOAD_SHEDDING_HEAP_THRESHOLD || "0.90"),
+      memoryThreshold: Number.parseFloat(process.env.LOAD_SHEDDING_MEMORY_THRESHOLD || "0.85"),
+      activeRequestsThreshold: Number.parseInt(
+        process.env.LOAD_SHEDDING_ACTIVE_REQUESTS_THRESHOLD || "1000",
+        10
+      ),
+    };
+    instance = new LoadShedder({ ...defaultOptions, ...options });
   }
   return instance;
 }
