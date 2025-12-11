@@ -1654,6 +1654,57 @@ async function runAgentLoop({
         requestedModel,
       );
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+    } else if (actualProvider === "azure-openai") {
+      const { convertOpenRouterResponseToAnthropic } = require("../clients/openrouter-utils");
+
+      // Validate Azure OpenAI response has choices array before conversion
+      if (!databricksResponse.json?.choices?.length) {
+        logger.warn({
+          json: databricksResponse.json,
+          status: databricksResponse.status
+        }, "Azure OpenAI response missing choices array");
+
+        appendTurnToSession(session, {
+          role: "assistant",
+          type: "error",
+          status: databricksResponse.status,
+          content: databricksResponse.json,
+          metadata: { termination: "malformed_response" },
+        });
+
+        const response = buildErrorResponse(databricksResponse);
+        return {
+          response,
+          steps,
+          durationMs: Date.now() - start,
+          terminationReason: response.terminationReason,
+        };
+      }
+
+      // Log Azure OpenAI raw response
+      logger.info({
+        hasChoices: !!databricksResponse.json?.choices,
+        choiceCount: databricksResponse.json?.choices?.length || 0,
+        firstChoice: databricksResponse.json?.choices?.[0],
+        hasToolCalls: !!databricksResponse.json?.choices?.[0]?.message?.tool_calls,
+        toolCallCount: databricksResponse.json?.choices?.[0]?.message?.tool_calls?.length || 0,
+        finishReason: databricksResponse.json?.choices?.[0]?.finish_reason
+      }, "=== AZURE OPENAI RAW RESPONSE ===");
+
+      // Convert OpenAI format to Anthropic format (reuse OpenRouter utility)
+      anthropicPayload = convertOpenRouterResponseToAnthropic(
+        databricksResponse.json,
+        requestedModel,
+      );
+
+      logger.info({
+        contentBlocks: anthropicPayload.content?.length || 0,
+        contentTypes: anthropicPayload.content?.map(c => c.type) || [],
+        stopReason: anthropicPayload.stop_reason,
+        hasToolUse: anthropicPayload.content?.some(c => c.type === 'tool_use')
+      }, "=== CONVERTED ANTHROPIC RESPONSE ===");
+
+      anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     } else {
       anthropicPayload = toAnthropicResponse(
         databricksResponse.json,

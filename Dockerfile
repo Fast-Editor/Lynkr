@@ -53,6 +53,12 @@ ENV OPENROUTER_API_KEY="" \
     OPENROUTER_ENDPOINT="https://openrouter.ai/api/v1/chat/completions" \
     OPENROUTER_MAX_TOOLS_FOR_ROUTING="15"
 
+# Azure OpenAI Configuration (optional)
+ENV AZURE_OPENAI_ENDPOINT="" \
+    AZURE_OPENAI_API_KEY="" \
+    AZURE_OPENAI_DEPLOYMENT="gpt-4o" \
+    AZURE_OPENAI_API_VERSION="2024-08-01-preview"
+
 # Hybrid Routing & Fallback Configuration
 ENV FALLBACK_ENABLED="true" \
     FALLBACK_PROVIDER="databricks"

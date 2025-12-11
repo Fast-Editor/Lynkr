@@ -5,6 +5,7 @@ const { withRetry } = require("./retry");
 const { getCircuitBreakerRegistry } = require("./circuit-breaker");
 const { getMetricsCollector } = require("../observability/metrics");
 const logger = require("../logger");
+const { STANDARD_TOOLS } = require("./standard-tools");
 
 if (typeof fetch !== "function") {
   throw new Error("Node 18+ is required for the built-in fetch API.");
@@ -117,6 +118,17 @@ async function invokeDatabricks(body) {
   if (!config.databricks?.url) {
     throw new Error("Databricks configuration is missing required URL.");
   }
+
+  // Inject standard tools if client didn't send any (passthrough mode)
+  if (!Array.isArray(body.tools) || body.tools.length === 0) {
+    body.tools = STANDARD_TOOLS;
+    logger.info({
+      injectedToolCount: STANDARD_TOOLS.length,
+      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      reason: "Client did not send tools (passthrough mode)"
+    }, "=== INJECTING STANDARD TOOLS (Databricks) ===");
+  }
+
   const headers = {
     Authorization: `Bearer ${config.databricks.apiKey}`,
     "Content-Type": "application/json",
@@ -128,6 +140,17 @@ async function invokeAzureAnthropic(body) {
   if (!config.azureAnthropic?.endpoint) {
     throw new Error("Azure Anthropic endpoint is not configured.");
   }
+
+  // Inject standard tools if client didn't send any (passthrough mode)
+  if (!Array.isArray(body.tools) || body.tools.length === 0) {
+    body.tools = STANDARD_TOOLS;
+    logger.info({
+      injectedToolCount: STANDARD_TOOLS.length,
+      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      reason: "Client did not send tools (passthrough mode)"
+    }, "=== INJECTING STANDARD TOOLS (Azure Anthropic) ===");
+  }
+
   const headers = {
     "Content-Type": "application/json",
     "x-api-key": config.azureAnthropic.apiKey,
@@ -180,12 +203,27 @@ async function invokeOllama(body) {
     },
   };
 
+  // Inject standard tools if client didn't send any (passthrough mode)
+  let toolsToSend = body.tools;
+  let toolsInjected = false;
+
+  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+    toolsToSend = STANDARD_TOOLS;
+    toolsInjected = true;
+    logger.info({
+      injectedToolCount: STANDARD_TOOLS.length,
+      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      reason: "Client did not send tools (passthrough mode)"
+    }, "=== INJECTING STANDARD TOOLS (Ollama) ===");
+  }
+
   // Add tools if present (for tool-capable models)
-  if (Array.isArray(body.tools) && body.tools.length > 0) {
-    ollamaBody.tools = convertAnthropicToolsToOllama(body.tools);
-    logger.debug({
-      toolCount: body.tools.length,
-      toolNames: body.tools.map(t => t.name)
+  if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+    ollamaBody.tools = convertAnthropicToolsToOllama(toolsToSend);
+    logger.info({
+      toolCount: toolsToSend.length,
+      toolNames: toolsToSend.map(t => t.name),
+      toolsInjected
     }, "Sending tools to Ollama");
   }
 
@@ -210,25 +248,130 @@ async function invokeOpenRouter(body) {
     "X-Title": "Claude-Ollama-Proxy"
   };
 
+  // Convert messages and handle system message
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+
+  // Anthropic uses separate 'system' field, OpenAI needs it as first message
+  if (body.system) {
+    messages.unshift({
+      role: "system",
+      content: body.system
+    });
+  }
+
   const openRouterBody = {
     model: config.openrouter.model,
-    messages: convertAnthropicMessagesToOpenRouter(body.messages || []),
+    messages,
     temperature: body.temperature ?? 0.7,
     max_tokens: body.max_tokens ?? 4096,
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
 
-  // Add tools if present
-  if (Array.isArray(body.tools) && body.tools.length > 0) {
-    openRouterBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
-    logger.debug({
-      toolCount: body.tools.length,
-      toolNames: body.tools.map(t => t.name)
+  // Add tools - inject standard tools if client didn't send any (passthrough mode)
+  let toolsToSend = body.tools;
+  let toolsInjected = false;
+
+  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+    // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
+    toolsToSend = STANDARD_TOOLS;
+    toolsInjected = true;
+    logger.info({
+      injectedToolCount: STANDARD_TOOLS.length,
+      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      reason: "Client did not send tools (passthrough mode)"
+    }, "=== INJECTING STANDARD TOOLS (OpenRouter) ===");
+  }
+
+  if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+    openRouterBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
+    logger.info({
+      toolCount: toolsToSend.length,
+      toolNames: toolsToSend.map(t => t.name),
+      toolsInjected
     }, "Sending tools to OpenRouter");
   }
 
   return performJsonRequest(endpoint, { headers, body: openRouterBody }, "OpenRouter");
+}
+
+async function invokeAzureOpenAI(body) {
+  if (!config.azureOpenAI?.endpoint || !config.azureOpenAI?.apiKey) {
+    throw new Error("Azure OpenAI endpoint or API key is not configured.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  // Azure OpenAI URL format: {endpoint}/openai/deployments/{deployment}/chat/completions
+  const endpoint = `${config.azureOpenAI.endpoint}/openai/deployments/${config.azureOpenAI.deployment}/chat/completions?api-version=${config.azureOpenAI.apiVersion}`;
+
+  const headers = {
+    "api-key": config.azureOpenAI.apiKey,  // Azure uses "api-key" not "Authorization"
+    "Content-Type": "application/json",
+  };
+
+  // Convert messages and handle system message
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+
+  // Anthropic uses separate 'system' field, OpenAI needs it as first message
+  if (body.system) {
+    messages.unshift({
+      role: "system",
+      content: body.system
+    });
+  }
+
+  const azureBody = {
+    messages,
+    temperature: body.temperature ?? 0.3,  // Lower temperature for more deterministic, action-oriented behavior
+    max_tokens: Math.min(body.max_tokens ?? 4096, 16384),  // Cap at Azure OpenAI's limit
+    top_p: body.top_p ?? 1.0,
+    stream: body.stream ?? false
+  };
+
+  // Add tools - inject standard tools if client didn't send any (passthrough mode)
+  let toolsToSend = body.tools;
+  let toolsInjected = false;
+
+  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+    // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
+    toolsToSend = STANDARD_TOOLS;
+    toolsInjected = true;
+    logger.info({
+      injectedToolCount: STANDARD_TOOLS.length,
+      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      reason: "Client did not send tools (passthrough mode)"
+    }, "=== INJECTING STANDARD TOOLS ===");
+  }
+
+  if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+    azureBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
+    azureBody.parallel_tool_calls = true;  // Enable parallel tool calling for better performance
+    azureBody.tool_choice = "auto";  // Explicitly enable tool use (helps GPT models understand they should use tools)
+    logger.info({
+      toolCount: toolsToSend.length,
+      toolNames: toolsToSend.map(t => t.name),
+      toolsInjected,
+      hasSystemMessage: !!body.system,
+      messageCount: messages.length,
+      temperature: azureBody.temperature,
+      sampleTool: azureBody.tools[0] // Log first tool for inspection
+    }, "=== SENDING TOOLS TO AZURE OPENAI ===");
+  }
+
+  logger.info({
+    endpoint,
+    hasTools: !!azureBody.tools,
+    toolCount: azureBody.tools?.length || 0,
+    temperature: azureBody.temperature,
+    max_tokens: azureBody.max_tokens,
+    tool_choice: azureBody.tool_choice
+  }, "=== AZURE OPENAI REQUEST ===");
+
+  return performJsonRequest(endpoint, { headers, body: azureBody }, "Azure OpenAI");
 }
 
 async function invokeModel(body, options = {}) {
@@ -262,7 +405,9 @@ async function invokeModel(body, options = {}) {
   try {
     // Try initial provider with circuit breaker
     const result = await breaker.execute(async () => {
-      if (initialProvider === "azure-anthropic") {
+      if (initialProvider === "azure-openai") {
+        return await invokeAzureOpenAI(body);
+      } else if (initialProvider === "azure-anthropic") {
         return await invokeAzureAnthropic(body);
       } else if (initialProvider === "ollama") {
         return await invokeOllama(body);
@@ -337,7 +482,9 @@ async function invokeModel(body, options = {}) {
 
       // Execute fallback
       const fallbackResult = await fallbackBreaker.execute(async () => {
-        if (fallbackProvider === "azure-anthropic") {
+        if (fallbackProvider === "azure-openai") {
+          return await invokeAzureOpenAI(body);
+        } else if (fallbackProvider === "azure-anthropic") {
           return await invokeAzureAnthropic(body);
         } else if (fallbackProvider === "openrouter") {
           return await invokeOpenRouter(body);

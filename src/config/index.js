@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 const modelProvider = SUPPORTED_MODEL_PROVIDERS.has(rawModelProvider)
   ? rawModelProvider
@@ -83,6 +83,12 @@ const ollamaTimeout = Number.parseInt(process.env.OLLAMA_TIMEOUT_MS ?? "120000",
 const openRouterApiKey = process.env.OPENROUTER_API_KEY ?? null;
 const openRouterModel = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
 const openRouterEndpoint = process.env.OPENROUTER_ENDPOINT ?? "https://openrouter.ai/api/v1/chat/completions";
+
+// Azure OpenAI configuration
+const azureOpenAIEndpoint = process.env.AZURE_OPENAI_ENDPOINT ?? null;
+const azureOpenAIApiKey = process.env.AZURE_OPENAI_API_KEY ?? null;
+const azureOpenAIDeployment = process.env.AZURE_OPENAI_DEPLOYMENT ?? "gpt-4o";
+const azureOpenAIApiVersion = process.env.AZURE_OPENAI_API_VERSION ?? "2024-08-01-preview";
 
 // Hybrid routing configuration
 const preferOllama = process.env.PREFER_OLLAMA === "true";
@@ -121,6 +127,12 @@ if (modelProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnt
   );
 }
 
+if (modelProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
+  throw new Error(
+    "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY before starting the proxy.",
+  );
+}
+
 if (modelProvider === "ollama") {
   try {
     new URL(ollamaEndpoint);
@@ -150,6 +162,9 @@ if (preferOllama) {
     }
     if (fallbackProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
       console.warn("[CONFIG WARNING] Azure Anthropic fallback configured but credentials missing. Fallback will fail if needed.");
+    }
+    if (fallbackProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
+      console.warn("[CONFIG WARNING] Azure OpenAI fallback configured but credentials missing. Fallback will fail if needed.");
     }
   }
 }
@@ -323,6 +338,12 @@ const config = {
     apiKey: openRouterApiKey,
     model: openRouterModel,
     endpoint: openRouterEndpoint,
+  },
+  azureOpenAI: {
+    endpoint: azureOpenAIEndpoint,
+    apiKey: azureOpenAIApiKey,
+    deployment: azureOpenAIDeployment,
+    apiVersion: azureOpenAIApiVersion,
   },
   modelProvider: {
     type: modelProvider,

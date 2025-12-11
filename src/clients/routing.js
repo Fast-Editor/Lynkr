@@ -52,13 +52,21 @@ function determineProvider(payload) {
     return "ollama";
   }
 
-  // Moderate tool count → OpenRouter (if configured and fallback enabled)
-  if (toolCount < maxToolsForOpenRouter && isFallbackEnabled() && config.openrouter?.apiKey) {
-    logger.debug(
-      { toolCount, maxToolsForOllama, maxToolsForOpenRouter, decision: "openrouter" },
-      "Routing to OpenRouter (moderate tools)"
-    );
-    return "openrouter";
+  // Moderate tool count → OpenRouter or Azure OpenAI (if configured and fallback enabled)
+  if (toolCount < maxToolsForOpenRouter && isFallbackEnabled()) {
+    if (config.openrouter?.apiKey) {
+      logger.debug(
+        { toolCount, maxToolsForOllama, maxToolsForOpenRouter, decision: "openrouter" },
+        "Routing to OpenRouter (moderate tools)"
+      );
+      return "openrouter";
+    } else if (config.azureOpenAI?.apiKey) {
+      logger.debug(
+        { toolCount, maxToolsForOllama, maxToolsForOpenRouter, decision: "azure-openai" },
+        "Routing to Azure OpenAI (moderate tools)"
+      );
+      return "azure-openai";
+    }
   }
 
   // Heavy tool count → cloud (only if fallback is enabled)

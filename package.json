@@ -12,7 +12,7 @@
     "dev": "nodemon index.js",
     "lint": "eslint src index.js",
     "test": "npm run test:unit && npm run test:performance",
-    "test:unit": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js test/hybrid-routing-integration.test.js test/web-tools.test.js test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js",
+    "test:unit": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js test/hybrid-routing-integration.test.js test/web-tools.test.js test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js test/azure-openai-config.test.js test/azure-openai-format-conversion.test.js test/azure-openai-routing.test.js test/azure-openai-streaming.test.js test/azure-openai-error-resilience.test.js test/azure-openai-integration.test.js",
     "test:new-features": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js",
     "test:performance": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/hybrid-routing-performance.test.js && DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-tests.js",
     "test:benchmark": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-benchmark.js",

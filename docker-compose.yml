@@ -40,6 +40,14 @@ services:
       OPENROUTER_MAX_TOOLS_FOR_ROUTING: ${OPENROUTER_MAX_TOOLS_FOR_ROUTING:-15}
 
       # ============================================================
+      # AZURE OPENAI CONFIGURATION
+      # ============================================================
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
+
+      # ============================================================
       # HYBRID ROUTING & FALLBACK
       # ============================================================
       # Enable/disable fallback to cloud providers
