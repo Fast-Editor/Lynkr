@@ -125,24 +125,23 @@ describe("Azure OpenAI Configuration Tests", () => {
       assert.strictEqual(config.modelProvider.fallbackProvider, "azure-openai");
     });
 
-    it("should warn when azure-openai is fallback but credentials missing", () => {
-      process.env.MODEL_PROVIDER = "databricks"; // Important: set to non-azure-openai
+    it("should reject when azure-openai is fallback but credentials missing", () => {
+      process.env.MODEL_PROVIDER = "ollama"; // Set to ollama for hybrid routing scenario
       process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "true";
       process.env.FALLBACK_PROVIDER = "azure-openai";
-      delete process.env.AZURE_OPENAI_ENDPOINT;
-      delete process.env.AZURE_OPENAI_API_KEY;
+      // Set to empty strings instead of deleting (dotenv.config() in config module would reload from .env)
+      process.env.AZURE_OPENAI_ENDPOINT = "";
+      process.env.AZURE_OPENAI_API_KEY = "";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
 
-      // Should load config but log warning (we can't easily test console.warn)
-      const config = require("../src/config");
-
-      assert.strictEqual(config.modelProvider.fallbackProvider, "azure-openai");
-      assert.strictEqual(config.azureOpenAI.endpoint, null);
-      assert.strictEqual(config.azureOpenAI.apiKey, null);
+      // Should throw error about missing Azure OpenAI credentials (fail-fast validation)
+      assert.throws(() => {
+        require("../src/config");
+      }, /AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY/);
     });
   });
 

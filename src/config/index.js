@@ -114,8 +114,8 @@ if (!["server", "client", "passthrough"].includes(toolExecutionMode)) {
 // Only require Databricks credentials if it's the primary provider or used as fallback
 if (modelProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
   throw new Error("Set DATABRICKS_API_BASE and DATABRICKS_API_KEY before starting the proxy.");
-} else if (modelProvider === "ollama" && fallbackEnabled && fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
-  // Relaxed: Allow mock credentials for Ollama-only testing
+} else if (modelProvider === "ollama" && !fallbackEnabled && (!rawBaseUrl || !apiKey)) {
+  // Relaxed: Allow mock credentials for true Ollama-only mode (fallback disabled)
   if (!rawBaseUrl) process.env.DATABRICKS_API_BASE = "http://localhost:8080";
   if (!apiKey) process.env.DATABRICKS_API_KEY = "mock-key-for-ollama-only";
   console.log("[CONFIG] Using mock Databricks credentials (Ollama-only mode with fallback disabled)");
@@ -158,13 +158,13 @@ if (preferOllama) {
   // Ensure fallback provider is properly configured (only if fallback is enabled)
   if (fallbackEnabled) {
     if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
-      console.warn("[CONFIG WARNING] Databricks fallback configured but credentials missing. Fallback will fail if needed.");
+      throw new Error("FALLBACK_PROVIDER is set to 'databricks' but DATABRICKS_API_BASE and DATABRICKS_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
     }
     if (fallbackProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
-      console.warn("[CONFIG WARNING] Azure Anthropic fallback configured but credentials missing. Fallback will fail if needed.");
+      throw new Error("FALLBACK_PROVIDER is set to 'azure-anthropic' but AZURE_ANTHROPIC_ENDPOINT and AZURE_ANTHROPIC_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
     }
     if (fallbackProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
-      console.warn("[CONFIG WARNING] Azure OpenAI fallback configured but credentials missing. Fallback will fail if needed.");
+      throw new Error("FALLBACK_PROVIDER is set to 'azure-openai' but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
     }
   }
 }

@@ -67,13 +67,15 @@ describe("Hybrid Routing Integration Tests", () => {
     });
 
     it("should reject PREFER_OLLAMA with databricks fallback but no databricks credentials", () => {
+      process.env.MODEL_PROVIDER = "ollama";  // Set to ollama for hybrid routing scenario
       process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "true";
       process.env.FALLBACK_PROVIDER = "databricks";
-      delete process.env.DATABRICKS_API_KEY;
-      delete process.env.DATABRICKS_API_BASE;
+      // Set to empty strings instead of deleting (dotenv.config() in config module would reload from .env)
+      process.env.DATABRICKS_API_KEY = "";
+      process.env.DATABRICKS_API_BASE = "";
 
       // Should throw error about missing databricks credentials
       // (Either from standard validation or hybrid routing validation)

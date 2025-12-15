@@ -1331,23 +1331,49 @@ async function runAgentLoop({
 
       // Check if tool execution should happen on client side
       const executionMode = config.toolExecutionMode || "server";
-      if (executionMode === "passthrough" || executionMode === "client") {
+
+      // IMPORTANT: Task tools (subagents) ALWAYS execute server-side, regardless of execution mode
+      // Separate Task calls from other tool calls
+      const taskToolCalls = [];
+      const nonTaskToolCalls = [];
+
+      for (const call of toolCalls) {
+        const toolName = (call.function?.name ?? call.name ?? "").toLowerCase();
+        if (toolName === "task") {
+          taskToolCalls.push(call);
+        } else {
+          nonTaskToolCalls.push(call);
+        }
+      }
+
+      // If in passthrough/client mode and there are non-Task tools, return them to client
+      // Task tools will be executed server-side below
+      if ((executionMode === "passthrough" || executionMode === "client") && nonTaskToolCalls.length > 0) {
         logger.info(
           {
             sessionId: session?.id ?? null,
-            toolCount: toolCalls.length,
+            totalToolCount: toolCalls.length,
+            taskToolCount: taskToolCalls.length,
+            nonTaskToolCount: nonTaskToolCalls.length,
             executionMode,
-            toolNames: toolCalls.map((c) => c.function?.name ?? c.name),
+            nonTaskTools: nonTaskToolCalls.map((c) => c.function?.name ?? c.name),
           },
-          "Passthrough mode: returning tool calls to client for execution"
+          "Hybrid mode: returning non-Task tools to client, executing Task tools on server"
         );
+
+        // Filter sessionContent to only include non-Task tool_use blocks
+        const clientContent = sessionContent.filter(block => {
+          if (block.type !== "tool_use") return true; // Keep text blocks
+          const toolName = (block.name ?? "").toLowerCase();
+          return toolName !== "task"; // Keep non-Task tool_use blocks
+        });
 
         // Convert OpenRouter response to Anthropic format for CLI
         const anthropicResponse = {
           id: databricksResponse.json?.id || `msg_${Date.now()}`,
           type: "message",
           role: "assistant",
-          content: sessionContent, // Already in Anthropic format with tool_use blocks
+          content: clientContent,
           model: databricksResponse.json?.model || clean.model,
           stop_reason: "tool_use",
           usage: databricksResponse.json?.usage || {
@@ -1356,32 +1382,51 @@ async function runAgentLoop({
           },
         };
 
-        // Debug: Log the actual content being returned
         logger.debug(
           {
             sessionId: session?.id ?? null,
-            contentLength: Array.isArray(sessionContent) ? sessionContent.length : 0,
-            contentTypes: Array.isArray(sessionContent) ? sessionContent.map(b => b.type) : [],
-            firstBlock: Array.isArray(sessionContent) && sessionContent.length > 0 ? sessionContent[0] : null,
-            responseId: anthropicResponse.id,
-            stopReason: anthropicResponse.stop_reason,
+            clientContentLength: clientContent.length,
+            clientContentTypes: clientContent.map(b => b.type),
           },
-          "Passthrough: returning Anthropic-formatted response with content blocks"
+          "Passthrough: returning non-Task tools to client"
         );
 
-        // Return Anthropic-formatted response to CLI
-        // The CLI will execute the tools and send another request with tool_result blocks
-        // IMPORTANT: Must match agent loop return format (response wrapper)
-        return {
-          response: {
-            status: 200,
-            body: anthropicResponse,
+        // If there are Task tools, we need to execute them server-side first
+        // then continue the conversation loop. For now, let's fall through to execute Task tools.
+        if (taskToolCalls.length === 0) {
+          // No Task tools - pure passthrough
+          return {
+            response: {
+              status: 200,
+              body: anthropicResponse,
+              terminationReason: "tool_use",
+            },
+            steps,
+            durationMs: Date.now() - start,
             terminationReason: "tool_use",
+          };
+        }
+
+        // Has Task tools - we need to execute them and continue
+        // Override toolCalls to only include Task tools for server execution
+        toolCalls = taskToolCalls;
+
+        logger.info(
+          {
+            sessionId: session?.id ?? null,
+            taskToolCount: taskToolCalls.length,
           },
-          steps,
-          durationMs: Date.now() - start,
-          terminationReason: "tool_use",
-        };
+          "Executing Task tools server-side in hybrid mode"
+        );
+      } else if (executionMode === "passthrough" || executionMode === "client") {
+        // Only Task tools, no non-Task tools - execute all server-side
+        logger.info(
+          {
+            sessionId: session?.id ?? null,
+            taskToolCount: taskToolCalls.length,
+          },
+          "All tools are Task tools - executing server-side"
+        );
       }
 
       logger.debug(
@@ -1413,8 +1458,127 @@ async function runAgentLoop({
         toolCallsWithPolicy.push({ call, decision });
       }
 
-      // Now process results (still sequential for message ordering)
-      for (const { call, decision } of toolCallsWithPolicy) {
+      // Identify Task tool calls for parallel execution
+      const taskCalls = [];
+      const nonTaskCalls = [];
+
+      for (const item of toolCallsWithPolicy) {
+        const toolName = (item.call.function?.name ?? item.call.name ?? "").toLowerCase();
+        if (toolName === "task" && item.decision.allowed) {
+          taskCalls.push(item);
+        } else {
+          nonTaskCalls.push(item);
+        }
+      }
+
+      // Execute Task tools in parallel if multiple exist
+      if (taskCalls.length > 1) {
+        logger.info({
+          taskCount: taskCalls.length,
+          sessionId: session?.id
+        }, "Executing multiple Task tools in parallel");
+
+        try {
+          // Execute all Task tools in parallel
+          const taskExecutions = await Promise.all(
+            taskCalls.map(({ call }) => executeToolCall(call, {
+              session,
+              requestMessages: cleanPayload.messages,
+            }))
+          );
+
+          // Process results and add to messages
+          taskExecutions.forEach((execution, index) => {
+            const call = taskCalls[index].call;
+            toolCallsExecuted += 1;
+
+            let toolMessage;
+            if (providerType === "azure-anthropic") {
+              const parsedContent = parseExecutionContent(execution.content);
+              const serialisedContent =
+                typeof parsedContent === "string" || parsedContent === null
+                  ? parsedContent ?? ""
+                  : JSON.stringify(parsedContent);
+
+              toolMessage = {
+                role: "user",
+                content: [
+                  {
+                    type: "tool_result",
+                    tool_use_id: call.id ?? execution.id,
+                    content: serialisedContent,
+                    is_error: execution.ok === false,
+                  },
+                ],
+              };
+
+              toolCallNames.set(
+                call.id ?? execution.id,
+                normaliseToolIdentifier(
+                  call.function?.name ?? call.name ?? execution.name ?? "tool",
+                ),
+              );
+            } else {
+              toolMessage = {
+                role: "tool",
+                tool_call_id: execution.id,
+                name: execution.name,
+                content: execution.content,
+              };
+            }
+
+            cleanPayload.messages.push(toolMessage);
+
+            // Convert to Anthropic format for session storage
+            let sessionToolResultContent;
+            if (providerType === "azure-anthropic") {
+              sessionToolResultContent = toolMessage.content;
+            } else {
+              sessionToolResultContent = [
+                {
+                  type: "tool_result",
+                  tool_use_id: toolMessage.tool_call_id,
+                  content: toolMessage.content,
+                  is_error: execution.ok === false,
+                },
+              ];
+            }
+
+            appendTurnToSession(session, {
+              role: "tool",
+              type: "tool_result",
+              status: execution.status,
+              content: sessionToolResultContent,
+              metadata: {
+                tool: execution.name,
+                ok: execution.ok,
+                parallel: true,
+                parallelIndex: index,
+                totalParallel: taskExecutions.length
+              },
+            });
+          });
+
+          logger.info({
+            completedTasks: taskExecutions.length,
+            sessionId: session?.id
+          }, "Completed parallel Task execution");
+        } catch (error) {
+          logger.error({
+            error: error.message,
+            taskCount: taskCalls.length
+          }, "Error in parallel Task execution");
+
+          // Fall back to sequential execution on error
+          taskCalls.forEach(item => nonTaskCalls.push(item));
+        }
+      } else if (taskCalls.length === 1) {
+        // Single Task tool - add back to non-task calls for normal processing
+        nonTaskCalls.push(...taskCalls);
+      }
+
+      // Now process results (sequential for non-Task tools or blocked tools)
+      for (const { call, decision } of nonTaskCalls) {
 
         if (!decision.allowed) {
           policy.logPolicyDecision(decision, {
