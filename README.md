@@ -13,12 +13,18 @@
 
 > **Production-ready Claude Code proxy server supporting Databricks, OpenRouter, Ollama & Azure. Features MCP integration, prompt caching & 60-80% token optimization savings.**
 
+## 🔖 Keywords
+
+`claude-code` `claude-proxy` `anthropic-api` `databricks-llm` `openrouter-integration` `ollama-local` `llama-cpp` `azure-openai` `azure-anthropic` `mcp-server` `prompt-caching` `token-optimization` `ai-coding-assistant` `llm-proxy` `self-hosted-ai` `git-automation` `code-generation` `developer-tools` `ci-cd-automation` `llm-gateway` `cost-reduction` `multi-provider-llm`
+
+---
+
 ## Table of Contents
 
 1. [Why Lynkr?](#why-lynkr)
 2. [Quick Start (3 minutes)](#quick-start-3-minutes)
 3. [Overview](#overview)
-4. [Supported Models & Providers](#supported-models--providers)
+4. [Supported AI Model Providers](#supported-ai-model-providers-databricks-openrouter-ollama-azure-llamacpp)
 5. [Lynkr vs Native Claude Code](#lynkr-vs-native-claude-code)
 6. [Core Capabilities](#core-capabilities)
    - [Repo Intelligence & Navigation](#repo-intelligence--navigation)
@@ -27,12 +33,12 @@
    - [Execution & Tooling](#execution--tooling)
    - [Workflow & Collaboration](#workflow--collaboration)
    - [UX, Monitoring, and Logs](#ux-monitoring-and-logs)
-7. [Production Hardening Features](#production-hardening-features)
+7. [Production-Ready Features for Enterprise Deployment](#production-ready-features-for-enterprise-deployment)
    - [Reliability & Resilience](#reliability--resilience)
    - [Observability & Monitoring](#observability--monitoring)
    - [Security & Governance](#security--governance)
 8. [Architecture](#architecture)
-9. [Getting Started](#getting-started)
+9. [Getting Started: Installation & Setup Guide](#getting-started-installation--setup-guide)
 10. [Configuration Reference](#configuration-reference)
 11. [Runtime Operations](#runtime-operations)
    - [Launching the Proxy](#launching-the-proxy)
@@ -47,9 +53,10 @@
 12. [Manual Test Matrix](#manual-test-matrix)
 13. [Troubleshooting](#troubleshooting)
 14. [Roadmap & Known Gaps](#roadmap--known-gaps)
-15. [FAQ](#faq)
-16. [References](#references)
-17. [License](#license)
+15. [Frequently Asked Questions (FAQ)](#frequently-asked-questions-faq)
+16. [References & Further Reading](#references--further-reading)
+17. [Community & Adoption](#community--adoption)
+18. [License](#license)
 
 ---
 
@@ -61,13 +68,13 @@ Claude Code CLI is locked to Anthropic's API, limiting your choice of LLM provid
 ### The Solution
 Lynkr is a **production-ready proxy server** that unlocks Claude Code CLI's full potential:
 
-- ✅ **Any LLM Provider** - Databricks, OpenRouter (100+ models), Ollama (local), Azure, OpenAI, llama.cpp
-- ✅ **60-80% Cost Reduction** - Built-in token optimization (5 optimization phases implemented)
-- ✅ **Zero Code Changes** - Drop-in replacement for Anthropic backend
-- ✅ **Local & Offline** - Run Claude Code with Ollama or llama.cpp (no internet required)
-- ✅ **Enterprise Features** - Circuit breakers, load balancing, metrics, K8s-ready health checks
-- ✅ **MCP Integration** - Automatically discover and orchestrate Model Context Protocol servers
-- ✅ **Privacy & Control** - Self-hosted, open-source (Apache 2.0), no vendor lock-in
+- ✅ **Any LLM Provider** - [Databricks, OpenRouter (100+ models), Ollama (local), Azure, OpenAI, llama.cpp](#supported-ai-model-providers-databricks-openrouter-ollama-azure-llamacpp)
+- ✅ **60-80% Cost Reduction** - Built-in [token optimization](#token-optimization-implementation) (5 optimization phases implemented)
+- ✅ **Zero Code Changes** - [Drop-in replacement](#connecting-claude-code-cli) for Anthropic backend
+- ✅ **Local & Offline** - Run Claude Code with [Ollama](#using-ollama-models) or [llama.cpp](#using-llamacpp-with-lynkr) (no internet required)
+- ✅ **Enterprise Features** - [Circuit breakers, load balancing, metrics, K8s-ready health checks](#production-ready-features-for-enterprise-deployment)
+- ✅ **MCP Integration** - Automatically discover and orchestrate [Model Context Protocol servers](#integrating-mcp-servers)
+- ✅ **Privacy & Control** - Self-hosted, open-source ([Apache 2.0](#license)), no vendor lock-in
 
 ### Perfect For
 - 🔧 **Developers** who want flexibility and cost control
@@ -154,7 +161,7 @@ Further documentation and usage notes are available on [DeepWiki](https://deepwi
 
 ---
 
-## Supported Models & Providers
+## Supported AI Model Providers (Databricks, OpenRouter, Ollama, Azure, llama.cpp)
 
 Lynkr supports multiple AI model providers, giving you flexibility in choosing the right model for your needs:
 
@@ -164,7 +171,7 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 |----------|--------------|------------------|----------|
 | **Databricks** (Default) | `MODEL_PROVIDER=databricks` | Claude Sonnet 4.5, Claude Opus 4.5 | Production use, enterprise deployment |
 | **OpenAI** | `MODEL_PROVIDER=openai` | GPT-5, GPT-5.2, GPT-4o, GPT-4o-mini, GPT-4-turbo, o1, o1-mini | Direct OpenAI API access |
-| **Azure OpenAI** | `MODEL_PROVIDER=azure-openai` | GPT-5, GPT-5.2,GPT-4o, GPT-4o-mini, GPT-5, o1, o3 | Azure integration, Microsoft ecosystem |
+| **Azure OpenAI** | `MODEL_PROVIDER=azure-openai` | GPT-5, GPT-5.2,GPT-4o, GPT-4o-mini, GPT-5, o1, o3, Kimi-K2 | Azure integration, Microsoft ecosystem |
 | **Azure Anthropic** | `MODEL_PROVIDER=azure-anthropic` | Claude Sonnet 4.5, Claude Opus 4.5 | Azure-hosted Claude models |
 | **OpenRouter** | `MODEL_PROVIDER=openrouter` | 100+ models (GPT-4o, Claude, Gemini, Llama, etc.) | Model flexibility, cost optimization |
 | **Ollama** (Local) | `MODEL_PROVIDER=ollama` | Llama 3.1, Qwen2.5, Mistral, CodeLlama | Local/offline use, privacy, no API costs |
@@ -193,15 +200,8 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 
 ### **Azure OpenAI Specific Models**
 
-When using `MODEL_PROVIDER=azure-openai`, you can deploy any of these models:
+When using `MODEL_PROVIDER=azure-openai`, you can deploy any of the models in azure ai foundry:
 
-| Model | Deployment Name | Capabilities | Best For |
-|-------|----------------|--------------|----------|
-| **GPT-4o** | `gpt-4o` | Text, vision, function calling | General-purpose, multimodal tasks |
-| **GPT-4o-mini** | `gpt-4o-mini` | Text, function calling | Fast responses, cost-effective |
-| **GPT-5** | `gpt-5-chat` or custom | Advanced reasoning, longer context | Complex problem-solving |
-| **o1-preview** | `o1-preview` | Deep reasoning, chain of thought | Mathematical, logic problems |
-| **o3-mini** | `o3-mini` | Efficient reasoning | Fast reasoning tasks |
 
 **Note**: Azure OpenAI deployment names are configurable via `AZURE_OPENAI_DEPLOYMENT` environment variable.
 
@@ -305,6 +305,17 @@ FALLBACK_PROVIDER=databricks  # or azure-openai, openrouter, azure-anthropic
 
 ---
 
+## 🚀 Ready to Get Started?
+
+**Reduce your Claude Code costs by 60-80% in under 3 minutes:**
+
+1. ⭐ **[Star this repo](https://github.com/vishalveerareddy123/Lynkr)** to show support and stay updated
+2. 📖 **[Follow the Quick Start Guide](#quick-start-3-minutes)** to install and configure Lynkr
+3. 💬 **[Join the Discussion](https://github.com/vishalveerareddy123/Lynkr/discussions)** for community support
+4. 🐛 **[Report Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** to help improve Lynkr
+
+---
+
 ## Core Capabilities
 
 ### Long-Term Memory System (Titans-Inspired)
@@ -405,9 +416,9 @@ See [MEMORY_SYSTEM.md](MEMORY_SYSTEM.md) for complete documentation and [QUICKST
 
 ---
 
-## Production Hardening Features
+## Production-Ready Features for Enterprise Deployment
 
-Lynkr includes comprehensive production-ready features designed for reliability, observability, and security in enterprise environments. These features add minimal performance overhead while providing robust operational capabilities.
+Lynkr includes comprehensive production-hardened features designed for reliability, observability, and security in enterprise environments. These features add minimal performance overhead while providing robust operational capabilities for mission-critical AI deployments.
 
 ### Reliability & Resilience
 
@@ -575,6 +586,59 @@ Lynkr includes comprehensive production-ready features designed for reliability,
                                 └───────────────────┘
 ```
 
+### Request Flow Diagram
+
+```mermaid
+graph TB
+    A[Claude Code CLI] -->|HTTP POST /v1/messages| B[Lynkr Proxy Server]
+    B --> C{Middleware Stack}
+    C -->|Load Shedding| D{Load OK?}
+    D -->|Yes| E[Request Logging]
+    D -->|No| Z1[503 Service Unavailable]
+    E --> F[Metrics Collection]
+    F --> G[Input Validation]
+    G --> H[Orchestrator]
+
+    H --> I{Check Prompt Cache}
+    I -->|Cache Hit| J[Return Cached Response]
+    I -->|Cache Miss| K{Determine Provider}
+
+    K -->|Simple 0-2 tools| L[Ollama Local]
+    K -->|Moderate 3-14 tools| M[OpenRouter / Azure]
+    K -->|Complex 15+ tools| N[Databricks]
+
+    L --> O[Circuit Breaker Check]
+    M --> O
+    N --> O
+
+    O -->|Closed| P{Provider API}
+    O -->|Open| Z2[Fallback Provider]
+
+    P -->|Databricks| Q1[Databricks API]
+    P -->|OpenRouter| Q2[OpenRouter API]
+    P -->|Ollama| Q3[Ollama Local]
+    P -->|Azure| Q4[Azure Anthropic API]
+
+    Q1 --> R[Response Processing]
+    Q2 --> R
+    Q3 --> R
+    Q4 --> R
+    Z2 --> R
+
+    R --> S[Format Conversion]
+    S --> T[Cache Response]
+    T --> U[Update Metrics]
+    U --> V[Return to Client]
+    J --> V
+
+    style B fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style H fill:#7b68ee,stroke:#333,stroke-width:2px,color:#fff
+    style K fill:#f39c12,stroke:#333,stroke-width:2px
+    style P fill:#2ecc71,stroke:#333,stroke-width:2px,color:#fff
+```
+
+**Key Components:**
+
 - **`src/api/router.js`** – Express routes that accept Claude-compatible `/v1/messages` requests.
 - **`src/api/middleware/*`** – Production middleware stack:
   - `load-shedding.js` – Proactive overload protection with resource monitoring
@@ -595,7 +659,7 @@ Lynkr includes comprehensive production-ready features designed for reliability,
 
 ---
 
-## Getting Started
+## Getting Started: Installation & Setup Guide
 
 ### Prerequisites
 
@@ -2113,13 +2177,67 @@ The graceful shutdown and health check endpoints ensure zero-downtime deployment
 
 ---
 
-## References
+## References & Further Reading
 
-Lynkr's design also includes ACE Framework informed by research in agentic AI systems and context engineering:
+### Academic & Technical Resources
 
+**Agentic AI Systems:**
 - **Zhang et al. (2024)**. *Agentic Context Engineering*. arXiv:2510.04618. [arXiv](https://arxiv.org/abs/2510.04618)
 
+**Long-Term Memory & RAG:**
+- **Mohtashami & Jaggi (2023)**. *Landmark Attention: Random-Access Infinite Context Length for Transformers*. [arXiv](https://arxiv.org/abs/2305.16300)
+- **Google DeepMind (2024)**. *Titans: Learning to Memorize at Test Time*. [arXiv](https://arxiv.org/abs/2411.07043)
+
 For BibTeX citations, see [CITATIONS.bib](CITATIONS.bib).
+
+### Official Documentation
+
+- [Claude Code CLI Documentation](https://docs.anthropic.com/en/docs/build-with-claude/claude-for-sheets) - Official Claude Code reference
+- [Model Context Protocol (MCP) Specification](https://spec.modelcontextprotocol.io/) - MCP protocol documentation
+- [Databricks Foundation Models](https://docs.databricks.com/en/machine-learning/foundation-models/index.html) - Databricks LLM documentation
+- [Anthropic API Documentation](https://docs.anthropic.com/en/api/getting-started) - Claude API reference
+
+### Related Projects & Tools
+
+- [Ollama](https://ollama.ai/) - Local LLM runtime for running open-source models
+- [OpenRouter](https://openrouter.ai/) - Multi-provider LLM API gateway (100+ models)
+- [llama.cpp](https://github.com/ggerganov/llama.cpp) - High-performance C++ LLM inference engine
+- [LiteLLM](https://github.com/BerriAI/litellm) - Multi-provider LLM proxy (alternative approach)
+- [Awesome MCP Servers](https://github.com/punkpeye/awesome-mcp-servers) - Curated list of MCP server implementations
+
+---
+
+## Community & Adoption
+
+### Get Involved
+
+**⭐ Star this repository** to show your support and help others discover Lynkr!
+
+[![GitHub stars](https://img.shields.io/github/stars/vishalveerareddy123/Lynkr?style=social)](https://github.com/vishalveerareddy123/Lynkr)
+
+### Support & Resources
+
+- 🐛 **Report Issues:** [GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues) - Bug reports and feature requests
+- 💬 **Discussions:** [GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions) - Questions, ideas, and community help
+- 📚 **Documentation:** [DeepWiki](https://deepwiki.com/vishalveerareddy123/Lynkr) - Comprehensive guides and examples
+- 🔧 **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute to Lynkr
+
+### Share Lynkr
+
+Help spread the word about Lynkr:
+
+- 🐦 [Share on Twitter](https://twitter.com/intent/tweet?text=Check%20out%20Lynkr%20-%20a%20production-ready%20Claude%20Code%20proxy%20with%20multi-provider%20support%20and%2060-80%25%20token%20savings!&url=https://github.com/vishalveerareddy123/Lynkr&hashtags=AI,ClaudeCode,LLM,OpenSource)
+- 💼 [Share on LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://github.com/vishalveerareddy123/Lynkr)
+- 📰 [Share on Hacker News](https://news.ycombinator.com/submitlink?u=https://github.com/vishalveerareddy123/Lynkr&t=Lynkr%20-%20Production-Ready%20Claude%20Code%20Proxy)
+- 📱 [Share on Reddit](https://www.reddit.com/submit?url=https://github.com/vishalveerareddy123/Lynkr&title=Lynkr%20-%20Production-Ready%20Claude%20Code%20Proxy%20with%20Multi-Provider%20Support)
+
+### Why Developers Choose Lynkr
+
+- 💰 **Massive cost savings** - Save 60-80% on token costs with built-in optimization
+- 🔓 **Provider freedom** - Choose from 7+ LLM providers (Databricks, OpenRouter, Ollama, Azure, llama.cpp)
+- 🏠 **Privacy & control** - Self-hosted, open-source, no vendor lock-in
+- 🚀 **Production-ready** - Enterprise features: circuit breakers, metrics, health checks
+- 🛠️ **Active development** - Regular updates, responsive maintainers, growing community
 
 ---
 

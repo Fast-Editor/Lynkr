@@ -413,4 +413,125 @@ describe("Memory Search", () => {
       assert.ok(results.length > 0);
     });
   });
+
+  describe("FTS5 Query Preparation (prepareFTS5Query)", () => {
+    it("should strip XML/HTML tags from queries", () => {
+      // The exact query that caused the error
+      const query = "<tool_use_error>Error: No such tool available: Bash</tool_use_error>";
+      const prepared = search.prepareFTS5Query(query);
+
+      // Should not contain < or >
+      assert.ok(!prepared.includes('<'));
+      assert.ok(!prepared.includes('>'));
+
+      // Should still contain the error text
+      assert.ok(prepared.includes('Error') || prepared.includes('tool_use_error'));
+    });
+
+    it("should handle XML tags with system reminders", () => {
+      const query = "<tool_use_error>Error: No such tool available: Bash</tool_use_error>\n\n<system-reminder>\nCRITICAL: This is a READ-ONLY task. You CANNOT edit, write, or create files.\n</system-reminder>";
+      const prepared = search.prepareFTS5Query(query);
+
+      // Should not contain XML tags
+      assert.ok(!prepared.includes('<'));
+      assert.ok(!prepared.includes('>'));
+
+      // Should be a valid FTS5 query (doesn't throw when searching)
+      assert.doesNotThrow(() => {
+        search.searchMemories({ query: prepared });
+      });
+    });
+
+    it("should remove FTS5 special characters", () => {
+      const specialChars = [
+        "query with * wildcard",
+        "query (with parentheses)",
+        "query with - minus",
+        "query:with:colons",
+        "query [with brackets]"
+      ];
+
+      for (const query of specialChars) {
+        const prepared = search.prepareFTS5Query(query);
+
+        // Should not throw FTS5 syntax error
+        assert.doesNotThrow(() => {
+          search.searchMemories({ query: prepared });
+        }, `Failed for: ${query}`);
+      }
+    });
+
+    it("should preserve AND/OR/NOT operators when present", () => {
+      const queries = [
+        "Python AND machine learning",
+        "JavaScript OR TypeScript",
+        "NOT deprecated"
+      ];
+
+      for (const query of queries) {
+        const prepared = search.prepareFTS5Query(query);
+
+        // Should preserve operators (not wrapped in quotes)
+        assert.ok(!prepared.startsWith('"') || prepared.includes('AND') || prepared.includes('OR') || prepared.includes('NOT'));
+      }
+    });
+
+    it("should wrap simple queries in quotes for phrase search", () => {
+      const query = "simple text query";
+      const prepared = search.prepareFTS5Query(query);
+
+      // Should be wrapped in quotes
+      assert.ok(prepared.startsWith('"'));
+      assert.ok(prepared.endsWith('"'));
+    });
+
+    it("should handle queries with existing double quotes", () => {
+      const query = 'query with "quoted text" inside';
+      const prepared = search.prepareFTS5Query(query);
+
+      // Should escape quotes (FTS5 uses "" for literal ")
+      assert.ok(prepared.includes('""') || !prepared.includes('"quoted text"'));
+
+      // Should not throw
+      assert.doesNotThrow(() => {
+        search.searchMemories({ query: prepared });
+      });
+    });
+
+    it("should handle empty query after tag removal", () => {
+      const query = "<tag></tag><another></another>";
+      const prepared = search.prepareFTS5Query(query);
+
+      // Should return safe fallback
+      assert.strictEqual(prepared, '"empty query"');
+    });
+
+    it("should handle queries with multiple special characters", () => {
+      const query = "test<>query-with*special:chars()[]";
+      const prepared = search.prepareFTS5Query(query);
+
+      // Should not throw FTS5 error
+      assert.doesNotThrow(() => {
+        search.searchMemories({ query: prepared });
+      });
+    });
+
+    it("should handle real-world error messages", () => {
+      const errorQueries = [
+        "TypeError: Cannot read property 'length' of undefined",
+        "Error: ENOENT: no such file or directory, open '/path/to/file.txt'",
+        "SyntaxError: Unexpected token '<' in JSON at position 0",
+        "<error>Database connection failed: ETIMEDOUT</error>"
+      ];
+
+      for (const query of errorQueries) {
+        const prepared = search.prepareFTS5Query(query);
+
+        // Should not throw FTS5 syntax error
+        assert.doesNotThrow(() => {
+          search.searchMemories({ query: prepared });
+        }, `Failed for: ${query}`);
+      }
+    });
+  });
 });

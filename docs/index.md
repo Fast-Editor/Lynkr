@@ -4,8 +4,9 @@
 <script defer data-url="https://devhunt.org/tool/lynkr" src="https://cdn.jsdelivr.net/gh/sidiDev/devhunt-banner/indexV0.js"></script>
 
 
-# Lynkr – Claude Code-Compatible Proxy for Databricks 
-#### Lynkr is an open-source Claude Code-compatible proxy that allows the Claude Code CLI to run directly with any LLMs without losing the features offered by Anthropic backend. It supports MCP servers, Git workflows, repo intelligence, workspace tools,  prompt caching for LLM-powered development and many other features.
+# Lynkr - Production-Ready Claude Code Proxy with Multi-Provider Support, MCP Integration & Token Optimization
+
+#### Lynkr is an open-source, production-ready Claude Code proxy that enables the Claude Code CLI to work with any LLM provider (Databricks, OpenRouter, Ollama, Azure, OpenAI, llama.cpp) without losing Anthropic backend features. It features MCP server orchestration, Git workflows, repo intelligence, workspace tools, prompt caching, and 60-80% token optimization for cost-effective LLM-powered development.
 <!--
 SEO Keywords:
 Databricks, Claude Code, Anthropic, Azure Anthropic,
@@ -14,6 +15,9 @@ developer tools, proxy, git automation, AI developer tools,
 prompt caching, Node.js
 -->
 
+## 🔖 Keywords
+
+`claude-code` `claude-proxy` `anthropic-api` `databricks-llm` `openrouter-integration` `ollama-local` `llama-cpp` `azure-openai` `azure-anthropic` `mcp-server` `prompt-caching` `token-optimization` `ai-coding-assistant` `llm-proxy` `self-hosted-ai` `git-automation` `code-generation` `developer-tools` `ci-cd-automation` `llm-gateway` `cost-reduction` `multi-provider-llm`
 
 ---
 
@@ -28,21 +32,21 @@ prompt caching, Node.js
 
 # 🚀 What is Lynkr?
 
-**Lynkr** is an open-source **Claude Code-compatible backend proxy** that lets you run the **Claude Code CLI** and Claude-style tools **directly against Databricks** or **Azure-hosted Anthropic models** instead of the default Anthropic cloud.
+**Lynkr** is an open-source **Claude Code-compatible backend proxy** that lets you run the **Claude Code CLI** and Claude-style tools **directly against [Databricks, Azure, OpenRouter, Ollama, and llama.cpp](#-configuration-guide-for-multi-provider-support-databricks-azure-openrouter-ollama-llamacpp)** instead of the default Anthropic cloud.
 
 It enables full repo-aware LLM workflows:
 
-- code navigation  
-- diff review  
-- Git operations  
-- test execution  
-- workspace tools  
-- Model Context Protocol (MCP) servers  
-- repo indexing and project intelligence  
-- prompt caching  
-- conversational sessions  
+- code navigation
+- diff review
+- [Git operations](#git-tools-and-workflow-automation)
+- test execution
+- workspace tools
+- [Model Context Protocol (MCP) servers](#full-model-context-protocol-mcp-integration)
+- [repo indexing and project intelligence](#-repo-intelligence--indexing)
+- [prompt caching](#prompt-caching-lru--ttl)
+- [conversational sessions with long-term memory](#-long-term-memory-system-titans-inspired)
 
-This makes Databricks a first-class environment for **AI-assisted software development**, **LLM agents**, **automated refactoring**, **debugging**, and **ML/ETL workflow exploration**.
+This makes Databricks and other providers a first-class environment for **AI-assisted software development**, **LLM agents**, **automated refactoring**, **debugging**, and **ML/ETL workflow exploration**.
 
 ---
 
@@ -170,7 +174,60 @@ Databricks / Azure Anthropic / OpenRouter / Ollama / llama.cpp
 
 ````
 
-Key directories:
+## Request Flow Visualization
+
+```mermaid
+graph TB
+    A[Claude Code CLI] -->|HTTP POST /v1/messages| B[Lynkr Proxy Server]
+    B --> C{Middleware Stack}
+    C -->|Load Shedding| D{Load OK?}
+    D -->|Yes| E[Request Logging]
+    D -->|No| Z1[503 Service Unavailable]
+    E --> F[Metrics Collection]
+    F --> G[Input Validation]
+    G --> H[Orchestrator]
+
+    H --> I{Check Prompt Cache}
+    I -->|Cache Hit| J[Return Cached Response]
+    I -->|Cache Miss| K{Determine Provider}
+
+    K -->|Simple 0-2 tools| L[Ollama Local]
+    K -->|Moderate 3-14 tools| M[OpenRouter / Azure]
+    K -->|Complex 15+ tools| N[Databricks]
+
+    L --> O[Circuit Breaker Check]
+    M --> O
+    N --> O
+
+    O -->|Closed| P{Provider API}
+    O -->|Open| Z2[Fallback Provider]
+
+    P -->|Databricks| Q1[Databricks API]
+    P -->|OpenRouter| Q2[OpenRouter API]
+    P -->|Ollama| Q3[Ollama Local]
+    P -->|Azure| Q4[Azure Anthropic API]
+    P -->|llama.cpp| Q5[llama.cpp Server]
+
+    Q1 --> R[Response Processing]
+    Q2 --> R
+    Q3 --> R
+    Q4 --> R
+    Q5 --> R
+    Z2 --> R
+
+    R --> S[Format Conversion]
+    S --> T[Cache Response]
+    T --> U[Update Metrics]
+    U --> V[Return to Client]
+    J --> V
+
+    style B fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style H fill:#7b68ee,stroke:#333,stroke-width:2px,color:#fff
+    style K fill:#f39c12,stroke:#333,stroke-width:2px
+    style P fill:#2ecc71,stroke:#333,stroke-width:2px,color:#fff
+```
+
+**Key directories:**
 
 - `src/api` → Claude-compatible API proxy
 - `src/orchestrator` → LLM agent runtime loop
@@ -182,7 +239,7 @@ Key directories:
 
 ---
 
-# ⚙ Installation
+# ⚙ Getting Started: Installation & Setup Guide
 
 ## Global install (recommended)
 ```bash
@@ -208,7 +265,7 @@ npm start
 
 ---
 
-# 🔧 Configuring Providers
+# 🔧 Configuration Guide for Multi-Provider Support (Databricks, Azure, OpenRouter, Ollama, llama.cpp)
 
 ## Databricks Setup
 
@@ -664,12 +721,87 @@ This "working nature" allows Lynkr to not just execute commands, but to **learn 
 
 ---
 
+# 📚 References & Further Reading
+
+## Academic & Technical Resources
+
+**Agentic AI Systems:**
+- **Zhang et al. (2024)**. *Agentic Context Engineering*. arXiv:2510.04618. [arXiv](https://arxiv.org/abs/2510.04618)
+
+**Long-Term Memory & RAG:**
+- **Mohtashami & Jaggi (2023)**. *Landmark Attention: Random-Access Infinite Context Length for Transformers*. [arXiv](https://arxiv.org/abs/2305.16300)
+- **Google DeepMind (2024)**. *Titans: Learning to Memorize at Test Time*. [arXiv](https://arxiv.org/abs/2411.07043)
+
+## Official Documentation
+
+- [Claude Code CLI Documentation](https://docs.anthropic.com/en/docs/build-with-claude/claude-for-sheets) - Official Claude Code reference
+- [Model Context Protocol (MCP) Specification](https://spec.modelcontextprotocol.io/) - MCP protocol documentation
+- [Databricks Foundation Models](https://docs.databricks.com/en/machine-learning/foundation-models/index.html) - Databricks LLM documentation
+- [Anthropic API Documentation](https://docs.anthropic.com/en/api/getting-started) - Claude API reference
+
+## Related Projects & Tools
+
+- [Ollama](https://ollama.ai/) - Local LLM runtime for running open-source models
+- [OpenRouter](https://openrouter.ai/) - Multi-provider LLM API gateway (100+ models)
+- [llama.cpp](https://github.com/ggerganov/llama.cpp) - High-performance C++ LLM inference engine
+- [LiteLLM](https://github.com/BerriAI/litellm) - Multi-provider LLM proxy (alternative approach)
+- [Awesome MCP Servers](https://github.com/punkpeye/awesome-mcp-servers) - Curated list of MCP server implementations
+
+---
+
+# 🌟 Community & Adoption
+
+## Get Involved
+
+**⭐ Star this repository** to show your support and help others discover Lynkr!
+
+[![GitHub stars](https://img.shields.io/github/stars/vishalveerareddy123/Lynkr?style=social)](https://github.com/vishalveerareddy123/Lynkr)
+
+## Support & Resources
+
+- 🐛 **Report Issues:** [GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues) - Bug reports and feature requests
+- 💬 **Discussions:** [GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions) - Questions, ideas, and community help
+- 📚 **Documentation:** [DeepWiki](https://deepwiki.com/vishalveerareddy123/Lynkr) - Comprehensive guides and examples
+- 🔧 **Contributing:** [CONTRIBUTING.md](https://github.com/vishalveerareddy123/Lynkr/blob/main/CONTRIBUTING.md) - How to contribute to Lynkr
+
+## Share Lynkr
+
+Help spread the word about Lynkr:
+
+- 🐦 [Share on Twitter](https://twitter.com/intent/tweet?text=Check%20out%20Lynkr%20-%20a%20production-ready%20Claude%20Code%20proxy%20with%20multi-provider%20support%20and%2060-80%25%20token%20savings!&url=https://github.com/vishalveerareddy123/Lynkr&hashtags=AI,ClaudeCode,LLM,OpenSource)
+- 💼 [Share on LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https://github.com/vishalveerareddy123/Lynkr)
+- 📰 [Share on Hacker News](https://news.ycombinator.com/submitlink?u=https://github.com/vishalveerareddy123/Lynkr&t=Lynkr%20-%20Production-Ready%20Claude%20Code%20Proxy)
+- 📱 [Share on Reddit](https://www.reddit.com/submit?url=https://github.com/vishalveerareddy123/Lynkr&title=Lynkr%20-%20Production-Ready%20Claude%20Code%20Proxy%20with%20Multi-Provider%20Support)
+
+## Why Developers Choose Lynkr
+
+- 💰 **Massive cost savings** - Save 60-80% on token costs with built-in optimization
+- 🔓 **Provider freedom** - Choose from 7+ LLM providers (Databricks, OpenRouter, Ollama, Azure, llama.cpp)
+- 🏠 **Privacy & control** - Self-hosted, open-source, no vendor lock-in
+- 🚀 **Production-ready** - Enterprise features: circuit breakers, metrics, health checks
+- 🛠️ **Active development** - Regular updates, responsive maintainers, growing community
+
+---
+
 # 🔗 Links
 
 * **GitHub**: [https://github.com/vishalveerareddy123/Lynkr](https://github.com/vishalveerareddy123/Lynkr)
 * **Docs**: [https://deepwiki.com/vishalveerareddy123/Lynkr](https://deepwiki.com/vishalveerareddy123/Lynkr)
 * **Issues**: [https://github.com/vishalveerareddy123/Lynkr/issues](https://github.com/vishalveerareddy123/Lynkr/issues)
 
-If you use Databricks or Azure Anthropic and want rich Claude Code workflows, Lynkr gives you the control and extensibility you need.
+---
 
-Feel free to open issues, contribute tools, or integrate with MCP servers!
+## 🚀 Ready to Get Started?
+
+**Reduce your Claude Code costs by 60-80% today:**
+
+1. ⭐ **[Star this repo](https://github.com/vishalveerareddy123/Lynkr)** to show support and stay updated
+2. 📖 **[Install Lynkr](#-getting-started-installation--setup-guide)** and configure your preferred provider
+3. 💬 **[Join the Discussion](https://github.com/vishalveerareddy123/Lynkr/discussions)** for community support
+4. 🐛 **[Report Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** to help improve Lynkr
+
+---
+
+If you use Databricks, Azure Anthropic, OpenRouter, Ollama, or llama.cpp and want rich Claude Code workflows with massive cost savings, Lynkr gives you the control, flexibility, and extensibility you need.
+
+Feel free to open issues, contribute tools, integrate with MCP servers, or help us improve the documentation!
