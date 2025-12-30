@@ -98,14 +98,18 @@ function prepareFTS5Query(query) {
   // For simple queries, just escape quotes and use phrase matching
   let cleaned = query.trim();
 
-  // If query looks like a phrase, wrap in quotes for exact matching
-  if (!cleaned.includes('"') && cleaned.split(/\s+/).length > 1) {
-    // Multi-word query - use phrase search
+  // Check if query contains FTS5 operators (AND, OR, NOT)
+  const hasFTS5Operators = /\b(AND|OR|NOT)\b/i.test(cleaned);
+
+  // If query looks like a phrase (multi-word but no operators), wrap in quotes for exact matching
+  if (!cleaned.includes('"') && cleaned.split(/\s+/).length > 1 && !hasFTS5Operators) {
+    // Multi-word query without operators - use phrase search
     cleaned = `"${cleaned.replace(/"/g, '""')}"`;
-  } else {
+  } else if (!hasFTS5Operators) {
     // Single word or already has quotes - just escape
     cleaned = cleaned.replace(/"/g, '""');
   }
+  // If it has FTS5 operators, leave as-is to let FTS5 parse them
 
   return cleaned;
 }
@@ -192,7 +196,9 @@ function extractKeywords(text) {
  */
 function findSimilar(memoryId, limit = 5) {
   const memory = store.getMemory(memoryId);
-  if (!memory) return [];
+  if (!memory) {
+    throw new Error(`Memory with id ${memoryId} not found`);
+  }
 
   const keywords = extractKeywords(memory.content);
   if (keywords.length === 0) return [];
@@ -223,8 +229,8 @@ function searchByContent(content, options = {}) {
 /**
  * Count search results without fetching them
  */
-function countSearchResults(query, options = {}) {
-  const results = searchMemories({ ...options, query, limit: 1000 });
+function countSearchResults(options) {
+  const results = searchMemories({ ...options, limit: 1000 });
   return results.length;
 }
 

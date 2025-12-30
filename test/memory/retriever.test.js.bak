@@ -457,11 +457,11 @@ describe("Memory Retriever", () => {
       store.createMemory({
         content: "Session memory",
         type: "fact",
-        sessionId: null // was: "test-session"
+        sessionId: "test-session"
       });
 
       const globalStats = retriever.getMemoryStats();
-      const sessionStats = retriever.getMemoryStats({ sessionId: null }); // was: "test-session"
+      const sessionStats = retriever.getMemoryStats({ sessionId: "test-session" });
 
       assert.ok(sessionStats.total <= globalStats.total);
     });

@@ -248,9 +248,18 @@ function createMemory(options) {
 /**
  * Get a memory by ID
  */
-function getMemory(id) {
+function getMemory(id, options = {}) {
   const row = getMemoryStmt.get(id);
-  return toMemory(row);
+  const memory = toMemory(row);
+
+  if (memory && options.incrementAccess) {
+    incrementAccessCount(id);
+    // Re-fetch to get updated access count
+    const updatedRow = getMemoryStmt.get(id);
+    return toMemory(updatedRow);
+  }
+
+  return memory;
 }
 
 /**
@@ -340,7 +349,9 @@ function getMemoriesByType(type, limit = 10) {
 /**
  * Prune old memories
  */
-function pruneOldMemories(olderThanMs) {
+function pruneOldMemories(options) {
+  const { maxAgeDays } = options;
+  const olderThanMs = maxAgeDays * 24 * 60 * 60 * 1000;
   const threshold = Date.now() - olderThanMs;
   const result = pruneOldMemoriesStmt.run(threshold);
   return result.changes;
@@ -349,7 +360,8 @@ function pruneOldMemories(olderThanMs) {
 /**
  * Prune to keep only top N memories by importance
  */
-function pruneByCount(maxCount) {
+function pruneByCount(options) {
+  const { maxCount } = options;
   const result = pruneByCountStmt.run(maxCount);
   return result.changes;
 }
@@ -357,7 +369,18 @@ function pruneByCount(maxCount) {
 /**
  * Count total memories
  */
-function countMemories() {
+function countMemories(options = {}) {
+  const { sessionId = null } = options;
+
+  if (sessionId) {
+    const stmt = db.prepare(`
+      SELECT COUNT(*) as count FROM memories
+      WHERE session_id = ?
+    `);
+    const result = stmt.get(sessionId);
+    return result.count;
+  }
+
   const result = countMemoriesStmt.get();
   return result.count;
 }
@@ -365,22 +388,39 @@ function countMemories() {
 /**
  * Track or update an entity
  */
-function trackEntity(entityType, entityName, properties = {}) {
+function trackEntity(options) {
+  const { name, type, context = {} } = options;
   const now = Date.now();
   upsertEntityStmt.run({
-    entity_type: entityType,
-    entity_name: entityName,
+    entity_type: type,
+    entity_name: name,
     timestamp: now,
-    properties: serialize(properties),
+    properties: serialize(context),
   });
 }
 
 /**
  * Get an entity
  */
-function getEntity(entityType, entityName) {
-  const row = getEntityStmt.get(entityType, entityName);
-  return toEntity(row);
+function getEntity(name) {
+  // Since we only have the name, we need to search across all entity types
+  const stmt = db.prepare(`
+    SELECT id, entity_type, entity_name, first_seen_at, last_seen_at, occurrence_count, properties
+    FROM memory_entities
+    WHERE entity_name = ?
+  `);
+  const row = stmt.get(name);
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    name: row.entity_name,
+    type: row.entity_type,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    count: row.occurrence_count ?? 1,
+    context: parseJSON(row.properties, {}),
+  };
 }
 
 /**
@@ -388,7 +428,15 @@ function getEntity(entityType, entityName) {
  */
 function getAllEntities(limit = 100) {
   const rows = getAllEntitiesStmt.all(limit);
-  return rows.map(toEntity);
+  return rows.map(row => ({
+    id: row.id,
+    name: row.entity_name,
+    type: row.entity_type,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    count: row.occurrence_count ?? 1,
+    context: parseJSON(row.properties, {}),
+  }));
 }
 
 module.exports = {

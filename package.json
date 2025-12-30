@@ -1,7 +1,7 @@
 {
   "name": "lynkr",
-  "version": "2.0.1",
-  "description": "Self-hosted Claude Code proxy with Databricks,Azure  adapters, workspace tooling, and MCP integration.",
+  "version": "3.0.0",
+  "description": "Self-hosted Claude Code proxy with Databricks,Azure  adapters, openrouter, Ollama,llamacpp, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
     "lynkr": "./bin/cli.js",

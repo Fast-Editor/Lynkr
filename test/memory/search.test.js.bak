@@ -21,13 +21,7 @@ describe("Memory Search", () => {
     process.env.DB_PATH = testDbPath;
 
     // Initialize database with schema
-    const db = require("../../src/db");
-
-    // Clear all existing data to ensure clean state
-    db.prepare("DELETE FROM memories").run();
-    db.prepare("DELETE FROM memory_entities").run();
-    db.prepare("DELETE FROM memory_embeddings").run();
-    db.prepare("DELETE FROM memory_associations").run();
+    require("../../src/db");
 
     // Load modules
     store = require("../../src/memory/store");
@@ -71,14 +65,6 @@ describe("Memory Search", () => {
   });
 
   afterEach(() => {
-    // Close database connection before cleanup
-    try {
-      const db = require("../../src/db");
-      db.close();
-    } catch (err) {
-      // Ignore if already closed
-    }
-
     // Clean up test database
     try {
       if (fs.existsSync(testDbPath)) {
@@ -130,12 +116,12 @@ describe("Memory Search", () => {
       store.createMemory({
         content: "Session-specific memory about testing",
         type: "fact",
-        sessionId: null // was: "test-session-123"
+        sessionId: "test-session-123"
       });
 
       const results = search.searchMemories({
         query: "testing",
-        sessionId: null // was: "test-session-123"
+        sessionId: "test-session-123"
       });
 
       assert.ok(results.length > 0);

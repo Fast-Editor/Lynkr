@@ -228,15 +228,36 @@ ${formattedMemories}
 /**
  * Get memory statistics
  */
-function getMemoryStats(sessionId = null) {
+function getMemoryStats(options = {}) {
   try {
-    const total = store.countMemories();
-    const byType = {};
-    const types = ['preference', 'decision', 'fact', 'entity', 'relationship'];
+    const { sessionId = null } = options;
+    const total = store.countMemories({ sessionId });
 
+    const byType = {};
+    const byCategory = {};
+    const types = ['preference', 'decision', 'fact', 'entity', 'relationship'];
+    const categories = ['user', 'code', 'project', 'general'];
+
+    // Count by type
     for (const type of types) {
-      byType[type] = store.getMemoriesByType(type, 1000).length;
+      const memories = store.getMemoriesByType(type, 10000);
+      // Filter by session if needed
+      const filtered = sessionId
+        ? memories.filter(m => m.sessionId === sessionId || m.sessionId === null)
+        : memories;
+      byType[type] = filtered.length;
     }
+
+    // Count by category
+    const allMemories = store.getRecentMemories({ limit: 10000, sessionId });
+    for (const category of categories) {
+      byCategory[category] = allMemories.filter(m => m.category === category).length;
+    }
+
+    // Calculate average importance
+    const avgImportance = allMemories.length > 0
+      ? allMemories.reduce((sum, m) => sum + (m.importance || 0), 0) / allMemories.length
+      : 0;
 
     const recent = store.getRecentMemories({ limit: 10, sessionId });
     const important = store.getMemoriesByImportance({ limit: 10, sessionId });
@@ -244,6 +265,8 @@ function getMemoryStats(sessionId = null) {
     return {
       total,
       byType,
+      byCategory,
+      avgImportance,
       recentCount: recent.length,
       importantCount: important.length,
       sessionId,
