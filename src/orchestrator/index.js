@@ -6,6 +6,10 @@ const policy = require("../policy");
 const logger = require("../logger");
 const { needsWebFallback } = require("../policy/web-fallback");
 const promptCache = require("../cache/prompt");
+const tokens = require("../utils/tokens");
+const systemPrompt = require("../prompts/system");
+const historyCompression = require("../context/compression");
+const tokenBudget = require("../context/budget");
 
 const DROP_KEYS = new Set([
   "provider",
@@ -1123,6 +1127,30 @@ async function runAgentLoop({
       );
     }
 
+
+    if (steps === 1 && config.historyCompression?.enabled !== false) {
+      try {
+        if (historyCompression.needsCompression(cleanPayload.messages)) {
+          const originalMessages = cleanPayload.messages;
+          cleanPayload.messages = historyCompression.compressHistory(originalMessages, {
+            keepRecentTurns: config.historyCompression?.keepRecentTurns ?? 10,
+            summarizeOlder: config.historyCompression?.summarizeOlder ?? true,
+            enabled: true
+          });
+
+          if (cleanPayload.messages !== originalMessages) {
+            const stats = historyCompression.calculateCompressionStats(originalMessages, cleanPayload.messages);
+            logger.debug({
+              sessionId: session?.id ?? null,
+              ...stats
+            }, 'History compression applied');
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, sessionId: session?.id }, 'History compression failed, continuing with full history');
+      }
+    }
+
     // === MEMORY RETRIEVAL (Titans-inspired long-term memory) ===
     if (config.memory?.enabled !== false && steps === 1) {
       try {
@@ -1153,7 +1181,8 @@ async function runAgentLoop({
               const injectedSystem = memoryRetriever.injectMemoriesIntoSystem(
                 cleanPayload.system,
                 relevantMemories,
-                config.memory.injectionFormat ?? 'system'
+                config.memory.injectionFormat ?? 'system',
+                cleanPayload.messages // Pass recent messages for deduplication
               );
 
               if (typeof injectedSystem === 'string') {
@@ -1169,7 +1198,126 @@ async function runAgentLoop({
       }
     }
 
-    const databricksResponse = await invokeModel(cleanPayload);
+    if (steps === 1 && (config.systemPrompt?.mode === 'dynamic' || config.systemPrompt?.toolDescriptions === 'minimal')) {
+      try {
+        // Compress tool descriptions if configured
+        if (cleanPayload.tools && cleanPayload.tools.length > 0 && config.systemPrompt?.toolDescriptions === 'minimal') {
+          const originalTools = cleanPayload.tools;
+          cleanPayload.tools = systemPrompt.compressToolDescriptions(originalTools, 'minimal');
+
+          const originalSize = JSON.stringify(originalTools).length;
+          const compressedSize = JSON.stringify(cleanPayload.tools).length;
+          const saved = originalSize - compressedSize;
+
+          if (saved > 100) {
+            logger.debug({
+              sessionId: session?.id ?? null,
+              toolCount: cleanPayload.tools.length,
+              originalChars: originalSize,
+              compressedChars: compressedSize,
+              saved,
+              percentage: ((saved / originalSize) * 100).toFixed(1)
+            }, 'Tool descriptions compressed');
+          }
+        }
+
+        // Optimize system prompt if configured
+        if (cleanPayload.system && config.systemPrompt?.mode === 'dynamic') {
+          const originalSystem = cleanPayload.system;
+          const optimizedSystem = systemPrompt.optimizeSystemPrompt(
+            originalSystem,
+            {
+              tools: cleanPayload.tools,
+              messages: cleanPayload.messages
+            },
+            'dynamic'
+          );
+
+          if (optimizedSystem !== originalSystem) {
+            const savings = systemPrompt.calculateSavings(originalSystem, optimizedSystem);
+            cleanPayload.system = optimizedSystem;
+
+            if (savings.tokensSaved > 50) {
+              logger.debug({
+                sessionId: session?.id ?? null,
+                ...savings
+              }, 'System prompt optimized');
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, sessionId: session?.id }, 'System prompt optimization failed, continuing with original');
+      }
+    }
+
+    if (steps === 1 && config.tokenBudget?.enforcement !== false) {
+      try {
+        const budgetCheck = tokenBudget.checkBudget(cleanPayload);
+
+        if (budgetCheck.atWarning) {
+          logger.warn({
+            sessionId: session?.id ?? null,
+            totalTokens: budgetCheck.totalTokens,
+            warningThreshold: budgetCheck.warningThreshold,
+            maxThreshold: budgetCheck.maxThreshold,
+            overMax: budgetCheck.overMax
+          }, 'Approaching or exceeding token budget');
+
+          if (budgetCheck.overMax) {
+            // Apply adaptive compression to fit within budget
+            const enforcement = tokenBudget.enforceBudget(cleanPayload, {
+              warningThreshold: config.tokenBudget?.warning,
+              maxThreshold: config.tokenBudget?.max,
+              enforcement: true
+            });
+
+            if (enforcement.compressed) {
+              cleanPayload = enforcement.payload;
+              logger.info({
+                sessionId: session?.id ?? null,
+                strategy: enforcement.strategy,
+                initialTokens: enforcement.stats.initialTokens,
+                finalTokens: enforcement.stats.finalTokens,
+                saved: enforcement.stats.saved,
+                percentage: enforcement.stats.percentage,
+                nowWithinBudget: !enforcement.finalBudget.overMax
+              }, 'Token budget enforcement applied');
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, sessionId: session?.id }, 'Token budget enforcement failed, continuing without enforcement');
+      }
+    }
+
+    // Track estimated token usage before model call
+  const estimatedTokens = config.tokenTracking?.enabled !== false
+    ? tokens.countPayloadTokens(cleanPayload)
+    : null;
+
+  if (estimatedTokens && config.tokenTracking?.enabled !== false) {
+    logger.debug({
+      sessionId: session?.id ?? null,
+      estimated: estimatedTokens,
+      model: cleanPayload.model
+    }, 'Estimated token usage before model call');
+  }
+
+  const databricksResponse = await invokeModel(cleanPayload);
+
+  // Extract and log actual token usage
+  const actualUsage = databricksResponse.ok && config.tokenTracking?.enabled !== false
+    ? tokens.extractUsageFromResponse(databricksResponse.json)
+    : null;
+
+  if (estimatedTokens && actualUsage && config.tokenTracking?.enabled !== false) {
+    tokens.logTokenUsage('model_invocation', estimatedTokens, actualUsage);
+
+    // Record in session metadata
+    if (session) {
+      tokens.recordTokenUsage(session, steps, estimatedTokens, actualUsage, cleanPayload.model);
+    }
+  }
 
     // Handle streaming responses (pass through without buffering)
     if (databricksResponse.stream) {

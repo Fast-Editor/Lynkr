@@ -135,6 +135,21 @@ const memoryExtractionEnabled = process.env.MEMORY_EXTRACTION_ENABLED !== "false
 const memoryDecayEnabled = process.env.MEMORY_DECAY_ENABLED !== "false"; // default true
 const memoryDecayHalfLifeDays = Number.parseInt(process.env.MEMORY_DECAY_HALF_LIFE ?? "30", 10);
 
+// Token optimization settings
+const tokenTrackingEnabled = process.env.TOKEN_TRACKING_ENABLED !== "false"; // default true
+const toolTruncationEnabled = process.env.TOOL_TRUNCATION_ENABLED !== "false"; // default true
+const memoryFormat = (process.env.MEMORY_FORMAT ?? "compact").toLowerCase();
+const memoryDedupEnabled = process.env.MEMORY_DEDUP_ENABLED !== "false"; // default true
+const memoryDedupLookback = Number.parseInt(process.env.MEMORY_DEDUP_LOOKBACK ?? "5", 10);
+const systemPromptMode = (process.env.SYSTEM_PROMPT_MODE ?? "dynamic").toLowerCase();
+const toolDescriptions = (process.env.TOOL_DESCRIPTIONS ?? "minimal").toLowerCase();
+const historyCompressionEnabled = process.env.HISTORY_COMPRESSION_ENABLED !== "false"; // default true
+const historyKeepRecentTurns = Number.parseInt(process.env.HISTORY_KEEP_RECENT_TURNS ?? "10", 10);
+const historySummarizeOlder = process.env.HISTORY_SUMMARIZE_OLDER !== "false"; // default true
+const tokenBudgetWarning = Number.parseInt(process.env.TOKEN_BUDGET_WARNING ?? "100000", 10);
+const tokenBudgetMax = Number.parseInt(process.env.TOKEN_BUDGET_MAX ?? "180000", 10);
+const tokenBudgetEnforcement = process.env.TOKEN_BUDGET_ENFORCEMENT !== "false"; // default true
+
 // Only require Databricks credentials if it's the primary provider or used as fallback
 if (modelProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
   throw new Error("Set DATABRICKS_API_BASE and DATABRICKS_API_KEY before starting the proxy.");
@@ -531,6 +546,9 @@ const config = {
     injectionFormat: ["system", "assistant_preamble"].includes(memoryInjectionFormat)
       ? memoryInjectionFormat
       : "system",
+    format: memoryFormat,
+    dedupEnabled: memoryDedupEnabled,
+    dedupLookback: memoryDedupLookback,
     extraction: {
       enabled: memoryExtractionEnabled,
     },
@@ -538,6 +556,26 @@ const config = {
       enabled: memoryDecayEnabled,
       halfLifeDays: Number.isNaN(memoryDecayHalfLifeDays) ? 30 : memoryDecayHalfLifeDays,
     },
+  },
+  tokenTracking: {
+    enabled: tokenTrackingEnabled,
+  },
+  toolTruncation: {
+    enabled: toolTruncationEnabled,
+  },
+  systemPrompt: {
+    mode: systemPromptMode,
+    toolDescriptions: toolDescriptions,
+  },
+  historyCompression: {
+    enabled: historyCompressionEnabled,
+    keepRecentTurns: historyKeepRecentTurns,
+    summarizeOlder: historySummarizeOlder,
+  },
+  tokenBudget: {
+    warning: tokenBudgetWarning,
+    max: tokenBudgetMax,
+    enforcement: tokenBudgetEnforcement,
   },
 };
 

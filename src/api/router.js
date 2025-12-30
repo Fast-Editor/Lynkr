@@ -305,4 +305,82 @@ router.get("/v1/agents/:executionId", (req, res) => {
   }
 });
 
+// Token usage statistics for a session
+router.get("/api/sessions/:sessionId/tokens", (req, res) => {
+  try {
+    const tokens = require("../utils/tokens");
+    const { sessionId } = req.params;
+    const session = getSession(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const stats = tokens.getSessionTokenStats(session);
+
+    res.json({
+      sessionId,
+      stats: {
+        turns: stats.turns,
+        totalTokens: stats.totalTokens,
+        totalCost: parseFloat(stats.totalCost.toFixed(4)),
+        averageTokensPerTurn: stats.averageTokensPerTurn,
+        cacheHitRate: parseFloat(stats.cacheHitRate) + '%'
+      },
+      breakdown: stats.breakdown.map(turn => ({
+        turn: turn.turn,
+        timestamp: turn.timestamp,
+        model: turn.model,
+        estimated: turn.estimated.total,
+        actual: {
+          input: turn.actual.inputTokens,
+          output: turn.actual.outputTokens,
+          cached: turn.actual.cacheReadTokens,
+          total: turn.actual.totalTokens
+        },
+        cost: parseFloat(turn.cost.total.toFixed(6))
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Global token usage statistics (all sessions)
+router.get("/api/tokens/stats", (req, res) => {
+  try {
+    const tokens = require("../utils/tokens");
+    const { getAllSessions } = require("../sessions");
+    const allSessions = getAllSessions();
+
+    let totalTokens = 0;
+    let totalCost = 0;
+    let totalTurns = 0;
+    let totalSessions = 0;
+
+    for (const session of allSessions) {
+      const stats = tokens.getSessionTokenStats(session);
+      if (stats.turns > 0) {
+        totalTokens += stats.totalTokens;
+        totalCost += stats.totalCost;
+        totalTurns += stats.turns;
+        totalSessions++;
+      }
+    }
+
+    res.json({
+      global: {
+        sessions: totalSessions,
+        turns: totalTurns,
+        totalTokens,
+        totalCost: parseFloat(totalCost.toFixed(4)),
+        averageTokensPerTurn: totalTurns > 0 ? Math.round(totalTokens / totalTurns) : 0,
+        averageTokensPerSession: totalSessions > 0 ? Math.round(totalTokens / totalSessions) : 0
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

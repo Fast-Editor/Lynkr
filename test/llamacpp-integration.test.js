@@ -682,5 +682,203 @@ describe("llama.cpp Integration", () => {
       assert.strictEqual(result.usage.input_tokens, 0);
       assert.strictEqual(result.usage.output_tokens, 0);
     });
+
+    it("should filter duplicate tool call JSON from content when tool_calls are present", () => {
+      process.env.MODEL_PROVIDER = "databricks";
+      process.env.DATABRICKS_API_KEY = "test-key";
+      process.env.DATABRICKS_API_BASE = "http://test.com";
+
+      const { convertOpenRouterResponseToAnthropic } = require("../src/clients/openrouter-utils");
+
+      // Simulate llama.cpp response with BOTH content (as JSON) and tool_calls
+      const response = {
+        id: "chatcmpl-123",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: '{"type": "function", "function": {"name": "Write", "parameters": {"file_path": "test.cpp", "content": "int main() {}"}}}',
+              tool_calls: [
+                {
+                  id: "call_abc123",
+                  type: "function",
+                  function: {
+                    name: "Write",
+                    arguments: '{"file_path": "test.cpp", "content": "int main() {}"}'
+                  }
+                }
+              ]
+            },
+            finish_reason: "tool_calls"
+          }
+        ],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 50
+        }
+      };
+
+      const result = convertOpenRouterResponseToAnthropic(response, "test-model");
+
+      // Should have only 1 content block (tool_use), not 2 (text + tool_use)
+      assert.strictEqual(result.content.length, 1);
+      assert.strictEqual(result.content[0].type, "tool_use");
+      assert.strictEqual(result.content[0].name, "Write");
+      assert.strictEqual(result.stop_reason, "tool_use");
+
+      // Verify the JSON text was NOT included as a text block
+      const textBlocks = result.content.filter(block => block.type === "text");
+      assert.strictEqual(textBlocks.length, 0, "Should not include text block with duplicate JSON");
+    });
+
+    it("should preserve normal text content when tool_calls are NOT present", () => {
+      process.env.MODEL_PROVIDER = "databricks";
+      process.env.DATABRICKS_API_KEY = "test-key";
+      process.env.DATABRICKS_API_BASE = "http://test.com";
+
+      const { convertOpenRouterResponseToAnthropic } = require("../src/clients/openrouter-utils");
+
+      const response = {
+        id: "chatcmpl-456",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "Here is the code you requested.",
+              // No tool_calls
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 50,
+          completion_tokens: 25
+        }
+      };
+
+      const result = convertOpenRouterResponseToAnthropic(response, "test-model");
+
+      // Should have 1 text block
+      assert.strictEqual(result.content.length, 1);
+      assert.strictEqual(result.content[0].type, "text");
+      assert.strictEqual(result.content[0].text, "Here is the code you requested.");
+      assert.strictEqual(result.stop_reason, "end_turn");
+    });
+
+    it("should preserve text content with tool_calls when text is NOT JSON", () => {
+      process.env.MODEL_PROVIDER = "databricks";
+      process.env.DATABRICKS_API_KEY = "test-key";
+      process.env.DATABRICKS_API_BASE = "http://test.com";
+
+      const { convertOpenRouterResponseToAnthropic } = require("../src/clients/openrouter-utils");
+
+      // Some models include explanatory text before/with tool calls
+      const response = {
+        id: "chatcmpl-789",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "I'll write the file for you now.",
+              tool_calls: [
+                {
+                  id: "call_xyz789",
+                  type: "function",
+                  function: {
+                    name: "Write",
+                    arguments: '{"file_path": "test.cpp", "content": "int main() {}"}'
+                  }
+                }
+              ]
+            },
+            finish_reason: "tool_calls"
+          }
+        ],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 60
+        }
+      };
+
+      const result = convertOpenRouterResponseToAnthropic(response, "test-model");
+
+      // Should have 2 content blocks (text + tool_use)
+      assert.strictEqual(result.content.length, 2);
+      assert.strictEqual(result.content[0].type, "text");
+      assert.strictEqual(result.content[0].text, "I'll write the file for you now.");
+      assert.strictEqual(result.content[1].type, "tool_use");
+      assert.strictEqual(result.content[1].name, "Write");
+      assert.strictEqual(result.stop_reason, "tool_use");
+    });
+
+    it("should filter malformed JSON when model outputs ONLY JSON without tool_calls", () => {
+      process.env.MODEL_PROVIDER = "databricks";
+      process.env.DATABRICKS_API_KEY = "test-key";
+      process.env.DATABRICKS_API_BASE = "http://test.com";
+
+      const { convertOpenRouterResponseToAnthropic } = require("../src/clients/openrouter-utils");
+
+      // Simulate llama.cpp model that outputs JSON in content but doesn't provide tool_calls
+      // This is a model training/configuration issue - model learned to output JSON
+      // but llama.cpp server isn't converting it to structured tool_calls
+      const response = {
+        id: "chatcmpl-malformed",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: '{"function": "Write", "parameters": {"file_path": "test.go", "content": "package main"}}',
+              // No tool_calls array - model error!
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 50,
+          completion_tokens: 30
+        }
+      };
+
+      const result = convertOpenRouterResponseToAnthropic(response, "test-model");
+
+      // Should have 1 empty text block (JSON was filtered out)
+      assert.strictEqual(result.content.length, 1);
+      assert.strictEqual(result.content[0].type, "text");
+      assert.strictEqual(result.content[0].text, "");
+      assert.strictEqual(result.stop_reason, "end_turn");
+    });
+
+    it("should filter alternative JSON formats without tool_calls", () => {
+      process.env.MODEL_PROVIDER = "databricks";
+      process.env.DATABRICKS_API_KEY = "test-key";
+      process.env.DATABRICKS_API_BASE = "http://test.com";
+
+      const { convertOpenRouterResponseToAnthropic } = require("../src/clients/openrouter-utils");
+
+      // Test the other JSON format seen in the wild
+      const response = {
+        id: "chatcmpl-alt-format",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: '{"type": "function", "function": {"name": "Read", "arguments": {"file_path": "config.json"}}}',
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 40,
+          completion_tokens: 25
+        }
+      };
+
+      const result = convertOpenRouterResponseToAnthropic(response, "test-model");
+
+      // Should filter out the JSON
+      assert.strictEqual(result.content.length, 1);
+      assert.strictEqual(result.content[0].type, "text");
+      assert.strictEqual(result.content[0].text, "");
+    });
   });
 });

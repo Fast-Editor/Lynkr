@@ -244,16 +244,60 @@ function convertOpenRouterResponseToAnthropic(openRouterResponse, requestedModel
   const message = choice.message || {};
   const contentBlocks = [];
 
-  // Add text content if present
+  // Check if there are tool calls present
+  const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+
+  // Helper function to detect if content is a JSON representation of a tool call
+  // Some models (like llama.cpp) may output tool calls in both content AND tool_calls
+  const isToolCallJson = (text) => {
+    if (!text) return false;
+    const trimmed = text.trim();
+    // Check if it looks like a JSON object containing tool/function call
+    // Matches various formats:
+    // - {"type": "function", "function": {"name": "X", "parameters": {...}}}
+    // - {"function": "X", "parameters": {...}}
+    // - {"tool": "X", "input": {...}}
+    return (trimmed.startsWith('{') || trimmed.startsWith('[')) &&
+           (trimmed.includes('"function"') || trimmed.includes('"tool"') ||
+            (trimmed.includes('"type"') && trimmed.includes('"parameters"'))) &&
+           (trimmed.includes('"parameters"') || trimmed.includes('"input"') ||
+            trimmed.includes('"arguments"'));
+  };
+
+  // Add text content if present, but skip if it's a duplicate/malformed tool call JSON
   if (message.content && message.content.trim()) {
-    contentBlocks.push({
-      type: "text",
-      text: message.content
-    });
+    const looksLikeToolJson = isToolCallJson(message.content);
+
+    // Skip content in two cases:
+    // 1. We have proper tool_calls AND content duplicates them (original fix)
+    // 2. Content looks like tool call JSON but we DON'T have tool_calls
+    //    (model incorrectly output JSON instead of structured tool_calls)
+    if (looksLikeToolJson) {
+      if (hasToolCalls) {
+        // Case 1: Duplicate - model provided both content and tool_calls
+        logger.debug({
+          contentPreview: message.content.substring(0, 100),
+          toolCallCount: message.tool_calls.length
+        }, "Skipping text content that duplicates tool_calls (llama.cpp quirk)");
+      } else {
+        // Case 2: Malformed - model only provided JSON in content, not structured tool_calls
+        // This is a model error - it should have used tool_calls, not raw JSON
+        logger.warn({
+          contentPreview: message.content.substring(0, 200)
+        }, "Model output tool call as JSON text instead of structured tool_calls - filtering out malformed output");
+      }
+      // Skip this content block in both cases
+    } else {
+      // Normal text content - include it
+      contentBlocks.push({
+        type: "text",
+        text: message.content
+      });
+    }
   }
 
   // Add tool calls if present
-  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+  if (hasToolCalls) {
     for (const toolCall of message.tool_calls) {
       const func = toolCall.function || {};
       let input = {};
@@ -288,7 +332,7 @@ function convertOpenRouterResponseToAnthropic(openRouterResponse, requestedModel
 
   // Determine stop reason
   let stopReason = "end_turn";
-  if (message.tool_calls && message.tool_calls.length > 0) {
+  if (hasToolCalls) {
     stopReason = "tool_use";
   } else if (choice.finish_reason === "length") {
     stopReason = "max_tokens";

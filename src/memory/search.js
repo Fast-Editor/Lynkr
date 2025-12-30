@@ -94,23 +94,41 @@ function searchMemories(options) {
  * Prepare FTS5 query - handle special characters and phrases
  */
 function prepareFTS5Query(query) {
-  // Remove or escape FTS5 special characters: " * ( ) AND OR NOT
-  // For simple queries, just escape quotes and use phrase matching
+  // FTS5 special characters: " * ( ) < > - : AND OR NOT
+  // Strategy: Strip XML/HTML tags, then sanitize remaining text
   let cleaned = query.trim();
 
-  // Check if query contains FTS5 operators (AND, OR, NOT)
+  // Step 1: Remove XML/HTML tags (common in error messages)
+  // Matches: <tag>, </tag>, <tag attr="value">
+  cleaned = cleaned.replace(/<[^>]+>/g, ' ');
+
+  // Step 2: Remove excess whitespace from tag removal
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  if (!cleaned) {
+    // Query was all tags, return safe fallback
+    return '"empty query"';
+  }
+
+  // Step 3: Check if query contains FTS5 operators (AND, OR, NOT)
   const hasFTS5Operators = /\b(AND|OR|NOT)\b/i.test(cleaned);
 
-  // If query looks like a phrase (multi-word but no operators), wrap in quotes for exact matching
-  if (!cleaned.includes('"') && cleaned.split(/\s+/).length > 1 && !hasFTS5Operators) {
-    // Multi-word query without operators - use phrase search
-    cleaned = `"${cleaned.replace(/"/g, '""')}"`;
-  } else if (!hasFTS5Operators) {
-    // Single word or already has quotes - just escape
-    cleaned = cleaned.replace(/"/g, '""');
-  }
-  // If it has FTS5 operators, leave as-is to let FTS5 parse them
+  // Step 4: Remove or escape remaining FTS5 special characters
+  // Characters: * ( ) < > - : [ ]
+  // Strategy: Remove them since they're rarely useful in memory search
+  cleaned = cleaned.replace(/[*()<>\-:\[\]]/g, ' ');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
 
+  // Step 5: Escape double quotes (FTS5 uses "" for literal quote)
+  cleaned = cleaned.replace(/"/g, '""');
+
+  // Step 6: Wrap in quotes for phrase search (safest approach)
+  if (!hasFTS5Operators) {
+    // Treat as literal phrase search
+    cleaned = `"${cleaned}"`;
+  }
+
+  // If query has FTS5 operators, let FTS5 parse them (advanced users)
   return cleaned;
 }
 

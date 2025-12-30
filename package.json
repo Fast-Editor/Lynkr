@@ -1,6 +1,6 @@
 {
   "name": "lynkr",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Self-hosted Claude Code proxy with Databricks,Azure  adapters, openrouter, Ollama,llamacpp, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
@@ -29,7 +29,7 @@
     "mcp"
   ],
   "author": "Vishal Veera Reddy",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/vishalveerareddy123/Lynkr.git"

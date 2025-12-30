@@ -1,4 +1,5 @@
 const logger = require("../logger");
+const { truncateToolOutput } = require("./truncate");
 
 const registry = new Map();
 const registryLowercase = new Map();
@@ -216,14 +217,22 @@ async function executeToolCall(call, context = {}) {
       context,
     );
     const formatted = normalizeHandlerResult(result);
+
+    // Apply tool output truncation for token efficiency
+    const truncatedContent = truncateToolOutput(normalisedCall.name, formatted.content);
+
     return {
       id: normalisedCall.id,
       name: normalisedCall.name,
       arguments: normalisedCall.arguments,
       ...formatted,
+      content: truncatedContent,
       metadata: {
         ...(formatted.metadata ?? {}),
         registered: true,
+        truncated: truncatedContent !== formatted.content,
+        originalLength: formatted.content?.length,
+        truncatedLength: truncatedContent?.length
       },
     };
   } catch (err) {

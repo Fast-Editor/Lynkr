@@ -1,6 +1,7 @@
 const store = require("./store");
 const search = require("./search");
 const logger = require("../logger");
+const format = require("./format");
 
 /**
  * Retrieve relevant memories using multi-signal ranking
@@ -198,24 +199,41 @@ function formatAge(ageMs) {
 /**
  * Inject memories into system prompt
  */
-function injectMemoriesIntoSystem(existingSystem, memories, format = 'system') {
+function injectMemoriesIntoSystem(existingSystem, memories, injectionFormat = 'system', recentMessages = null) {
   if (!memories || memories.length === 0) return existingSystem;
 
-  const formattedMemories = formatMemoriesForContext(memories);
+  // Apply deduplication if recent messages provided
+  const dedupedMemories = recentMessages
+    ? format.filterRedundantMemories(memories, recentMessages)
+    : memories;
 
-  if (format === 'system') {
-    const memoryBlock = `
-<long_term_memory>
-The following are relevant facts and context from previous conversations:
-${formattedMemories}
-</long_term_memory>`;
-
-    return existingSystem
-      ? `${existingSystem}\n${memoryBlock}`
-      : memoryBlock;
+  if (dedupedMemories.length === 0) {
+    logger.debug('All memories filtered out as redundant');
+    return existingSystem;
   }
 
-  if (format === 'assistant_preamble') {
+  // Use compact format (or configured format)
+  const config = require("../config");
+  const formatType = config.memory?.format || 'compact';
+  const formattedMemories = format.formatMemoriesForContext(dedupedMemories, formatType);
+
+  // Log token savings
+  const savings = format.calculateFormatSavings(dedupedMemories, 'verbose', formatType);
+  if (savings.saved > 0) {
+    logger.debug({
+      memories: dedupedMemories.length,
+      tokensSaved: savings.saved,
+      percentage: savings.percentage
+    }, 'Memory format optimization applied');
+  }
+
+  if (injectionFormat === 'system') {
+    return existingSystem
+      ? `${existingSystem}\n\n${formattedMemories}`
+      : formattedMemories;
+  }
+
+  if (injectionFormat === 'assistant_preamble') {
     return {
       system: existingSystem,
       memoryPreamble: formattedMemories,
