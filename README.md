@@ -11,7 +11,7 @@
 [![IndexNow Enabled](https://img.shields.io/badge/IndexNow-Enabled-success?style=flat-square)](https://www.indexnow.org/ "SEO Optimized with IndexNow")
 [![DevHunt](https://img.shields.io/badge/DevHunt-Lynkr-orange)](https://devhunt.org/tool/lynkr "Lynkr on DevHunt")
 
-> **Production-ready Claude Code proxy server supporting Databricks, OpenRouter, Ollama & Azure. Features MCP integration, prompt caching & 60-80% token optimization savings.**
+> ** Claude Code proxy server supporting Databricks, OpenRouter, Ollama & Azure. Features MCP integration, prompt caching & 60-80% token optimization savings.**
 
 ## 🔖 Keywords
 
