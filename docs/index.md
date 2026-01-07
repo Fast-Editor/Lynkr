@@ -6,7 +6,7 @@
 
 # Lynkr - Production-Ready Claude Code Proxy with Multi-Provider Support, MCP Integration & Token Optimization
 
-#### Lynkr is an open-source, production-ready Claude Code proxy that enables the Claude Code CLI to work with any LLM provider (Databricks, OpenRouter, Ollama, Azure, OpenAI, llama.cpp) without losing Anthropic backend features. It features MCP server orchestration, Git workflows, repo intelligence, workspace tools, prompt caching, and 60-80% token optimization for cost-effective LLM-powered development.
+#### Lynkr is an open-source, production-ready Claude Code proxy that enables the Claude Code CLI to work with any LLM provider (Databricks, AWS Bedrock (100+ models), OpenRouter, Ollama, Azure, OpenAI, llama.cpp) without losing Anthropic backend features. It features MCP server orchestration, Git workflows, repo intelligence, workspace tools, prompt caching, and 60-80% token optimization for cost-effective LLM-powered development.
 <!--
 SEO Keywords:
 Databricks, Claude Code, Anthropic, Azure Anthropic,
@@ -17,7 +17,7 @@ prompt caching, Node.js
 
 ## 🔖 Keywords
 
-`claude-code` `claude-proxy` `anthropic-api` `databricks-llm` `openrouter-integration` `ollama-local` `llama-cpp` `azure-openai` `azure-anthropic` `mcp-server` `prompt-caching` `token-optimization` `ai-coding-assistant` `llm-proxy` `self-hosted-ai` `git-automation` `code-generation` `developer-tools` `ci-cd-automation` `llm-gateway` `cost-reduction` `multi-provider-llm`
+`claude-code` `claude-proxy` `anthropic-api` `databricks-llm` `aws-bedrock` `bedrock-models` `deepseek-r1` `qwen3` `openrouter-integration` `ollama-local` `llama-cpp` `azure-openai` `azure-anthropic` `mcp-server` `prompt-caching` `token-optimization` `ai-coding-assistant` `llm-proxy` `self-hosted-ai` `git-automation` `code-generation` `developer-tools` `ci-cd-automation` `llm-gateway` `cost-reduction` `multi-provider-llm`
 
 ---
 
@@ -32,7 +32,7 @@ prompt caching, Node.js
 
 # 🚀 What is Lynkr?
 
-**Lynkr** is an open-source **Claude Code-compatible backend proxy** that lets you run the **Claude Code CLI** and Claude-style tools **directly against [Databricks, Azure, OpenRouter, Ollama, and llama.cpp](#-configuration-guide-for-multi-provider-support-databricks-azure-openrouter-ollama-llamacpp)** instead of the default Anthropic cloud.
+**Lynkr** is an open-source **Claude Code-compatible backend proxy** that lets you run the **Claude Code CLI** and Claude-style tools **directly against [Databricks, AWS Bedrock, Azure, OpenRouter, Ollama, and llama.cpp](#-configuration-guide-for-multi-provider-support-databricks-aws-bedrock-azure-openrouter-ollama-llamacpp)** instead of the default Anthropic cloud.
 
 It enables full repo-aware LLM workflows:
 
@@ -57,6 +57,9 @@ Emulates Anthropic’s backend so the **Claude Code CLI works without modificati
 
 ### ✔ Works with Databricks LLM Serving  
 Supports **Databricks-hosted Claude Sonnet / Haiku models**, or any LLM served from Databricks.
+
+### ✔ Supports AWS Bedrock (100+ models) 🆕
+Access Claude 4.5, DeepSeek R1, Qwen3 (480B), OpenAI GPT-OSS, Google Gemma, Nova, Titan, Llama, Mistral, and more through AWS's unified Converse API.
 
 ### ✔ Supports Azure Anthropic models
 Route Claude Code requests into Azure's `/anthropic/v1/messages` endpoint.
@@ -137,7 +140,7 @@ Claude Code CLI
 ↓
 Lynkr Proxy
 ↓
-Databricks / Azure Anthropic / OpenRouter / Ollama / llama.cpp / MCP / Tools
+Databricks / AWS Bedrock / Azure Anthropic / OpenRouter / Ollama / llama.cpp / MCP / Tools
 
 ```
 
@@ -265,7 +268,7 @@ npm start
 
 ---
 
-# 🔧 Configuration Guide for Multi-Provider Support (Databricks, Azure, OpenRouter, Ollama, llama.cpp)
+# 🔧 Configuration Guide for Multi-Provider Support (Databricks, AWS Bedrock, Azure, OpenRouter, Ollama, llama.cpp)
 
 ## Databricks Setup
 
@@ -299,6 +302,47 @@ AZURE_OPENAI_DEPLOYMENT=gpt-4o
 PORT=8080
 ```
 
+## AWS Bedrock Setup (🆕 NEW - 100+ Models)
+
+**What is AWS Bedrock?**
+
+AWS Bedrock provides serverless access to **nearly 100 foundation models** from leading AI companies through a unified Converse API. Benefits:
+- ✅ **Massive model variety** – Claude, DeepSeek R1, Qwen3, OpenAI GPT-OSS, Google Gemma, Nova, Titan, Llama, Mistral, Cohere, and more
+- ✅ **Enterprise-grade** – AWS infrastructure, security, and compliance
+- ✅ **Pay-per-use** – No monthly fees, pay only for tokens used
+- ✅ **Claude tool calling** – Full Read/Write/Bash tool support with Claude models
+- ✅ **Multi-cloud flexibility** – Not locked into single provider
+
+**Configuration:**
+
+```env
+MODEL_PROVIDER=bedrock
+AWS_BEDROCK_API_KEY=your-bearer-token           # Get from AWS Console → Bedrock → API Keys
+AWS_BEDROCK_REGION=us-east-2                    # us-east-1, us-west-2, us-east-2, etc.
+AWS_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+PORT=8080
+WORKSPACE_ROOT=/path/to/your/repo
+```
+
+**Popular Models:**
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` – Best for coding with tool calling
+- `us.deepseek.r1-v1:0` – Reasoning model (o1-style)
+- `qwen.qwen3-coder-480b-a35b-v1:0` – 480B parameter coding specialist
+- `openai.gpt-oss-120b-1:0` – Open-weight GPT model
+- `us.amazon.nova-pro-v1:0` – Multimodal, 300K context
+- `meta.llama3-1-70b-instruct-v1:0` – Open-source Llama 3.1
+- `mistral.mistral-large-2407-v1:0` – Multilingual, coding
+
+📖 See [BEDROCK_MODELS.md](https://github.com/vishalveerareddy123/Lynkr/blob/main/BEDROCK_MODELS.md) for complete model catalog (100+ models), pricing, capabilities, and use cases.
+
+**Getting Started:**
+1. Visit [AWS Bedrock Console](https://console.aws.amazon.com/bedrock/)
+2. Navigate to API Keys section
+3. Generate a new API key (Bearer token)
+4. Configure Lynkr as shown above
+5. Start using any of the 100+ available models!
+
+⚠️ **Tool Calling Note**: Only Claude models support tool calling (Read, Write, Bash) on Bedrock. Other models work via Converse API but won't execute tools.
 
 ## OpenRouter Setup
 

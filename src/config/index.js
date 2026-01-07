@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 const modelProvider = SUPPORTED_MODEL_PROVIDERS.has(rawModelProvider)
   ? rawModelProvider
@@ -107,6 +107,11 @@ const lmstudioEndpoint = process.env.LMSTUDIO_ENDPOINT?.trim() || "http://localh
 const lmstudioModel = process.env.LMSTUDIO_MODEL?.trim() || "default";
 const lmstudioTimeout = Number.parseInt(process.env.LMSTUDIO_TIMEOUT_MS ?? "120000", 10);
 const lmstudioApiKey = process.env.LMSTUDIO_API_KEY?.trim() || null;
+
+// AWS Bedrock configuration
+const bedrockRegion = process.env.AWS_BEDROCK_REGION?.trim() || process.env.AWS_REGION?.trim() || "us-east-1";
+const bedrockApiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null; // Bearer token
+const bedrockModelId = process.env.AWS_BEDROCK_MODEL_ID?.trim() || "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
 // Hybrid routing configuration
 const preferOllama = process.env.PREFER_OLLAMA === "true";
@@ -215,6 +220,14 @@ if (modelProvider === "lmstudio") {
   }
 }
 
+// Validate Bedrock credentials when it's the primary provider
+if (modelProvider === "bedrock" && !bedrockApiKey) {
+  throw new Error(
+    "AWS Bedrock requires AWS_BEDROCK_API_KEY (Bearer token). " +
+    "Generate from AWS Console → Bedrock → API Keys, then set AWS_BEDROCK_API_KEY in your .env file."
+  );
+}
+
 // Validate hybrid routing configuration
 if (preferOllama) {
   if (!ollamaEndpoint) {
@@ -225,10 +238,11 @@ if (preferOllama) {
       `FALLBACK_PROVIDER must be one of: ${Array.from(SUPPORTED_MODEL_PROVIDERS).join(", ")}`
     );
   }
+
   // Prevent local providers from being used as fallback (they can fail just like Ollama)
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (fallbackEnabled && localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, openai`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, openai, bedrock`);
   }
 
   // Ensure fallback provider is properly configured (only if fallback is enabled)
@@ -241,6 +255,9 @@ if (preferOllama) {
     }
     if (fallbackProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
       throw new Error("FALLBACK_PROVIDER is set to 'azure-openai' but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
+    }
+    if (fallbackProvider === "bedrock" && !bedrockApiKey) {
+      throw new Error("FALLBACK_PROVIDER is set to 'bedrock' but AWS_BEDROCK_API_KEY is not configured. Please set this environment variable or choose a different fallback provider.");
     }
   }
 }
@@ -445,6 +462,11 @@ const config = {
     model: lmstudioModel,
     timeout: Number.isNaN(lmstudioTimeout) ? 120000 : lmstudioTimeout,
     apiKey: lmstudioApiKey,
+  },
+  bedrock: {
+    region: bedrockRegion,
+    apiKey: bedrockApiKey,
+    modelId: bedrockModelId,
   },
   modelProvider: {
     type: modelProvider,

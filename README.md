@@ -5,17 +5,18 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE "Apache 2.0 License - Open Source Claude Code Alternative")
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vishalveerareddy123/Lynkr "Lynkr Documentation on DeepWiki")
 [![Databricks Supported](https://img.shields.io/badge/Databricks-Supported-orange)](https://www.databricks.com/ "Databricks Claude Integration")
+[![AWS Bedrock](https://img.shields.io/badge/AWS%20Bedrock-100%2B%20Models-FF9900)](https://aws.amazon.com/bedrock/ "AWS Bedrock - 100+ Models")
 [![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-412991)](https://openai.com/ "OpenAI GPT Integration")
 [![Ollama Compatible](https://img.shields.io/badge/Ollama-Compatible-brightgreen)](https://ollama.ai/ "Local Ollama Model Support")
 [![llama.cpp Compatible](https://img.shields.io/badge/llama.cpp-Compatible-blue)](https://github.com/ggerganov/llama.cpp "llama.cpp GGUF Model Support")
 [![IndexNow Enabled](https://img.shields.io/badge/IndexNow-Enabled-success?style=flat-square)](https://www.indexnow.org/ "SEO Optimized with IndexNow")
 [![DevHunt](https://img.shields.io/badge/DevHunt-Lynkr-orange)](https://devhunt.org/tool/lynkr "Lynkr on DevHunt")
 
-> ** Claude Code proxy server supporting Databricks, OpenRouter, Ollama & Azure. Features MCP integration, prompt caching & 60-80% token optimization savings.**
+> ** Claude Code proxy server supporting Databricks, AWS Bedrock (100+ models), OpenRouter, Ollama & Azure. Features MCP integration, prompt caching & 60-80% token optimization savings.**
 
 ## 🔖 Keywords
 
-`claude-code` `claude-proxy` `anthropic-api` `databricks-llm` `openrouter-integration` `ollama-local` `llama-cpp` `azure-openai` `azure-anthropic` `mcp-server` `prompt-caching` `token-optimization` `ai-coding-assistant` `llm-proxy` `self-hosted-ai` `git-automation` `code-generation` `developer-tools` `ci-cd-automation` `llm-gateway` `cost-reduction` `multi-provider-llm`
+`claude-code` `claude-proxy` `anthropic-api` `databricks-llm` `aws-bedrock` `bedrock-models` `deepseek-r1` `qwen3-coder` `openrouter-integration` `ollama-local` `llama-cpp` `azure-openai` `azure-anthropic` `mcp-server` `prompt-caching` `token-optimization` `ai-coding-assistant` `llm-proxy` `self-hosted-ai` `git-automation` `code-generation` `developer-tools` `ci-cd-automation` `llm-gateway` `cost-reduction` `multi-provider-llm`
 
 ---
 
@@ -68,7 +69,7 @@ Claude Code CLI is locked to Anthropic's API, limiting your choice of LLM provid
 ### The Solution
 Lynkr is a **production-ready proxy server** that unlocks Claude Code CLI's full potential:
 
-- ✅ **Any LLM Provider** - [Databricks, OpenRouter (100+ models), Ollama (local), Azure, OpenAI, llama.cpp](#supported-ai-model-providers-databricks-openrouter-ollama-azure-llamacpp)
+- ✅ **Any LLM Provider** - [Databricks, AWS Bedrock (100+ models), OpenRouter (100+ models), Ollama (local), Azure, OpenAI, llama.cpp](#supported-ai-model-providers-databricks-aws-bedrock-openrouter-ollama-azure-llamacpp)
 - ✅ **60-80% Cost Reduction** - Built-in [token optimization](#token-optimization-implementation) (5 optimization phases implemented)
 - ✅ **Zero Code Changes** - [Drop-in replacement](#connecting-claude-code-cli) for Anthropic backend
 - ✅ **Local & Offline** - Run Claude Code with [Ollama](#using-ollama-models) or [llama.cpp](#using-llamacpp-with-lynkr) (no internet required)
@@ -94,11 +95,17 @@ npm install -g lynkr
 
 ### 2️⃣ Configure Your Provider
 ```bash
-# Option A: Use local Ollama (free, offline)
+# Option A: Use AWS Bedrock (100+ models) 🆕
+export MODEL_PROVIDER=bedrock
+export AWS_BEDROCK_API_KEY=your-bearer-token
+export AWS_BEDROCK_REGION=us-east-2
+export AWS_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+
+# Option B: Use local Ollama (free, offline)
 export MODEL_PROVIDER=ollama
 export OLLAMA_MODEL=llama3.1:8b
 
-# Option B: Use Databricks (production)
+# Option C: Use Databricks (production)
 export MODEL_PROVIDER=databricks
 export DATABRICKS_API_BASE=https://your-workspace.databricks.net
 export DATABRICKS_API_KEY=your-api-key
@@ -160,7 +167,7 @@ Further documentation and usage notes are available on [DeepWiki](https://deepwi
 
 ---
 
-## Supported AI Model Providers (Databricks, OpenRouter, Ollama, Azure, llama.cpp)
+## Supported AI Model Providers (Databricks, AWS Bedrock, OpenRouter, Ollama, Azure, llama.cpp)
 
 Lynkr supports multiple AI model providers, giving you flexibility in choosing the right model for your needs:
 
@@ -169,6 +176,7 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 | Provider | Configuration | Models Available | Best For |
 |----------|--------------|------------------|----------|
 | **Databricks** (Default) | `MODEL_PROVIDER=databricks` | Claude Sonnet 4.5, Claude Opus 4.5 | Production use, enterprise deployment |
+| **AWS Bedrock** 🆕 | `MODEL_PROVIDER=bedrock` | 100+ models (Claude, DeepSeek R1, Qwen3, Nova, Titan, Llama, Mistral, etc.) | AWS ecosystem, multi-model flexibility, Claude + alternatives |
 | **OpenAI** | `MODEL_PROVIDER=openai` | GPT-5, GPT-5.2, GPT-4o, GPT-4o-mini, GPT-4-turbo, o1, o1-mini | Direct OpenAI API access |
 | **Azure OpenAI** | `MODEL_PROVIDER=azure-openai` | GPT-5, GPT-5.2,GPT-4o, GPT-4o-mini, GPT-5, o1, o3, Kimi-K2 | Azure integration, Microsoft ecosystem |
 | **Azure Anthropic** | `MODEL_PROVIDER=azure-anthropic` | Claude Sonnet 4.5, Claude Opus 4.5 | Azure-hosted Claude models |
@@ -203,6 +211,44 @@ When using `MODEL_PROVIDER=azure-openai`, you can deploy any of the models in az
 
 
 **Note**: Azure OpenAI deployment names are configurable via `AZURE_OPENAI_DEPLOYMENT` environment variable.
+
+### **AWS Bedrock Model Catalog (100+ Models)**
+
+When using `MODEL_PROVIDER=bedrock`, you have access to **nearly 100 models** via AWS Bedrock's unified Converse API:
+
+#### **🆕 NEW Models (2025-2026)**
+- **DeepSeek R1** - `us.deepseek.r1-v1:0` - Reasoning model (o1-style)
+- **Qwen3** - `qwen.qwen3-235b-*`, `qwen.qwen3-coder-480b-*` - Up to 480B parameters!
+- **OpenAI GPT-OSS** - `openai.gpt-oss-120b-1:0` - Open-weight GPT models
+- **Google Gemma 3** - `google.gemma-3-27b` - Open-weight from Google
+- **MiniMax M2** - `minimax.m2-v1:0` - Chinese AI company
+
+#### **Claude Models (Best for Tool Calling)**
+- **Claude 4.5** - `us.anthropic.claude-sonnet-4-5-*` - Best for coding with tools
+- **Claude 3.5** - `anthropic.claude-3-5-sonnet-*` - Excellent tool calling
+- **Claude 3 Haiku** - `anthropic.claude-3-haiku-*` - Fast and cost-effective
+
+#### **Amazon Models**
+- **Nova** - `us.amazon.nova-pro-v1:0` - Multimodal, 300K context
+- **Titan** - `amazon.titan-text-express-v1` - General purpose
+
+#### **Other Major Models**
+- **Meta Llama** - `meta.llama3-1-70b-*` - Open-source Llama 3.1
+- **Mistral** - `mistral.mistral-large-*` - Coding, multilingual
+- **Cohere** - `cohere.command-r-plus-v1:0` - RAG, search
+- **AI21 Jamba** - `ai21.jamba-1-5-large-v1:0` - 256K context
+
+#### **Quick Setup**
+```bash
+export MODEL_PROVIDER=bedrock
+export AWS_BEDROCK_API_KEY=your-bearer-token  # Get from AWS Console → Bedrock → API Keys
+export AWS_BEDROCK_REGION=us-east-2
+export AWS_BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+```
+
+📖 **Full Documentation**: See [BEDROCK_MODELS.md](BEDROCK_MODELS.md) for complete model catalog, pricing, capabilities, and use cases.
+
+⚠️ **Tool Calling Note**: Only **Claude models** support tool calling on Bedrock. Other models work via Converse API but won't use Read/Write/Bash tools.
 
 ### **Ollama Model Recommendations**
 
@@ -241,16 +287,19 @@ FALLBACK_PROVIDER=databricks  # or azure-openai, openrouter, azure-anthropic
 
 ### **Provider Comparison**
 
-| Feature | Databricks | OpenAI | Azure OpenAI | Azure Anthropic | OpenRouter | Ollama | llama.cpp |
-|---------|-----------|--------|--------------|-----------------|------------|--------|-----------|
-| **Setup Complexity** | Medium | Easy | Medium | Medium | Easy | Easy | Medium |
-| **Cost** | $$$ | $$ | $$ | $$$ | $ | Free | Free |
-| **Latency** | Low | Low | Low | Low | Medium | Very Low | Very Low |
-| **Tool Calling** | Excellent | Excellent | Excellent | Excellent | Good | Fair | Good |
-| **Context Length** | 200K | 128K | 128K | 200K | Varies | 32K-128K | Model-dependent |
-| **Streaming** | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| **Privacy** | Enterprise | Third-party | Enterprise | Enterprise | Third-party | Local | Local |
-| **Offline** | No | No | No | No | No | Yes | Yes |
+| Feature | Databricks | AWS Bedrock | OpenAI | Azure OpenAI | Azure Anthropic | OpenRouter | Ollama | llama.cpp |
+|---------|-----------|-------------|--------|--------------|-----------------|------------|--------|-----------|
+| **Setup Complexity** | Medium | Easy | Easy | Medium | Medium | Easy | Easy | Medium |
+| **Cost** | $$$ | $$ | $$ | $$ | $$$ | $ | Free | Free |
+| **Latency** | Low | Low | Low | Low | Low | Medium | Very Low | Very Low |
+| **Model Variety** | 2 | 100+ | 10+ | 10+ | 2 | 100+ | 50+ | Unlimited |
+| **Tool Calling** | Excellent | Excellent* | Excellent | Excellent | Excellent | Good | Fair | Good |
+| **Context Length** | 200K | Up to 300K | 128K | 128K | 200K | Varies | 32K-128K | Model-dependent |
+| **Streaming** | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| **Privacy** | Enterprise | Enterprise | Third-party | Enterprise | Enterprise | Third-party | Local | Local |
+| **Offline** | No | No | No | No | No | No | Yes | Yes |
+
+_* Tool calling only supported by Claude models on Bedrock_
 
 ---
 

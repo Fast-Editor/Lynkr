@@ -1994,7 +1994,14 @@ async function runAgentLoop({
     // Use actualProvider from invokeModel for hybrid routing support
     const actualProvider = databricksResponse.actualProvider || providerType;
 
-    if (actualProvider === "azure-anthropic") {
+    if (actualProvider === "bedrock") {
+      // Bedrock with Claude models returns native Anthropic format
+      // Other models are already converted by bedrock-utils
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
+    } else if (actualProvider === "azure-anthropic") {
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);

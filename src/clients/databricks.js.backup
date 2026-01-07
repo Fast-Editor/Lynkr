@@ -651,18 +651,25 @@ async function invokeLMStudio(body) {
 }
 
 async function invokeBedrock(body) {
-  // 1. Validate Bearer token
-  if (!config.bedrock?.apiKey) {
+  
+  // 1. Validate configuration
+  if (!config.bedrock?.accessKeyId || !config.bedrock?.secretAccessKey) {
     throw new Error(
-      "AWS Bedrock requires AWS_BEDROCK_API_KEY (Bearer token). " +
-      "Generate from AWS Console → Bedrock → API Keys, then set AWS_BEDROCK_API_KEY in your .env file."
+      "AWS Bedrock requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. " +
+      "Set these environment variables before starting the proxy."
     );
   }
 
-  const bearerToken = config.bedrock.apiKey;
-  logger.info({ authMethod: "Bearer Token" }, "=== BEDROCK AUTH ===");
+  // 2. Initialize AWS SDK client
+  const client = new BedrockRuntimeClient({
+    region: config.bedrock.region,
+    credentials: {
+      accessKeyId: config.bedrock.accessKeyId,
+      secretAccessKey: config.bedrock.secretAccessKey,
+    },
+  });
 
-  // 2. Inject standard tools if needed
+  // 3. Inject standard tools if needed
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
@@ -688,133 +695,103 @@ async function invokeBedrock(body) {
     hasTools: !!bedrockBody.tools,
     toolCount: bedrockBody.tools?.length || 0,
     streaming: body.stream || false,
-  }, "=== BEDROCK REQUEST (FETCH) ===");
+  }, "=== BEDROCK REQUEST ===");
 
-  // 5. Convert to Bedrock Converse API format (simpler, more universal)
-  // Bedrock Converse API only allows 'user' and 'assistant' roles in messages array
+  const requestBody = convertAnthropicToBedrockFormat(bedrockBody, modelFamily);
 
-  // Extract system messages from messages array (if any)
-  const systemMessages = bedrockBody.messages.filter(msg => msg.role === 'system');
+  // 5. Handle streaming vs non-streaming
+  if (body.stream) {
+    // Streaming request
+    const command = new InvokeModelWithResponseStreamCommand({
+      modelId,
+      contentType: "application/json",
+      accept: "application/json",
+      body: JSON.stringify(requestBody),
+    });
+try {
+    const response = await client.send(command);
 
-  const converseBody = {
-    messages: bedrockBody.messages
-      .filter(msg => msg.role !== 'system') // Filter out system messages
-      .map(msg => ({
-        role: msg.role,
-        content: Array.isArray(msg.content)
-          ? msg.content.map(c => ({ text: c.text || c.content || "" }))
-          : [{ text: msg.content }]
-      }))
-  };
+    // Convert Bedrock event stream to Anthropic SSE format
+    const { Readable } = require("stream");
+    const anthropicStream = new Readable({
+      async read() {
+        try {
+          for await (const event of response.body) {
+            if (event.chunk) {
+              // Decode the chunk bytes
+              const chunkJson = JSON.parse(new TextDecoder().decode(event.chunk.bytes));
 
-  // Add system prompt (from Anthropic system field OR extracted from messages)
-  if (bedrockBody.system) {
-    converseBody.system = [{ text: bedrockBody.system }];
-  } else if (systemMessages.length > 0) {
-    // If system messages were in the messages array, use the first one
-    const systemContent = Array.isArray(systemMessages[0].content)
-      ? systemMessages[0].content.map(c => c.text || c.content || "").join("\n")
-      : systemMessages[0].content;
-    converseBody.system = [{ text: systemContent }];
-  }
-
-  // Add inference config
-  if (bedrockBody.max_tokens) {
-    converseBody.inferenceConfig = {
-      maxTokens: bedrockBody.max_tokens,
-      temperature: bedrockBody.temperature,
-      topP: bedrockBody.top_p,
-    };
-  }
-
-  // Add tools if present
-  if (bedrockBody.tools && bedrockBody.tools.length > 0) {
-    converseBody.toolConfig = {
-      tools: bedrockBody.tools.map(tool => ({
-        toolSpec: {
-          name: tool.name,
-          description: tool.description,
-          inputSchema: {
-            json: tool.input_schema
+              // Convert to Anthropic SSE format
+              const sseEvent = `event: message\ndata: ${JSON.stringify(chunkJson)}\n\n`;
+              this.push(sseEvent);
+            }
           }
+          // Send completion event
+          this.push(`event: message_stop\ndata: {}\n\n`);
+          this.push(null); // End stream
+        } catch (err) {
+          logger.error({ err }, "Error converting Bedrock stream");
+          this.destroy(err);
         }
-      }))
-    };
-  }
-
-  // 6. Construct Bedrock Converse API endpoint
-  const path = `/model/${modelId}/converse`;
-  const host = `bedrock-runtime.${config.bedrock.region}.amazonaws.com`;
-  const endpoint = `https://${host}${path}`;
-
-  logger.info({
-    endpoint,
-    authMethod: "Bearer Token",
-    hasSystem: !!converseBody.system,
-    hasTools: !!converseBody.toolConfig,
-    messageCount: converseBody.messages.length
-  }, "=== BEDROCK CONVERSE API REQUEST ===");
-
-  // 7. Prepare request headers with Bearer token
-  const requestHeaders = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${bearerToken}`
-  };
-
-  // 8. Make the Converse API request
-  try {
-    const response = await performJsonRequest(endpoint, {
-      headers: requestHeaders,
-      body: converseBody  // Pass object, performJsonRequest will stringify it
-    }, "Bedrock");  // Add provider label for logging
-
-    if (!response.ok) {
-      const errorText = response.text;  // Use property, not method
-      logger.error({
-        status: response.status,
-        error: errorText
-      }, "=== BEDROCK CONVERSE API ERROR ===");
-      throw new Error(`Bedrock Converse API failed: ${response.status} ${errorText}`);
-    }
-
-    // Parse Converse API response (already parsed by performJsonRequest)
-    const converseResponse = response.json;  // Use property, not method
+      }
+    });
 
     logger.info({
-      stopReason: converseResponse.stopReason,
-      inputTokens: converseResponse.usage?.inputTokens || 0,
-      outputTokens: converseResponse.usage?.outputTokens || 0,
-      hasToolUse: !!converseResponse.output?.message?.content?.some(c => c.toolUse)
-    }, "=== BEDROCK CONVERSE API RESPONSE ===");
+      modelId,
+      modelFamily,
+      streaming: true
+    }, "=== BEDROCK STREAMING RESPONSE ===");
 
-    // Convert Converse API response to Anthropic format
-    const message = converseResponse.output.message;
-    const anthropicResponse = {
-      id: `bedrock-${Date.now()}`,
-      type: "message",
-      role: message.role,
-      model: modelId,
-      content: message.content.map(item => {
-        if (item.text) {
-          return { type: "text", text: item.text };
-        } else if (item.toolUse) {
-          return {
-            type: "tool_use",
-            id: item.toolUse.toolUseId,
-            name: item.toolUse.name,
-            input: item.toolUse.input
-          };
-        }
-        return item;
-      }),
-      stop_reason: converseResponse.stopReason === "end_turn" ? "end_turn" :
-                   converseResponse.stopReason === "tool_use" ? "tool_use" :
-                   converseResponse.stopReason === "max_tokens" ? "max_tokens" : "end_turn",
-      usage: {
-        input_tokens: converseResponse.usage?.inputTokens || 0,
-        output_tokens: converseResponse.usage?.outputTokens || 0,
-      },
+    return {
+      stream: anthropicStream, // Converted stream in Anthropic SSE format
+      actualProvider: "bedrock",
+      modelFamily,
+      contentType: "text/event-stream",
+      status: 200,
     };
+} catch (e) {
+    logger.error({
+      error: e.message,
+      code: e.name,
+      statusCode: e.$metadata?.httpStatusCode,
+      requestId: e.$metadata?.requestId,
+      modelId,
+      region: config.bedrock.region,
+      fullError: e
+    }, "=== BEDROCK STREAMING ERROR ===");
+    throw e;
+}
+    
+
+
+  } else {
+    // Non-streaming request
+    const command = new InvokeModelCommand({
+      modelId,
+      contentType: "application/json",
+      accept: "application/json",
+      body: JSON.stringify(requestBody),
+    });
+    try {
+          const response = await client.send(command);
+
+    // Parse response body
+    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+
+    // Convert to Anthropic format
+    const anthropicResponse = convertBedrockResponseToAnthropic(
+      responseBody,
+      modelFamily,
+      modelId
+    );
+
+    logger.info({
+      modelId,
+      modelFamily,
+      stopReason: anthropicResponse.stop_reason,
+      inputTokens: anthropicResponse.usage?.input_tokens || 0,
+      outputTokens: anthropicResponse.usage?.output_tokens || 0,
+    }, "=== BEDROCK RESPONSE ===");
 
     return {
       ok: true,
@@ -823,15 +800,21 @@ async function invokeBedrock(body) {
       actualProvider: "bedrock",
       modelFamily,
     };
-  } catch (e) {
-    logger.error({
-      error: e.message,
-      modelId,
-      region: config.bedrock.region,
-      endpoint,
-      stack: e.stack
-    }, "=== BEDROCK CONVERSE API ERROR ===");
-    throw e;
+    }
+    catch (e) {
+      logger.error({
+        error: e.message,
+        code: e.name,
+        statusCode: e.$metadata?.httpStatusCode,
+        requestId: e.$metadata?.requestId,
+        modelId,
+        region: config.bedrock.region,
+        fullError: e
+      }, "=== BEDROCK NON-STREAMING ERROR ===");
+      throw e;
+    }
+
+
   }
 }
 

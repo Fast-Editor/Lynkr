@@ -84,6 +84,12 @@ function determineProvider(payload) {
         "Routing to LM Studio (moderate tools)"
       );
       return "lmstudio";
+    } else if (config.bedrock?.accessKeyId) {
+      logger.debug(
+        { toolCount, maxToolsForOllama, maxToolsForOpenRouter, decision: "bedrock" },
+        "Routing to AWS Bedrock (moderate tools)"
+      );
+      return "bedrock";
     }
   }
 
