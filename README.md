@@ -116,9 +116,9 @@ Lynkr reduces AI costs by **60-80%** through intelligent token optimization:
 
 ### IDE Integration
 - ✅ **Claude Code CLI** - Drop-in replacement for Anthropic backend
-- ✅ **Cursor IDE** - Full OpenAI API compatibility
+- ✅ **Cursor IDE** - Full OpenAI API compatibility (Requires Cursor Pro)
 - ✅ **Continue.dev** - Works with any OpenAI-compatible client
-- ✅ **All Features Work** - Chat, file operations, tool calling, streaming
+- ✅ **Cline +VSCode** - Confgiure it similar to cursor in openai compatible section
 
 ### Advanced Capabilities
 - 🧠 **Long-Term Memory** - Titans-inspired memory system with surprise-based filtering
