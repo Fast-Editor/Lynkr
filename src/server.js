@@ -8,7 +8,7 @@ const { budgetMiddleware } = require("./api/middleware/budget");
 const { metricsMiddleware } = require("./api/middleware/metrics");
 const { requestLoggingMiddleware } = require("./api/middleware/request-logging");
 const { errorHandlingMiddleware, notFoundHandler } = require("./api/middleware/error-handling");
-const { loadSheddingMiddleware } = require("./api/middleware/load-shedding");
+const { loadSheddingMiddleware, initializeLoadShedder } = require("./api/middleware/load-shedding");
 const { livenessCheck, readinessCheck } = require("./api/health");
 const { getMetricsCollector } = require("./observability/metrics");
 const { getShutdownManager } = require("./server/shutdown");
@@ -43,6 +43,9 @@ registerAgentTaskTool();
 
 function createApp() {
   const app = express();
+
+  // Initialize load shedder (log configuration)
+  initializeLoadShedder();
 
   // Load shedding (protect against overload)
   app.use(loadSheddingMiddleware);
@@ -98,6 +101,12 @@ function createApp() {
   app.get("/metrics/circuit-breakers", (req, res) => {
     const registry = getCircuitBreakerRegistry();
     res.json(registry.getAll());
+  });
+
+  app.get("/metrics/load-shedding", (req, res) => {
+    const { getLoadShedder } = require("./api/middleware/load-shedding");
+    const shedder = getLoadShedder();
+    res.json(shedder.getMetrics());
   });
 
   app.use(router);
