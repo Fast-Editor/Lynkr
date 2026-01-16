@@ -15,7 +15,7 @@ class LoadShedder {
   constructor(options = {}) {
     // Thresholds
     this.memoryThreshold = options.memoryThreshold || 0.85; // 85%
-    this.heapThreshold = options.heapThreshold || 0.90; // 90%
+    this.heapThreshold = options.heapThreshold || 0.95; // 95% (increased from 90% to prevent false positives from temporary allocation spikes)
     this.activeRequestsThreshold = options.activeRequestsThreshold || 1000;
 
     // State
@@ -96,7 +96,7 @@ function getLoadShedder(options) {
   if (!instance) {
     // Read from environment variables if not provided
     const defaultOptions = {
-      heapThreshold: Number.parseFloat(process.env.LOAD_SHEDDING_HEAP_THRESHOLD || "0.90"),
+      heapThreshold: Number.parseFloat(process.env.LOAD_SHEDDING_HEAP_THRESHOLD || "0.95"),
       memoryThreshold: Number.parseFloat(process.env.LOAD_SHEDDING_MEMORY_THRESHOLD || "0.85"),
       activeRequestsThreshold: Number.parseInt(
         process.env.LOAD_SHEDDING_ACTIVE_REQUESTS_THRESHOLD || "1000",
