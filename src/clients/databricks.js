@@ -1123,6 +1123,24 @@ function estimateCostSavings(inputTokens, outputTokens) {
   return inputCost + outputCost;
 }
 
+/**
+ * Destroy HTTP agents (for graceful shutdown)
+ */
+function destroyHttpAgents() {
+  try {
+    if (httpAgent) {
+      httpAgent.destroy();
+    }
+    if (httpsAgent) {
+      httpsAgent.destroy();
+    }
+    logger.info("HTTP agents destroyed");
+  } catch (error) {
+    logger.warn({ error }, "Failed to destroy HTTP agents");
+  }
+}
+
 module.exports = {
   invokeModel,
+  destroyHttpAgents,
 };

@@ -152,16 +152,18 @@ function loadSheddingMiddleware(req, res, next) {
   // Track active request
   shedder.activeRequests++;
 
-  // Decrement on response finish
-  res.on("finish", () => {
-    shedder.activeRequests--;
-  });
-
-  res.on("close", () => {
-    if (shedder.activeRequests > 0) {
+  // Use flag to prevent double-decrement race condition
+  let decremented = false;
+  const decrementOnce = () => {
+    if (!decremented) {
+      decremented = true;
       shedder.activeRequests--;
     }
-  });
+  };
+
+  // Both events might fire, but only decrement once
+  res.on("finish", decrementOnce);
+  res.on("close", decrementOnce);
 
   next();
 }

@@ -107,8 +107,31 @@ class ShutdownManager {
         }
       }
 
-      // Step 3: Close database connections
-      logger.info("Step 3: Closing database connections");
+      // Step 3: Stop background tasks
+      logger.info("Step 3: Stopping background tasks");
+      try {
+        const { getSessionCleanupManager } = require("../sessions/cleanup");
+        const sessionCleanup = getSessionCleanupManager();
+        if (sessionCleanup) {
+          sessionCleanup.stop();
+        }
+      } catch (err) {
+        logger.warn({ err }, "Error stopping session cleanup");
+      }
+
+      // Step 4: Close cache databases
+      logger.info("Step 4: Closing cache databases");
+      try {
+        const promptCache = require("../cache/prompt");
+        if (promptCache && typeof promptCache.close === 'function') {
+          promptCache.close();
+        }
+      } catch (err) {
+        logger.warn({ err }, "Error closing prompt cache");
+      }
+
+      // Step 5: Close database connections
+      logger.info("Step 5: Closing database connections");
       try {
         const budgetManager = getBudgetManager();
         if (budgetManager) {
@@ -118,8 +141,19 @@ class ShutdownManager {
         logger.warn({ err }, "Error closing budget manager");
       }
 
-      // Step 4: Final cleanup
-      logger.info("Step 4: Final cleanup");
+      // Step 6: Destroy HTTP agents
+      logger.info("Step 6: Destroying HTTP agents");
+      try {
+        const databricks = require("../clients/databricks");
+        if (databricks && typeof databricks.destroyHttpAgents === 'function') {
+          databricks.destroyHttpAgents();
+        }
+      } catch (err) {
+        logger.warn({ err }, "Error destroying HTTP agents");
+      }
+
+      // Step 7: Final cleanup
+      logger.info("Step 7: Final cleanup");
       clearTimeout(forceTimer);
 
       const duration = Date.now() - startTime;

@@ -40,9 +40,17 @@ class PromptCache {
     this.ttlMs =
       Number.isInteger(options.ttlMs) && options.ttlMs > 0 ? options.ttlMs : 300000;
 
+    // Add pruning interval (default: 5 minutes)
+    this.pruneIntervalMs =
+      Number.isInteger(options.pruneIntervalMs) && options.pruneIntervalMs > 0
+        ? options.pruneIntervalMs
+        : 300000;
+    this.pruneTimer = null;
+
     // Initialize persistent cache database
     if (this.enabled) {
       this.initDatabase();
+      this.startPruning();
     }
   }
 
@@ -325,10 +333,38 @@ class PromptCache {
     }
   }
 
+  startPruning() {
+    if (this.pruneTimer) return; // Already started
+
+    this.pruneTimer = setInterval(() => {
+      try {
+        this.pruneExpired();
+        logger.debug("Prompt cache pruning completed");
+      } catch (error) {
+        logger.warn({ error }, "Failed to prune cache in background");
+      }
+    }, this.pruneIntervalMs);
+
+    // Don't prevent process exit
+    this.pruneTimer.unref();
+
+    logger.info({ intervalMs: this.pruneIntervalMs }, "Prompt cache pruning started");
+  }
+
+  stopPruning() {
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer);
+      this.pruneTimer = null;
+      logger.debug("Prompt cache pruning stopped");
+    }
+  }
+
   // Cleanup method
   close() {
+    this.stopPruning(); // Stop pruning first
     if (this.db) {
       try {
+        this.pruneExpired(); // Final cleanup
         this.db.close();
       } catch (error) {
         logger.warn({ err: error }, "Failed to close cache database");
