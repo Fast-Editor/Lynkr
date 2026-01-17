@@ -113,16 +113,20 @@ function prepareFTS5Query(query) {
   // Step 3: Check if query contains FTS5 operators (AND, OR, NOT)
   const hasFTS5Operators = /\b(AND|OR|NOT)\b/i.test(cleaned);
 
-  // Step 4: Remove or escape remaining FTS5 special characters
-  // Characters: * ( ) < > - : [ ]
-  // Strategy: Remove them since they're rarely useful in memory search
-  cleaned = cleaned.replace(/[*()<>\-:\[\]]/g, ' ');
+  // Step 4: ENHANCED - Remove ALL special characters that could break FTS5
+  // Keep only: letters, numbers, spaces
+  // Remove: * ( ) < > - : [ ] | , + = ? ! ; / \ @ # $ % ^ & { }
+  cleaned = cleaned.replace(/[*()<>\-:\[\]|,+=?!;\/\\@#$%^&{}]/g, ' ');
   cleaned = cleaned.replace(/\s+/g, ' ').trim();
 
   // Step 5: Escape double quotes (FTS5 uses "" for literal quote)
   cleaned = cleaned.replace(/"/g, '""');
 
-  // Step 6: Wrap in quotes for phrase search (safest approach)
+  // Step 6: Additional safety - remove any remaining non-alphanumeric except spaces
+  cleaned = cleaned.replace(/[^\w\s""]/g, ' ');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  // Step 7: Wrap in quotes for phrase search (safest approach)
   if (!hasFTS5Operators) {
     // Treat as literal phrase search
     cleaned = `"${cleaned}"`;
