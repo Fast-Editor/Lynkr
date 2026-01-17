@@ -112,6 +112,9 @@ function createApp() {
 }
 
 function start() {
+  // Validate configuration before starting (checks for required credentials)
+  config.validateConfig();
+
   const app = createApp();
   const server = app.listen(config.port, () => {
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
