@@ -132,11 +132,6 @@ const fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLower
 
 // Tool execution mode: server (default), client, or passthrough
 const toolExecutionMode = (process.env.TOOL_EXECUTION_MODE ?? "server").toLowerCase();
-if (!["server", "client", "passthrough"].includes(toolExecutionMode)) {
-  throw new Error(
-    "TOOL_EXECUTION_MODE must be one of: server, client, passthrough (default: server)"
-  );
-}
 
 // Memory system configuration (Titans-inspired long-term memory)
 const memoryEnabled = process.env.MEMORY_ENABLED !== "false"; // default true
@@ -172,99 +167,8 @@ const smartToolSelectionTokenBudget = Number.parseInt(
   10
 );
 
-// Only require Databricks credentials if it's the primary provider or used as fallback
-if (modelProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
-  throw new Error("Set DATABRICKS_API_BASE and DATABRICKS_API_KEY before starting the proxy.");
-} else if (modelProvider === "ollama" && !fallbackEnabled && (!rawBaseUrl || !apiKey)) {
-  // Relaxed: Allow mock credentials for true Ollama-only mode (fallback disabled)
-  if (!rawBaseUrl) process.env.DATABRICKS_API_BASE = "http://localhost:8080";
-  if (!apiKey) process.env.DATABRICKS_API_KEY = "mock-key-for-ollama-only";
-  console.log("[CONFIG] Using mock Databricks credentials (Ollama-only mode with fallback disabled)");
-}
-
-if (modelProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
-  throw new Error(
-    "Set AZURE_ANTHROPIC_ENDPOINT and AZURE_ANTHROPIC_API_KEY before starting the proxy.",
-  );
-}
-
-if (modelProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
-  throw new Error(
-    "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY before starting the proxy.",
-  );
-}
-
-if (modelProvider === "openai" && !openAIApiKey) {
-  throw new Error(
-    "Set OPENAI_API_KEY before starting the proxy.",
-  );
-}
-
-if (modelProvider === "ollama") {
-  try {
-    new URL(ollamaEndpoint);
-  } catch (err) {
-    throw new Error("OLLAMA_ENDPOINT must be a valid URL (default: http://localhost:11434)");
-  }
-}
-
-if (modelProvider === "llamacpp") {
-  try {
-    new URL(llamacppEndpoint);
-  } catch (err) {
-    throw new Error("LLAMACPP_ENDPOINT must be a valid URL (default: http://localhost:8080)");
-  }
-}
-
-if (modelProvider === "lmstudio") {
-  try {
-    new URL(lmstudioEndpoint);
-  } catch (err) {
-    throw new Error("LMSTUDIO_ENDPOINT must be a valid URL (default: http://localhost:1234)");
-  }
-}
-
-// Validate Bedrock credentials when it's the primary provider
-if (modelProvider === "bedrock" && !bedrockApiKey) {
-  throw new Error(
-    "AWS Bedrock requires AWS_BEDROCK_API_KEY (Bearer token). " +
-    "Generate from AWS Console → Bedrock → API Keys, then set AWS_BEDROCK_API_KEY in your .env file."
-  );
-}
-
-// Validate hybrid routing configuration
-if (preferOllama) {
-  if (!ollamaEndpoint) {
-    throw new Error("PREFER_OLLAMA is set but OLLAMA_ENDPOINT is not configured");
-  }
-  if (fallbackEnabled && !SUPPORTED_MODEL_PROVIDERS.has(fallbackProvider)) {
-    throw new Error(
-      `FALLBACK_PROVIDER must be one of: ${Array.from(SUPPORTED_MODEL_PROVIDERS).join(", ")}`
-    );
-  }
-
-  // Prevent local providers from being used as fallback (they can fail just like Ollama)
-  const localProviders = ["ollama", "llamacpp", "lmstudio"];
-  if (fallbackEnabled && localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, openai, bedrock`);
-  }
-
-  // Ensure fallback provider is properly configured (only if fallback is enabled)
-  if (fallbackEnabled) {
-    if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
-      throw new Error("FALLBACK_PROVIDER is set to 'databricks' but DATABRICKS_API_BASE and DATABRICKS_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
-    }
-    if (fallbackProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
-      throw new Error("FALLBACK_PROVIDER is set to 'azure-anthropic' but AZURE_ANTHROPIC_ENDPOINT and AZURE_ANTHROPIC_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
-    }
-    if (fallbackProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
-      throw new Error("FALLBACK_PROVIDER is set to 'azure-openai' but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
-    }
-    if (fallbackProvider === "bedrock" && !bedrockApiKey) {
-      throw new Error("FALLBACK_PROVIDER is set to 'bedrock' but AWS_BEDROCK_API_KEY is not configured. Please set this environment variable or choose a different fallback provider.");
-    }
-  }
-}
+// Note: Validation moved to validateConfig() function at the bottom.
+// This allows --help/--version to work without requiring credentials.
 
 const endpointPath =
   process.env.DATABRICKS_ENDPOINT_PATH ??
@@ -644,4 +548,113 @@ const config = {
   },
 };
 
+/**
+ * Validates the configuration. Call this before starting the server.
+ * Throws an Error if required environment variables are missing.
+ */
+function validateConfig() {
+  // Validate tool execution mode
+  if (!["server", "client", "passthrough"].includes(toolExecutionMode)) {
+    throw new Error(
+      "TOOL_EXECUTION_MODE must be one of: server, client, passthrough (default: server)"
+    );
+  }
+
+  // Only require Databricks credentials if it's the primary provider or used as fallback
+  if (modelProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
+    throw new Error("Set DATABRICKS_API_BASE and DATABRICKS_API_KEY before starting the proxy.");
+  } else if (modelProvider === "ollama" && !fallbackEnabled && (!rawBaseUrl || !apiKey)) {
+    // Relaxed: Allow mock credentials for true Ollama-only mode (fallback disabled)
+    if (!rawBaseUrl) process.env.DATABRICKS_API_BASE = "http://localhost:8080";
+    if (!apiKey) process.env.DATABRICKS_API_KEY = "mock-key-for-ollama-only";
+    console.log("[CONFIG] Using mock Databricks credentials (Ollama-only mode with fallback disabled)");
+  }
+
+  if (modelProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
+    throw new Error(
+      "Set AZURE_ANTHROPIC_ENDPOINT and AZURE_ANTHROPIC_API_KEY before starting the proxy."
+    );
+  }
+
+  if (modelProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
+    throw new Error(
+      "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY before starting the proxy."
+    );
+  }
+
+  if (modelProvider === "openai" && !openAIApiKey) {
+    throw new Error(
+      "Set OPENAI_API_KEY before starting the proxy."
+    );
+  }
+
+  if (modelProvider === "ollama") {
+    try {
+      new URL(ollamaEndpoint);
+    } catch {
+      throw new Error("OLLAMA_ENDPOINT must be a valid URL (default: http://localhost:11434)");
+    }
+  }
+
+  if (modelProvider === "llamacpp") {
+    try {
+      new URL(llamacppEndpoint);
+    } catch {
+      throw new Error("LLAMACPP_ENDPOINT must be a valid URL (default: http://localhost:8080)");
+    }
+  }
+
+  if (modelProvider === "lmstudio") {
+    try {
+      new URL(lmstudioEndpoint);
+    } catch {
+      throw new Error("LMSTUDIO_ENDPOINT must be a valid URL (default: http://localhost:1234)");
+    }
+  }
+
+  // Validate Bedrock credentials when it's the primary provider
+  if (modelProvider === "bedrock" && !bedrockApiKey) {
+    throw new Error(
+      "AWS Bedrock requires AWS_BEDROCK_API_KEY (Bearer token). " +
+      "Generate from AWS Console → Bedrock → API Keys, then set AWS_BEDROCK_API_KEY in your .env file."
+    );
+  }
+
+  // Validate hybrid routing configuration
+  if (preferOllama) {
+    if (!ollamaEndpoint) {
+      throw new Error("PREFER_OLLAMA is set but OLLAMA_ENDPOINT is not configured");
+    }
+    if (fallbackEnabled && !SUPPORTED_MODEL_PROVIDERS.has(fallbackProvider)) {
+      throw new Error(
+        `FALLBACK_PROVIDER must be one of: ${Array.from(SUPPORTED_MODEL_PROVIDERS).join(", ")}`
+      );
+    }
+
+    // Prevent local providers from being used as fallback (they can fail just like Ollama)
+    const localProviders = ["ollama", "llamacpp", "lmstudio"];
+    if (fallbackEnabled && localProviders.includes(fallbackProvider)) {
+      throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, openai, bedrock`);
+    }
+
+    // Ensure fallback provider is properly configured (only if fallback is enabled)
+    if (fallbackEnabled) {
+      if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
+        throw new Error("FALLBACK_PROVIDER is set to 'databricks' but DATABRICKS_API_BASE and DATABRICKS_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
+      }
+      if (fallbackProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
+        throw new Error("FALLBACK_PROVIDER is set to 'azure-anthropic' but AZURE_ANTHROPIC_ENDPOINT and AZURE_ANTHROPIC_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
+      }
+      if (fallbackProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
+        throw new Error("FALLBACK_PROVIDER is set to 'azure-openai' but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
+      }
+      if (fallbackProvider === "bedrock" && !bedrockApiKey) {
+        throw new Error("FALLBACK_PROVIDER is set to 'bedrock' but AWS_BEDROCK_API_KEY is not configured. Please set this environment variable or choose a different fallback provider.");
+      }
+    }
+  }
+}
+
+// Export config as default, with validateConfig attached
+config.validateConfig = validateConfig;
 module.exports = config;
