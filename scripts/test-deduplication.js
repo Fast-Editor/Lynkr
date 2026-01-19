@@ -228,6 +228,153 @@ function testSizeCalculation() {
   return true;
 }
 
+// Test 6: Content sanitization (empty User: entries removal)
+function testContentSanitization() {
+  console.log("\n=== Test 6: Content Sanitization (Empty User: Removal) ===");
+
+  const deduplicator = new ContentDeduplicator(TEST_DICT_PATH, {
+    minSize: 50,
+    cacheSize: 10,
+    sanitize: true, // Enable sanitization
+  });
+
+  // Content with multiple empty "User:" entries
+  const dirtyContent = `Claude: I'll implement...
+
+User:
+
+Claude: Now I'll implement...
+
+User:
+
+User:
+
+User:
+
+Respond with the title for the conversation and nothing else.`;
+
+  console.log("✓ Original content length:", dirtyContent.length);
+  console.log("✓ Empty 'User:' entries in original:", (dirtyContent.match(/User:\s*\n/g) || []).length);
+
+  // Store the content (should be sanitized internally)
+  const ref = deduplicator.storeContent(dirtyContent);
+  console.log("✓ Stored content with ref:", ref.$ref);
+
+  // Retrieve it back
+  const retrieved = deduplicator.getContent(ref.$ref);
+  console.log("✓ Retrieved content length:", retrieved?.length);
+
+  // Count empty "User:" entries in retrieved content
+  // Pattern: "User:" followed by newline(s) and then "Claude:" or another "User:" or end
+  const emptyUserMatches = retrieved.match(/User:\s*\n+(?=(Claude:|User:|$))/g) || [];
+  console.log("✓ Empty 'User:' entries in retrieved:", emptyUserMatches.length);
+
+  // Verify empty User: entries were removed
+  if (emptyUserMatches.length > 0) {
+    console.error("✗ FAIL: Empty User: entries not removed!");
+    console.error("Retrieved content:", retrieved);
+    return false;
+  }
+
+  // Verify content still contains Claude: entries
+  if (!retrieved.includes("Claude:")) {
+    console.error("✗ FAIL: Claude: entries were incorrectly removed!");
+    return false;
+  }
+
+  // Verify the last line is preserved
+  if (!retrieved.includes("Respond with the title")) {
+    console.error("✗ FAIL: Content was over-sanitized!");
+    return false;
+  }
+
+  console.log("✓ PASS: Empty User: entries removed, content preserved");
+
+  // Test with sanitization disabled
+  const dedupNoSanitize = new ContentDeduplicator(TEST_DICT_PATH, {
+    minSize: 50,
+    cacheSize: 10,
+    sanitize: false, // Disable sanitization
+  });
+
+  const refNoSanitize = dedupNoSanitize.storeContent(dirtyContent);
+  const retrievedNoSanitize = dedupNoSanitize.getContent(refNoSanitize.$ref);
+
+  // Should have empty User: entries when sanitization is disabled
+  const emptyUserNoSanitize = retrievedNoSanitize.match(/User:\s*\n+(?=(Claude:|User:|$))/g) || [];
+  if (emptyUserNoSanitize.length === 0) {
+    console.error("✗ FAIL: Content was sanitized even with sanitize=false!");
+    return false;
+  }
+
+  console.log("✓ PASS: Sanitization can be disabled");
+
+  return true;
+}
+
+// Test 7: Content sanitization preserves non-empty User: entries
+function testSanitizationPreservesContent() {
+  console.log("\n=== Test 7: Sanitization Preserves Non-Empty User: Entries ===");
+
+  const deduplicator = new ContentDeduplicator(TEST_DICT_PATH, {
+    minSize: 50,
+    cacheSize: 10,
+    sanitize: true,
+  });
+
+  // Content with both empty and non-empty User: entries
+  const mixedContent = `Claude: I'll help you.
+
+User: Can you explain this?
+
+Claude: Sure, here's the explanation.
+
+User:
+
+User: Another question here.
+
+Claude: Here's the answer.`;
+
+  console.log("✓ Original has both empty and non-empty User: entries");
+
+  const ref = deduplicator.storeContent(mixedContent);
+  const retrieved = deduplicator.getContent(ref.$ref);
+
+  // Check that non-empty User: entries are preserved
+  if (!retrieved.includes("User: Can you explain this?")) {
+    console.error("✗ FAIL: Non-empty User: entry was removed!");
+    return false;
+  }
+
+  if (!retrieved.includes("User: Another question here.")) {
+    console.error("✗ FAIL: Non-empty User: entry was removed!");
+    return false;
+  }
+
+  // Check that empty User: entries are removed
+  const lines = retrieved.split('\n');
+  let hasEmptyUser = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === 'User:' || line === 'User: ') {
+      const nextLine = i + 1 < lines.length ? lines[i + 1].trim() : '';
+      if (nextLine === '' || nextLine === 'Claude:' || nextLine === 'User:') {
+        hasEmptyUser = true;
+        break;
+      }
+    }
+  }
+
+  if (hasEmptyUser) {
+    console.error("✗ FAIL: Empty User: entries not removed from mixed content!");
+    return false;
+  }
+
+  console.log("✓ PASS: Non-empty User: entries preserved, empty ones removed");
+
+  return true;
+}
+
 // Main test runner
 async function runTests() {
   console.log("=".repeat(60));
@@ -242,6 +389,8 @@ async function runTests() {
     testContentRestoration,
     testEntryProcessing,
     testSizeCalculation,
+    testContentSanitization,
+    testSanitizationPreservesContent,
   ];
 
   let passed = 0;

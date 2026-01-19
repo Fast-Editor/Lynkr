@@ -215,6 +215,7 @@ function createAuditLoggerWrapper(config) {
       ? new ContentDeduplicator(config.deduplication.dictionaryPath, {
           minSize: config.deduplication.minSize,
           cacheSize: config.deduplication.cacheSize,
+          sanitize: config.deduplication.sanitize,
         })
       : null;
 

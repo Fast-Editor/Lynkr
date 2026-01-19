@@ -65,6 +65,7 @@ class ContentDeduplicator {
     this.dictionaryPath = dictionaryPath;
     this.minSize = options.minSize || 500;
     this.cacheSize = options.cacheSize || 100;
+    this.sanitizeEnabled = options.sanitize !== false; // default true
 
     // LRU cache: hash -> content
     this.contentCache = new LRUCache(this.cacheSize);
@@ -153,6 +154,54 @@ class ContentDeduplicator {
   }
 
   /**
+   * Clean empty "User:" entries from content
+   * Removes wasteful empty "User:" entries that appear between Claude responses
+   *
+   * @private
+   * @param {string} content - Content to clean
+   * @returns {string} Cleaned content
+   */
+  _sanitizeContent(content) {
+    // Only process string content that contains conversation patterns
+    if (typeof content !== 'string' || !content.includes('User:') || !content.includes('Claude:')) {
+      return content;
+    }
+
+    // Split into lines for processing
+    const lines = content.split('\n');
+    const cleaned = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // Check if this is an empty "User:" entry
+      // Pattern: line with just "User:" or "User: " followed by empty line(s)
+      if (line.trim() === 'User:' || line.trim() === 'User: ') {
+        // Look ahead to see if next line is empty or another "User:" or "Claude:"
+        const nextLine = i + 1 < lines.length ? lines[i + 1] : '';
+
+        // If followed by empty line or another marker, this is an empty User: entry
+        if (nextLine.trim() === '' || nextLine.trim() === 'User:' || nextLine.trim() === 'Claude:') {
+          // Skip this empty User: entry
+          i += 1;
+          // Also skip following empty lines
+          while (i < lines.length && lines[i].trim() === '') {
+            i += 1;
+          }
+          continue;
+        }
+      }
+
+      // Keep this line
+      cleaned.push(line);
+      i++;
+    }
+
+    return cleaned.join('\n');
+  }
+
+  /**
    * Check if content should be deduplicated
    * @param {string|object|array} content - Content to check
    * @param {number} minSize - Minimum size threshold (default: from config)
@@ -190,7 +239,13 @@ class ContentDeduplicator {
       return null;
     }
 
-    const stringContent = typeof content === "string" ? content : JSON.stringify(content);
+    let stringContent = typeof content === "string" ? content : JSON.stringify(content);
+
+    // Sanitize content before hashing (if enabled)
+    if (this.sanitizeEnabled) {
+      stringContent = this._sanitizeContent(stringContent);
+    }
+
     const hash = this.hashContent(stringContent);
     const size = stringContent.length;
 

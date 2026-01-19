@@ -603,6 +603,7 @@ const auditDeduplicationDictPath =
   process.env.LLM_AUDIT_DEDUP_DICT_PATH ?? path.join(process.cwd(), "logs", "llm-audit-dictionary.jsonl");
 const auditDeduplicationMinSize = Number.parseInt(process.env.LLM_AUDIT_DEDUP_MIN_SIZE ?? "500", 10);
 const auditDeduplicationCacheSize = Number.parseInt(process.env.LLM_AUDIT_DEDUP_CACHE_SIZE ?? "100", 10);
+const auditDeduplicationSanitize = process.env.LLM_AUDIT_DEDUP_SANITIZE !== "false"; // default true
 
 const config = {
   env: process.env.NODE_ENV ?? "development",
@@ -950,6 +951,7 @@ const config = {
       dictionaryPath: auditDeduplicationDictPath,
       minSize: Number.isNaN(auditDeduplicationMinSize) ? 500 : auditDeduplicationMinSize,
       cacheSize: Number.isNaN(auditDeduplicationCacheSize) ? 100 : auditDeduplicationCacheSize,
+      sanitize: auditDeduplicationSanitize,
     },
   },
 };
