@@ -66,6 +66,7 @@ class ContentDeduplicator {
     this.minSize = options.minSize || 500;
     this.cacheSize = options.cacheSize || 100;
     this.sanitizeEnabled = options.sanitize !== false; // default true
+    this.sessionCacheEnabled = options.sessionCache !== false; // default true
 
     // LRU cache: hash -> content
     this.contentCache = new LRUCache(this.cacheSize);
@@ -75,6 +76,10 @@ class ContentDeduplicator {
 
     // Track last seen timestamps: hash -> ISO timestamp
     this.lastSeenTimestamps = new Map();
+
+    // Session-level cache: hash -> boolean (tracks if hash has been output in full in this session)
+    // Cleared on server restart, not persisted to disk
+    this.sessionContentCache = new Map();
 
     // Ensure dictionary directory exists
     const dictDir = path.dirname(this.dictionaryPath);
@@ -274,6 +279,89 @@ class ContentDeduplicator {
     this._appendToDictionary(hash, stringContent, currentCount + 1, now);
 
     return { $ref: hash, size };
+  }
+
+  /**
+   * Store content with a pre-computed hash (for hash-before-truncate pattern)
+   * @param {string|object|array} content - Content to store (original, not truncated)
+   * @param {string} precomputedHash - Hash computed before truncation
+   * @returns {object} Reference object: { $ref: "sha256:abc...", size: 1234 } or full content if first time in session
+   */
+  storeContentWithHash(content, precomputedHash) {
+    if (!content || !precomputedHash) {
+      return null;
+    }
+
+    let stringContent = typeof content === "string" ? content : JSON.stringify(content);
+
+    // Sanitize content (if enabled)
+    if (this.sanitizeEnabled) {
+      stringContent = this._sanitizeContent(stringContent);
+    }
+
+    const hash = precomputedHash; // Use provided hash instead of recomputing
+    const size = stringContent.length;
+
+    // Update usage count
+    const currentCount = this.usageCounts.get(hash) || 0;
+    this.usageCounts.set(hash, currentCount + 1);
+
+    // Track lastSeen
+    const now = new Date().toISOString();
+    this.lastSeenTimestamps.set(hash, now);
+
+    // Session-level deduplication: First time in session outputs full content
+    const isFirstTimeInSession = this.sessionCacheEnabled && !this.isFirstTimeInSession(hash);
+
+    // If already in cache (dictionary), update metadata
+    if (this.contentCache.has(hash)) {
+      // Update dictionary entry asynchronously (increment useCount, update lastSeen)
+      this._updateDictionaryEntry(hash, currentCount + 1, now);
+
+      // If first time in session, mark it and return reference (will be expanded by caller if needed)
+      if (isFirstTimeInSession) {
+        this.markSeenInSession(hash);
+      }
+
+      return { $ref: hash, size };
+    }
+
+    // Store in cache (first time ever)
+    this.contentCache.set(hash, stringContent);
+
+    // Mark as seen in session
+    if (this.sessionCacheEnabled) {
+      this.markSeenInSession(hash);
+    }
+
+    // Append to dictionary file asynchronously
+    this._appendToDictionary(hash, stringContent, currentCount + 1, now);
+
+    return { $ref: hash, size };
+  }
+
+  /**
+   * Check if this hash has been output in full during the current session
+   * @param {string} hash - Content hash
+   * @returns {boolean} True if this is the first time seeing this hash in this session
+   */
+  isFirstTimeInSession(hash) {
+    return !this.sessionContentCache.has(hash);
+  }
+
+  /**
+   * Mark a hash as having been output in full during this session
+   * @param {string} hash - Content hash
+   */
+  markSeenInSession(hash) {
+    this.sessionContentCache.set(hash, true);
+  }
+
+  /**
+   * Clear session cache (useful for testing or manual cache reset)
+   */
+  clearSessionCache() {
+    this.sessionContentCache.clear();
   }
 
   /**

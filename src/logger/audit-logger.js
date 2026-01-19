@@ -115,6 +115,33 @@ function truncateContent(content, maxLength) {
 }
 
 /**
+ * Hash and truncate content for audit logging
+ * Hashes the ORIGINAL content before truncation to preserve full content hash
+ * @param {string|Array|Object} content - Content to hash and truncate
+ * @param {number} maxLength - Maximum length for truncation (0 = no truncation)
+ * @param {ContentDeduplicator} deduplicator - Deduplicator instance for hashing
+ * @returns {Object} { hash, content, truncated, originalLength }
+ */
+function hashAndTruncate(content, maxLength, deduplicator) {
+  if (!content) {
+    return { hash: null, content: null, truncated: false, originalLength: null };
+  }
+
+  // Hash the ORIGINAL content before any truncation
+  const hash = deduplicator ? deduplicator.hashContent(content) : null;
+
+  // Then truncate for display
+  const truncationResult = truncateContent(content, maxLength);
+
+  return {
+    hash,
+    content: truncationResult.content,
+    truncated: truncationResult.truncated,
+    originalLength: truncationResult.originalLength,
+  };
+}
+
+/**
  * Smart truncation for system reminder content
  * Keeps first N characters and everything from the LAST </system-reminder> tag onwards
  * @param {string|Array|Object} content - Content to truncate
@@ -173,6 +200,34 @@ function truncateSystemReminder(content, prefixLength = 50) {
 }
 
 /**
+ * Hash and apply smart truncation for system reminder content
+ * Hashes the ORIGINAL content before truncation
+ * @param {string|Array|Object} content - Content to hash and truncate
+ * @param {number} prefixLength - Length of prefix to keep (default: 50)
+ * @param {ContentDeduplicator} deduplicator - Deduplicator instance for hashing
+ * @returns {Object} { hash, content, truncated, originalLength, charsRemoved }
+ */
+function hashAndTruncateSystemReminder(content, prefixLength = 50, deduplicator) {
+  if (!content) {
+    return { hash: null, content: null, truncated: false, originalLength: null, charsRemoved: 0 };
+  }
+
+  // Hash the ORIGINAL content before any truncation
+  const hash = deduplicator ? deduplicator.hashContent(content) : null;
+
+  // Then apply smart truncation
+  const truncationResult = truncateSystemReminder(content, prefixLength);
+
+  return {
+    hash,
+    content: truncationResult.content,
+    truncated: truncationResult.truncated,
+    originalLength: truncationResult.originalLength,
+    charsRemoved: truncationResult.charsRemoved,
+  };
+}
+
+/**
  * Extract hostname and port from URL
  * @param {string} url - Full URL
  * @returns {Object} { hostname, port }
@@ -207,7 +262,16 @@ function createAuditLoggerWrapper(config) {
   }
 
   const logger = createAuditLogger(config);
-  const maxContentLength = config.maxContentLength || 5000;
+
+  // Support both legacy single value and new object format for maxContentLength
+  const maxContentLength =
+    typeof config.maxContentLength === 'object'
+      ? config.maxContentLength
+      : {
+          systemPrompt: config.maxContentLength || 5000,
+          userMessages: config.maxContentLength || 5000,
+          response: config.maxContentLength || 5000,
+        };
 
   // Initialize deduplicator if enabled
   const deduplicator =
@@ -216,8 +280,38 @@ function createAuditLoggerWrapper(config) {
           minSize: config.deduplication.minSize,
           cacheSize: config.deduplication.cacheSize,
           sanitize: config.deduplication.sanitize,
+          sessionCache: config.deduplication.sessionCache,
         })
       : null;
+
+  /**
+   * Log hash annotation line for easy lookup
+   * @private
+   * @param {Object} hashes - Hash values to annotate
+   */
+  function logHashAnnotation(hashes) {
+    if (!config.annotations) {
+      return; // Skip if annotations disabled
+    }
+
+    const annotationEntry = {
+      _annotation: true,
+      lookup: "Use: node scripts/audit-log-reader.js --hash <hash>",
+    };
+
+    // Add any provided hashes
+    if (hashes.systemPromptHash) {
+      annotationEntry.systemPromptHash = hashes.systemPromptHash;
+    }
+    if (hashes.userMessagesHash) {
+      annotationEntry.userMessagesHash = hashes.userMessagesHash;
+    }
+    if (hashes.userQueryHash) {
+      annotationEntry.userQueryHash = hashes.userQueryHash;
+    }
+
+    logger.info(annotationEntry);
+  }
 
   return {
     /**
@@ -240,24 +334,49 @@ function createAuditLoggerWrapper(config) {
 
       const { hostname, port, protocol } = parseDestinationUrl(destinationUrl);
 
-      // Truncate messages if needed
-      const truncatedMessages = truncateContent(userMessages, maxContentLength);
-      const truncatedSystem = systemPrompt
-        ? truncateContent(systemPrompt, maxContentLength)
-        : { content: null, truncated: false };
+      // Hash BEFORE truncate - this ensures we track the original content
+      // Use specific max lengths for different content types
+      const hashedMessages = hashAndTruncate(userMessages, maxContentLength.userMessages, deduplicator);
+      const hashedSystem = systemPrompt
+        ? hashAndTruncate(systemPrompt, maxContentLength.systemPrompt, deduplicator)
+        : { hash: null, content: null, truncated: false };
 
-      // Deduplicate large content if enabled
-      let finalUserMessages = truncatedMessages.content;
-      let finalSystemPrompt = truncatedSystem.content;
+      // Deduplicate large content if enabled (using original content hash)
+      // Session-level deduplication: first time outputs truncated content, subsequent times output reference
+      let finalUserMessages = hashedMessages.content;
+      let finalSystemPrompt = hashedSystem.content;
 
       if (deduplicator) {
-        // Deduplicate userMessages if it's large enough
-        if (deduplicator.shouldDeduplicate(truncatedMessages.content)) {
-          finalUserMessages = deduplicator.storeContent(truncatedMessages.content);
+        // Deduplicate userMessages if original content is large enough
+        if (userMessages && deduplicator.shouldDeduplicate(userMessages)) {
+          const isFirstTime = deduplicator.isFirstTimeInSession(hashedMessages.hash);
+          if (isFirstTime) {
+            // First time: output truncated content, but store in dictionary
+            deduplicator.storeContentWithHash(userMessages, hashedMessages.hash);
+            finalUserMessages = hashedMessages.content; // Use truncated content
+          } else {
+            // Subsequent times: output only reference
+            finalUserMessages = deduplicator.storeContentWithHash(
+              userMessages,
+              hashedMessages.hash
+            );
+          }
         }
-        // Deduplicate systemPrompt if it's large enough
-        if (systemPrompt && deduplicator.shouldDeduplicate(truncatedSystem.content)) {
-          finalSystemPrompt = deduplicator.storeContent(truncatedSystem.content);
+
+        // Deduplicate systemPrompt if original content is large enough
+        if (systemPrompt && deduplicator.shouldDeduplicate(systemPrompt)) {
+          const isFirstTime = deduplicator.isFirstTimeInSession(hashedSystem.hash);
+          if (isFirstTime) {
+            // First time: output truncated content, but store in dictionary
+            deduplicator.storeContentWithHash(systemPrompt, hashedSystem.hash);
+            finalSystemPrompt = hashedSystem.content; // Use truncated content
+          } else {
+            // Subsequent times: output only reference
+            finalSystemPrompt = deduplicator.storeContentWithHash(
+              systemPrompt,
+              hashedSystem.hash
+            );
+          }
         }
       }
 
@@ -276,19 +395,25 @@ function createAuditLoggerWrapper(config) {
         systemPrompt: finalSystemPrompt,
         tools: Array.isArray(tools) ? tools : null,
         maxTokens: maxTokens || null,
-        contentTruncated: truncatedMessages.truncated || truncatedSystem.truncated,
+        contentTruncated: hashedMessages.truncated || hashedSystem.truncated,
         msg: "LLM request initiated",
       };
 
       // Add original length indicators if truncated
-      if (truncatedMessages.truncated) {
-        logEntry.userMessagesOriginalLength = truncatedMessages.originalLength;
+      if (hashedMessages.truncated) {
+        logEntry.userMessagesOriginalLength = hashedMessages.originalLength;
       }
-      if (truncatedSystem.truncated) {
-        logEntry.systemPromptOriginalLength = truncatedSystem.originalLength;
+      if (hashedSystem.truncated) {
+        logEntry.systemPromptOriginalLength = hashedSystem.originalLength;
       }
 
       logger.info(logEntry);
+
+      // Log hash annotation for easy lookup
+      logHashAnnotation({
+        userMessagesHash: hashedMessages.hash,
+        systemPromptHash: hashedSystem.hash,
+      });
     },
 
     /**
@@ -321,7 +446,7 @@ function createAuditLoggerWrapper(config) {
       // Truncate response content if needed (but not for streaming)
       let truncatedMessage = { content: null, truncated: false };
       if (assistantMessage && !stream) {
-        truncatedMessage = truncateContent(assistantMessage, maxContentLength);
+        truncatedMessage = truncateContent(assistantMessage, maxContentLength.response);
       }
 
       const logEntry = {
@@ -396,13 +521,22 @@ function createAuditLoggerWrapper(config) {
         responseTokens,
       } = context;
 
-      // Apply smart truncation to userQuery
-      const truncatedQuery = truncateSystemReminder(userQuery);
+      // Hash BEFORE truncate - apply smart truncation to userQuery
+      const hashedQuery = hashAndTruncateSystemReminder(userQuery, 50, deduplicator);
 
-      // Deduplicate userQuery if it's still large after truncation
-      let finalUserQuery = truncatedQuery.content;
-      if (deduplicator && deduplicator.shouldDeduplicate(truncatedQuery.content)) {
-        finalUserQuery = deduplicator.storeContent(truncatedQuery.content);
+      // Deduplicate userQuery if original content is large enough
+      // Session-level deduplication: first time outputs truncated content, subsequent times output reference
+      let finalUserQuery = hashedQuery.content;
+      if (deduplicator && userQuery && deduplicator.shouldDeduplicate(userQuery)) {
+        const isFirstTime = deduplicator.isFirstTimeInSession(hashedQuery.hash);
+        if (isFirstTime) {
+          // First time: output truncated content, but store in dictionary
+          deduplicator.storeContentWithHash(userQuery, hashedQuery.hash);
+          finalUserQuery = hashedQuery.content; // Use truncated content
+        } else {
+          // Subsequent times: output only reference
+          finalUserQuery = deduplicator.storeContentWithHash(userQuery, hashedQuery.hash);
+        }
       }
 
       const logEntry = {
@@ -421,10 +555,10 @@ function createAuditLoggerWrapper(config) {
       };
 
       // Add truncation metadata if truncation occurred
-      if (truncatedQuery.truncated) {
+      if (hashedQuery.truncated) {
         logEntry.userQueryTruncated = true;
-        logEntry.userQueryOriginalLength = truncatedQuery.originalLength;
-        logEntry.userQueryCharsRemoved = truncatedQuery.charsRemoved;
+        logEntry.userQueryOriginalLength = hashedQuery.originalLength;
+        logEntry.userQueryCharsRemoved = hashedQuery.charsRemoved;
       }
 
       // Add token usage if available
@@ -437,6 +571,11 @@ function createAuditLoggerWrapper(config) {
       }
 
       logger.info(logEntry);
+
+      // Log hash annotation for easy lookup
+      logHashAnnotation({
+        userQueryHash: hashedQuery.hash,
+      });
     },
 
     /**
@@ -464,5 +603,7 @@ module.exports = {
   createAuditLogger: createAuditLoggerWrapper,
   truncateContent,
   truncateSystemReminder,
+  hashAndTruncate,
+  hashAndTruncateSystemReminder,
   parseDestinationUrl,
 };

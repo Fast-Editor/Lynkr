@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -86,6 +86,8 @@ const azureAnthropicVersion = process.env.AZURE_ANTHROPIC_VERSION ?? "2023-06-01
 const ollamaEndpoint = process.env.OLLAMA_ENDPOINT ?? "http://localhost:11434";
 const ollamaModel = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:7b";
 const ollamaTimeout = Number.parseInt(process.env.OLLAMA_TIMEOUT_MS ?? "120000", 10);
+const ollamaEmbeddingsEndpoint = process.env.OLLAMA_EMBEDDINGS_ENDPOINT ?? `${ollamaEndpoint}/api/embeddings`;
+const ollamaEmbeddingsModel = process.env.OLLAMA_EMBEDDINGS_MODEL ?? "nomic-embed-text";
 
 // Ollama cluster configuration
 function loadOllamaClusterConfig() {
@@ -198,6 +200,7 @@ const ollamaClusterConfig = loadOllamaClusterConfig();
 // OpenRouter configuration
 const openRouterApiKey = process.env.OPENROUTER_API_KEY ?? null;
 const openRouterModel = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
+const openRouterEmbeddingsModel = process.env.OPENROUTER_EMBEDDINGS_MODEL ?? "openai/text-embedding-ada-002";
 const openRouterEndpoint = process.env.OPENROUTER_ENDPOINT ?? "https://openrouter.ai/api/v1/chat/completions";
 
 // Azure OpenAI configuration
@@ -216,6 +219,7 @@ const openAIOrganization = process.env.OPENAI_ORGANIZATION?.trim() || null;
 const llamacppEndpoint = process.env.LLAMACPP_ENDPOINT?.trim() || "http://localhost:8080";
 const llamacppModel = process.env.LLAMACPP_MODEL?.trim() || "default";
 const llamacppTimeout = Number.parseInt(process.env.LLAMACPP_TIMEOUT_MS ?? "120000", 10);
+const llamacppEmbeddingsEndpoint = process.env.LLAMACPP_EMBEDDINGS_ENDPOINT?.trim() || `${llamacppEndpoint}/embeddings`;
 const llamacppApiKey = process.env.LLAMACPP_API_KEY?.trim() || null;
 
 // LM Studio configuration
@@ -228,6 +232,15 @@ const lmstudioApiKey = process.env.LMSTUDIO_API_KEY?.trim() || null;
 const bedrockRegion = process.env.AWS_BEDROCK_REGION?.trim() || process.env.AWS_REGION?.trim() || "us-east-1";
 const bedrockApiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null; // Bearer token
 const bedrockModelId = process.env.AWS_BEDROCK_MODEL_ID?.trim() || "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+// Z.AI (Zhipu) configuration - Anthropic-compatible API at ~1/7 cost
+const zaiApiKey = process.env.ZAI_API_KEY?.trim() || null;
+const zaiEndpoint = process.env.ZAI_ENDPOINT?.trim() || "https://api.z.ai/api/anthropic/v1/messages";
+const zaiModel = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
+
+// Vertex AI (Google Gemini) configuration
+const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
+const vertexModel = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
 
 // Hybrid routing configuration
 const preferOllama = process.env.PREFER_OLLAMA === "true";
@@ -593,9 +606,13 @@ const agentsTimeout = Number.parseInt(process.env.AGENTS_TIMEOUT ?? "120000", 10
 // LLM Audit logging configuration
 const auditEnabled = process.env.LLM_AUDIT_ENABLED === "true"; // default false
 const auditLogFile = process.env.LLM_AUDIT_LOG_FILE ?? path.join(process.cwd(), "logs", "llm-audit.log");
-const auditMaxContentLength = Number.parseInt(process.env.LLM_AUDIT_MAX_CONTENT_LENGTH ?? "5000", 10);
+const auditMaxContentLength = Number.parseInt(process.env.LLM_AUDIT_MAX_CONTENT_LENGTH ?? "5000", 10); // Legacy fallback
+const auditMaxSystemLength = Number.parseInt(process.env.LLM_AUDIT_MAX_SYSTEM_LENGTH ?? "2000", 10);
+const auditMaxUserLength = Number.parseInt(process.env.LLM_AUDIT_MAX_USER_LENGTH ?? "3000", 10);
+const auditMaxResponseLength = Number.parseInt(process.env.LLM_AUDIT_MAX_RESPONSE_LENGTH ?? "3000", 10);
 const auditMaxFiles = Number.parseInt(process.env.LLM_AUDIT_MAX_FILES ?? "30", 10);
 const auditMaxSize = process.env.LLM_AUDIT_MAX_SIZE ?? "100M";
+const auditAnnotations = process.env.LLM_AUDIT_ANNOTATIONS !== "false"; // default true
 
 // LLM Audit deduplication configuration
 const auditDeduplicationEnabled = process.env.LLM_AUDIT_DEDUP_ENABLED !== "false"; // default true
@@ -604,6 +621,7 @@ const auditDeduplicationDictPath =
 const auditDeduplicationMinSize = Number.parseInt(process.env.LLM_AUDIT_DEDUP_MIN_SIZE ?? "500", 10);
 const auditDeduplicationCacheSize = Number.parseInt(process.env.LLM_AUDIT_DEDUP_CACHE_SIZE ?? "100", 10);
 const auditDeduplicationSanitize = process.env.LLM_AUDIT_DEDUP_SANITIZE !== "false"; // default true
+const auditDeduplicationSessionCache = process.env.LLM_AUDIT_DEDUP_SESSION_CACHE !== "false"; // default true
 
 const config = {
   env: process.env.NODE_ENV ?? "development",
@@ -623,11 +641,14 @@ const config = {
     endpoint: ollamaEndpoint,
     model: ollamaModel,
     timeout: Number.isNaN(ollamaTimeout) ? 120000 : ollamaTimeout,
+    embeddingsEndpoint: ollamaEmbeddingsEndpoint,
+    embeddingsModel: ollamaEmbeddingsModel,
     cluster: ollamaClusterConfig, // null if cluster not configured
   },
   openrouter: {
     apiKey: openRouterApiKey,
     model: openRouterModel,
+    embeddingsModel: openRouterEmbeddingsModel,
     endpoint: openRouterEndpoint,
   },
   azureOpenAI: {
@@ -646,6 +667,7 @@ const config = {
     endpoint: llamacppEndpoint,
     model: llamacppModel,
     timeout: Number.isNaN(llamacppTimeout) ? 120000 : llamacppTimeout,
+    embeddingsEndpoint: llamacppEmbeddingsEndpoint,
     apiKey: llamacppApiKey,
   },
   lmstudio: {
@@ -658,6 +680,15 @@ const config = {
     region: bedrockRegion,
     apiKey: bedrockApiKey,
     modelId: bedrockModelId,
+  },
+  zai: {
+    apiKey: zaiApiKey,
+    endpoint: zaiEndpoint,
+    model: zaiModel,
+  },
+  vertex: {
+    apiKey: vertexApiKey,
+    model: vertexModel,
   },
   modelProvider: {
     type: modelProvider,
@@ -941,7 +972,12 @@ const config = {
   audit: {
     enabled: auditEnabled,
     logFile: auditLogFile,
-    maxContentLength: Number.isNaN(auditMaxContentLength) ? 5000 : auditMaxContentLength,
+    maxContentLength: {
+      systemPrompt: Number.isNaN(auditMaxSystemLength) ? 2000 : auditMaxSystemLength,
+      userMessages: Number.isNaN(auditMaxUserLength) ? 3000 : auditMaxUserLength,
+      response: Number.isNaN(auditMaxResponseLength) ? 3000 : auditMaxResponseLength,
+    },
+    annotations: auditAnnotations,
     rotation: {
       maxFiles: Number.isNaN(auditMaxFiles) ? 30 : auditMaxFiles,
       maxSize: auditMaxSize,
@@ -952,6 +988,7 @@ const config = {
       minSize: Number.isNaN(auditDeduplicationMinSize) ? 500 : auditDeduplicationMinSize,
       cacheSize: Number.isNaN(auditDeduplicationCacheSize) ? 100 : auditDeduplicationCacheSize,
       sanitize: auditDeduplicationSanitize,
+      sessionCache: auditDeduplicationSessionCache,
     },
   },
 };
