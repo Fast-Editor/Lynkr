@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # Lynkr proxy service
   lynkr:
@@ -7,8 +5,9 @@ services:
     container_name: lynkr
     image: lynkr:2.0.0
     ports:
-      - "8081:8081"
-      - "8888:8888"
+      - "8081:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # ============================================================
       # PRIMARY MODEL PROVIDER
@@ -42,12 +41,14 @@ services:
       # - qwen2.5:14b (strong reasoning, 7b struggles with tools)
       # - mistral:7b-instruct (fast and capable)
       PREFER_OLLAMA: ${PREFER_OLLAMA:-true}
-      OLLAMA_ENDPOINT: http://ollama:11434
+#      OLLAMA_ENDPOINT: http://ollama:11434
+      OLLAMA_ENDPOINT: http://host.docker.internal:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
       OLLAMA_MAX_TOOLS_FOR_ROUTING: ${OLLAMA_MAX_TOOLS_FOR_ROUTING:-3}
       # Ollama Embeddings (for Cursor @Codebase search)
       OLLAMA_EMBEDDINGS_MODEL: ${OLLAMA_EMBEDDINGS_MODEL:-nomic-embed-text}
-      OLLAMA_EMBEDDINGS_ENDPOINT: ${OLLAMA_EMBEDDINGS_ENDPOINT:-http://ollama:11434/api/embeddings}
+#      OLLAMA_EMBEDDINGS_ENDPOINT: ${OLLAMA_EMBEDDINGS_ENDPOINT:-http://ollama:11434/api/embeddings}
+      OLLAMA_EMBEDDINGS_ENDPOINT: ${OLLAMA_EMBEDDINGS_ENDPOINT:-http://host.docker.internal:11434/api/embeddings}
 
       # ============================================================
       # OPENROUTER CONFIGURATION
@@ -131,7 +132,7 @@ services:
       # ============================================================
       PORT: ${PORT:-8081}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      WEB_SEARCH_ENDPOINT: ${WEB_SEARCH_ENDPOINT:-http://localhost:8888/search}
+      WEB_SEARCH_ENDPOINT: ${WEB_SEARCH_ENDPOINT:-http://searxng:8888/search}
       WORKSPACE_ROOT: /workspace
 
       # ============================================================
@@ -144,9 +145,6 @@ services:
     volumes:
       - ./data:/app/data  # Persist SQLite databases
       - .:/workspace      # Mount workspace
-    depends_on:
-      ollama:
-        condition: service_healthy
     restart: unless-stopped
     networks:
       - lynkr-network
@@ -173,6 +171,8 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
+    profiles:
+      - ollama
     ports:
       - "11434:11434"
     volumes:
@@ -220,11 +220,37 @@ services:
   #     timeout: 10s
   #     retries: 3
 
+  # Local searxng search service (web search provider)
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    ports:
+      - "8888:8080"
+    volumes:
+      - searxng-data:/etc/searxng
+#    environment:
+      # you can add SEARX settings here if needed (e.g. timezone, settings.yml mount, etc.)
+      # see https://docs.searxng.org/admin/installation-docker.html#environment-variables
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: unless-stopped
+    networks:
+      - lynkr-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8888/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
 volumes:
   ollama-data:
     driver: local
   # ollama-webui-data:
   #   driver: local
+  searxng-data:
+    driver: local
 
 networks:
   lynkr-network:

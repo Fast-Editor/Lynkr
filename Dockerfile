@@ -16,7 +16,7 @@ WORKDIR /app
 RUN apk add --no-cache python3 py3-pip make g++ git
 
 # Install searxng (local search provider)
-RUN pip install --no-cache-dir searxng
+#RUN pip install --no-cache-dir searxng
 
 # Copy dependency manifests first for better layer caching
 COPY package.json package-lock.json ./
@@ -55,7 +55,8 @@ ENV MODEL_PROVIDER="databricks" \
     PORT="8081" \
     LOG_LEVEL="info" \
     WORKSPACE_ROOT="/workspace" \
-    WEB_SEARCH_ENDPOINT="http://localhost:8888/search"
+    WEB_SEARCH_ENDPOINT="http://searxng:8888/search" \
+    NODE_ENV="production"
 
 # Databricks Configuration (default provider)
 ENV DATABRICKS_API_BASE="https://example.cloud.databricks.com" \
@@ -144,4 +145,6 @@ ENV MEMORY_ENABLED="true" \
 USER nodejs
 
 # Run the proxy
-CMD ["./start.sh"]
+#CMD ["./start.sh"]
+CMD ["node","index.js"]
+
