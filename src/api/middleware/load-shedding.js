@@ -109,6 +109,26 @@ function getLoadShedder(options) {
 }
 
 /**
+ * Initialize load shedder and log configuration
+ * Call this at server startup to ensure configuration is logged
+ */
+function initializeLoadShedder(options) {
+  const shedder = getLoadShedder(options);
+
+  // Log configuration
+  logger.info({
+    enabled: true,
+    thresholds: {
+      heapThreshold: (shedder.heapThreshold * 100).toFixed(2),
+      memoryThreshold: (shedder.memoryThreshold * 100).toFixed(2),
+      activeRequestsThreshold: shedder.activeRequestsThreshold,
+    }
+  }, "Load shedding initialized");
+
+  return shedder;
+}
+
+/**
  * Load shedding middleware
  */
 function loadSheddingMiddleware(req, res, next) {
@@ -149,5 +169,6 @@ function loadSheddingMiddleware(req, res, next) {
 module.exports = {
   LoadShedder,
   getLoadShedder,
+  initializeLoadShedder,
   loadSheddingMiddleware,
 };
