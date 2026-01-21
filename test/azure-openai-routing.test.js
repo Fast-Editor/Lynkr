@@ -20,6 +20,9 @@ describe("Azure OpenAI Routing Tests", () => {
     process.env.MODEL_PROVIDER = "databricks"; // Set default to avoid validation errors
     process.env.DATABRICKS_API_KEY = "test-key";
     process.env.DATABRICKS_API_BASE = "http://test.com";
+    
+    // Explicitly set valid fallback to override any local .env pollution (e.g. lmstudio)
+    process.env.FALLBACK_PROVIDER = "databricks";
   });
 
   afterEach(() => {

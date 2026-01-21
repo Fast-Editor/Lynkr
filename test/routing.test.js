@@ -15,6 +15,9 @@ describe("Routing Logic", () => {
 
     // Store original config
     originalConfig = { ...process.env };
+    
+    // Explicitly set valid fallback to override any local .env pollution (e.g. lmstudio)
+    process.env.FALLBACK_PROVIDER = "databricks";
   });
 
   afterEach(() => {

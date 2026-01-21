@@ -201,7 +201,7 @@ async function invokeOllama(body) {
     throw new Error("Ollama endpoint is not configured.");
   }
 
-  const { convertAnthropicToolsToOllama } = require("./ollama-utils");
+  const { convertAnthropicToolsToOllama, checkOllamaToolSupport } = require("./ollama-utils");
 
   const endpoint = `${config.ollama.endpoint}/api/chat`;
   const headers = { "Content-Type": "application/json" };
@@ -278,8 +278,18 @@ async function invokeOllama(body) {
     logger.info({}, "Tool injection disabled for Ollama (INJECT_TOOLS_OLLAMA=false)");
   }
 
-  // Add tools if present (for tool-capable models)
-  if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+  // Check if model supports tools
+  const supportsTools = await checkOllamaToolSupport(config.ollama.model);
+
+  if (!supportsTools) {
+    logger.warn({
+      model: config.ollama.model,
+      toolCount: toolsToSend?.length || 0
+    }, "Model does not support tool calling - stripping tools from request");
+  }
+
+  // Add tools if present AND model supports them
+  if (supportsTools && Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     ollamaBody.tools = convertAnthropicToolsToOllama(toolsToSend);
     logger.info({
       toolCount: toolsToSend.length,
