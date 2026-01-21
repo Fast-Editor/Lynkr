@@ -64,9 +64,17 @@ function resolveConfigPath(targetPath) {
 
 const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
-const modelProvider = SUPPORTED_MODEL_PROVIDERS.has(rawModelProvider)
-  ? rawModelProvider
-  : "databricks";
+
+// Validate MODEL_PROVIDER early with a clear error message
+if (!SUPPORTED_MODEL_PROVIDERS.has(rawModelProvider)) {
+  const supportedList = Array.from(SUPPORTED_MODEL_PROVIDERS).sort().join(", ");
+  throw new Error(
+    `Unsupported MODEL_PROVIDER: "${process.env.MODEL_PROVIDER}". ` +
+    `Valid options are: ${supportedList}`
+  );
+}
+
+const modelProvider = rawModelProvider;
 
 const rawBaseUrl = trimTrailingSlash(process.env.DATABRICKS_API_BASE);
 const apiKey = process.env.DATABRICKS_API_KEY;
@@ -141,7 +149,19 @@ const openRouterMaxToolsForRouting = Number.parseInt(
   process.env.OPENROUTER_MAX_TOOLS_FOR_ROUTING ?? "15",
   10
 );
-const fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
+
+const rawFallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
+
+// Validate FALLBACK_PROVIDER early with a clear error message
+if (!SUPPORTED_MODEL_PROVIDERS.has(rawFallbackProvider)) {
+  const supportedList = Array.from(SUPPORTED_MODEL_PROVIDERS).sort().join(", ");
+  throw new Error(
+    `Unsupported FALLBACK_PROVIDER: "${process.env.FALLBACK_PROVIDER}". ` +
+    `Valid options are: ${supportedList}`
+  );
+}
+
+const fallbackProvider = rawFallbackProvider;
 
 // Tool execution mode: server (default), client, or passthrough
 const toolExecutionMode = (process.env.TOOL_EXECUTION_MODE ?? "server").toLowerCase();
