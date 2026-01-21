@@ -126,6 +126,11 @@ function start() {
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
   });
 
+  // Start session cleanup manager
+  const { getSessionCleanupManager } = require("./sessions/cleanup");
+  const sessionCleanup = getSessionCleanupManager();
+  sessionCleanup.start();
+
   // Setup graceful shutdown
   const shutdownManager = getShutdownManager();
   shutdownManager.registerServer(server);

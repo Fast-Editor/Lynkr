@@ -25,6 +25,14 @@ const insertHistoryStmt = db.prepare(
   `INSERT INTO session_history (session_id, role, type, status, content, metadata, timestamp)
    VALUES (@session_id, @role, @type, @status, @content, @metadata, @timestamp)`,
 );
+const cleanupOldSessionsStmt = db.prepare(`
+  DELETE FROM sessions
+  WHERE updated_at < ?
+`);
+const cleanupOldHistoryStmt = db.prepare(`
+  DELETE FROM session_history
+  WHERE timestamp < ?
+`);
 
 function parseJSON(value, fallback) {
   if (value === null || value === undefined) return fallback;
@@ -170,10 +178,26 @@ function deleteSession(sessionId) {
   deleteHistory(sessionId);
 }
 
+function cleanupOldSessions(maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
+  const cutoffTime = Date.now() - maxAgeMs;
+  const result = cleanupOldSessionsStmt.run(cutoffTime);
+  logger.info({ deleted: result.changes, maxAgeMs }, "Cleaned up old sessions");
+  return result.changes;
+}
+
+function cleanupOldHistory(maxAgeMs = 30 * 24 * 60 * 60 * 1000) {
+  const cutoffTime = Date.now() - maxAgeMs;
+  const result = cleanupOldHistoryStmt.run(cutoffTime);
+  logger.info({ deleted: result.changes, maxAgeMs }, "Cleaned up old history");
+  return result.changes;
+}
+
 module.exports = {
   getSession,
   getOrCreateSession,
   upsertSession,
   appendSessionTurn,
   deleteSession,
+  cleanupOldSessions,
+  cleanupOldHistory,
 };

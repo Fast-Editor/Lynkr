@@ -171,12 +171,28 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           return;
         } catch (streamError) {
           logger.error({ error: streamError }, "Error streaming response");
+
+          // Cancel stream on error
+          try {
+            await reader.cancel();
+          } catch (cancelError) {
+            logger.debug({ error: cancelError }, "Failed to cancel stream");
+          }
+
           if (!res.headersSent) {
             res.status(500).json({ error: "Streaming error" });
           } else {
             res.end();
           }
           return;
+        } finally {
+          // CRITICAL: Always release lock
+          try {
+            reader.releaseLock();
+          } catch (releaseError) {
+            // Lock may already be released, ignore
+            logger.debug({ error: releaseError }, "Stream lock already released");
+          }
         }
       }
 

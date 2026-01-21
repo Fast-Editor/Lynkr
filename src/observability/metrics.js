@@ -56,8 +56,18 @@ class MetricsCollector {
     // Histogram buckets for latency (in ms)
     this.latencyBuckets = [10, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
 
-    // Performance: Pre-allocate latency buffer
-    this.maxLatencyBuffer = 10000;
+    // Performance: Circular buffer for latency (reduced from 10000 to 1000)
+    this.maxLatencyBuffer = 1000;
+  }
+
+  /**
+   * Add value to circular buffer (prevents unbounded growth)
+   */
+  addToBuffer(buffer, value, maxSize) {
+    buffer.push(value);
+    if (buffer.length > maxSize) {
+      buffer.shift(); // Remove oldest entry
+    }
   }
 
   /**
@@ -79,10 +89,8 @@ class MetricsCollector {
     const endpointCount = this.requestsByEndpoint.get(endpoint) || 0;
     this.requestsByEndpoint.set(endpoint, endpointCount + 1);
 
-    // Record latency (with buffer limit for memory)
-    if (this.requestLatencies.length < this.maxLatencyBuffer) {
-      this.requestLatencies.push(durationMs);
-    }
+    // Record latency with circular buffer
+    this.addToBuffer(this.requestLatencies, durationMs, this.maxLatencyBuffer);
   }
 
   /**
@@ -141,8 +149,8 @@ class MetricsCollector {
     const count = this.providerSuccesses.get(provider) || 0;
     this.providerSuccesses.set(provider, count + 1);
 
-    if (provider === "ollama" && this.ollamaLatencies.length < 10000) {
-      this.ollamaLatencies.push(latencyMs);
+    if (provider === "ollama") {
+      this.addToBuffer(this.ollamaLatencies, latencyMs, this.maxLatencyBuffer);
     }
   }
 
@@ -168,9 +176,7 @@ class MetricsCollector {
    */
   recordFallbackSuccess(latencyMs) {
     this.fallbackSuccesses++;
-    if (this.fallbackLatencies.length < 10000) {
-      this.fallbackLatencies.push(latencyMs);
-    }
+    this.addToBuffer(this.fallbackLatencies, latencyMs, this.maxLatencyBuffer);
   }
 
   /**
