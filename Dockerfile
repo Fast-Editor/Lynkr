@@ -1,5 +1,5 @@
 # Use a small Node.js base image
-FROM node:20-alpine
+FROM node:24-alpine
 
 # Add OCI labels for better container management
 LABEL org.opencontainers.image.title="Lynkr" \
