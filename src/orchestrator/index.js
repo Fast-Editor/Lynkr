@@ -2604,8 +2604,8 @@ async function processMessage({ payload, headers, session, options = {} }) {
   let cacheKey = null;
   let cachedResponse = null;
   if (promptCache.isEnabled()) {
-    const cacheSeedPayload = JSON.parse(JSON.stringify(cleanPayload));
-    const { key, entry } = promptCache.lookup(cacheSeedPayload);
+    // cleanPayload is already a deep clone from sanitizePayload, no need to clone again
+    const { key, entry } = promptCache.lookup(cleanPayload);
     cacheKey = key;
     if (entry?.value) {
       try {
