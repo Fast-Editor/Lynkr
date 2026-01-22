@@ -623,6 +623,13 @@ const auditDeduplicationCacheSize = Number.parseInt(process.env.LLM_AUDIT_DEDUP_
 const auditDeduplicationSanitize = process.env.LLM_AUDIT_DEDUP_SANITIZE !== "false"; // default true
 const auditDeduplicationSessionCache = process.env.LLM_AUDIT_DEDUP_SESSION_CACHE !== "false"; // default true
 
+// Oversized Error Logging Configuration
+const oversizedErrorLoggingEnabled = process.env.OVERSIZED_ERROR_LOGGING_ENABLED !== "false"; // default true
+const oversizedErrorThreshold = Number.parseInt(process.env.OVERSIZED_ERROR_THRESHOLD ?? "200", 10);
+const oversizedErrorLogDir =
+	process.env.OVERSIZED_ERROR_LOG_DIR ?? path.join(process.cwd(), "logs", "oversized-errors");
+const oversizedErrorMaxFiles = Number.parseInt(process.env.OVERSIZED_ERROR_MAX_FILES ?? "100", 10);
+
 const config = {
   env: process.env.NODE_ENV ?? "development",
   port: Number.isNaN(port) ? 8080 : port,
@@ -990,6 +997,12 @@ const config = {
       sanitize: auditDeduplicationSanitize,
       sessionCache: auditDeduplicationSessionCache,
     },
+  },
+  oversizedErrorLogging: {
+    enabled: oversizedErrorLoggingEnabled,
+    threshold: oversizedErrorThreshold,
+    logDir: oversizedErrorLogDir,
+    maxFiles: oversizedErrorMaxFiles,
   },
 };
 
