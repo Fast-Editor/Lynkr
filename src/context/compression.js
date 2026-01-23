@@ -67,9 +67,9 @@ function compressHistory(messages, options = {}) {
 
   const finalMessages = [...compressed, ...recentCompressed];
 
-  // Log compression stats
-  const originalLength = JSON.stringify(messages).length;
-  const compressedLength = JSON.stringify(finalMessages).length;
+  // Log compression stats - estimate sizes without expensive JSON.stringify
+  const originalLength = estimateMessagesSize(messages);
+  const compressedLength = estimateMessagesSize(finalMessages);
   const saved = originalLength - compressedLength;
 
   if (saved > 1000) {
@@ -385,6 +385,68 @@ function calculateCompressionStats(original, compressed) {
  */
 function needsCompression(messages, threshold = 15) {
   return messages && messages.length > threshold;
+}
+
+/**
+ * Estimate size of messages array without full JSON serialization
+ *
+ * Provides a rough size estimation that's much faster than JSON.stringify
+ * while being accurate enough for compression statistics.
+ *
+ * @param {Array} messages - Messages to estimate
+ * @returns {number} Estimated size in characters
+ */
+function estimateMessagesSize(messages) {
+  if (!messages || !Array.isArray(messages)) return 0;
+
+  let totalSize = 0;
+
+  for (const msg of messages) {
+    // Base overhead for message structure
+    totalSize += 50;
+
+    // Role field
+    if (msg.role) totalSize += msg.role.length;
+
+    // Content estimation
+    if (typeof msg.content === 'string') {
+      totalSize += msg.content.length;
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        totalSize += 20; // Block overhead
+
+        if (block.type) totalSize += block.type.length;
+
+        if (block.text) {
+          totalSize += block.text.length;
+        } else if (block.content) {
+          if (typeof block.content === 'string') {
+            totalSize += block.content.length;
+          } else if (Array.isArray(block.content)) {
+            for (const item of block.content) {
+              if (typeof item === 'string') {
+                totalSize += item.length;
+              } else if (item.text) {
+                totalSize += item.text.length;
+              }
+            }
+          }
+        }
+
+        // Tool use fields
+        if (block.name) totalSize += block.name.length;
+        if (block.id) totalSize += block.id.length;
+        if (block.tool_use_id) totalSize += block.tool_use_id.length;
+
+        // Input estimation (rough)
+        if (block.input) {
+          totalSize += JSON.stringify(block.input).length;
+        }
+      }
+    }
+  }
+
+  return totalSize;
 }
 
 module.exports = {

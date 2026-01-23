@@ -15,7 +15,7 @@ class LoadShedder {
   constructor(options = {}) {
     // Thresholds
     this.memoryThreshold = options.memoryThreshold || 0.85; // 85%
-    this.heapThreshold = options.heapThreshold || 0.90; // 90%
+    this.heapThreshold = options.heapThreshold || 0.95; // 95% (increased from 90% to prevent false positives from temporary allocation spikes)
     this.activeRequestsThreshold = options.activeRequestsThreshold || 1000;
 
     // State
@@ -96,7 +96,7 @@ function getLoadShedder(options) {
   if (!instance) {
     // Read from environment variables if not provided
     const defaultOptions = {
-      heapThreshold: Number.parseFloat(process.env.LOAD_SHEDDING_HEAP_THRESHOLD || "0.90"),
+      heapThreshold: Number.parseFloat(process.env.LOAD_SHEDDING_HEAP_THRESHOLD || "0.95"),
       memoryThreshold: Number.parseFloat(process.env.LOAD_SHEDDING_MEMORY_THRESHOLD || "0.85"),
       activeRequestsThreshold: Number.parseInt(
         process.env.LOAD_SHEDDING_ACTIVE_REQUESTS_THRESHOLD || "1000",
@@ -106,6 +106,26 @@ function getLoadShedder(options) {
     instance = new LoadShedder({ ...defaultOptions, ...options });
   }
   return instance;
+}
+
+/**
+ * Initialize load shedder and log configuration
+ * Call this at server startup to ensure configuration is logged
+ */
+function initializeLoadShedder(options) {
+  const shedder = getLoadShedder(options);
+
+  // Log configuration
+  logger.info({
+    enabled: true,
+    thresholds: {
+      heapThreshold: (shedder.heapThreshold * 100).toFixed(2),
+      memoryThreshold: (shedder.memoryThreshold * 100).toFixed(2),
+      activeRequestsThreshold: shedder.activeRequestsThreshold,
+    }
+  }, "Load shedding initialized");
+
+  return shedder;
 }
 
 /**
@@ -132,16 +152,18 @@ function loadSheddingMiddleware(req, res, next) {
   // Track active request
   shedder.activeRequests++;
 
-  // Decrement on response finish
-  res.on("finish", () => {
-    shedder.activeRequests--;
-  });
-
-  res.on("close", () => {
-    if (shedder.activeRequests > 0) {
+  // Use flag to prevent double-decrement race condition
+  let decremented = false;
+  const decrementOnce = () => {
+    if (!decremented) {
+      decremented = true;
       shedder.activeRequests--;
     }
-  });
+  };
+
+  // Both events might fire, but only decrement once
+  res.on("finish", decrementOnce);
+  res.on("close", decrementOnce);
 
   next();
 }
@@ -149,5 +171,6 @@ function loadSheddingMiddleware(req, res, next) {
 module.exports = {
   LoadShedder,
   getLoadShedder,
+  initializeLoadShedder,
   loadSheddingMiddleware,
 };
