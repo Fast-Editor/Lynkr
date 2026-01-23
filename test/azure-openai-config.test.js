@@ -156,11 +156,11 @@ describe("Azure OpenAI Configuration Tests", () => {
 
   describe("Deployment and API Version Defaults", () => {
     it("should use gpt-4o as default deployment", () => {
-      delete process.env.AZURE_OPENAI_DEPLOYMENT;
+      // Keep as empty string (don't delete) to prevent dotenv from reloading from .env
+      process.env.AZURE_OPENAI_DEPLOYMENT = "";
       process.env.MODEL_PROVIDER = "azure-openai";
       process.env.AZURE_OPENAI_ENDPOINT = "https://test-resource.openai.azure.com";
       process.env.AZURE_OPENAI_API_KEY = "test-api-key";
-      process.env.AZURE_OPENAI_DEPLOYMENT = "gpt-4o";
 
       const config = require("../src/config");
 
@@ -178,15 +178,16 @@ describe("Azure OpenAI Configuration Tests", () => {
       assert.strictEqual(config.azureOpenAI.deployment, "gpt-5");
     });
 
-    it("should use 2024-05-01-preview as default API version", () => {
-      delete process.env.AZURE_OPENAI_API_VERSION;
+    it("should use 2024-08-01-preview as default API version", () => {
+      // Keep as empty string (don't delete) to prevent dotenv from reloading from .env
+      process.env.AZURE_OPENAI_API_VERSION = "";
       process.env.MODEL_PROVIDER = "databricks";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
 
       const config = require("../src/config");
 
-      assert.strictEqual(config.azureOpenAI.apiVersion, "2024-05-01-preview");
+      assert.strictEqual(config.azureOpenAI.apiVersion, "2024-08-01-preview");
     });
 
     it("should use custom API version when specified", () => {

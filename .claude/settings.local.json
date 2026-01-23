@@ -24,7 +24,10 @@
       "Bash(tail:*)",
       "Bash(pkill:*)",
       "Bash(jq:*)",
-      "Bash(jobs:*)"
+      "Bash(jobs:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)"
     ],
     "deny": [],
     "ask": []
