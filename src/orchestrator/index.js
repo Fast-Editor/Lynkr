@@ -11,6 +11,7 @@ const systemPrompt = require("../prompts/system");
 const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
+const { getShuttingDown } = require("../api/health");
 
 const DROP_KEYS = new Set([
   "provider",
@@ -1173,6 +1174,35 @@ async function runAgentLoop({
   while (steps < settings.maxSteps) {
     if (Date.now() - start > settings.maxDurationMs) {
       break;
+    }
+
+    // Check if system is shutting down (Ctrl+C or SIGTERM)
+    if (getShuttingDown()) {
+      logger.info(
+        {
+          sessionId: session?.id ?? null,
+          steps,
+          toolCallsExecuted,
+          durationMs: Date.now() - start,
+        },
+        "Agent loop interrupted - system shutting down",
+      );
+
+      return {
+        response: {
+          status: 503,
+          body: {
+            error: {
+              type: "service_unavailable",
+              message: "Service is shutting down. Request was interrupted gracefully.",
+            },
+          },
+          terminationReason: "shutdown",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "shutdown",
+      };
     }
 
     steps += 1;
