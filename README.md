@@ -1,4 +1,4 @@
-# Lynkr - Run Cursor, Cline, Continue, and Claude Code on any model.
+# Lynkr - Run Cursor, Cline, Continue, OpenAi Compatible Tools and Claude Code on any model.
 ## One universal LLM proxy for AI coding tools.
 
 [![npm version](https://img.shields.io/npm/v/lynkr.svg)](https://www.npmjs.com/package/lynkr)
@@ -17,7 +17,7 @@
                         ↓
                        Lynkr
                         ↓
-        Local LLMs | OpenRouter | Azure | Databricks
+        Local LLMs | OpenRouter | Azure | Databricks | AWS BedRock | Ollama | LMStudio | Gemini
 ```
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "lynkr",
-  "version": "4.3.1",
+  "version": "5.0.0",
   "description": "Self-hosted Claude Code & Cursor proxy with Databricks,AWS BedRock,Azure  adapters, openrouter, Ollama,llamacpp,LM Studio, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
