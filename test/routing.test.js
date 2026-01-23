@@ -84,6 +84,11 @@ describe("Routing Logic", () => {
       process.env.FALLBACK_ENABLED = "true"; // Ensure fallback is enabled
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
+      // Set Azure OpenAI to empty to prevent dotenv from loading .env values
+      // dotenv won't override existing vars, even if empty
+      process.env.AZURE_OPENAI_ENDPOINT = "";
+      process.env.AZURE_OPENAI_API_KEY = "";
+      process.env.OPENROUTER_API_KEY = "";
 
       config = require("../src/config");
       routing = require("../src/clients/routing");

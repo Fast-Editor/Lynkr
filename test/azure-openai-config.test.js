@@ -178,7 +178,7 @@ describe("Azure OpenAI Configuration Tests", () => {
       assert.strictEqual(config.azureOpenAI.deployment, "gpt-5");
     });
 
-    it("should use 2024-08-01-preview as default API version", () => {
+    it("should use 2024-05-01-preview as default API version", () => {
       delete process.env.AZURE_OPENAI_API_VERSION;
       process.env.MODEL_PROVIDER = "databricks";
       process.env.DATABRICKS_API_KEY = "test-key";
@@ -186,7 +186,7 @@ describe("Azure OpenAI Configuration Tests", () => {
 
       const config = require("../src/config");
 
-      assert.strictEqual(config.azureOpenAI.apiVersion, "2024-08-01-preview");
+      assert.strictEqual(config.azureOpenAI.apiVersion, "2024-05-01-preview");
     });
 
     it("should use custom API version when specified", () => {
