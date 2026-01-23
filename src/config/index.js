@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 const modelProvider = SUPPORTED_MODEL_PROVIDERS.has(rawModelProvider)
   ? rawModelProvider
@@ -116,6 +116,19 @@ const lmstudioApiKey = process.env.LMSTUDIO_API_KEY?.trim() || null;
 const bedrockRegion = process.env.AWS_BEDROCK_REGION?.trim() || process.env.AWS_REGION?.trim() || "us-east-1";
 const bedrockApiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null; // Bearer token
 const bedrockModelId = process.env.AWS_BEDROCK_MODEL_ID?.trim() || "anthropic.claude-3-5-sonnet-20241022-v2:0";
+
+// Z.AI (Zhipu) configuration - Anthropic-compatible API at ~1/7 cost
+const zaiApiKey = process.env.ZAI_API_KEY?.trim() || null;
+const zaiEndpoint = process.env.ZAI_ENDPOINT?.trim() || "https://api.z.ai/api/anthropic/v1/messages";
+const zaiModel = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
+
+// Vertex AI (Google Gemini) configuration
+const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
+const vertexModel = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
+
+// Hot reload configuration
+const hotReloadEnabled = process.env.HOT_RELOAD_ENABLED !== "false"; // default true
+const hotReloadDebounceMs = Number.parseInt(process.env.HOT_RELOAD_DEBOUNCE_MS ?? "1000", 10);
 
 // Hybrid routing configuration
 const preferOllama = process.env.PREFER_OLLAMA === "true";
@@ -476,6 +489,19 @@ const config = {
     apiKey: bedrockApiKey,
     modelId: bedrockModelId,
   },
+  zai: {
+    apiKey: zaiApiKey,
+    endpoint: zaiEndpoint,
+    model: zaiModel,
+  },
+  vertex: {
+    apiKey: vertexApiKey,
+    model: vertexModel,
+  },
+  hotReload: {
+    enabled: hotReloadEnabled,
+    debounceMs: Number.isNaN(hotReloadDebounceMs) ? 1000 : hotReloadDebounceMs,
+  },
   modelProvider: {
     type: modelProvider,
     defaultModel,
@@ -643,5 +669,47 @@ const config = {
     minimalMode: false,  // HARDCODED - disabled
   },
 };
+
+/**
+ * Reload configuration from environment
+ * Called by hot reload watcher when .env changes
+ */
+function reloadConfig() {
+  // Re-parse .env file
+  dotenv.config({ override: true });
+
+  // Update mutable config values (those that can safely change at runtime)
+  // API keys and endpoints
+  config.databricks.apiKey = process.env.DATABRICKS_API_KEY;
+  config.azureAnthropic.apiKey = process.env.AZURE_ANTHROPIC_API_KEY ?? null;
+  config.ollama.model = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+  config.openrouter.apiKey = process.env.OPENROUTER_API_KEY ?? null;
+  config.openrouter.model = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
+  config.azureOpenAI.apiKey = process.env.AZURE_OPENAI_API_KEY?.trim() || null;
+  config.openai.apiKey = process.env.OPENAI_API_KEY?.trim() || null;
+  config.bedrock.apiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null;
+  config.zai.apiKey = process.env.ZAI_API_KEY?.trim() || null;
+  config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
+  config.vertex.apiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
+  config.vertex.model = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
+
+  // Model provider settings
+  const newProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
+  if (SUPPORTED_MODEL_PROVIDERS.has(newProvider)) {
+    config.modelProvider.type = newProvider;
+  }
+  config.modelProvider.preferOllama = process.env.PREFER_OLLAMA === "true";
+  config.modelProvider.fallbackEnabled = process.env.FALLBACK_ENABLED !== "false";
+  config.modelProvider.fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
+
+  // Log level
+  config.logger.level = process.env.LOG_LEVEL ?? "info";
+
+  console.log("[CONFIG] Configuration reloaded from environment");
+  return config;
+}
+
+// Make config mutable for hot reload
+config.reloadConfig = reloadConfig;
 
 module.exports = config;

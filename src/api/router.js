@@ -4,6 +4,7 @@ const { getSession } = require("../sessions");
 const metrics = require("../metrics");
 const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
+const providersRouter = require("./providers-handler");
 const { getRoutingHeaders, getRoutingStats, analyzeComplexity } = require("../routing");
 
 const router = express.Router();
@@ -564,5 +565,9 @@ router.get("/api/tokens/stats", (req, res) => {
 
 // Mount OpenAI-compatible endpoints for Cursor IDE support
 router.use("/v1", openaiRouter);
+
+// Mount Anthropic-compatible provider discovery endpoints (cc-relay style)
+// These provide /v1/models and /v1/providers for Claude Code CLI compatibility
+router.use("/v1", providersRouter);
 
 module.exports = router;

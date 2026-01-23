@@ -19,6 +19,16 @@ class ShutdownManager {
     this.isShuttingDown = false;
     this.server = null;
     this.connections = new Set();
+    this.shutdownCallbacks = [];
+  }
+
+  /**
+   * Register a callback to be called during shutdown
+   */
+  onShutdown(callback) {
+    if (typeof callback === 'function') {
+      this.shutdownCallbacks.push(callback);
+    }
   }
 
   /**
@@ -107,8 +117,18 @@ class ShutdownManager {
         }
       }
 
-      // Step 3: Close database connections
-      logger.info("Step 3: Closing database connections");
+      // Step 3: Run registered shutdown callbacks
+      logger.info(`Step 3: Running ${this.shutdownCallbacks.length} shutdown callbacks`);
+      for (const callback of this.shutdownCallbacks) {
+        try {
+          await callback();
+        } catch (err) {
+          logger.warn({ err }, "Error in shutdown callback");
+        }
+      }
+
+      // Step 4: Close database connections
+      logger.info("Step 4: Closing database connections");
       try {
         const budgetManager = getBudgetManager();
         if (budgetManager) {
@@ -118,8 +138,8 @@ class ShutdownManager {
         logger.warn({ err }, "Error closing budget manager");
       }
 
-      // Step 4: Final cleanup
-      logger.info("Step 4: Final cleanup");
+      // Step 5: Final cleanup
+      logger.info("Step 5: Final cleanup");
       clearTimeout(forceTimer);
 
       const duration = Date.now() - startTime;

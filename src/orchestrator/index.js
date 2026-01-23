@@ -977,6 +977,22 @@ function sanitizePayload(payload) {
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
       delete clean.tools;
     }
+  } else if (providerType === "zai") {
+    // Z.AI (Zhipu) supports tools - keep them in Anthropic format
+    // They will be converted to OpenAI format in invokeZai
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
+      // Ensure tools are in Anthropic format
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
+  } else if (providerType === "vertex") {
+    // Vertex AI supports tools - keep them in Anthropic format
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
   } else if (Array.isArray(clean.tools)) {
     // Unknown provider - remove tools for safety
     delete clean.tools;
@@ -1770,10 +1786,11 @@ async function runAgentLoop({
                 ),
               );
             } else {
+              // OpenAI format: tool_call_id MUST match the id from assistant's tool_call
               toolMessage = {
                 role: "tool",
-                tool_call_id: execution.id,
-                name: execution.name,
+                tool_call_id: call.id ?? execution.id,
+                name: call.function?.name ?? call.name ?? execution.name,
                 content: execution.content,
               };
             }
@@ -1958,10 +1975,11 @@ async function runAgentLoop({
           );
 
         } else {
+          // OpenAI format: tool_call_id MUST match the id from assistant's tool_call
           toolMessage = {
             role: "tool",
-            tool_call_id: execution.id,
-            name: execution.name,
+            tool_call_id: call.id ?? execution.id,
+            name: call.function?.name ?? call.name ?? execution.name,
             content: execution.content,
           };
         }
@@ -2227,6 +2245,22 @@ async function runAgentLoop({
       }, "=== CONVERTED ANTHROPIC RESPONSE (llama.cpp) ===");
 
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+    } else if (actualProvider === "zai") {
+      // Z.AI responses are already converted to Anthropic format in invokeZai
+      logger.info({
+        hasJson: !!databricksResponse.json,
+        jsonContent: JSON.stringify(databricksResponse.json?.content)?.substring(0, 200),
+      }, "=== ZAI ORCHESTRATOR DEBUG ===");
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
+    } else if (actualProvider === "vertex") {
+      // Vertex AI responses are already in Anthropic format
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
     } else {
       anthropicPayload = toAnthropicResponse(
         databricksResponse.json,

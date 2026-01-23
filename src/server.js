@@ -27,6 +27,7 @@ const { registerTaskTools } = require("./tools/tasks");
 const { registerTestTools } = require("./tools/tests");
 const { registerMcpTools } = require("./tools/mcp");
 const { registerAgentTaskTool } = require("./tools/agent-task");
+const { initConfigWatcher, getConfigWatcher } = require("./config/watcher");
 
 initialiseMcp();
 registerStubTools();
@@ -121,6 +122,30 @@ function start() {
   const shutdownManager = getShutdownManager();
   shutdownManager.registerServer(server);
   shutdownManager.setupSignalHandlers();
+
+  // Initialize hot reload config watcher
+  if (config.hotReload?.enabled !== false) {
+    const watcher = initConfigWatcher({
+      paths: [".env"],
+      debounceMs: config.hotReload?.debounceMs || 1000,
+      enabled: true,
+    });
+
+    watcher.on("change", (filepath) => {
+      try {
+        config.reloadConfig();
+        logger.info({ filepath }, "Configuration hot-reloaded successfully");
+      } catch (err) {
+        logger.error({ error: err.message, filepath }, "Failed to hot-reload configuration");
+      }
+    });
+
+    // Stop watcher on shutdown
+    shutdownManager.onShutdown(() => {
+      const w = getConfigWatcher();
+      if (w) w.stop();
+    });
+  }
 
   return server;
 }
