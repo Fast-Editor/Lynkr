@@ -142,6 +142,27 @@ services:
       CIRCUIT_BREAKER_TIMEOUT: ${CIRCUIT_BREAKER_TIMEOUT:-60000}
       LOAD_SHEDDING_MEMORY_THRESHOLD: ${LOAD_SHEDDING_MEMORY_THRESHOLD:-0.85}
 
+      # ============================================================
+      # HEADROOM CONTEXT COMPRESSION (OPTIONAL)
+      # ============================================================
+      # Provides 47-92% token reduction through intelligent compression
+      HEADROOM_ENABLED: ${HEADROOM_ENABLED:-false}
+      HEADROOM_ENDPOINT: ${HEADROOM_ENDPOINT:-http://headroom:8787}
+      HEADROOM_TIMEOUT_MS: ${HEADROOM_TIMEOUT_MS:-5000}
+      HEADROOM_MIN_TOKENS: ${HEADROOM_MIN_TOKENS:-500}
+      HEADROOM_MODE: ${HEADROOM_MODE:-optimize}
+      # Disable Docker management - we use docker-compose instead
+      HEADROOM_DOCKER_ENABLED: "false"
+      # Transform settings
+      HEADROOM_SMART_CRUSHER: ${HEADROOM_SMART_CRUSHER:-true}
+      HEADROOM_TOOL_CRUSHER: ${HEADROOM_TOOL_CRUSHER:-true}
+      HEADROOM_CACHE_ALIGNER: ${HEADROOM_CACHE_ALIGNER:-true}
+      HEADROOM_ROLLING_WINDOW: ${HEADROOM_ROLLING_WINDOW:-true}
+      HEADROOM_KEEP_TURNS: ${HEADROOM_KEEP_TURNS:-3}
+      HEADROOM_CCR: ${HEADROOM_CCR:-true}
+      HEADROOM_CCR_TTL: ${HEADROOM_CCR_TTL:-300}
+      HEADROOM_LLMLINGUA: ${HEADROOM_LLMLINGUA:-false}
+
     volumes:
       - ./data:/app/data  # Persist SQLite databases
       - .:/workspace      # Mount workspace
@@ -244,12 +265,76 @@ services:
       retries: 3
       start_period: 20s
 
+  # Headroom context compression sidecar (47-92% token reduction)
+  headroom:
+    image: lynkr/headroom-sidecar:latest
+    container_name: lynkr-headroom
+    profiles:
+      - headroom
+    build:
+      context: ./headroom-sidecar
+      dockerfile: Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      HEADROOM_HOST: "0.0.0.0"
+      HEADROOM_PORT: "8787"
+      HEADROOM_LOG_LEVEL: ${HEADROOM_LOG_LEVEL:-info}
+      HEADROOM_MODE: ${HEADROOM_MODE:-optimize}
+      HEADROOM_PROVIDER: ${HEADROOM_PROVIDER:-anthropic}
+      # Transforms
+      HEADROOM_SMART_CRUSHER: ${HEADROOM_SMART_CRUSHER:-true}
+      HEADROOM_SMART_CRUSHER_MIN_TOKENS: ${HEADROOM_SMART_CRUSHER_MIN_TOKENS:-200}
+      HEADROOM_SMART_CRUSHER_MAX_ITEMS: ${HEADROOM_SMART_CRUSHER_MAX_ITEMS:-15}
+      HEADROOM_TOOL_CRUSHER: ${HEADROOM_TOOL_CRUSHER:-true}
+      HEADROOM_CACHE_ALIGNER: ${HEADROOM_CACHE_ALIGNER:-true}
+      HEADROOM_ROLLING_WINDOW: ${HEADROOM_ROLLING_WINDOW:-true}
+      HEADROOM_KEEP_TURNS: ${HEADROOM_KEEP_TURNS:-3}
+      # CCR
+      HEADROOM_CCR: ${HEADROOM_CCR:-true}
+      HEADROOM_CCR_TTL: ${HEADROOM_CCR_TTL:-300}
+      # LLMLingua (optional, requires GPU)
+      HEADROOM_LLMLINGUA: ${HEADROOM_LLMLINGUA:-false}
+      HEADROOM_LLMLINGUA_DEVICE: ${HEADROOM_LLMLINGUA_DEVICE:-auto}
+    volumes:
+      - headroom-data:/app/data
+    restart: unless-stopped
+    networks:
+      - lynkr-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8787/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - "com.lynkr.service=headroom"
+      - "com.lynkr.description=Context compression sidecar"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    # Uncomment for GPU support (LLMLingua)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
 volumes:
   ollama-data:
     driver: local
   # ollama-webui-data:
   #   driver: local
   searxng-data:
+    driver: local
+  headroom-data:
     driver: local
 
 networks:

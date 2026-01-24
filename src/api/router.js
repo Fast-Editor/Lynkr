@@ -595,4 +595,65 @@ router.use("/v1", openaiRouter);
 // These provide /v1/models and /v1/providers for Claude Code CLI compatibility
 router.use("/v1", providersRouter);
 
+// Headroom compression endpoints
+router.get("/metrics/compression", async (req, res) => {
+  try {
+    const { getCombinedMetrics } = require("../headroom");
+    const metrics = await getCombinedMetrics();
+    res.json(metrics);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get("/health/headroom", async (req, res) => {
+  try {
+    const { getHeadroomManager } = require("../headroom");
+    const manager = getHeadroomManager();
+    const health = await manager.getHealth();
+    res.status(health.healthy ? 200 : 503).json(health);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get("/headroom/status", async (req, res) => {
+  try {
+    const { getHeadroomManager } = require("../headroom");
+    const manager = getHeadroomManager();
+    const status = await manager.getDetailedStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post("/headroom/restart", async (req, res) => {
+  try {
+    const { getHeadroomManager } = require("../headroom");
+    const manager = getHeadroomManager();
+    const result = await manager.restart();
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get("/headroom/logs", async (req, res) => {
+  try {
+    const { getHeadroomManager } = require("../headroom");
+    const manager = getHeadroomManager();
+    const tail = parseInt(req.query.tail || "100", 10);
+    const logs = await manager.getLogs(tail);
+
+    if (logs === null) {
+      return res.status(400).json({ error: "Docker management is disabled" });
+    }
+
+    res.type("text/plain").send(logs);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

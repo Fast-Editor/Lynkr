@@ -31,6 +31,7 @@ Understand Lynkr's capabilities:
 - **[Architecture & Features](features.md)** - System architecture, request flow, format conversion, and core capabilities
 - **[Memory System](memory-system.md)** - Titans-inspired long-term memory with surprise-based filtering and decay
 - **[Token Optimization](token-optimization.md)** - Achieve 60-80% cost reduction through smart tool selection, prompt caching, and memory deduplication
+- **[Headroom Compression](headroom.md)** - 47-92% token reduction through intelligent context compression (Smart Crusher, CCR, LLMLingua)
 - **[Tools & Execution Modes](tools.md)** - Tool calling, server vs client execution, custom tool integration, MCP support
 
 ---
@@ -71,7 +72,7 @@ Get help and contribute:
 - [Installation](installation.md) | [Providers](providers.md) | [Claude Code](claude-code-cli.md) | [Cursor](cursor-integration.md) | [Embeddings](embeddings.md)
 
 ### Features & Optimization
-- [Features](features.md) | [Memory System](memory-system.md) | [Token Optimization](token-optimization.md) | [Tools](tools.md)
+- [Features](features.md) | [Memory System](memory-system.md) | [Token Optimization](token-optimization.md) | [Headroom](headroom.md) | [Tools](tools.md)
 
 ### Deployment & Production
 - [Docker](docker.md) | [Production](production.md) | [API Reference](api.md)

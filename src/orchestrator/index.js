@@ -11,6 +11,7 @@ const systemPrompt = require("../prompts/system");
 const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
+const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = require("../headroom");
 
 const DROP_KEYS = new Set([
   "provider",
@@ -1163,6 +1164,8 @@ async function runAgentLoop({
   cacheKey,
   providerType,
 }) {
+  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length);
+  logger.info({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop ENTERED');
   const settings = resolveLoopOptions(options);
   const start = Date.now();
   let steps = 0;
@@ -1176,6 +1179,7 @@ async function runAgentLoop({
     }
 
     steps += 1;
+    console.log('[LOOP DEBUG] Entered while loop - step:', steps);
     logger.debug(
       {
         sessionId: session?.id ?? null,
@@ -1362,6 +1366,7 @@ async function runAgentLoop({
     }
 
     // Track estimated token usage before model call
+  console.log('[TOKEN DEBUG] About to track token usage - step:', steps);
   const estimatedTokens = config.tokenTracking?.enabled !== false
     ? tokens.countPayloadTokens(cleanPayload)
     : null;
@@ -1372,6 +1377,52 @@ async function runAgentLoop({
       estimated: estimatedTokens,
       model: cleanPayload.model
     }, 'Estimated token usage before model call');
+  }
+
+  // Apply Headroom compression if enabled
+  console.log('[HEADROOM DEBUG] About to check compression - step:', steps, 'messages:', cleanPayload.messages?.length);
+  logger.info({
+    headroomEnabled: isHeadroomEnabled(),
+    hasMessages: Boolean(cleanPayload.messages),
+    messageCount: cleanPayload.messages?.length ?? 0,
+  }, 'Headroom compression check');
+
+  if (isHeadroomEnabled() && cleanPayload.messages && cleanPayload.messages.length > 0) {
+    console.log('[HEADROOM DEBUG] Entering compression block');
+    try {
+      console.log('[HEADROOM DEBUG] About to call headroomCompress');
+      const compressionResult = await headroomCompress(
+        cleanPayload.messages,
+        cleanPayload.tools || [],
+        {
+          mode: config.headroom?.mode,
+          queryContext: cleanPayload.messages[cleanPayload.messages.length - 1]?.content,
+        }
+      );
+      console.log('[HEADROOM DEBUG] headroomCompress returned - compressed:', compressionResult.compressed, 'stats:', JSON.stringify(compressionResult.stats));
+
+      if (compressionResult.compressed) {
+        cleanPayload.messages = compressionResult.messages;
+        if (compressionResult.tools) {
+          cleanPayload.tools = compressionResult.tools;
+        }
+        logger.info({
+          sessionId: session?.id ?? null,
+          tokensBefore: compressionResult.stats?.tokens_before,
+          tokensAfter: compressionResult.stats?.tokens_after,
+          saved: compressionResult.stats?.tokens_saved,
+          savingsPercent: compressionResult.stats?.savings_percent,
+          transforms: compressionResult.stats?.transforms_applied,
+        }, 'Headroom compression applied to request');
+      } else {
+        logger.debug({
+          sessionId: session?.id ?? null,
+          reason: compressionResult.stats?.reason,
+        }, 'Headroom compression skipped');
+      }
+    } catch (headroomErr) {
+      logger.warn({ err: headroomErr, sessionId: session?.id ?? null }, 'Headroom compression failed, using original messages');
+    }
   }
 
   const databricksResponse = await invokeModel(cleanPayload);
