@@ -185,6 +185,40 @@ const smartToolSelectionTokenBudget = Number.parseInt(
   10
 );
 
+// Headroom sidecar configuration
+const headroomEnabled = process.env.HEADROOM_ENABLED === "true";
+const headroomEndpoint = process.env.HEADROOM_ENDPOINT?.trim() || "http://localhost:8787";
+const headroomTimeoutMs = Number.parseInt(process.env.HEADROOM_TIMEOUT_MS ?? "5000", 10);
+const headroomMinTokens = Number.parseInt(process.env.HEADROOM_MIN_TOKENS ?? "500", 10);
+const headroomMode = (process.env.HEADROOM_MODE ?? "optimize").toLowerCase();
+
+// Headroom Docker container configuration
+const headroomDockerEnabled = process.env.HEADROOM_DOCKER_ENABLED !== "false"; // default true when headroom enabled
+const headroomDockerImage = process.env.HEADROOM_DOCKER_IMAGE ?? "lynkr/headroom-sidecar:latest";
+const headroomDockerContainerName = process.env.HEADROOM_DOCKER_CONTAINER_NAME ?? "lynkr-headroom";
+const headroomDockerPort = Number.parseInt(process.env.HEADROOM_DOCKER_PORT ?? "8787", 10);
+const headroomDockerMemoryLimit = process.env.HEADROOM_DOCKER_MEMORY_LIMIT ?? "512m";
+const headroomDockerCpuLimit = process.env.HEADROOM_DOCKER_CPU_LIMIT ?? "1.0";
+const headroomDockerRestartPolicy = process.env.HEADROOM_DOCKER_RESTART_POLICY ?? "unless-stopped";
+const headroomDockerNetwork = process.env.HEADROOM_DOCKER_NETWORK ?? null;
+const headroomDockerBuildContext = process.env.HEADROOM_DOCKER_BUILD_CONTEXT ?? "./headroom-sidecar";
+const headroomDockerAutoBuild = process.env.HEADROOM_DOCKER_AUTO_BUILD === "true";
+
+// Headroom transform configuration (passed to sidecar)
+const headroomSmartCrusher = process.env.HEADROOM_SMART_CRUSHER !== "false";
+const headroomSmartCrusherMinTokens = Number.parseInt(process.env.HEADROOM_SMART_CRUSHER_MIN_TOKENS ?? "200", 10);
+const headroomSmartCrusherMaxItems = Number.parseInt(process.env.HEADROOM_SMART_CRUSHER_MAX_ITEMS ?? "15", 10);
+const headroomToolCrusher = process.env.HEADROOM_TOOL_CRUSHER !== "false";
+const headroomCacheAligner = process.env.HEADROOM_CACHE_ALIGNER !== "false";
+const headroomRollingWindow = process.env.HEADROOM_ROLLING_WINDOW !== "false";
+const headroomKeepTurns = Number.parseInt(process.env.HEADROOM_KEEP_TURNS ?? "3", 10);
+const headroomCcrEnabled = process.env.HEADROOM_CCR !== "false";
+const headroomCcrTtl = Number.parseInt(process.env.HEADROOM_CCR_TTL ?? "300", 10);
+const headroomLlmlingua = process.env.HEADROOM_LLMLINGUA === "true";
+const headroomLlmlinguaDevice = process.env.HEADROOM_LLMLINGUA_DEVICE ?? "auto";
+const headroomProvider = process.env.HEADROOM_PROVIDER ?? "anthropic";
+const headroomLogLevel = process.env.HEADROOM_LOG_LEVEL ?? "info";
+
 // Only require Databricks credentials if it's the primary provider or used as fallback
 if (modelProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
   throw new Error("Set DATABRICKS_API_BASE and DATABRICKS_API_KEY before starting the proxy.");
@@ -667,6 +701,44 @@ const config = {
     mode: smartToolSelectionMode,
     tokenBudget: smartToolSelectionTokenBudget,
     minimalMode: false,  // HARDCODED - disabled
+  },
+  headroom: {
+    enabled: headroomEnabled,
+    endpoint: headroomEndpoint,
+    timeoutMs: Number.isNaN(headroomTimeoutMs) ? 5000 : headroomTimeoutMs,
+    minTokens: Number.isNaN(headroomMinTokens) ? 500 : headroomMinTokens,
+    mode: headroomMode,
+    docker: {
+      enabled: headroomDockerEnabled,
+      image: headroomDockerImage,
+      containerName: headroomDockerContainerName,
+      port: Number.isNaN(headroomDockerPort) ? 8787 : headroomDockerPort,
+      memoryLimit: headroomDockerMemoryLimit,
+      cpuLimit: headroomDockerCpuLimit,
+      restartPolicy: headroomDockerRestartPolicy,
+      network: headroomDockerNetwork,
+      buildContext: headroomDockerBuildContext,
+      autoBuild: headroomDockerAutoBuild,
+    },
+    transforms: {
+      smartCrusher: headroomSmartCrusher,
+      smartCrusherMinTokens: Number.isNaN(headroomSmartCrusherMinTokens) ? 200 : headroomSmartCrusherMinTokens,
+      smartCrusherMaxItems: Number.isNaN(headroomSmartCrusherMaxItems) ? 15 : headroomSmartCrusherMaxItems,
+      toolCrusher: headroomToolCrusher,
+      cacheAligner: headroomCacheAligner,
+      rollingWindow: headroomRollingWindow,
+      keepTurns: Number.isNaN(headroomKeepTurns) ? 3 : headroomKeepTurns,
+    },
+    ccr: {
+      enabled: headroomCcrEnabled,
+      ttlSeconds: Number.isNaN(headroomCcrTtl) ? 300 : headroomCcrTtl,
+    },
+    llmlingua: {
+      enabled: headroomLlmlingua,
+      device: headroomLlmlinguaDevice,
+    },
+    provider: headroomProvider,
+    logLevel: headroomLogLevel,
   },
 };
 

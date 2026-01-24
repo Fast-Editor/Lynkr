@@ -500,11 +500,91 @@ async function invokeAzureOpenAI(body) {
     return performJsonRequest(endpoint, { headers, body: azureBody }, "Azure OpenAI");
   }
   else if (format === "responses") {
-    azureBody.max_completion_tokens = azureBody.max_tokens;
-    delete azureBody.max_tokens;
-    delete azureBody.temperature;
-    delete azureBody.top_p;
-    return performJsonRequest(endpoint, { headers, body: azureBody }, "Azure OpenAI");
+    // Responses API uses 'input' instead of 'messages' and flat tool format
+    // Convert tools from Chat Completions format to Responses API format
+    const responsesTools = azureBody.tools?.map(tool => {
+      if (tool.type === "function" && tool.function) {
+        // Flatten: {type:"function", function:{name,description,parameters}} -> {type:"function", name, description, parameters}
+        return {
+          type: "function",
+          name: tool.function.name,
+          description: tool.function.description,
+          parameters: tool.function.parameters
+        };
+      }
+      return tool;
+    });
+
+    const responsesBody = {
+      input: azureBody.messages,
+      model: azureBody.model,
+      max_output_tokens: azureBody.max_tokens,
+      tools: responsesTools,
+      tool_choice: azureBody.tool_choice,
+      stream: false
+    };
+    logger.info({
+      format: "responses",
+      inputCount: responsesBody.input?.length,
+      model: responsesBody.model,
+      hasTools: !!responsesBody.tools
+    }, "Using Responses API format");
+
+    const result = await performJsonRequest(endpoint, { headers, body: responsesBody }, "Azure OpenAI Responses");
+
+    // Convert Responses API response to Chat Completions format
+    if (result.ok && result.json?.output) {
+      const outputArray = result.json.output || [];
+
+      // Find message output (contains text content)
+      const messageOutput = outputArray.find(o => o.type === "message");
+      const textContent = messageOutput?.content?.find(c => c.type === "output_text")?.text || "";
+
+      // Find function_call outputs (tool calls are separate items in output array)
+      const toolCalls = outputArray
+        .filter(o => o.type === "function_call")
+        .map(tc => ({
+          id: tc.call_id || tc.id || `call_${Date.now()}`,
+          type: "function",
+          function: {
+            name: tc.name,
+            arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments || {})
+          }
+        }));
+
+      logger.info({
+        outputTypes: outputArray.map(o => o.type),
+        hasMessage: !!messageOutput,
+        toolCallCount: toolCalls.length,
+        toolCallNames: toolCalls.map(tc => tc.function.name)
+      }, "Parsing Responses API output");
+
+      // Convert to Chat Completions format
+      result.json = {
+        id: result.json.id,
+        object: "chat.completion",
+        created: result.json.created_at,
+        model: result.json.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: textContent,
+            tool_calls: toolCalls.length > 0 ? toolCalls : undefined
+          },
+          finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop"
+        }],
+        usage: result.json.usage
+      };
+
+      logger.info({
+        convertedContent: textContent?.substring(0, 100),
+        hasToolCalls: toolCalls.length > 0,
+        toolCallCount: toolCalls.length
+      }, "Converted Responses API to Chat Completions format");
+    }
+
+    return result;
   }
   else {
     throw new Error(`Unsupported Azure OpenAI endpoint format: ${format}`);
@@ -1167,9 +1247,9 @@ function convertOpenAIToAnthropic(response) {
   const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
   if (message.content) {
     content.push({ type: "text", text: message.content });
-  } else if (message.reasoning_content && !message.content && !hasToolCalls) {
-    // Z.AI returns reasoning in reasoning_content - if no final content AND no tool calls, use a placeholder
-    content.push({ type: "text", text: "[Model is still thinking - increase max_tokens for complete response]" });
+  } else if (message.reasoning_content && !message.content) {
+    // Thinking models (Kimi-K2, o1, etc.) return response in reasoning_content
+    content.push({ type: "text", text: message.reasoning_content });
   }
 
   // Convert tool calls

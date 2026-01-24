@@ -28,6 +28,7 @@ const { registerTestTools } = require("./tools/tests");
 const { registerMcpTools } = require("./tools/mcp");
 const { registerAgentTaskTool } = require("./tools/agent-task");
 const { initConfigWatcher, getConfigWatcher } = require("./config/watcher");
+const { initializeHeadroom, shutdownHeadroom, getHeadroomManager } = require("./headroom");
 
 initialiseMcp();
 registerStubTools();
@@ -121,7 +122,22 @@ function createApp() {
   return app;
 }
 
-function start() {
+async function start() {
+  // Initialize Headroom sidecar (if enabled)
+  // This must happen before the server starts accepting requests
+  if (config.headroom?.enabled) {
+    try {
+      const result = await initializeHeadroom();
+      if (result.success) {
+        logger.info("Headroom sidecar initialized");
+      } else {
+        logger.warn({ error: result.error }, "Headroom initialization failed, continuing without compression");
+      }
+    } catch (err) {
+      logger.error({ err }, "Headroom initialization error, continuing without compression");
+    }
+  }
+
   const app = createApp();
   const server = app.listen(config.port, () => {
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
@@ -136,6 +152,14 @@ function start() {
   const shutdownManager = getShutdownManager();
   shutdownManager.registerServer(server);
   shutdownManager.setupSignalHandlers();
+
+  // Register Headroom shutdown callback
+  if (config.headroom?.enabled) {
+    shutdownManager.onShutdown(async () => {
+      logger.info("Stopping Headroom sidecar on shutdown");
+      await shutdownHeadroom(false); // Don't remove container on shutdown
+    });
+  }
 
   // Initialize hot reload config watcher
   if (config.hotReload?.enabled !== false) {
