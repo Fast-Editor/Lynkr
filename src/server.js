@@ -8,7 +8,7 @@ const { budgetMiddleware } = require("./api/middleware/budget");
 const { metricsMiddleware } = require("./api/middleware/metrics");
 const { requestLoggingMiddleware } = require("./api/middleware/request-logging");
 const { errorHandlingMiddleware, notFoundHandler } = require("./api/middleware/error-handling");
-const { loadSheddingMiddleware } = require("./api/middleware/load-shedding");
+const { loadSheddingMiddleware, initializeLoadShedder } = require("./api/middleware/load-shedding");
 const { livenessCheck, readinessCheck } = require("./api/health");
 const { getMetricsCollector } = require("./observability/metrics");
 const { getShutdownManager } = require("./server/shutdown");
@@ -27,6 +27,7 @@ const { registerTaskTools } = require("./tools/tasks");
 const { registerTestTools } = require("./tools/tests");
 const { registerMcpTools } = require("./tools/mcp");
 const { registerAgentTaskTool } = require("./tools/agent-task");
+const { initConfigWatcher, getConfigWatcher } = require("./config/watcher");
 
 initialiseMcp();
 registerStubTools();
@@ -43,6 +44,9 @@ registerAgentTaskTool();
 
 function createApp() {
   const app = express();
+
+  // Initialize load shedder (log configuration)
+  initializeLoadShedder();
 
   // Load shedding (protect against overload)
   app.use(loadSheddingMiddleware);
@@ -100,6 +104,12 @@ function createApp() {
     res.json(registry.getAll());
   });
 
+  app.get("/metrics/load-shedding", (req, res) => {
+    const { getLoadShedder } = require("./api/middleware/load-shedding");
+    const shedder = getLoadShedder();
+    res.json(shedder.getMetrics());
+  });
+
   app.use(router);
 
   // 404 handler (must be after all routes)
@@ -117,10 +127,39 @@ function start() {
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
   });
 
+  // Start session cleanup manager
+  const { getSessionCleanupManager } = require("./sessions/cleanup");
+  const sessionCleanup = getSessionCleanupManager();
+  sessionCleanup.start();
+
   // Setup graceful shutdown
   const shutdownManager = getShutdownManager();
   shutdownManager.registerServer(server);
   shutdownManager.setupSignalHandlers();
+
+  // Initialize hot reload config watcher
+  if (config.hotReload?.enabled !== false) {
+    const watcher = initConfigWatcher({
+      paths: [".env"],
+      debounceMs: config.hotReload?.debounceMs || 1000,
+      enabled: true,
+    });
+
+    watcher.on("change", (filepath) => {
+      try {
+        config.reloadConfig();
+        logger.info({ filepath }, "Configuration hot-reloaded successfully");
+      } catch (err) {
+        logger.error({ error: err.message, filepath }, "Failed to hot-reload configuration");
+      }
+    });
+
+    // Stop watcher on shutdown
+    shutdownManager.onShutdown(() => {
+      const w = getConfigWatcher();
+      if (w) w.stop();
+    });
+  }
 
   return server;
 }

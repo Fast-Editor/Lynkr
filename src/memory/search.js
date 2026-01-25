@@ -259,7 +259,57 @@ function searchMemories(options) {
 }
 
 /**
+
  * Search with keyword expansion (UPDATED - now uses sanitized keywords)
+=======
+ * Prepare FTS5 query - handle special characters and phrases
+ */
+function prepareFTS5Query(query) {
+  // FTS5 special characters: " * ( ) < > - : AND OR NOT
+  // Strategy: Strip XML/HTML tags, then sanitize remaining text
+  let cleaned = query.trim();
+
+  // Step 1: Remove XML/HTML tags (common in error messages)
+  // Matches: <tag>, </tag>, <tag attr="value">
+  cleaned = cleaned.replace(/<[^>]+>/g, ' ');
+
+  // Step 2: Remove excess whitespace from tag removal
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  if (!cleaned) {
+    // Query was all tags, return safe fallback
+    return '"empty query"';
+  }
+
+  // Step 3: Check if query contains FTS5 operators (AND, OR, NOT)
+  const hasFTS5Operators = /\b(AND|OR|NOT)\b/i.test(cleaned);
+
+  // Step 4: ENHANCED - Remove ALL special characters that could break FTS5
+  // Keep only: letters, numbers, spaces
+  // Remove: * ( ) < > - : [ ] | , + = ? ! ; / \ @ # $ % ^ & { }
+  cleaned = cleaned.replace(/[*()<>\-:\[\]|,+=?!;\/\\@#$%^&{}]/g, ' ');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  // Step 5: Escape double quotes (FTS5 uses "" for literal quote)
+  cleaned = cleaned.replace(/"/g, '""');
+
+  // Step 6: Additional safety - remove any remaining non-alphanumeric except spaces
+  cleaned = cleaned.replace(/[^\w\s""]/g, ' ');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  // Step 7: Wrap in quotes for phrase search (safest approach)
+  if (!hasFTS5Operators) {
+    // Treat as literal phrase search
+    cleaned = `"${cleaned}"`;
+  }
+
+  // If query has FTS5 operators, let FTS5 parse them (advanced users)
+  return cleaned;
+}
+
+/**
+ * Search with keyword expansion (extract key terms)
+
  */
 function searchWithExpansion(options) {
   const { query, limit = 10 } = options;

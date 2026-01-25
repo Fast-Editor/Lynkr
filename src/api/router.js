@@ -4,6 +4,7 @@ const { getSession } = require("../sessions");
 const metrics = require("../metrics");
 const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
+const providersRouter = require("./providers-handler");
 const { getRoutingHeaders, getRoutingStats, analyzeComplexity } = require("../routing");
 
 const router = express.Router();
@@ -159,16 +160,24 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         // Parse SSE stream from provider and forward to client
         const reader = result.stream.getReader();
         const decoder = new TextDecoder();
-        let buffer = '';
+        const bufferChunks = []; // Use array to avoid string concatenation overhead
 
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
+            const chunk = decoder.decode(value, { stream: true });
+            bufferChunks.push(chunk);
+
+            // Join buffer and split by lines
+            const buffer = bufferChunks.join('');
             const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+            // Keep last incomplete line in buffer chunks
+            const remaining = lines.pop() || '';
+            bufferChunks.length = 0;
+            if (remaining) bufferChunks.push(remaining);
 
             for (const line of lines) {
               if (line.trim()) {
@@ -183,8 +192,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           }
 
           // Send any remaining buffer
-          if (buffer.trim()) {
-            res.write(buffer + '\n');
+          const remaining = bufferChunks.join('');
+          if (remaining.trim()) {
+            res.write(remaining + '\n');
           }
 
           metrics.recordResponse(200);
@@ -192,12 +202,28 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           return;
         } catch (streamError) {
           logger.error({ error: streamError }, "Error streaming response");
+
+          // Cancel stream on error
+          try {
+            await reader.cancel();
+          } catch (cancelError) {
+            logger.debug({ error: cancelError }, "Failed to cancel stream");
+          }
+
           if (!res.headersSent) {
             res.status(500).json({ error: "Streaming error" });
           } else {
             res.end();
           }
           return;
+        } finally {
+          // CRITICAL: Always release lock
+          try {
+            reader.releaseLock();
+          } catch (releaseError) {
+            // Lock may already be released, ignore
+            logger.debug({ error: releaseError }, "Stream lock already released");
+          }
         }
       }
 
@@ -564,5 +590,9 @@ router.get("/api/tokens/stats", (req, res) => {
 
 // Mount OpenAI-compatible endpoints for Cursor IDE support
 router.use("/v1", openaiRouter);
+
+// Mount Anthropic-compatible provider discovery endpoints (cc-relay style)
+// These provide /v1/models and /v1/providers for Claude Code CLI compatibility
+router.use("/v1", providersRouter);
 
 module.exports = router;

@@ -51,7 +51,7 @@ describe("Hybrid Routing Integration Tests", () => {
 
       assert.throws(() => {
         require("../src/config");
-      }, /FALLBACK_PROVIDER must be one of/);
+      }, /Unsupported FALLBACK_PROVIDER.*Valid options are/);
     });
 
     it("should reject circular fallback (ollama -> ollama)", () => {

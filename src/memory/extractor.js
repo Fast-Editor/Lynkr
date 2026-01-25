@@ -102,7 +102,11 @@ async function extractMemories(assistantResponse, conversationMessages, context 
 
     for (const entityName of entities) {
       // Track entity
-      store.trackEntity('code', entityName, { source: 'extraction' });
+      store.trackEntity({
+        type: 'code',
+        name: entityName,
+        context: { source: 'extraction' }
+      });
 
       const memory = await createMemoryWithSurprise({
         content: `Entity: ${entityName}`,

@@ -75,7 +75,7 @@ function enforceBudget(payload, options = {}) {
     };
   }
 
-  // Clone payload to avoid modifying original
+  // Clone payload only when compression is needed (avoids unnecessary allocation)
   let optimized = JSON.parse(JSON.stringify(payload));
   let strategy = [];
 

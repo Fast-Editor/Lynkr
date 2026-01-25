@@ -11,6 +11,7 @@ const systemPrompt = require("../prompts/system");
 const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
+const { getShuttingDown } = require("../api/health");
 
 const DROP_KEYS = new Set([
   "provider",
@@ -977,6 +978,22 @@ function sanitizePayload(payload) {
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
       delete clean.tools;
     }
+  } else if (providerType === "zai") {
+    // Z.AI (Zhipu) supports tools - keep them in Anthropic format
+    // They will be converted to OpenAI format in invokeZai
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
+      // Ensure tools are in Anthropic format
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
+  } else if (providerType === "vertex") {
+    // Vertex AI supports tools - keep them in Anthropic format
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
   } else if (Array.isArray(clean.tools)) {
     // Unknown provider - remove tools for safety
     delete clean.tools;
@@ -1157,6 +1174,35 @@ async function runAgentLoop({
   while (steps < settings.maxSteps) {
     if (Date.now() - start > settings.maxDurationMs) {
       break;
+    }
+
+    // Check if system is shutting down (Ctrl+C or SIGTERM)
+    if (getShuttingDown()) {
+      logger.info(
+        {
+          sessionId: session?.id ?? null,
+          steps,
+          toolCallsExecuted,
+          durationMs: Date.now() - start,
+        },
+        "Agent loop interrupted - system shutting down",
+      );
+
+      return {
+        response: {
+          status: 503,
+          body: {
+            error: {
+              type: "service_unavailable",
+              message: "Service is shutting down. Request was interrupted gracefully.",
+            },
+          },
+          terminationReason: "shutdown",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "shutdown",
+      };
     }
 
     steps += 1;
@@ -1770,10 +1816,11 @@ async function runAgentLoop({
                 ),
               );
             } else {
+              // OpenAI format: tool_call_id MUST match the id from assistant's tool_call
               toolMessage = {
                 role: "tool",
-                tool_call_id: execution.id,
-                name: execution.name,
+                tool_call_id: call.id ?? execution.id,
+                name: call.function?.name ?? call.name ?? execution.name,
                 content: execution.content,
               };
             }
@@ -1958,10 +2005,11 @@ async function runAgentLoop({
           );
 
         } else {
+          // OpenAI format: tool_call_id MUST match the id from assistant's tool_call
           toolMessage = {
             role: "tool",
-            tool_call_id: execution.id,
-            name: execution.name,
+            tool_call_id: call.id ?? execution.id,
+            name: call.function?.name ?? call.name ?? execution.name,
             content: execution.content,
           };
         }
@@ -2227,6 +2275,22 @@ async function runAgentLoop({
       }, "=== CONVERTED ANTHROPIC RESPONSE (llama.cpp) ===");
 
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+    } else if (actualProvider === "zai") {
+      // Z.AI responses are already converted to Anthropic format in invokeZai
+      logger.info({
+        hasJson: !!databricksResponse.json,
+        jsonContent: JSON.stringify(databricksResponse.json?.content)?.substring(0, 200),
+      }, "=== ZAI ORCHESTRATOR DEBUG ===");
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
+    } else if (actualProvider === "vertex") {
+      // Vertex AI responses are already in Anthropic format
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
     } else {
       anthropicPayload = toAnthropicResponse(
         databricksResponse.json,
@@ -2604,8 +2668,8 @@ async function processMessage({ payload, headers, session, options = {} }) {
   let cacheKey = null;
   let cachedResponse = null;
   if (promptCache.isEnabled()) {
-    const cacheSeedPayload = JSON.parse(JSON.stringify(cleanPayload));
-    const { key, entry } = promptCache.lookup(cacheSeedPayload);
+    // cleanPayload is already a deep clone from sanitizePayload, no need to clone again
+    const { key, entry } = promptCache.lookup(cleanPayload);
     cacheKey = key;
     if (entry?.value) {
       try {

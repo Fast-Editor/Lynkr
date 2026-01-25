@@ -4,13 +4,12 @@ const https = require("https");
 const { withRetry } = require("./retry");
 const { getCircuitBreakerRegistry } = require("./circuit-breaker");
 const { getMetricsCollector } = require("../observability/metrics");
+const { getHealthTracker } = require("../observability/health-tracker");
 const logger = require("../logger");
 const { STANDARD_TOOLS } = require("./standard-tools");
 const { convertAnthropicToolsToOpenRouter } = require("./openrouter-utils");
 const {
-  detectModelFamily,
-  convertAnthropicToBedrockFormat,
-  convertBedrockResponseToAnthropic
+  detectModelFamily
 } = require("./bedrock-utils");
 
 
@@ -19,6 +18,54 @@ const {
 if (typeof fetch !== "function") {
   throw new Error("Node 18+ is required for the built-in fetch API.");
 }
+
+/**
+ * Simple Semaphore for limiting concurrent requests
+ * Used to prevent Z.AI rate limiting from parallel Claude Code CLI calls
+ */
+class Semaphore {
+  constructor(maxConcurrent = 2) {
+    this.maxConcurrent = maxConcurrent;
+    this.current = 0;
+    this.queue = [];
+  }
+
+  async acquire() {
+    if (this.current < this.maxConcurrent) {
+      this.current++;
+      return;
+    }
+
+    // Wait in queue
+    return new Promise((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release() {
+    this.current--;
+    if (this.queue.length > 0 && this.current < this.maxConcurrent) {
+      this.current++;
+      const next = this.queue.shift();
+      next();
+    }
+  }
+
+  async run(fn) {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+}
+
+// Z.AI request semaphore - limit concurrent requests to avoid rate limiting
+// Configurable via ZAI_MAX_CONCURRENT env var (default: 2)
+const zaiMaxConcurrent = parseInt(process.env.ZAI_MAX_CONCURRENT || '2', 10);
+const zaiSemaphore = new Semaphore(zaiMaxConcurrent);
+logger.info({ maxConcurrent: zaiMaxConcurrent }, "Z.AI semaphore initialized");
 
 
 
@@ -920,10 +967,571 @@ async function invokeBedrock(body) {
   }
 }
 
+/**
+ * Z.AI (Zhipu) Provider
+ *
+ * Z.AI offers GLM models through an Anthropic-compatible API at ~1/7 the cost.
+ * Minimal transformation needed - mostly passthrough with model mapping.
+ */
+async function invokeZai(body) {
+  if (!config.zai?.apiKey) {
+    throw new Error("Z.AI API key is not configured. Set ZAI_API_KEY in your .env file.");
+  }
+
+  const endpoint = config.zai.endpoint || "https://api.z.ai/api/anthropic/v1/messages";
+  const isOpenAIFormat = endpoint.includes("/chat/completions");
+
+  // Model mapping: Anthropic names → Z.AI names (lowercase)
+  const modelMap = {
+    "claude-sonnet-4-5-20250929": "glm-4.7",
+    "claude-sonnet-4-5": "glm-4.7",
+    "claude-sonnet-4.5": "glm-4.7",
+    "claude-3-5-sonnet": "glm-4.7",
+    "claude-haiku-4-5-20251001": "glm-4.5-air",
+    "claude-haiku-4-5": "glm-4.5-air",
+    "claude-3-haiku": "glm-4.5-air",
+  };
+
+  const requestedModel = body.model || config.zai.model;
+  let mappedModel = modelMap[requestedModel] || config.zai.model || "glm-4.7";
+  mappedModel = mappedModel.toLowerCase();
+
+  let zaiBody;
+  let headers;
+
+  if (isOpenAIFormat) {
+    const {
+      convertAnthropicToolsToOpenRouter,
+      convertAnthropicMessagesToOpenRouter
+    } = require("./openrouter-utils");
+
+    // Convert messages using existing utility
+    let messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+
+    // Extract system content from body.system OR from system messages in the array
+    let systemContent = "";
+    if (body.system) {
+      systemContent = Array.isArray(body.system)
+        ? body.system.map(s => s.text || s).join("\n")
+        : body.system;
+    }
+
+    // Filter out any system role messages (Z.AI doesn't support system role)
+    // and collect their content
+    const filteredMessages = [];
+    for (const msg of messages) {
+      if (msg.role === "system") {
+        // Append system message content to systemContent
+        if (msg.content) {
+          systemContent = systemContent ? `${systemContent}\n${msg.content}` : msg.content;
+        }
+      } else {
+        filteredMessages.push(msg);
+      }
+    }
+    messages = filteredMessages;
+
+    // Prepend system content to first user message ONLY if no tools
+    // When tools are present, system instructions can confuse tool calling
+    const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+    if (systemContent && messages.length > 0 && !hasTools) {
+      const firstUserIdx = messages.findIndex(m => m.role === "user");
+      if (firstUserIdx >= 0) {
+        const firstUser = messages[firstUserIdx];
+        firstUser.content = `[System Instructions]\n${systemContent}\n\n[User Message]\n${firstUser.content}`;
+      } else {
+        // No user message, add system as user message
+        messages.unshift({ role: "user", content: systemContent });
+      }
+    } else if (systemContent && !hasTools) {
+      // No messages at all, add system as user
+      messages.push({ role: "user", content: systemContent });
+    }
+
+    // Convert tools if present
+    let tools = undefined;
+    if (Array.isArray(body.tools) && body.tools.length > 0) {
+      tools = convertAnthropicToolsToOpenRouter(body.tools);
+    }
+
+    zaiBody = {
+      model: mappedModel,
+      messages,
+      max_tokens: body.max_tokens || 4096,
+      temperature: body.temperature ?? 0.7,
+      stream: body.stream,
+    };
+
+    // Only add tools if present
+    if (tools && tools.length > 0) {
+      zaiBody.tools = tools;
+      // Use "auto" to let the model decide when to use tools
+      // "required" was forcing tools even for simple greetings
+      zaiBody.tool_choice = "auto";
+      // Also enable parallel tool calls
+      zaiBody.parallel_tool_calls = true;
+    }
+
+    headers = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${config.zai.apiKey}`,
+    };
+  } else {
+    // Anthropic format endpoint
+    zaiBody = { ...body };
+    zaiBody.model = mappedModel;
+
+    // Inject standard tools if client didn't send any (passthrough mode)
+    if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
+      zaiBody.tools = STANDARD_TOOLS;
+      logger.info({
+        injectedToolCount: STANDARD_TOOLS.length,
+        injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+        reason: "Client did not send tools (passthrough mode)"
+      }, "=== INJECTING STANDARD TOOLS (Z.AI Anthropic) ===");
+    }
+
+    headers = {
+      "Content-Type": "application/json",
+      "x-api-key": config.zai.apiKey,
+      "anthropic-version": "2023-06-01",
+    };
+  }
+
+  logger.info({
+    endpoint,
+    format: isOpenAIFormat ? "openai" : "anthropic",
+    model: zaiBody.model,
+    originalModel: requestedModel,
+    messageCount: zaiBody.messages?.length || 0,
+    firstMessageRole: zaiBody.messages?.[0]?.role,
+    firstMessageContent: typeof zaiBody.messages?.[0]?.content === 'string'
+      ? zaiBody.messages[0].content.substring(0, 200)
+      : JSON.stringify(zaiBody.messages?.[0]?.content)?.substring(0, 200),
+    hasTools: !!zaiBody.tools,
+    toolCount: zaiBody.tools?.length || 0,
+    toolNames: zaiBody.tools?.map(t => t.function?.name || t.name),
+    toolChoice: zaiBody.tool_choice,
+    fullRequest: JSON.stringify(zaiBody).substring(0, 500),
+  }, "=== Z.AI REQUEST ===");
+
+  logger.debug({
+    zaiBody: JSON.stringify(zaiBody).substring(0, 1000),
+  }, "Z.AI request body (truncated)");
+
+  // Use semaphore to limit concurrent Z.AI requests (prevents rate limiting)
+  return zaiSemaphore.run(async () => {
+    logger.debug({
+      queueLength: zaiSemaphore.queue.length,
+      currentConcurrent: zaiSemaphore.current,
+    }, "Z.AI semaphore status");
+
+    const response = await performJsonRequest(endpoint, { headers, body: zaiBody }, "Z.AI");
+
+    logger.info({
+      responseOk: response?.ok,
+      responseStatus: response?.status,
+      hasJson: !!response?.json,
+      rawContent: response?.json?.choices?.[0]?.message?.content,
+      hasReasoning: !!response?.json?.choices?.[0]?.message?.reasoning_content,
+      isOpenAIFormat,
+    }, "=== Z.AI RAW RESPONSE ===");
+
+    // Convert OpenAI response back to Anthropic format if needed
+    if (isOpenAIFormat && response?.ok && response?.json) {
+      const anthropicJson = convertOpenAIToAnthropic(response.json);
+      logger.info({
+        convertedContent: JSON.stringify(anthropicJson.content).substring(0, 200),
+      }, "=== Z.AI CONVERTED RESPONSE ===");
+      // Return in the same format as other providers (with ok, status, json)
+      return {
+        ok: response.ok,
+        status: response.status,
+        json: anthropicJson,
+        text: JSON.stringify(anthropicJson),
+        contentType: "application/json",
+        headers: response.headers,
+      };
+    }
+
+    return response;
+  });
+}
+
+
+
+/**
+ * Convert OpenAI response to Anthropic format
+ */
+function convertOpenAIToAnthropic(response) {
+  if (!response.choices || !response.choices[0]) {
+    return response; // Return as-is if unexpected format
+  }
+
+  const choice = response.choices[0];
+  const message = choice.message || {};
+  const content = [];
+
+  // Add text content from message.content
+  // Don't add placeholder text if there are tool_calls - tools are the actual response
+  const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+  if (message.content) {
+    content.push({ type: "text", text: message.content });
+  } else if (message.reasoning_content && !message.content && !hasToolCalls) {
+    // Z.AI returns reasoning in reasoning_content - if no final content AND no tool calls, use a placeholder
+    content.push({ type: "text", text: "[Model is still thinking - increase max_tokens for complete response]" });
+  }
+
+  // Convert tool calls
+  if (Array.isArray(message.tool_calls)) {
+    for (const toolCall of message.tool_calls) {
+      content.push({
+        type: "tool_use",
+        id: toolCall.id,
+        name: toolCall.function?.name,
+        input: JSON.parse(toolCall.function?.arguments || "{}")
+      });
+    }
+  }
+
+  // Ensure there's at least some content
+  if (content.length === 0) {
+    content.push({ type: "text", text: "" });
+  }
+
+  // Determine stop reason
+  let stopReason = "end_turn";
+  if (choice.finish_reason === "tool_calls") {
+    stopReason = "tool_use";
+  } else if (choice.finish_reason === "length") {
+    stopReason = "max_tokens";
+  } else if (choice.finish_reason === "stop") {
+    stopReason = "end_turn";
+  }
+
+  return {
+    id: response.id || `msg_${Date.now()}`,
+    type: "message",
+    role: "assistant",
+    content,
+    model: response.model,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: {
+      input_tokens: response.usage?.prompt_tokens || 0,
+      output_tokens: response.usage?.completion_tokens || 0,
+    }
+  };
+}
+
+/**
+ * Sanitize JSON schema for Gemini API
+ * Gemini doesn't support certain JSON Schema properties like additionalProperties
+ */
+function sanitizeSchemaForGemini(schema) {
+  if (!schema || typeof schema !== 'object') {
+    return schema;
+  }
+
+  const sanitized = { ...schema };
+
+  // Remove unsupported properties
+  delete sanitized.additionalProperties;
+  delete sanitized.$schema;
+  delete sanitized.definitions;
+  delete sanitized.$ref;
+
+  // Recursively sanitize nested properties
+  if (sanitized.properties && typeof sanitized.properties === 'object') {
+    const cleanProps = {};
+    for (const [key, value] of Object.entries(sanitized.properties)) {
+      cleanProps[key] = sanitizeSchemaForGemini(value);
+    }
+    sanitized.properties = cleanProps;
+  }
+
+  // Sanitize items in arrays
+  if (sanitized.items) {
+    sanitized.items = sanitizeSchemaForGemini(sanitized.items);
+  }
+
+  // Sanitize anyOf, oneOf, allOf
+  for (const key of ['anyOf', 'oneOf', 'allOf']) {
+    if (Array.isArray(sanitized[key])) {
+      sanitized[key] = sanitized[key].map(item => sanitizeSchemaForGemini(item));
+    }
+  }
+
+  return sanitized;
+}
+
+/**
+ * Vertex AI (Google Cloud) Provider - Gemini Models
+ *
+ * Supports Google Gemini models through Vertex AI.
+ * Converts Anthropic format to Gemini format and back.
+ */
+async function invokeVertex(body) {
+  const apiKey = config.vertex?.apiKey;
+
+  if (!apiKey) {
+    throw new Error(
+      "Vertex AI API key is not configured. Set VERTEX_API_KEY in your .env file."
+    );
+  }
+
+  // Model mapping: Anthropic names → Gemini models
+  const modelMap = {
+    "claude-sonnet-4-5-20250929": "gemini-2.0-flash",
+    "claude-sonnet-4-5": "gemini-2.0-flash",
+    "claude-sonnet-4.5": "gemini-2.0-flash",
+    "claude-3-5-sonnet": "gemini-2.0-flash",
+    "claude-haiku-4-5-20251001": "gemini-2.0-flash-lite",
+    "claude-haiku-4-5": "gemini-2.0-flash-lite",
+    "claude-opus-4-5": "gemini-2.5-pro",
+  };
+
+  // Map model name
+  const requestedModel = body.model || config.vertex.model;
+  const geminiModel = modelMap[requestedModel] || config.vertex.model || "gemini-2.0-flash";
+
+  // Construct Gemini API endpoint
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
+
+  // Convert Anthropic messages to Gemini format
+  const contents = convertAnthropicToGemini(body.messages || [], body.system);
+
+  // Convert tools to Gemini format
+  let tools = undefined;
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    tools = [{
+      functionDeclarations: body.tools.map(tool => ({
+        name: tool.name,
+        description: tool.description || "",
+        parameters: sanitizeSchemaForGemini(tool.input_schema || { type: "object", properties: {} })
+      }))
+    }];
+  }
+
+  // Build Gemini request body
+  const geminiBody = {
+    contents,
+    generationConfig: {
+      temperature: body.temperature ?? 0.7,
+      maxOutputTokens: body.max_tokens || 4096,
+      topP: body.top_p ?? 1.0,
+    }
+  };
+
+  // Add tools if present
+  if (tools) {
+    geminiBody.tools = tools;
+    // Tell Gemini to use AUTO function calling mode
+    geminiBody.toolConfig = {
+      functionCallingConfig: {
+        mode: "AUTO"
+      }
+    };
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  logger.info({
+    endpoint: endpoint.replace(apiKey, "***"),
+    model: geminiModel,
+    originalModel: requestedModel,
+    hasTools: !!tools,
+    toolCount: body.tools?.length || 0,
+    contentCount: contents.length,
+  }, "=== VERTEX AI (GEMINI) REQUEST ===");
+
+  const response = await performJsonRequest(endpoint, { headers, body: geminiBody }, "Vertex AI");
+
+  // Log error details if request failed
+  if (!response?.ok) {
+    logger.error({
+      status: response?.status,
+      error: response?.json?.error || response?.text?.substring(0, 500),
+      model: geminiModel,
+    }, "=== VERTEX AI (GEMINI) ERROR ===");
+
+    // Throw error to trigger circuit breaker correctly
+    const errorMessage = response?.json?.error?.message || response?.text || `Gemini API error: ${response?.status}`;
+    const err = new Error(errorMessage);
+    err.status = response?.status;
+    throw err;
+  }
+
+  // Convert Gemini response to Anthropic format
+  if (response?.json) {
+    const anthropicJson = convertGeminiToAnthropic(response.json, requestedModel);
+    logger.info({
+      convertedContent: JSON.stringify(anthropicJson.content).substring(0, 200),
+    }, "=== VERTEX AI (GEMINI) CONVERTED RESPONSE ===");
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: anthropicJson,
+      text: JSON.stringify(anthropicJson),
+      contentType: "application/json",
+      headers: response.headers,
+    };
+  }
+
+  return response;
+}
+
+/**
+ * Convert Anthropic messages to Gemini format
+ */
+function convertAnthropicToGemini(messages, system) {
+  const contents = [];
+
+  // Add system as first user message if present
+  // Also add Gemini-specific tool usage instructions
+  const geminiToolInstructions = `
+IMPORTANT TOOL USAGE RULES:
+- To create or write files, use the Write tool with file_path and content parameters. Do NOT use Bash echo.
+- To read files, use the Read tool. Do NOT use Bash cat.
+- To search for files, use the Glob tool. Do NOT use Bash find.
+- To search file contents, use the Grep tool. Do NOT use Bash grep.
+- Always use the specific tool designed for the task.
+- When you want to call a tool, use the function calling mechanism, not text output.
+`;
+
+  if (system) {
+    const systemText = Array.isArray(system)
+      ? system.map(s => s.text || s).join("\n")
+      : system;
+    contents.push({
+      role: "user",
+      parts: [{ text: `[System Instructions]\n${systemText}\n\n${geminiToolInstructions}` }]
+    });
+    contents.push({
+      role: "model",
+      parts: [{ text: "I understand. I will follow these instructions and use the proper tools." }]
+    });
+  } else {
+    // Even without system, add tool instructions
+    contents.push({
+      role: "user",
+      parts: [{ text: `[System Instructions]\n${geminiToolInstructions}` }]
+    });
+    contents.push({
+      role: "model",
+      parts: [{ text: "I understand. I will use the proper tools." }]
+    });
+  }
+
+  for (const msg of messages) {
+    // Map roles: user → user, assistant → model
+    const role = msg.role === "assistant" ? "model" : "user";
+    const parts = [];
+
+    if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          parts.push({ text: block.text });
+        } else if (block.type === "tool_use") {
+          // Assistant's tool call
+          parts.push({
+            functionCall: {
+              name: block.name,
+              args: block.input || {}
+            }
+          });
+        } else if (block.type === "tool_result") {
+          // Tool result - add as function response
+          parts.push({
+            functionResponse: {
+              name: block.tool_use_id || "unknown",
+              response: {
+                result: typeof block.content === "string" ? block.content : JSON.stringify(block.content)
+              }
+            }
+          });
+        }
+      }
+    } else if (typeof msg.content === "string") {
+      parts.push({ text: msg.content });
+    }
+
+    if (parts.length > 0) {
+      contents.push({ role, parts });
+    }
+  }
+
+  return contents;
+}
+
+/**
+ * Convert Gemini response to Anthropic format
+ */
+function convertGeminiToAnthropic(response, requestedModel) {
+  const candidate = response.candidates?.[0];
+  if (!candidate) {
+    return {
+      id: `msg_${Date.now()}`,
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "" }],
+      model: requestedModel,
+      stop_reason: "end_turn",
+      usage: { input_tokens: 0, output_tokens: 0 }
+    };
+  }
+
+  const content = [];
+  const parts = candidate.content?.parts || [];
+
+  for (const part of parts) {
+    if (part.text) {
+      content.push({ type: "text", text: part.text });
+    } else if (part.functionCall) {
+      content.push({
+        type: "tool_use",
+        id: `toolu_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        name: part.functionCall.name,
+        input: part.functionCall.args || {}
+      });
+    }
+  }
+
+  // Ensure at least empty text if no content
+  if (content.length === 0) {
+    content.push({ type: "text", text: "" });
+  }
+
+  // Determine stop reason
+  let stopReason = "end_turn";
+  if (content.some(c => c.type === "tool_use")) {
+    stopReason = "tool_use";
+  } else if (candidate.finishReason === "MAX_TOKENS") {
+    stopReason = "max_tokens";
+  }
+
+  return {
+    id: `msg_${Date.now()}`,
+    type: "message",
+    role: "assistant",
+    content,
+    model: requestedModel,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: {
+      input_tokens: response.usageMetadata?.promptTokenCount || 0,
+      output_tokens: response.usageMetadata?.candidatesTokenCount || 0,
+    }
+  };
+}
+
 async function invokeModel(body, options = {}) {
   const { determineProvider, isFallbackEnabled, getFallbackProvider, analyzeComplexity } = require("./routing");
   const metricsCollector = getMetricsCollector();
   const registry = getCircuitBreakerRegistry();
+  const healthTracker = getHealthTracker();
 
   // Analyze complexity and determine provider
   const complexityAnalysis = analyzeComplexity(body);
@@ -963,6 +1571,9 @@ async function invokeModel(body, options = {}) {
   let retries = 0;
   const startTime = Date.now();
 
+  // Record request start for health tracking
+  healthTracker.recordRequestStart(initialProvider);
+
   try {
     // Try initial provider with circuit breaker
     const result = await breaker.execute(async () => {
@@ -982,6 +1593,10 @@ async function invokeModel(body, options = {}) {
         return await invokeLMStudio(body);
       } else if (initialProvider === "bedrock") {
         return await invokeBedrock(body);
+      } else if (initialProvider === "zai") {
+        return await invokeZai(body);
+      } else if (initialProvider === "vertex") {
+        return await invokeVertex(body);
       }
       return await invokeDatabricks(body);
     });
@@ -990,6 +1605,7 @@ async function invokeModel(body, options = {}) {
     const latency = Date.now() - startTime;
     metricsCollector.recordProviderSuccess(initialProvider, latency);
     metricsCollector.recordDatabricksRequest(true, retries);
+    healthTracker.recordSuccess(initialProvider, latency);
 
     // Record tokens and cost savings
     if (result.json?.usage) {
@@ -1014,6 +1630,7 @@ async function invokeModel(body, options = {}) {
   } catch (err) {
     // Record failure
     metricsCollector.recordProviderFailure(initialProvider);
+    healthTracker.recordFailure(initialProvider, err, err.status);
 
     // Check if we should fallback
     const shouldFallback =
@@ -1040,6 +1657,9 @@ async function invokeModel(body, options = {}) {
 
     metricsCollector.recordFallbackAttempt(initialProvider, fallbackProvider, reason);
 
+    // Record fallback request start for health tracking
+    healthTracker.recordRequestStart(fallbackProvider);
+
     try {
       // Get circuit breaker for fallback provider
       const fallbackBreaker = registry.get(fallbackProvider, {
@@ -1062,6 +1682,10 @@ async function invokeModel(body, options = {}) {
           return await invokeOpenAI(body);
         } else if (fallbackProvider === "llamacpp") {
           return await invokeLlamaCpp(body);
+        } else if (fallbackProvider === "zai") {
+          return await invokeZai(body);
+        } else if (fallbackProvider === "vertex") {
+          return await invokeVertex(body);
         }
         return await invokeDatabricks(body);
       });
@@ -1071,6 +1695,7 @@ async function invokeModel(body, options = {}) {
       // Record fallback success
       metricsCollector.recordFallbackSuccess(fallbackLatency);
       metricsCollector.recordDatabricksRequest(true, retries);
+      healthTracker.recordSuccess(fallbackProvider, fallbackLatency);
 
       // Record token usage
       if (fallbackResult.json?.usage) {
@@ -1103,6 +1728,7 @@ async function invokeModel(body, options = {}) {
       // Both providers failed
       metricsCollector.recordFallbackFailure();
       metricsCollector.recordDatabricksRequest(false, retries);
+      healthTracker.recordFailure(fallbackProvider, fallbackErr, fallbackErr.status);
 
       logger.error({
         originalProvider: initialProvider,
@@ -1155,6 +1781,24 @@ function estimateCostSavings(inputTokens, outputTokens) {
   return inputCost + outputCost;
 }
 
+/**
+ * Destroy HTTP agents (for graceful shutdown)
+ */
+function destroyHttpAgents() {
+  try {
+    if (httpAgent) {
+      httpAgent.destroy();
+    }
+    if (httpsAgent) {
+      httpsAgent.destroy();
+    }
+    logger.info("HTTP agents destroyed");
+  } catch (error) {
+    logger.warn({ error }, "Failed to destroy HTTP agents");
+  }
+}
+
 module.exports = {
   invokeModel,
+  destroyHttpAgents,
 };

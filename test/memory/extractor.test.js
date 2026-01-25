@@ -31,7 +31,17 @@ describe("Memory Extractor", () => {
     });
 
     // Initialize database first
-    require("../../src/db");
+    const db = require("../../src/db");
+
+    // Create test sessions to satisfy foreign key constraints
+    const now = Date.now();
+    const insertSession = db.prepare(`
+      INSERT OR IGNORE INTO sessions (id, created_at, updated_at, metadata)
+      VALUES (?, ?, ?, ?)
+    `);
+    insertSession.run("test-session", now, now, "{}");
+    insertSession.run("test-session-123", now, now, "{}");
+    insertSession.run("test", now, now, "{}");
 
     // Then load extractor module
     extractor = require("../../src/memory/extractor");

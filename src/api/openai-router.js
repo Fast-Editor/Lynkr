@@ -224,182 +224,187 @@ router.post("/chat/completions", async (req, res) => {
 });
 
 /**
+ * Get all configured providers with their models (cc-relay style)
+ * Reads from config (which comes from .env) to discover what's available
+ */
+function getConfiguredProviders() {
+  const providers = [];
+  const timestamp = Math.floor(Date.now() / 1000);
+
+  // Check Databricks
+  if (config.databricks?.url && config.databricks?.apiKey) {
+    providers.push({
+      name: "databricks",
+      type: "databricks",
+      models: [
+        "claude-sonnet-4.5",
+        "claude-opus-4.5",
+        config.modelProvider?.defaultModel || "databricks-claude-sonnet-4-5"
+      ]
+    });
+  }
+
+  // Check AWS Bedrock
+  if (config.bedrock?.apiKey) {
+    const bedrockModels = [config.bedrock.modelId];
+    if (config.bedrock.modelId?.includes("claude")) {
+      bedrockModels.push(
+        "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "anthropic.claude-3-opus-20240229-v1:0",
+        "anthropic.claude-3-haiku-20240307-v1:0"
+      );
+    }
+    providers.push({
+      name: "bedrock",
+      type: "aws-bedrock",
+      models: [...new Set(bedrockModels)]
+    });
+  }
+
+  // Check Azure Anthropic
+  if (config.azureAnthropic?.endpoint && config.azureAnthropic?.apiKey) {
+    providers.push({
+      name: "azure-anthropic",
+      type: "azure-anthropic",
+      models: ["claude-3-5-sonnet", "claude-opus-4.5"]
+    });
+  }
+
+  // Check Azure OpenAI
+  if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) {
+    providers.push({
+      name: "azure-openai",
+      type: "azure-openai",
+      models: [
+        config.azureOpenAI.deployment || "gpt-4o",
+        "gpt-4o",
+        "gpt-4-turbo",
+        "gpt-4",
+        "gpt-3.5-turbo"
+      ]
+    });
+  }
+
+  // Check OpenAI
+  if (config.openai?.apiKey) {
+    providers.push({
+      name: "openai",
+      type: "openai",
+      models: [
+        config.openai.model || "gpt-4o",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo"
+      ]
+    });
+  }
+
+  // Check OpenRouter
+  if (config.openrouter?.apiKey) {
+    providers.push({
+      name: "openrouter",
+      type: "openrouter",
+      models: [
+        config.openrouter.model || "openai/gpt-4o-mini",
+        "anthropic/claude-3.5-sonnet",
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "nvidia/nemotron-3-nano-30b-a3b:free"
+      ]
+    });
+  }
+
+  // Check Ollama
+  if (config.ollama?.endpoint) {
+    providers.push({
+      name: "ollama",
+      type: "ollama",
+      models: [config.ollama.model || "qwen2.5-coder:7b"]
+    });
+  }
+
+  // Check llama.cpp
+  if (config.llamacpp?.endpoint) {
+    providers.push({
+      name: "llamacpp",
+      type: "llama.cpp",
+      models: [config.llamacpp.model || "default"]
+    });
+  }
+
+  // Check LM Studio
+  if (config.lmstudio?.endpoint) {
+    providers.push({
+      name: "lmstudio",
+      type: "lm-studio",
+      models: [config.lmstudio.model || "default"]
+    });
+  }
+
+  // Check Z.AI (Zhipu)
+  if (config.zai?.apiKey) {
+    providers.push({
+      name: "zai",
+      type: "zhipu-ai",
+      models: [
+        config.zai.model || "GLM-4.7",
+        "GLM-4.7",
+        "GLM-4.5-Air",
+        "GLM-4-Plus"
+      ]
+    });
+  }
+
+  // Check Vertex AI (Google Cloud)
+  if (config.vertex?.projectId) {
+    providers.push({
+      name: "vertex",
+      type: "google-vertex-ai",
+      models: [
+        config.vertex.model || "claude-sonnet-4-5@20250514",
+        "claude-sonnet-4-5@20250514",
+        "claude-opus-4-5@20250514",
+        "claude-haiku-4-5@20251001"
+      ]
+    });
+  }
+
+  return providers;
+}
+
+/**
  * GET /v1/models
  *
- * List available models based on configured provider.
- * Returns OpenAI-compatible model list.
+ * List available models from ALL configured providers (cc-relay style).
+ * Returns OpenAI-compatible model list with provider field.
  */
 router.get("/models", (req, res) => {
   try {
-    const provider = config.modelProvider?.type || "databricks";
+    const providers = getConfiguredProviders();
+    const primaryProvider = config.modelProvider?.type || "databricks";
+    const timestamp = Math.floor(Date.now() / 1000);
     const models = [];
+    const seenModelIds = new Set();
 
-    // Add models based on configured provider
-    switch (provider) {
-      case "databricks":
-        models.push(
-          {
-            id: "claude-sonnet-4.5",
-            object: "model",
-            created: 1704067200,
-            owned_by: "databricks",
-            permission: [],
-            root: "claude-sonnet-4.5",
-            parent: null
-          },
-          {
-            id: "claude-opus-4.5",
-            object: "model",
-            created: 1704067200,
-            owned_by: "databricks",
-            permission: [],
-            root: "claude-opus-4.5",
-            parent: null
-          }
-        );
-        break;
+    // Collect models from all providers
+    for (const provider of providers) {
+      for (const modelId of provider.models) {
+        // Create unique key to avoid duplicates
+        const uniqueKey = `${provider.name}:${modelId}`;
+        if (seenModelIds.has(uniqueKey)) continue;
+        seenModelIds.add(uniqueKey);
 
-      case "bedrock":
-        const bedrockModelId = config.bedrock?.modelId || "anthropic.claude-3-5-sonnet-20241022-v2:0";
         models.push({
-          id: bedrockModelId,
+          id: modelId,
           object: "model",
-          created: 1704067200,
-          owned_by: "aws-bedrock",
+          created: timestamp,
+          owned_by: provider.type,
+          provider: provider.name,  // cc-relay style: include provider name
           permission: [],
-          root: bedrockModelId,
+          root: modelId,
           parent: null
         });
-        break;
-
-      case "azure-anthropic":
-        models.push({
-          id: "claude-3-5-sonnet",
-          object: "model",
-          created: 1704067200,
-          owned_by: "azure-anthropic",
-          permission: [],
-          root: "claude-3-5-sonnet",
-          parent: null
-        });
-        break;
-
-      case "openrouter":
-        const openrouterModel = config.openrouter?.model || "openai/gpt-4o-mini";
-        models.push({
-          id: openrouterModel,
-          object: "model",
-          created: 1704067200,
-          owned_by: "openrouter",
-          permission: [],
-          root: openrouterModel,
-          parent: null
-        });
-        break;
-
-      case "openai":
-        models.push(
-          {
-            id: "gpt-4o",
-            object: "model",
-            created: 1704067200,
-            owned_by: "openai",
-            permission: [],
-            root: "gpt-4o",
-            parent: null
-          },
-          {
-            id: "gpt-4o-mini",
-            object: "model",
-            created: 1704067200,
-            owned_by: "openai",
-            permission: [],
-            root: "gpt-4o-mini",
-            parent: null
-          }
-        );
-        break;
-
-      case "azure-openai":
-        // Return standard OpenAI model names that Cursor recognizes
-        // The actual Azure deployment name doesn't matter - Lynkr routes based on config
-        models.push(
-          {
-            id: "gpt-4o",
-            object: "model",
-            created: 1704067200,
-            owned_by: "openai",
-            permission: [],
-            root: "gpt-4o",
-            parent: null
-          },
-          {
-            id: "gpt-4-turbo",
-            object: "model",
-            created: 1704067200,
-            owned_by: "openai",
-            permission: [],
-            root: "gpt-4-turbo",
-            parent: null
-          },
-          {
-            id: "gpt-4",
-            object: "model",
-            created: 1704067200,
-            owned_by: "openai",
-            permission: [],
-            root: "gpt-4",
-            parent: null
-          },
-          {
-            id: "gpt-3.5-turbo",
-            object: "model",
-            created: 1704067200,
-            owned_by: "openai",
-            permission: [],
-            root: "gpt-3.5-turbo",
-            parent: null
-          }
-        );
-        break;
-
-      case "ollama":
-        const ollamaModel = config.ollama?.model || "qwen2.5-coder:7b";
-        models.push({
-          id: ollamaModel,
-          object: "model",
-          created: 1704067200,
-          owned_by: "ollama",
-          permission: [],
-          root: ollamaModel,
-          parent: null
-        });
-        break;
-
-      case "llamacpp":
-        const llamacppModel = config.llamacpp?.model || "default";
-        models.push({
-          id: llamacppModel,
-          object: "model",
-          created: 1704067200,
-          owned_by: "llamacpp",
-          permission: [],
-          root: llamacppModel,
-          parent: null
-        });
-        break;
-
-      default:
-        // Generic model
-        models.push({
-          id: "claude-3-5-sonnet",
-          object: "model",
-          created: 1704067200,
-          owned_by: "lynkr",
-          permission: [],
-          root: "claude-3-5-sonnet",
-          parent: null
-        });
+      }
     }
 
     // Add embedding models if embeddings are configured
@@ -408,7 +413,7 @@ router.get("/models", (req, res) => {
       let embeddingModelId;
       switch (embeddingConfig.provider) {
         case "llamacpp":
-          embeddingModelId = "text-embedding-3-small"; // Generic name for Cursor
+          embeddingModelId = "text-embedding-3-small";
           break;
         case "ollama":
           embeddingModelId = embeddingConfig.model;
@@ -423,23 +428,27 @@ router.get("/models", (req, res) => {
           embeddingModelId = "text-embedding-3-small";
       }
 
-      models.push({
-        id: embeddingModelId,
-        object: "model",
-        created: 1704067200,
-        owned_by: embeddingConfig.provider,
-        permission: [],
-        root: embeddingModelId,
-        parent: null
-      });
+      const uniqueKey = `${embeddingConfig.provider}:${embeddingModelId}`;
+      if (!seenModelIds.has(uniqueKey)) {
+        models.push({
+          id: embeddingModelId,
+          object: "model",
+          created: timestamp,
+          owned_by: embeddingConfig.provider,
+          provider: embeddingConfig.provider,
+          permission: [],
+          root: embeddingModelId,
+          parent: null
+        });
+      }
     }
 
     logger.debug({
-      provider,
+      providerCount: providers.length,
       modelCount: models.length,
-      models: models.map(m => m.id),
+      models: models.map(m => ({ id: m.id, provider: m.provider })),
       hasEmbeddings: !!embeddingConfig
-    }, "Listed models for OpenAI API");
+    }, "Listed models for OpenAI API (cc-relay style)");
 
     res.json({
       object: "list",
