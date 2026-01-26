@@ -89,114 +89,6 @@ const ollamaTimeout = Number.parseInt(process.env.OLLAMA_TIMEOUT_MS ?? "120000",
 const ollamaEmbeddingsEndpoint = process.env.OLLAMA_EMBEDDINGS_ENDPOINT ?? `${ollamaEndpoint}/api/embeddings`;
 const ollamaEmbeddingsModel = process.env.OLLAMA_EMBEDDINGS_MODEL ?? "nomic-embed-text";
 
-// Ollama cluster configuration
-function loadOllamaClusterConfig() {
-  const configPath = process.env.OLLAMA_CLUSTER_CONFIG
-    ?? path.join(process.cwd(), ".lynkr", "ollama-cluster.json");
-
-  try {
-    const fs = require("fs");
-    if (!fs.existsSync(configPath)) {
-      return null; // No cluster config, use single-host mode
-    }
-
-    const configFile = fs.readFileSync(configPath, "utf8");
-    const config = JSON.parse(configFile);
-
-    // Validate configuration
-    if (!config.enabled) {
-      return null; // Cluster disabled
-    }
-
-    const errors = validateOllamaClusterConfig(config);
-    if (errors.length > 0) {
-      throw new Error(`Ollama cluster configuration errors:\n${errors.join("\n")}`);
-    }
-
-    return config;
-  } catch (err) {
-    if (err.code === "ENOENT") {
-      return null; // File doesn't exist, use single-host mode
-    }
-    throw new Error(`Failed to load Ollama cluster config from ${configPath}: ${err.message}`);
-  }
-}
-
-function validateOllamaClusterConfig(config) {
-  const errors = [];
-
-  if (!config.hosts || !Array.isArray(config.hosts) || config.hosts.length === 0) {
-    errors.push("At least one Ollama host must be configured in 'hosts' array");
-    return errors; // Return early if no hosts
-  }
-
-  const seenIds = new Set();
-  const seenEndpoints = new Set();
-
-  config.hosts.forEach((host, idx) => {
-    // Check required fields
-    if (!host.endpoint) {
-      errors.push(`Host ${idx}: 'endpoint' is required`);
-    } else {
-      // Check URL format
-      try {
-        new URL(host.endpoint);
-      } catch {
-        errors.push(`Host ${idx}: invalid endpoint URL "${host.endpoint}"`);
-      }
-
-      // Check for duplicate endpoints
-      if (seenEndpoints.has(host.endpoint)) {
-        errors.push(`Host ${idx}: duplicate endpoint "${host.endpoint}"`);
-      }
-      seenEndpoints.add(host.endpoint);
-    }
-
-    // Check ID
-    if (!host.id) {
-      errors.push(`Host ${idx}: 'id' is required`);
-    } else if (seenIds.has(host.id)) {
-      errors.push(`Host ${idx}: duplicate ID "${host.id}"`);
-    } else {
-      seenIds.add(host.id);
-    }
-
-    // Validate ranges
-    if (host.weight !== undefined && host.weight < 1) {
-      errors.push(`Host ${host.id || idx}: weight must be >= 1 (got ${host.weight})`);
-    }
-
-    if (host.maxConcurrent !== undefined && host.maxConcurrent < 1) {
-      errors.push(`Host ${host.id || idx}: maxConcurrent must be >= 1 (got ${host.maxConcurrent})`);
-    }
-
-    if (host.timeout !== undefined && host.timeout < 1000) {
-      errors.push(`Host ${host.id || idx}: timeout must be >= 1000ms (got ${host.timeout})`);
-    }
-  });
-
-  // Validate load balancing strategy
-  const validStrategies = [
-    "round-robin",
-    "weighted-round-robin",
-    "least-connections",
-    "response-time-weighted",
-    "model-based",
-    "random"
-  ];
-
-  if (config.loadBalancing && !validStrategies.includes(config.loadBalancing)) {
-    errors.push(
-      `Invalid loadBalancing strategy "${config.loadBalancing}". ` +
-      `Must be one of: ${validStrategies.join(", ")}`
-    );
-  }
-
-  return errors;
-}
-
-const ollamaClusterConfig = loadOllamaClusterConfig();
-
 // OpenRouter configuration
 const openRouterApiKey = process.env.OPENROUTER_API_KEY ?? null;
 const openRouterModel = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
@@ -242,6 +134,9 @@ const zaiModel = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
 const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
 const vertexModel = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
 
+// Hot reload configuration
+const hotReloadEnabled = process.env.HOT_RELOAD_ENABLED !== "false"; // default true
+const hotReloadDebounceMs = Number.parseInt(process.env.HOT_RELOAD_DEBOUNCE_MS ?? "1000", 10);
 // Hybrid routing configuration
 const preferOllama = process.env.PREFER_OLLAMA === "true";
 const fallbackEnabled = process.env.FALLBACK_ENABLED !== "false"; // default true
@@ -260,67 +155,19 @@ const rawFallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLo
 if (!SUPPORTED_MODEL_PROVIDERS.has(rawFallbackProvider)) {
   const supportedList = Array.from(SUPPORTED_MODEL_PROVIDERS).sort().join(", ");
   throw new Error(
-    `Unsupported FALLBACK_PROVIDER: "${process.env.FALLBACK_PROVIDER}". ` +
-    `Valid options are: ${supportedList}`
+    "TOOL_EXECUTION_MODE must be one of: server, client, passthrough (default: server)"
   );
 }
 
 const fallbackProvider = rawFallbackProvider;
 
-// Tool execution mode: server (default), client, passthrough, local, or synthetic
+// Tool execution mode: server (default), client, or passthrough
 const toolExecutionMode = (process.env.TOOL_EXECUTION_MODE ?? "server").toLowerCase();
-if (!["server", "client", "passthrough", "local", "synthetic"].includes(toolExecutionMode)) {
+if (!["server", "client", "passthrough"].includes(toolExecutionMode)) {
   throw new Error(
-    "TOOL_EXECUTION_MODE must be one of: server, client, passthrough, local, synthetic (default: server)"
+    "TOOL_EXECUTION_MODE must be one of: server, client, passthrough (default: server)"
   );
 }
-
-// Pattern B Configuration (Lynkr on localhost)
-const deploymentMode = (process.env.DEPLOYMENT_MODE ?? "pattern-a").toLowerCase();
-const patternBEnabled = deploymentMode === "pattern-b" || toolExecutionMode === "local" || toolExecutionMode === "synthetic";
-
-// Local tool execution settings (Pattern B)
-const localToolsEnabled = toolExecutionMode === "local" || toolExecutionMode === "synthetic";
-const localToolsAllowedOperations = parseList(
-  process.env.LOCAL_TOOLS_ALLOWED_OPERATIONS ?? "readFile,writeFile,listDirectory,executeCommand,searchCode"
-);
-const localToolsRestrictedPaths = parseList(
-  process.env.LOCAL_TOOLS_RESTRICTED_PATHS ?? "/etc,/sys,/proc,/root,~/.ssh,~/.gnupg"
-);
-const localToolsMaxFileSize = Number.parseInt(
-  process.env.LOCAL_TOOLS_MAX_FILE_SIZE ?? "10485760", // 10MB default
-  10
-);
-const localToolsCommandTimeout = Number.parseInt(
-  process.env.LOCAL_TOOLS_COMMAND_TIMEOUT ?? "30000", // 30s default
-  10
-);
-
-// Synthetic mode settings (Pattern B)
-const syntheticModeEnabled = toolExecutionMode === "synthetic";
-const syntheticModePatterns = process.env.SYNTHETIC_MODE_PATTERNS
-  ? parseJson(process.env.SYNTHETIC_MODE_PATTERNS)
-  : {
-      readFile: ["read.*file", "show.*contents", "display.*file"],
-      writeFile: ["write.*to.*file", "save.*to.*file", "create.*file"],
-      listDirectory: ["list.*files", "show.*directory", "ls.*"],
-      executeCommand: ["run.*command", "execute.*"],
-      searchCode: ["search.*for", "find.*in.*files", "grep.*"]
-    };
-
-// Remote Ollama configuration (Pattern B)
-// When Lynkr runs on localhost but Ollama runs on GPU server
-const remoteOllamaEnabled = patternBEnabled;
-const remoteOllamaEndpoint = process.env.REMOTE_OLLAMA_ENDPOINT ?? ollamaEndpoint;
-const remoteOllamaConnectionPooling = process.env.REMOTE_OLLAMA_CONNECTION_POOLING !== "false"; // default true
-const remoteOllamaMaxConnections = Number.parseInt(
-  process.env.REMOTE_OLLAMA_MAX_CONNECTIONS ?? "10",
-  10
-);
-const remoteOllamaTimeout = Number.parseInt(
-  process.env.REMOTE_OLLAMA_TIMEOUT ?? "300000", // 5 minutes
-  10
-);
 
 // Memory system configuration (Titans-inspired long-term memory)
 const memoryEnabled = process.env.MEMORY_ENABLED !== "false"; // default true
@@ -650,7 +497,6 @@ const config = {
     timeout: Number.isNaN(ollamaTimeout) ? 120000 : ollamaTimeout,
     embeddingsEndpoint: ollamaEmbeddingsEndpoint,
     embeddingsModel: ollamaEmbeddingsModel,
-    cluster: ollamaClusterConfig, // null if cluster not configured
   },
   openrouter: {
     apiKey: openRouterApiKey,
@@ -677,6 +523,7 @@ const config = {
     embeddingsEndpoint: llamacppEmbeddingsEndpoint,
     apiKey: llamacppApiKey,
   },
+    
   lmstudio: {
     endpoint: lmstudioEndpoint,
     model: lmstudioModel,
@@ -697,6 +544,10 @@ const config = {
     apiKey: vertexApiKey,
     model: vertexModel,
   },
+  hotReload: {
+    enabled: hotReloadEnabled,
+    debounceMs: Number.isNaN(hotReloadDebounceMs) ? 1000 : hotReloadDebounceMs,
+  },  
   modelProvider: {
     type: modelProvider,
     defaultModel,
@@ -708,105 +559,7 @@ const config = {
     fallbackProvider,
   },
   toolExecutionMode,
-  patternB: {
-    enabled: patternBEnabled,
-    deploymentMode,
-    localTools: {
-      enabled: localToolsEnabled,
-      allowedOperations: localToolsAllowedOperations,
-      restrictedPaths: localToolsRestrictedPaths,
-      maxFileSize: localToolsMaxFileSize,
-      commandTimeout: localToolsCommandTimeout,
-    },
-    syntheticMode: {
-      enabled: syntheticModeEnabled,
-      patterns: syntheticModePatterns,
-    },
-    remoteOllama: {
-      enabled: remoteOllamaEnabled,
-      endpoint: remoteOllamaEndpoint,
-      connectionPooling: remoteOllamaConnectionPooling,
-      maxConnections: remoteOllamaMaxConnections,
-      timeout: remoteOllamaTimeout,
-    },
-  },
-  gpuDiscovery: {
-    enabled: process.env.GPU_DISCOVERY_ENABLED !== "false", // default true
-    probe_on_startup: process.env.GPU_DISCOVERY_PROBE_ON_STARTUP !== "false", // default true
-    probe_local: process.env.GPU_DISCOVERY_PROBE_LOCAL !== "false", // default true
-    health_check_interval_seconds: Number.parseInt(
-      process.env.GPU_DISCOVERY_HEALTH_CHECK_INTERVAL ?? "300", // 5 minutes
-      10
-    ),
-    nvidia_smi_timeout_ms: Number.parseInt(
-      process.env.GPU_DISCOVERY_NVIDIA_SMI_TIMEOUT ?? "5000",
-      10
-    ),
-    cache_path: process.env.GPU_DISCOVERY_CACHE_PATH || "/tmp/lynkr_gpu_inventory.json",
-    detection_method: (process.env.GPU_DISCOVERY_METHOD ?? "auto").toLowerCase(), // "auto" | "ollama-api" | "nvidia-smi"
-    ssh_config: {
-      enabled: process.env.GPU_DISCOVERY_SSH_ENABLED === "true",
-      user: process.env.GPU_DISCOVERY_SSH_USER || null,
-      key_path: process.env.GPU_DISCOVERY_SSH_KEY_PATH || "~/.ssh/id_rsa",
-    },
-  },
-  gpuOrchestration: {
-    enabled: process.env.GPU_ORCHESTRATION_ENABLED !== "false", // default true
-    auto_profile_new_models: process.env.GPU_ORCHESTRATION_AUTO_PROFILE !== "false", // default true
-    model_profiles_path: process.env.GPU_ORCHESTRATION_PROFILES_PATH || "/tmp/ollama_model_profiles.json",
-  },
-  taskModels: {
-    // User can override via ~/.lynkr/config.json or environment
-    // Format: TASK_MODELS_<TASK>_PRIMARY, TASK_MODELS_<TASK>_FALLBACK
-    planning: {
-      primary: process.env.TASK_MODELS_PLANNING_PRIMARY || "qwen2.5:14b",
-      fallback: process.env.TASK_MODELS_PLANNING_FALLBACK || "llama3.1:8b",
-    },
-    coding: {
-      primary: process.env.TASK_MODELS_CODING_PRIMARY || "qwen2.5-coder:32b",
-      fallback: process.env.TASK_MODELS_CODING_FALLBACK || "qwen2.5-coder:7b",
-    },
-    debugging: {
-      primary: process.env.TASK_MODELS_DEBUGGING_PRIMARY || "deepseek-coder-v2:16b",
-      fallback: process.env.TASK_MODELS_DEBUGGING_FALLBACK || "llama3.1:8b",
-    },
-    refactoring: {
-      primary: process.env.TASK_MODELS_REFACTORING_PRIMARY || "qwen2.5-coder:32b",
-      fallback: process.env.TASK_MODELS_REFACTORING_FALLBACK || "qwen2.5:14b",
-    },
-    documentation: {
-      primary: process.env.TASK_MODELS_DOCUMENTATION_PRIMARY || "llama3.2:11b",
-      fallback: process.env.TASK_MODELS_DOCUMENTATION_FALLBACK || "llama3.1:8b",
-    },
-    testing: {
-      primary: process.env.TASK_MODELS_TESTING_PRIMARY || "qwen2.5-coder:14b",
-      fallback: process.env.TASK_MODELS_TESTING_FALLBACK || "llama3.1:8b",
-    },
-    review: {
-      primary: process.env.TASK_MODELS_REVIEW_PRIMARY || "qwen2.5:14b",
-      fallback: process.env.TASK_MODELS_REVIEW_FALLBACK || "llama3.1:8b",
-    },
-    analysis: {
-      primary: process.env.TASK_MODELS_ANALYSIS_PRIMARY || "qwen2.5:14b",
-      fallback: process.env.TASK_MODELS_ANALYSIS_FALLBACK || "llama3.1:8b",
-    },
-    general: {
-      primary: process.env.TASK_MODELS_GENERAL_PRIMARY || "llama3.1:8b",
-      fallback: process.env.TASK_MODELS_GENERAL_FALLBACK || "llama3.1:8b",
-    },
-  },
-  palMcp: {
-    enabled: process.env.PAL_MCP_ENABLED === "true",
-    serverPath: process.env.PAL_MCP_SERVER_PATH || path.join(__dirname, "../../external/pal-mcp-server"),
-    pythonPath: process.env.PAL_MCP_PYTHON_PATH || "python3",
-    autoStart: process.env.PAL_MCP_AUTO_START !== "false", // default true if enabled
-    // Orchestration settings (for avoiding expensive cloud fallback)
-    useForComplexRequests: process.env.PAL_MCP_USE_FOR_COMPLEX_REQUESTS !== "false", // default true if enabled
-    maxToolsBeforeOrchestration: Number.parseInt(
-      process.env.PAL_MCP_MAX_TOOLS_BEFORE_ORCHESTRATION ?? "3",
-      10
-    ),
-  },
+  
   server: {
     jsonLimit: process.env.REQUEST_JSON_LIMIT ?? "1gb",
   },
@@ -1005,5 +758,47 @@ const config = {
     maxFiles: oversizedErrorMaxFiles,
   },
 };
+
+/**
+ * Reload configuration from environment
+ * Called by hot reload watcher when .env changes
+ */
+function reloadConfig() {
+  // Re-parse .env file
+  dotenv.config({ override: true });
+
+  // Update mutable config values (those that can safely change at runtime)
+  // API keys and endpoints
+  config.databricks.apiKey = process.env.DATABRICKS_API_KEY;
+  config.azureAnthropic.apiKey = process.env.AZURE_ANTHROPIC_API_KEY ?? null;
+  config.ollama.model = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+  config.openrouter.apiKey = process.env.OPENROUTER_API_KEY ?? null;
+  config.openrouter.model = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
+  config.azureOpenAI.apiKey = process.env.AZURE_OPENAI_API_KEY?.trim() || null;
+  config.openai.apiKey = process.env.OPENAI_API_KEY?.trim() || null;
+  config.bedrock.apiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null;
+  config.zai.apiKey = process.env.ZAI_API_KEY?.trim() || null;
+  config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
+  config.vertex.apiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
+  config.vertex.model = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
+
+  // Model provider settings
+  const newProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
+  if (SUPPORTED_MODEL_PROVIDERS.has(newProvider)) {
+    config.modelProvider.type = newProvider;
+  }
+  config.modelProvider.preferOllama = process.env.PREFER_OLLAMA === "true";
+  config.modelProvider.fallbackEnabled = process.env.FALLBACK_ENABLED !== "false";
+  config.modelProvider.fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
+
+  // Log level
+  config.logger.level = process.env.LOG_LEVEL ?? "info";
+
+  console.log("[CONFIG] Configuration reloaded from environment");
+  return config;
+}
+
+// Make config mutable for hot reload
+config.reloadConfig = reloadConfig;
 
 module.exports = config;

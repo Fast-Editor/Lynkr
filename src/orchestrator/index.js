@@ -11,7 +11,6 @@ const systemPrompt = require("../prompts/system");
 const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
-const { parseOllamaModel } = require("../clients/ollama-model-parser");
 const { createAuditLogger } = require("../logger/audit-logger");
 const { getResolvedIp, runWithDnsContext } = require("../clients/dns-logger");
 const { getShuttingDown } = require("../api/health");
