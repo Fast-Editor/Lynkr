@@ -1,6 +1,5 @@
 const crypto = require("crypto");
 const { getOrCreateSession } = require("../../sessions/store");
-const logger = require("../../logger");
 
 const PRIMARY_HEADER = "x-session-id";
 const FALLBACK_HEADERS = [
@@ -41,9 +40,6 @@ function sessionMiddleware(req, res, next) {
   try {
     const sessionId = extractSessionId(req);
     req.sessionId = sessionId;
-
-    // Add sessionId to logger context for this request
-    req.log = logger.child({ sessionId });
 
     const session = getOrCreateSession(sessionId);
     req.session = session;
