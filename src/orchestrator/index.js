@@ -1325,6 +1325,25 @@ async function runAgentLoop({
       }
     }
 
+    // Inject agent delegation instructions when Task tool is available (for all models)
+    if (steps === 1 && config.agents?.enabled !== false) {
+      try {
+        const injectedSystem = systemPrompt.injectAgentInstructions(
+          cleanPayload.system || '',
+          cleanPayload.tools
+        );
+        if (injectedSystem !== cleanPayload.system) {
+          cleanPayload.system = injectedSystem;
+          logger.debug({
+            sessionId: session?.id ?? null,
+            hasTaskTool: true
+          }, 'Agent delegation instructions injected into system prompt');
+        }
+      } catch (err) {
+        logger.warn({ err, sessionId: session?.id }, 'Agent instructions injection failed, continuing without');
+      }
+    }
+
     if (steps === 1 && config.tokenBudget?.enforcement !== false) {
       try {
         const budgetCheck = tokenBudget.checkBudget(cleanPayload);

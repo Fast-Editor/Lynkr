@@ -591,6 +591,68 @@ async function invokeAzureOpenAI(body) {
   }
 }
 
+/**
+ * Convert Azure Responses API response to Anthropic format
+ */
+function convertResponsesAPIToAnthropic(response, model) {
+  const content = [];
+  const outputArray = response.output || [];
+
+  // Extract text content from message output
+  const messageOutput = outputArray.find(o => o.type === "message");
+  if (messageOutput?.content) {
+    for (const item of messageOutput.content) {
+      if (item.type === "output_text" && item.text) {
+        content.push({ type: "text", text: item.text });
+      }
+    }
+  }
+
+  // Extract tool calls from function_call outputs
+  const toolCalls = outputArray
+    .filter(o => o.type === "function_call")
+    .map(tc => ({
+      type: "tool_use",
+      id: tc.call_id || tc.id || `call_${Date.now()}`,
+      name: tc.name,
+      input: typeof tc.arguments === 'string' ? JSON.parse(tc.arguments || "{}") : (tc.arguments || {})
+    }));
+
+  content.push(...toolCalls);
+
+  // Handle reasoning_content for thinking models
+  if (content.length === 0 && response.reasoning_content) {
+    content.push({ type: "text", text: response.reasoning_content });
+  }
+
+  // Ensure at least empty text if no content
+  if (content.length === 0) {
+    content.push({ type: "text", text: "" });
+  }
+
+  // Determine stop reason
+  let stopReason = "end_turn";
+  if (toolCalls.length > 0) {
+    stopReason = "tool_use";
+  } else if (response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens") {
+    stopReason = "max_tokens";
+  }
+
+  return {
+    id: response.id || `msg_${Date.now()}`,
+    type: "message",
+    role: "assistant",
+    content,
+    model: model || response.model,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: {
+      input_tokens: response.usage?.input_tokens || 0,
+      output_tokens: response.usage?.output_tokens || 0,
+    }
+  };
+}
+
 async function invokeOpenAI(body) {
   if (!config.openai?.apiKey) {
     throw new Error("OpenAI API key is not configured.");
