@@ -37,12 +37,14 @@ function registerAgentTaskTool() {
       logger.info({
         subagentType,
         prompt: prompt.slice(0, 100),
-        sessionId: context.sessionId
+        sessionId: context.sessionId,
+        cwd: context.cwd
       }, "Task tool: spawning subagent");
 
       try {
         const result = await spawnAgent(subagentType, prompt, {
           sessionId: context.sessionId,
+          cwd: context.cwd, // Pass client CWD to subagent
           mainContext: context.mainContext // Pass minimal context
         });
 

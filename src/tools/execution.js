@@ -10,9 +10,11 @@ function parseTimeout(value) {
   return Math.min(parsed, MAX_TIMEOUT_MS);
 }
 
-function normaliseCwd(cwd) {
-  if (!cwd) return workspaceRoot;
-  return resolveWorkspacePath(cwd);
+function normaliseCwd(cwd, contextCwd) {
+  // Priority: explicit cwd arg > context.cwd > workspaceRoot
+  if (cwd) return resolveWorkspacePath(cwd);
+  if (contextCwd) return contextCwd; // Already validated absolute path
+  return workspaceRoot;
 }
 
 function parseSandboxMode(value) {
@@ -44,10 +46,10 @@ function formatProcessResult(result) {
 function registerShellTool() {
   registerTool(
     "shell",
-    async ({ args = {} }) => {
+    async ({ args = {} }, context = {}) => {
       const command = args.command ?? args.cmd ?? args.run ?? args.input;
       const commandArgs = Array.isArray(args.args) ? args.args.map(String) : [];
-      const cwd = normaliseCwd(args.cwd);
+      const cwd = normaliseCwd(args.cwd, context.cwd);
       const timeoutMs = parseTimeout(args.timeout_ms ?? args.timeout);
 
       let spawnCommand;
@@ -106,7 +108,7 @@ function registerShellTool() {
 function registerPythonTool() {
   registerTool(
     "python_exec",
-    async ({ args = {} }) => {
+    async ({ args = {} }, context = {}) => {
       const code =
         typeof args.code === "string"
           ? args.code
@@ -121,7 +123,7 @@ function registerPythonTool() {
       }
 
       const executable = args.executable ?? args.python ?? "python3";
-      const cwd = normaliseCwd(args.cwd);
+      const cwd = normaliseCwd(args.cwd, context.cwd);
       const timeoutMs = parseTimeout(args.timeout_ms ?? args.timeout);
       const requirements = Array.isArray(args.requirements) ? args.requirements : [];
 

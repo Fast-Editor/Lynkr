@@ -515,8 +515,106 @@ async function invokeAzureOpenAI(body) {
       return tool;
     });
 
+    // Convert messages to Responses API input format
+    // Responses API uses different structure for tool calls and results
+    const responsesInput = [];
+    // Track function call IDs for matching with outputs
+    const pendingCallIds = [];
+
+    for (const msg of azureBody.messages) {
+      if (msg.role === "system") {
+        // System messages become developer messages
+        responsesInput.push({
+          type: "message",
+          role: "developer",
+          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        });
+      } else if (msg.role === "user") {
+        // Check if content contains tool_result blocks (Anthropic format)
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === "tool_result") {
+              // Convert tool_result to function_call_output
+              // Use tool_use_id if available, otherwise pop from pending call IDs
+              const callId = block.tool_use_id || pendingCallIds.shift() || `call_${Date.now()}`;
+              responsesInput.push({
+                type: "function_call_output",
+                call_id: callId,
+                output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || "")
+              });
+            } else if (block.type === "text") {
+              responsesInput.push({
+                type: "message",
+                role: "user",
+                content: block.text || ""
+              });
+            }
+          }
+        } else {
+          responsesInput.push({
+            type: "message",
+            role: "user",
+            content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+          });
+        }
+      } else if (msg.role === "assistant") {
+        // Assistant messages - handle tool_calls (OpenAI format) and tool_use blocks (Anthropic format)
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          // OpenAI format: tool_calls array
+          for (const tc of msg.tool_calls) {
+            const callId = tc.id || `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            pendingCallIds.push(callId);
+            responsesInput.push({
+              type: "function_call",
+              call_id: callId,
+              name: tc.function?.name || tc.name,
+              arguments: typeof tc.function?.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function?.arguments || {})
+            });
+          }
+        }
+        // Handle content - could be string, array with tool_use blocks, or array with text blocks
+        if (Array.isArray(msg.content)) {
+          // Anthropic format: content is array of blocks
+          for (const block of msg.content) {
+            if (block.type === "tool_use") {
+              const callId = block.id || `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+              pendingCallIds.push(callId);
+              responsesInput.push({
+                type: "function_call",
+                call_id: callId,
+                name: block.name,
+                arguments: typeof block.input === 'string' ? block.input : JSON.stringify(block.input || {})
+              });
+            } else if (block.type === "text" && block.text) {
+              responsesInput.push({
+                type: "message",
+                role: "assistant",
+                content: block.text
+              });
+            }
+          }
+        } else if (msg.content) {
+          // String content
+          responsesInput.push({
+            type: "message",
+            role: "assistant",
+            content: msg.content
+          });
+        }
+      } else if (msg.role === "tool") {
+        // Tool results become function_call_output
+        // Use tool_call_id if available, otherwise pop from pending call IDs
+        const callId = msg.tool_call_id || pendingCallIds.shift() || `call_${Date.now()}`;
+        responsesInput.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        });
+      }
+    }
+
     const responsesBody = {
-      input: azureBody.messages,
+      input: responsesInput,
       model: azureBody.model,
       max_output_tokens: azureBody.max_tokens,
       tools: responsesTools,
@@ -582,6 +680,22 @@ async function invokeAzureOpenAI(body) {
         hasToolCalls: toolCalls.length > 0,
         toolCallCount: toolCalls.length
       }, "Converted Responses API to Chat Completions format");
+
+      // Now convert from Chat Completions format to Anthropic format
+      const anthropicJson = convertOpenAIToAnthropic(result.json);
+      logger.info({
+        anthropicContentTypes: anthropicJson.content?.map(c => c.type),
+        stopReason: anthropicJson.stop_reason
+      }, "Converted to Anthropic format");
+
+      return {
+        ok: result.ok,
+        status: result.status,
+        json: anthropicJson,
+        text: JSON.stringify(anthropicJson),
+        contentType: "application/json",
+        headers: result.headers,
+      };
     }
 
     return result;

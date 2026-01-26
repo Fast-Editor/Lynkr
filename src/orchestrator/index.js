@@ -1160,6 +1160,7 @@ async function runAgentLoop({
   requestedModel,
   wantsThinking,
   session,
+  cwd,
   options,
   cacheKey,
   providerType,
@@ -1531,7 +1532,12 @@ async function runAgentLoop({
     let message = {};
     let toolCalls = [];
 
-    if (providerType === "azure-anthropic") {
+    // Detect Anthropic format: has 'content' array and 'stop_reason' at top level (no 'choices')
+    // This handles azure-anthropic provider AND azure-openai Responses API (which we convert to Anthropic format)
+    const isAnthropicFormat = providerType === "azure-anthropic" ||
+      (Array.isArray(databricksResponse.json?.content) && databricksResponse.json?.stop_reason !== undefined && !databricksResponse.json?.choices);
+
+    if (isAnthropicFormat) {
       // Anthropic format: { content: [{ type: "tool_use", ... }], stop_reason: "tool_use" }
       message = {
         content: databricksResponse.json?.content ?? [],
@@ -1820,6 +1826,7 @@ async function runAgentLoop({
           const taskExecutions = await Promise.all(
             taskCalls.map(({ call }) => executeToolCall(call, {
               session,
+              cwd,
               requestMessages: cleanPayload.messages,
             }))
           );
@@ -1994,6 +2001,7 @@ async function runAgentLoop({
 
         const execution = await executeToolCall(call, {
           session,
+          cwd,
           requestMessages: cleanPayload.messages,
         });
 
@@ -2523,6 +2531,7 @@ async function runAgentLoop({
 
           const execution = await executeToolCall(attemptCall, {
             session,
+            cwd,
             requestMessages: cleanPayload.messages,
           });
 
@@ -2686,7 +2695,7 @@ async function runAgentLoop({
   };
 }
 
-async function processMessage({ payload, headers, session, options = {} }) {
+async function processMessage({ payload, headers, session, cwd, options = {} }) {
   const requestedModel =
     payload?.model ??
     config.modelProvider?.defaultModel ??
@@ -2763,6 +2772,7 @@ async function processMessage({ payload, headers, session, options = {} }) {
     requestedModel,
     wantsThinking,
     session,
+    cwd,
     options,
     cacheKey,
     providerType: config.modelProvider?.type ?? "databricks",

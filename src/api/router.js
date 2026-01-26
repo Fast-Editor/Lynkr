@@ -6,6 +6,7 @@ const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");
 const { getRoutingHeaders, getRoutingStats, analyzeComplexity } = require("../routing");
+const { validateCwd } = require("../workspace");
 
 const router = express.Router();
 
@@ -130,6 +131,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       reason: complexity.breakdown?.taskType?.reason || complexity.recommendation,
     });
 
+    // Extract client CWD from request body or header
+    const clientCwd = validateCwd(req.body?.cwd || req.headers['x-workspace-cwd']);
+
     // For true streaming: only support non-tool requests for MVP
     // Tool requests require buffering for agent loop
     if (wantsStream && !hasTools) {
@@ -149,6 +153,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         payload: req.body,
         headers: req.headers,
         session: req.session,
+        cwd: clientCwd,
         options: {
           maxSteps: req.body?.max_steps,
           maxDurationMs: req.body?.max_duration_ms,
@@ -324,6 +329,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       payload: req.body,
       headers: req.headers,
       session: req.session,
+      cwd: clientCwd,
       options: {
         maxSteps: req.body?.max_steps,
         maxDurationMs: req.body?.max_duration_ms,

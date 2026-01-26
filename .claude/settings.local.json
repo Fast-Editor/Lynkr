@@ -45,7 +45,9 @@
       "Bash(xargs:*)",
       "Bash(docker info:*)",
       "Bash(docker container ls:*)",
-      "Bash(node --check:*)"
+      "Bash(node --check:*)",
+      "Bash(node index.js:*)",
+      "Bash(tee:*)"
     ],
     "deny": [],
     "ask": []

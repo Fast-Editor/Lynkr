@@ -121,7 +121,7 @@ Work autonomously. Do not ask questions.`,
         "Read"
       ],
       model: "haiku", // Fast, cheap
-      maxSteps: 10,
+      maxSteps: 25, // Increased for thorough exploration
       builtIn: true
     });
 
