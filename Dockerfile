@@ -1,48 +1,67 @@
-# Use a small Node.js base image
-FROM node:24-alpine
+############################
+# Build stage
+############################
+FROM node:24-alpine AS build
 
-# Add OCI labels for better container management
-LABEL org.opencontainers.image.title="Lynkr" \
-      org.opencontainers.image.description="Self-hosted Claude Code proxy with multi-provider support and production hardening" \
-      org.opencontainers.image.version="3.1.0" \
-      org.opencontainers.image.vendor="Vishal Veera Reddy" \
-      org.opencontainers.image.source="https://github.com/vishalveerareddy123/Lynkr" \
-      org.opencontainers.image.licenses="Apache-2.0"
-
-# Create app directory
+# Set working directory
 WORKDIR /app
 
-# Install build prerequisites for native modules (better-sqlite3)
-RUN apk add --no-cache python3 py3-pip make g++ git
+# Ensure native addons compile correctly under Alpine (musl)
+# Explicitly force a modern C++ standard for tree-sitter and friends
+ENV CXXFLAGS="-std=gnu++20"
 
-# Install searxng (local search provider)
-#RUN pip install --no-cache-dir searxng
+# Install build dependencies for native Node modules
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    git \
+    bash
 
-# Copy dependency manifests first for better layer caching
+# Copy only dependency manifests first for better layer caching
 COPY package.json package-lock.json ./
 
-# Install only production dependencies
+# Install dependencies deterministically and strip npm cache artifacts
+RUN npm ci \
+ && npm cache clean --force \
+ && rm -rf /root/.npm /tmp/*
+
+# Copy application source
+COPY . .
+
+# Build application (adjust if your build output differs)
 RUN npm ci --omit=dev
 
-# Copy source files
-COPY index.js ./
-COPY src ./src
+############################
+# Runtime stage
+############################
+FROM node:24-alpine AS runtime
 
-# Create data directories for SQLite databases and skillbooks
-RUN mkdir -p data/skillbooks data/agent-transcripts
+# Build metadata supplied externally (reproducible)
+ARG VCS_REF
+ARG BUILD_DATE
 
-COPY docker/start.sh ./start.sh
-RUN chmod +x ./start.sh
+# OCI-compliant, reproducible image labels
+LABEL org.opencontainers.image.revision=$VCS_REF \
+      org.opencontainers.image.created=$BUILD_DATE \
+      org.opencontainers.image.title="Your App Name" \
+      org.opencontainers.image.source="https://github.com/your-org/your-repo"
+
+# Set runtime working directory
+WORKDIR /app
+
+# Copy only what is required to run
+COPY --from=build --chown=node:node /app/index.js /app/package.json ./
+# Copy application source and modules (recursive, safe)
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/src ./src
+
 VOLUME ["/app/data"]
 
-# Create non-root user for better security
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001 && \
-    chown -R nodejs:nodejs /app
-
-# Expose the proxy port and searxng port
 EXPOSE 8081
-EXPOSE 8888
+
+# Drop root privileges if your app allows it (recommended)
+# RUN addgroup -S nodejs && adduser -S nodejs -G nodejs
 
 # Health check for container orchestration
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
@@ -142,9 +161,7 @@ ENV MEMORY_ENABLED="true" \
     MEMORY_DEDUP_LOOKBACK="5"
 
 # Switch to non-root user
-USER nodejs
+USER node
 
-# Run the proxy
-#CMD ["./start.sh"]
-CMD ["node","index.js"]
-
+# Run the application
+CMD ["node", "index.js"]

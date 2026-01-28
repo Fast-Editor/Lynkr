@@ -17,7 +17,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [20.x, 22.x]
+        node-version: [20.x, 22.x, 23.x, 24.x]
 
     steps:
       - name: Checkout code
@@ -29,7 +29,10 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install dependencies (C++20 for native addons)
+        env:
+          CXXFLAGS: "-std=gnu++20"
+          npm_config_build_from_source: true
         run: npm ci
 
       - name: Run linter
