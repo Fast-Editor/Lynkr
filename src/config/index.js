@@ -452,6 +452,33 @@ const agentsDefaultModel = process.env.AGENTS_DEFAULT_MODEL ?? "haiku";
 const agentsMaxSteps = Number.parseInt(process.env.AGENTS_MAX_STEPS ?? "15", 10);
 const agentsTimeout = Number.parseInt(process.env.AGENTS_TIMEOUT ?? "120000", 10);
 
+// LLM Audit logging configuration
+const auditEnabled = process.env.LLM_AUDIT_ENABLED === "true"; // default false
+const auditLogFile = process.env.LLM_AUDIT_LOG_FILE ?? path.join(process.cwd(), "logs", "llm-audit.log");
+const auditMaxContentLength = Number.parseInt(process.env.LLM_AUDIT_MAX_CONTENT_LENGTH ?? "5000", 10); // Legacy fallback
+const auditMaxSystemLength = Number.parseInt(process.env.LLM_AUDIT_MAX_SYSTEM_LENGTH ?? "2000", 10);
+const auditMaxUserLength = Number.parseInt(process.env.LLM_AUDIT_MAX_USER_LENGTH ?? "3000", 10);
+const auditMaxResponseLength = Number.parseInt(process.env.LLM_AUDIT_MAX_RESPONSE_LENGTH ?? "3000", 10);
+const auditMaxFiles = Number.parseInt(process.env.LLM_AUDIT_MAX_FILES ?? "30", 10);
+const auditMaxSize = process.env.LLM_AUDIT_MAX_SIZE ?? "100M";
+const auditAnnotations = process.env.LLM_AUDIT_ANNOTATIONS !== "false"; // default true
+
+// LLM Audit deduplication configuration
+const auditDeduplicationEnabled = process.env.LLM_AUDIT_DEDUP_ENABLED !== "false"; // default true
+const auditDeduplicationDictPath =
+  process.env.LLM_AUDIT_DEDUP_DICT_PATH ?? path.join(process.cwd(), "logs", "llm-audit-dictionary.jsonl");
+const auditDeduplicationMinSize = Number.parseInt(process.env.LLM_AUDIT_DEDUP_MIN_SIZE ?? "500", 10);
+const auditDeduplicationCacheSize = Number.parseInt(process.env.LLM_AUDIT_DEDUP_CACHE_SIZE ?? "100", 10);
+const auditDeduplicationSanitize = process.env.LLM_AUDIT_DEDUP_SANITIZE !== "false"; // default true
+const auditDeduplicationSessionCache = process.env.LLM_AUDIT_DEDUP_SESSION_CACHE !== "false"; // default true
+
+// Oversized Error Logging Configuration
+const oversizedErrorLoggingEnabled = process.env.OVERSIZED_ERROR_LOGGING_ENABLED !== "false"; // default true
+const oversizedErrorThreshold = Number.parseInt(process.env.OVERSIZED_ERROR_THRESHOLD ?? "200", 10);
+const oversizedErrorLogDir =
+	process.env.OVERSIZED_ERROR_LOG_DIR ?? path.join(process.cwd(), "logs", "oversized-errors");
+const oversizedErrorMaxFiles = Number.parseInt(process.env.OVERSIZED_ERROR_MAX_FILES ?? "100", 10);
+
 const config = {
   env: process.env.NODE_ENV ?? "development",
   port: Number.isNaN(port) ? 8080 : port,
@@ -521,7 +548,7 @@ const config = {
   hotReload: {
     enabled: hotReloadEnabled,
     debounceMs: Number.isNaN(hotReloadDebounceMs) ? 1000 : hotReloadDebounceMs,
-  },
+  },  
   modelProvider: {
     type: modelProvider,
     defaultModel,
@@ -687,6 +714,48 @@ const config = {
     mode: smartToolSelectionMode,
     tokenBudget: smartToolSelectionTokenBudget,
     minimalMode: false,  // HARDCODED - disabled
+  },
+  security: {
+    // Content filtering
+    contentFilterEnabled: process.env.SECURITY_CONTENT_FILTER_ENABLED !== "false", // default true
+    blockOnDetection: process.env.SECURITY_BLOCK_ON_DETECTION !== "false", // default true
+
+    // Rate limiting
+    rateLimitEnabled: process.env.SECURITY_RATE_LIMIT_ENABLED !== "false", // default true
+    perIpLimit: Number.parseInt(process.env.SECURITY_PER_IP_LIMIT ?? "100", 10), // requests per minute
+    perEndpointLimit: Number.parseInt(process.env.SECURITY_PER_ENDPOINT_LIMIT ?? "1000", 10), // requests per minute
+
+    // Audit logging
+    auditLogEnabled: process.env.SECURITY_AUDIT_LOG_ENABLED !== "false", // default true
+    auditLogDir: process.env.SECURITY_AUDIT_LOG_DIR ?? path.join(process.cwd(), "logs"),
+  },
+  audit: {
+    enabled: auditEnabled,
+    logFile: auditLogFile,
+    maxContentLength: {
+      systemPrompt: Number.isNaN(auditMaxSystemLength) ? 2000 : auditMaxSystemLength,
+      userMessages: Number.isNaN(auditMaxUserLength) ? 3000 : auditMaxUserLength,
+      response: Number.isNaN(auditMaxResponseLength) ? 3000 : auditMaxResponseLength,
+    },
+    annotations: auditAnnotations,
+    rotation: {
+      maxFiles: Number.isNaN(auditMaxFiles) ? 30 : auditMaxFiles,
+      maxSize: auditMaxSize,
+    },
+    deduplication: {
+      enabled: auditDeduplicationEnabled,
+      dictionaryPath: auditDeduplicationDictPath,
+      minSize: Number.isNaN(auditDeduplicationMinSize) ? 500 : auditDeduplicationMinSize,
+      cacheSize: Number.isNaN(auditDeduplicationCacheSize) ? 100 : auditDeduplicationCacheSize,
+      sanitize: auditDeduplicationSanitize,
+      sessionCache: auditDeduplicationSessionCache,
+    },
+  },
+  oversizedErrorLogging: {
+    enabled: oversizedErrorLoggingEnabled,
+    threshold: oversizedErrorThreshold,
+    logDir: oversizedErrorLogDir,
+    maxFiles: oversizedErrorMaxFiles,
   },
 };
 

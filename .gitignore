@@ -1,6 +1,7 @@
 node_modules/
 data/
 *.db
+logs/
 npm-debug.log
 SUBAGENT_IMPLEMENTATION_PLAN_V2.md
 .DS_Store
