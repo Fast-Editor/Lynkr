@@ -255,7 +255,18 @@ async function invokeOllama(body) {
 
   // Convert Anthropic messages format to Ollama format
   // Ollama expects content as string, not content blocks array
-  const convertedMessages = (body.messages || []).map(msg => {
+  const convertedMessages = [];
+
+  // Handle system prompt (same pattern as other providers)
+  if (body.system && typeof body.system === "string" && body.system.trim().length > 0) {
+    convertedMessages.push({
+      role: "system",
+      content: body.system.trim()
+    });
+  }
+
+  // Add user/assistant messages
+  (body.messages || []).forEach(msg => {
     let content = msg.content;
 
     // Convert content blocks array to simple string
@@ -266,10 +277,10 @@ async function invokeOllama(body) {
         .join('\n');
     }
 
-    return {
+    convertedMessages.push({
       role: msg.role,
       content: content || ''
-    };
+    });
   });
 
   // FIX: Deduplicate consecutive messages with same role (Ollama may reject this)

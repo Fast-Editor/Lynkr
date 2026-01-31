@@ -98,10 +98,30 @@ function createSession(sessionId, metadata = {}) {
 
 function getOrCreateSession(sessionId) {
   const existing = getSession(sessionId);
-  if (existing) return existing;
+  if (existing) {
+    // [SESSION_DEBUG] Reusing existing session
+    const ageMs = Date.now() - existing.createdAt;
+    const ageHours = (ageMs / (1000 * 60 * 60)).toFixed(2);
+
+    logger.debug({
+      sessionId,
+      ageMs,
+      ageHours,
+      historyEntries: existing.history?.length ?? 0
+    }, '[SESSION_DEBUG] Reusing existing session');
+
+    return existing;
+  }
 
   try {
-    return createSession(sessionId);
+    // [SESSION_DEBUG] Created new session
+    const newSession = createSession(sessionId);
+    logger.debug({
+      sessionId,
+      createdAt: newSession.createdAt
+    }, '[SESSION_DEBUG] Created NEW session');
+
+    return newSession;
   } catch (err) {
     if (err.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
       return getSession(sessionId);

@@ -14,6 +14,8 @@ const TOOL_CAPABLE_MODELS = new Set([
   "mistral",
   "mistral-nemo",
   "firefunction-v2",
+  "kimi-k2.5",
+  "nemotron"
 ]);
 
 /**
