@@ -47,7 +47,8 @@
       "Bash(docker container ls:*)",
       "Bash(node --check:*)",
       "Bash(node index.js:*)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "Bash(gh pr checks:*)"
     ],
     "deny": [],
     "ask": []
