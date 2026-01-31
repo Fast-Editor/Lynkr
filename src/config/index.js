@@ -786,6 +786,7 @@ var config = {
     },
     provider: headroomProvider,
     logLevel: headroomLogLevel,
+  },
   security: {
     // Content filtering
     contentFilterEnabled: process.env.SECURITY_CONTENT_FILTER_ENABLED !== "false", // default true
@@ -828,7 +829,6 @@ var config = {
     logDir: oversizedErrorLogDir,
     maxFiles: oversizedErrorMaxFiles,
   },
-}
 };
 
 /**
