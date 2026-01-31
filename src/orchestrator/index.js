@@ -12,6 +12,44 @@ const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
 const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = require("../headroom");
+const { createAuditLogger } = require("../logger/audit-logger");
+const { getResolvedIp, runWithDnsContext } = require("../clients/dns-logger");
+const { getShuttingDown } = require("../api/health");
+const crypto = require("crypto");
+
+/**
+ * Get destination URL for audit logging based on provider type
+ * @param {string} providerType - Provider type (databricks, azure-anthropic, etc)
+ * @returns {string} - Destination URL
+ */
+function getDestinationUrl(providerType) {
+  switch (providerType) {
+    case 'databricks':
+      return config.databricks?.url ?? 'unknown';
+    case 'azure-anthropic':
+      return config.azureAnthropic?.endpoint ?? 'unknown';
+    case 'ollama':
+      return config.ollama?.endpoint ?? 'unknown';
+    case 'azure-openai':
+      return config.azureOpenAI?.endpoint ?? 'unknown';
+    case 'openrouter':
+      return config.openrouter?.endpoint ?? 'unknown';
+    case 'openai':
+      return 'https://api.openai.com/v1/chat/completions';
+    case 'llamacpp':
+      return config.llamacpp?.endpoint ?? 'unknown';
+    case 'lmstudio':
+      return config.lmstudio?.endpoint ?? 'unknown';
+    case 'bedrock':
+      return config.bedrock?.endpoint ?? 'unknown';
+    case 'zai':
+      return config.zai?.endpoint ?? 'unknown';
+    case 'vertex':
+      return config.vertex?.endpoint ?? 'unknown';
+    default:
+      return 'unknown';
+  }
+}
 
 const DROP_KEYS = new Set([
   "provider",
@@ -841,28 +879,8 @@ function sanitizePayload(payload) {
       });
     }
 
-    // Flatten system messages into the first user message
-    const systemChunks = [];
-    clean.messages = clean.messages.filter((msg) => {
-      if (msg?.role === "system") {
-        if (typeof msg.content === "string" && msg.content.trim().length > 0) {
-          systemChunks.push(msg.content.trim());
-        }
-        return false;
-      }
-      return true;
-    });
-
-    // Prepend system content to first user message if present
-    if (systemChunks.length > 0 && clean.messages.length > 0) {
-      const systemContent = systemChunks.join("\n\n");
-      const firstMsg = clean.messages[0];
-      if (firstMsg.role === "user") {
-        firstMsg.content = `${systemContent}\n\n${firstMsg.content}`;
-      }
-    }
-
-    delete clean.system;
+    // Keep system prompt separate for Ollama (same as other providers)
+    // Let invokeOllama() handle body.system properly
   } else {
     delete clean.system;
   }
@@ -1101,12 +1119,27 @@ function sanitizePayload(payload) {
     clean.messages = deduplicated;
   }
 
+  // [CONTEXT_FLOW] Log payload after sanitization
+  logger.debug({
+    providerType: config.modelProvider?.type ?? "databricks",
+    phase: "after_sanitize",
+    systemField: typeof clean.system === 'string'
+      ? { type: 'string', length: clean.system.length }
+      : clean.system
+        ? { type: typeof clean.system, value: clean.system }
+        : undefined,
+    messageCount: clean.messages?.length ?? 0,
+    firstMessageHasSystem: clean.messages?.[0]?.content?.includes?.('You are Claude Code') ?? false,
+    toolCount: clean.tools?.length ?? 0
+  }, '[CONTEXT_FLOW] After sanitizePayload');
+
   return clean;
 }
 
 const DEFAULT_LOOP_OPTIONS = {
   maxSteps: config.policy.maxStepsPerTurn ?? 6,
   maxDurationMs: 120000,
+  maxToolCallsPerRequest: config.policy.maxToolCallsPerRequest ?? 20, // Prevent runaway tool calling
 };
 
 function resolveLoopOptions(options = {}) {
@@ -1118,11 +1151,41 @@ function resolveLoopOptions(options = {}) {
     Number.isInteger(options.maxDurationMs) && options.maxDurationMs > 0
       ? options.maxDurationMs
       : DEFAULT_LOOP_OPTIONS.maxDurationMs;
+  const maxToolCallsPerRequest =
+    Number.isInteger(options.maxToolCallsPerRequest) && options.maxToolCallsPerRequest > 0
+      ? options.maxToolCallsPerRequest
+      : DEFAULT_LOOP_OPTIONS.maxToolCallsPerRequest;
   return {
     ...DEFAULT_LOOP_OPTIONS,
     maxSteps,
     maxDurationMs,
+    maxToolCallsPerRequest,
   };
+}
+
+/**
+ * Create a signature for a tool call to detect identical repeated calls
+ * @param {Object} toolCall - The tool call object
+ * @returns {string} - A hash signature of the tool name and parameters
+ */
+function getToolCallSignature(toolCall) {
+  const crypto = require('crypto');
+  const name = toolCall.function?.name ?? toolCall.name ?? 'unknown';
+  const args = toolCall.function?.arguments ?? toolCall.input;
+
+  // Parse arguments if they're a string
+  let argsObj = args;
+  if (typeof args === 'string') {
+    try {
+      argsObj = JSON.parse(args);
+    } catch (err) {
+      argsObj = args; // Use raw string if parse fails
+    }
+  }
+
+  // Create a deterministic signature
+  const signature = `${name}:${JSON.stringify(argsObj)}`;
+  return crypto.createHash('sha256').update(signature).digest('hex').substring(0, 16);
 }
 
 function buildNonJsonResponse(databricksResponse) {
@@ -1168,15 +1231,48 @@ async function runAgentLoop({
   console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length);
   logger.info({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop ENTERED');
   const settings = resolveLoopOptions(options);
+  // Initialize audit logger (no-op if disabled)
+  const auditLogger = createAuditLogger(config.audit);
   const start = Date.now();
   let steps = 0;
   let toolCallsExecuted = 0;
   let fallbackPerformed = false;
   const toolCallNames = new Map();
+  const toolCallHistory = new Map(); // Track tool calls to detect loops: signature -> count
+  let loopWarningInjected = false; // Track if we've already warned about loops
 
   while (steps < settings.maxSteps) {
     if (Date.now() - start > settings.maxDurationMs) {
       break;
+    }
+
+    // Check if system is shutting down (Ctrl+C or SIGTERM)
+    if (getShuttingDown()) {
+      logger.info(
+        {
+          sessionId: session?.id ?? null,
+          steps,
+          toolCallsExecuted,
+          durationMs: Date.now() - start,
+        },
+        "Agent loop interrupted - system shutting down",
+      );
+
+      return {
+        response: {
+          status: 503,
+          body: {
+            error: {
+              type: "service_unavailable",
+              message: "Service is shutting down. Request was interrupted gracefully.",
+            },
+          },
+          terminationReason: "shutdown",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "shutdown",
+      };
     }
 
     steps += 1;
@@ -1273,6 +1369,15 @@ async function runAgentLoop({
         logger.warn({ err, sessionId: session?.id }, 'Memory retrieval failed, continuing without memories');
       }
     }
+
+    // [CONTEXT_FLOW] Log after memory injection
+    logger.debug({
+      sessionId: session?.id ?? null,
+      phase: "after_memory",
+      systemPromptLength: cleanPayload.system?.length ?? 0,
+      messageCount: cleanPayload.messages?.length ?? 0,
+      toolCount: cleanPayload.tools?.length ?? 0
+    }, '[CONTEXT_FLOW] After memory injection');
 
     if (steps === 1 && (config.systemPrompt?.mode === 'dynamic' || config.systemPrompt?.toolDescriptions === 'minimal')) {
       try {
@@ -1443,6 +1548,23 @@ async function runAgentLoop({
     } catch (headroomErr) {
       logger.warn({ err: headroomErr, sessionId: session?.id ?? null }, 'Headroom compression failed, using original messages');
     }
+  // Generate correlation ID for request/response pairing
+  const correlationId = `req_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+
+  // Log LLM request before invocation
+  if (auditLogger.enabled) {
+    auditLogger.logLlmRequest({
+      correlationId,
+      sessionId: session?.id ?? null,
+      provider: providerType,
+      model: cleanPayload.model,
+      stream: cleanPayload.stream ?? false,
+      destinationUrl: getDestinationUrl(providerType),
+      userMessages: cleanPayload.messages,
+      systemPrompt: cleanPayload.system,
+      tools: cleanPayload.tools,
+      maxTokens: cleanPayload.max_tokens,
+    });
   }
 
   const databricksResponse = await invokeModel(cleanPayload);
@@ -1458,6 +1580,58 @@ async function runAgentLoop({
     // Record in session metadata
     if (session) {
       tokens.recordTokenUsage(session, steps, estimatedTokens, actualUsage, cleanPayload.model);
+    }
+  }
+
+  // Log LLM response after invocation
+  if (auditLogger.enabled) {
+    const latencyMs = Date.now() - start;
+
+    if (databricksResponse.stream) {
+      // Log streaming response (no content, just metadata)
+      auditLogger.logLlmResponse({
+        correlationId,
+        sessionId: session?.id ?? null,
+        provider: providerType,
+        model: cleanPayload.model,
+        stream: true,
+        destinationUrl: getDestinationUrl(providerType),
+        status: databricksResponse.status,
+        latencyMs,
+        streamingNote: 'Content streamed directly to client, not captured in audit log',
+      });
+    } else if (databricksResponse.ok && databricksResponse.json) {
+      // Log successful non-streaming response
+      const message = databricksResponse.json;
+      const assistantMessage = message.content ?? message.choices?.[0]?.message;
+
+      auditLogger.logLlmResponse({
+        correlationId,
+        sessionId: session?.id ?? null,
+        provider: providerType,
+        model: cleanPayload.model,
+        stream: false,
+        destinationUrl: getDestinationUrl(providerType),
+        assistantMessage,
+        stopReason: message.stop_reason ?? message.choices?.[0]?.finish_reason ?? null,
+        requestTokens: actualUsage?.input_tokens ?? actualUsage?.prompt_tokens ?? null,
+        responseTokens: actualUsage?.output_tokens ?? actualUsage?.completion_tokens ?? null,
+        latencyMs,
+        status: databricksResponse.status,
+      });
+    } else {
+      // Log error response
+      auditLogger.logLlmResponse({
+        correlationId,
+        sessionId: session?.id ?? null,
+        provider: providerType,
+        model: cleanPayload.model,
+        stream: false,
+        destinationUrl: getDestinationUrl(providerType),
+        status: databricksResponse.status,
+        latencyMs,
+        error: databricksResponse.text ?? databricksResponse.json ?? 'Unknown error',
+      });
     }
   }
 
@@ -1908,6 +2082,35 @@ async function runAgentLoop({
             completedTasks: taskExecutions.length,
             sessionId: session?.id
           }, "Completed parallel Task execution");
+
+          // Check if we've exceeded the max tool calls limit after parallel execution
+          if (toolCallsExecuted > settings.maxToolCallsPerRequest) {
+            logger.error(
+              {
+                sessionId: session?.id ?? null,
+                toolCallsExecuted,
+                maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
+                steps,
+              },
+              "Maximum tool calls per request exceeded after parallel Task execution - terminating",
+            );
+
+            return {
+              response: {
+                status: 500,
+                body: {
+                  error: {
+                    type: "max_tool_calls_exceeded",
+                    message: `Maximum tool calls per request exceeded. The model attempted to execute ${toolCallsExecuted} tool calls, but the limit is ${settings.maxToolCallsPerRequest}. This may indicate a complex task that requires breaking down into smaller steps.`,
+                  },
+                },
+                terminationReason: "max_tool_calls_exceeded",
+              },
+              steps,
+              durationMs: Date.now() - start,
+              terminationReason: "max_tool_calls_exceeded",
+            };
+          }
         } catch (error) {
           logger.error({
             error: error.message,
@@ -1998,6 +2201,35 @@ async function runAgentLoop({
         }
 
         toolCallsExecuted += 1;
+
+        // Check if we've exceeded the max tool calls limit
+        if (toolCallsExecuted > settings.maxToolCallsPerRequest) {
+          logger.error(
+            {
+              sessionId: session?.id ?? null,
+              toolCallsExecuted,
+              maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
+              steps,
+            },
+            "Maximum tool calls per request exceeded - terminating",
+          );
+
+          return {
+            response: {
+              status: 500,
+              body: {
+                error: {
+                  type: "max_tool_calls_exceeded",
+                  message: `Maximum tool calls per request exceeded. The model attempted to execute ${toolCallsExecuted} tool calls, but the limit is ${settings.maxToolCallsPerRequest}. This may indicate a complex task that requires breaking down into smaller steps.`,
+                },
+              },
+              terminationReason: "max_tool_calls_exceeded",
+            },
+            steps,
+            durationMs: Date.now() - start,
+            terminationReason: "max_tool_calls_exceeded",
+          };
+        }
 
         const execution = await executeToolCall(call, {
           session,
@@ -2112,6 +2344,94 @@ async function runAgentLoop({
             },
             "Tool execution returned an error response",
           );
+        }
+      }
+
+      // === TOOL CALL LOOP DETECTION ===
+      // Track tool calls to detect infinite loops where the model calls the same tool
+      // repeatedly with identical parameters
+      for (const call of toolCalls) {
+        const signature = getToolCallSignature(call);
+        const count = (toolCallHistory.get(signature) || 0) + 1;
+        toolCallHistory.set(signature, count);
+
+        const toolName = call.function?.name ?? call.name ?? 'unknown';
+
+        if (count === 3 && !loopWarningInjected) {
+          logger.warn(
+            {
+              sessionId: session?.id ?? null,
+              correlationId: options?.correlationId,
+              tool: toolName,
+              loopCount: count,
+              signature: signature,
+              action: 'warning_injected',
+              totalSteps: steps,
+              remainingSteps: settings.maxSteps - steps,
+            },
+            "Tool call loop detected - same tool called 3 times with identical parameters",
+          );
+
+          // Inject warning message to model
+          loopWarningInjected = true;
+          const warningMessage = {
+            role: "user",
+            content: "⚠️ System Warning: You have called the same tool with identical parameters 3 times in this request. This may indicate an infinite loop. Please provide a final answer to the user instead of calling the same tool again, or explain why you need to continue retrying with the same parameters.",
+          };
+
+          cleanPayload.messages.push(warningMessage);
+
+          if (session) {
+            appendTurnToSession(session, {
+              role: "user",
+              type: "system_warning",
+              status: 200,
+              content: warningMessage.content,
+              metadata: {
+                reason: "tool_call_loop_warning",
+                toolName,
+                loopCount: count,
+              },
+            });
+          }
+        } else if (count > 3) {
+          // Force termination after 3 identical calls
+          // Log FULL context for debugging why the loop occurred
+          logger.error(
+            {
+              sessionId: session?.id ?? null,
+              correlationId: options?.correlationId,
+              tool: toolName,
+              loopCount: count,
+              signature: signature,
+              action: 'request_terminated',
+              totalSteps: steps,
+              maxSteps: settings.maxSteps,
+              // FULL CONTEXT for debugging
+              myPrompt: cleanPayload.messages, // Full conversation sent to LLM
+              systemPrompt: cleanPayload.system, // Full system prompt
+              llmResponse: databricksResponse?.data || databricksResponse?.json, // Full LLM response that triggered loop
+              repeatedToolCalls: toolCalls, // The actual repeated tool calls
+              toolCallHistory: Array.from(toolCallHistory.entries()), // Full history of all tool calls in this request
+            },
+            "Tool call loop limit exceeded - forcing termination (FULL CONTEXT CAPTURED)",
+          );
+
+          return {
+            response: {
+              status: 500,
+              body: {
+                error: {
+                  type: "tool_call_loop_detected",
+                  message: `Tool call loop detected: The model called the same tool ("${toolName}") with identical parameters ${count} times. This indicates an infinite loop and execution has been terminated. Please try rephrasing your request or provide different parameters.`,
+                },
+              },
+              terminationReason: "tool_call_loop",
+            },
+            steps,
+            durationMs: Date.now() - start,
+            terminationReason: "tool_call_loop",
+          };
         }
       }
 
@@ -2576,6 +2896,35 @@ async function runAgentLoop({
 
           toolCallsExecuted += 1;
 
+          // Check if we've exceeded the max tool calls limit
+          if (toolCallsExecuted > settings.maxToolCallsPerRequest) {
+            logger.error(
+              {
+                sessionId: session?.id ?? null,
+                toolCallsExecuted,
+                maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
+                steps,
+              },
+              "Maximum tool calls per request exceeded during fallback - terminating",
+            );
+
+            return {
+              response: {
+                status: 500,
+                body: {
+                  error: {
+                    type: "max_tool_calls_exceeded",
+                    message: `Maximum tool calls per request exceeded. The model attempted to execute ${toolCallsExecuted} tool calls, but the limit is ${settings.maxToolCallsPerRequest}. This may indicate a complex task that requires breaking down into smaller steps.`,
+                  },
+                },
+                terminationReason: "max_tool_calls_exceeded",
+              },
+              steps,
+              durationMs: Date.now() - start,
+              terminationReason: "max_tool_calls_exceeded",
+            };
+          }
+
           if (execution.ok) {
             fallbackPerformed = true;
             attemptSucceeded = true;
@@ -2633,13 +2982,18 @@ async function runAgentLoop({
       });
     }
 
+    const finalDurationMs = Date.now() - start;
     logger.info(
       {
         sessionId: session?.id ?? null,
         steps,
-        durationMs: Date.now() - start,
+        toolCallsExecuted,
+        uniqueToolSignatures: toolCallHistory.size,
+        toolCallLoopWarnings: loopWarningInjected ? 1 : 0,
+        durationMs: finalDurationMs,
+        avgDurationPerStep: steps > 0 ? Math.round(finalDurationMs / steps) : 0,
       },
-      "Agent loop completed",
+      "Agent loop completed successfully",
     );
     return {
       response: {
@@ -2648,7 +3002,7 @@ async function runAgentLoop({
         terminationReason: "completion",
       },
       steps,
-      durationMs: Date.now() - start,
+      durationMs: finalDurationMs,
       terminationReason: "completion",
     };
   }
@@ -2667,11 +3021,17 @@ async function runAgentLoop({
     },
     metadata: { termination: "max_steps" },
   });
+  const finalDurationMs = Date.now() - start;
   logger.warn(
     {
       sessionId: session?.id ?? null,
       steps,
-      durationMs: Date.now() - start,
+      toolCallsExecuted,
+      uniqueToolSignatures: toolCallHistory.size,
+      durationMs: finalDurationMs,
+      maxSteps: settings.maxSteps,
+      maxDurationMs: settings.maxDurationMs,
+      maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
     },
     "Agent loop exceeded limits",
   );
@@ -2685,14 +3045,21 @@ async function runAgentLoop({
         limits: {
           maxSteps: settings.maxSteps,
           maxDurationMs: settings.maxDurationMs,
+          maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
+        },
+        metrics: {
+          steps,
+          toolCallsExecuted,
+          durationMs: finalDurationMs,
         },
       },
       terminationReason: "max_steps",
     },
     steps,
-    durationMs: Date.now() - start,
+    durationMs: finalDurationMs,
     terminationReason: "max_steps",
   };
+}
 }
 
 async function processMessage({ payload, headers, session, cwd, options = {} }) {

@@ -52,15 +52,15 @@ class ShutdownManager {
    */
   setupSignalHandlers() {
     // Handle SIGTERM (Kubernetes, Docker, etc.)
-    process.on("SIGTERM", () => {
+    process.on("SIGTERM", async () => {
       logger.info("Received SIGTERM, starting graceful shutdown");
-      this.shutdown("SIGTERM");
+      await this.shutdown("SIGTERM");
     });
 
     // Handle SIGINT (Ctrl+C)
-    process.on("SIGINT", () => {
+    process.on("SIGINT", async () => {
       logger.info("Received SIGINT, starting graceful shutdown");
-      this.shutdown("SIGINT");
+      await this.shutdown("SIGINT");
     });
 
     // Handle uncaught exceptions

@@ -255,8 +255,16 @@ function setShuttingDown(value) {
   isShuttingDown = value;
 }
 
+/**
+ * Get shutting down flag
+ */
+function getShuttingDown() {
+  return isShuttingDown;
+}
+
 module.exports = {
   livenessCheck,
   readinessCheck,
   setShuttingDown,
+  getShuttingDown,
 };

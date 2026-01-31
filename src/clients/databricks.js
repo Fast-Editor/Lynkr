@@ -248,14 +248,25 @@ async function invokeOllama(body) {
     throw new Error("Ollama endpoint is not configured.");
   }
 
-  const { convertAnthropicToolsToOllama } = require("./ollama-utils");
+  const { convertAnthropicToolsToOllama, checkOllamaToolSupport } = require("./ollama-utils");
 
   const endpoint = `${config.ollama.endpoint}/api/chat`;
   const headers = { "Content-Type": "application/json" };
 
   // Convert Anthropic messages format to Ollama format
   // Ollama expects content as string, not content blocks array
-  const convertedMessages = (body.messages || []).map(msg => {
+  const convertedMessages = [];
+
+  // Handle system prompt (same pattern as other providers)
+  if (body.system && typeof body.system === "string" && body.system.trim().length > 0) {
+    convertedMessages.push({
+      role: "system",
+      content: body.system.trim()
+    });
+  }
+
+  // Add user/assistant messages
+  (body.messages || []).forEach(msg => {
     let content = msg.content;
 
     // Convert content blocks array to simple string
@@ -266,10 +277,10 @@ async function invokeOllama(body) {
         .join('\n');
     }
 
-    return {
+    convertedMessages.push({
       role: msg.role,
       content: content || ''
-    };
+    });
   });
 
   // FIX: Deduplicate consecutive messages with same role (Ollama may reject this)
@@ -308,32 +319,52 @@ async function invokeOllama(body) {
     },
   };
 
+  // Check if model supports tools FIRST (before wasteful injection)
+  const supportsTools = await checkOllamaToolSupport(config.ollama.model);
+
   // Inject standard tools if client didn't send any (passthrough mode)
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
   const injectToolsOllama = process.env.INJECT_TOOLS_OLLAMA !== "false";
-  if (injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+
+  if (!supportsTools) {
+    // Model doesn't support tools - don't inject them
+    toolsToSend = null;
+  } else if (injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+    // Model supports tools and none provided - inject them
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (Ollama) ===");
-  } else if (!injectToolsOllama) {
-    logger.info({}, "Tool injection disabled for Ollama (INJECT_TOOLS_OLLAMA=false)");
   }
 
-  // Add tools if present (for tool-capable models)
-  if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+  // Add tools if present AND model supports them
+  if (supportsTools && Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     ollamaBody.tools = convertAnthropicToolsToOllama(toolsToSend);
-    logger.info({
-      toolCount: toolsToSend.length,
-      toolNames: toolsToSend.map(t => t.name),
-      toolsInjected
-    }, "Sending tools to Ollama");
   }
+
+  // Single consolidated log message for all cases (easy to grep and compare across models)
+  const toolCount = (supportsTools && Array.isArray(toolsToSend)) ? toolsToSend.length : 0;
+  let logMessage;
+
+  if (!supportsTools) {
+    logMessage = `Tools not supported (0 tools)`;
+  } else if (toolsInjected) {
+    logMessage = `injected ${toolCount} tools`;
+  } else if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+    logMessage = `Using client-provided tools (${toolCount} tools)`;
+  } else if (!injectToolsOllama) {
+    logMessage = `Tool injection disabled (0 tools)`;
+  } else {
+    logMessage = `No tools (0 tools)`;
+  }
+
+  logger.info({
+    model: config.ollama.model,
+    toolCount,
+    toolsInjected,
+    supportsTools,
+    toolNames: (Array.isArray(toolsToSend) && toolsToSend.length > 0) ? toolsToSend.map(t => t.name) : []
+  }, `=== Ollama STANDARD TOOLS INJECTION for ${config.ollama.model} === ${logMessage}`);
 
   return performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
 }

@@ -2,6 +2,152 @@ const db = require("../db");
 const logger = require("../logger");
 const store = require("./store");
 
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+const MAX_QUERY_LENGTH = 1000;
+const MAX_OR_TERMS = 50;
+
+// ============================================================================
+// KEYWORD SANITIZATION (NEW - Critical for FTS5 Safety)
+// ============================================================================
+
+/**
+ * Sanitize a single keyword for use in FTS5 queries
+ * Removes all FTS5 special characters that can cause syntax errors
+ * 
+ * CRITICAL: FTS5 has many special characters that cause errors:
+ * - Dash (-) is interpreted as column filter
+ * - @ is invalid bareword character
+ * - Parentheses, brackets, quotes can break query syntax
+ * - Commas and periods can cause issues in newer SQLite versions
+ */
+function sanitizeKeyword(keyword) {
+  if (!keyword || typeof keyword !== 'string') {
+    return '';
+  }
+  
+  // Remove ALL FTS5 special characters
+  const sanitized = keyword
+    .replace(/[*()<>\-:\[\]{}|^~,.;!?'"@#$%&+=/\\\\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  
+  return sanitized;
+}
+
+/**
+ * Sanitize array of keywords
+ * Returns only keywords that are 3+ characters after sanitization
+ */
+function sanitizeKeywords(keywords) {
+  if (!Array.isArray(keywords)) {
+    return [];
+  }
+  
+  return keywords
+    .map(sanitizeKeyword)
+    .filter(k => k.length >= 3);
+}
+
+// ============================================================================
+// FTS5 QUERY PREPARATION (UPDATED - Hardened)
+// ============================================================================
+
+/**
+ * Prepare FTS5 query - handle special characters and phrases
+ * 
+ * CRITICAL FIX for better-sqlite3 v12+ (SQLite 3.46+):
+ * - Commas and periods inside quoted strings cause "fts5: syntax error near ,"
+ * - Solution: Extract keywords and search for them individually with OR
+ * - This is more robust than attempting to quote complex phrases
+ */
+function prepareFTS5Query(query) {
+  let cleaned = query.trim();
+
+  // Length validation
+  if (cleaned.length > MAX_QUERY_LENGTH) {
+    logger.warn({ 
+      queryLength: cleaned.length, 
+      truncatedTo: MAX_QUERY_LENGTH 
+    }, 'Query truncated due to excessive length');
+    cleaned = cleaned.substring(0, MAX_QUERY_LENGTH);
+  }
+
+  if (!cleaned) {
+    return '"empty query"'; // Safe fallback
+  }
+
+  // Step 1: Remove XML/HTML tags (common in error messages and code)
+  cleaned = cleaned.replace(/<[^>]+>/g, ' ');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  if (!cleaned) {
+    return '"empty query"';
+  }
+
+  // Step 2: Check for FTS5 operators (AND, OR, NOT)
+  // If present, user is doing advanced search - preserve operators
+  const hasFTS5Operators = /\b(AND|OR|NOT)\b/.test(cleaned);
+
+  // Step 3: Remove ALL FTS5 special characters and punctuation
+  // CRITICAL: These can cause syntax errors even in quoted strings:
+  // - Commas (,) and periods (.) → "syntax error near ,"
+  // - Dashes (-) → interpreted as column filter
+  // - @ symbol → "syntax error near @"
+  // - Quotes (") → can break string quoting
+  // - Parentheses, brackets → break grouping syntax
+  cleaned = cleaned.replace(/[*()<>\-:\[\]{}|^~,.;!?'"@#$%&+=/\\\\]/g, ' ');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  if (!cleaned) {
+    return '"empty query"';
+  }
+
+  // Step 4: If has operators, return as-is for advanced search
+  if (hasFTS5Operators) {
+    // Advanced users can use AND/OR/NOT
+    // Characters are already sanitized above
+    return cleaned;
+  }
+
+  // Step 5: Extract keywords (min 3 chars, max 50 words to prevent DoS)
+  const words = cleaned
+    .split(/\s+/)
+    .filter(w => w.length >= 3)
+    .slice(0, MAX_OR_TERMS);
+  
+  if (words.length === 0) {
+    // No valid keywords - try with shorter words
+    const anyWords = cleaned
+      .split(/\s+/)
+      .filter(w => w.length > 0)
+      .slice(0, 10);
+    
+    if (anyWords.length === 0) {
+      return '"empty query"';
+    }
+    
+    // Quote each word individually
+    return anyWords.map(w => `"${w}"`).join(' OR ');
+  }
+
+  // Step 6: Single word - simple quote
+  if (words.length === 1) {
+    return `"${words[0]}"`;
+  }
+
+  // Step 7: Multiple words - create OR query of individual quoted words
+  // This is the safest approach that avoids all FTS5 syntax errors
+  // Example: "word1" OR "word2" OR "word3"
+  return words.map(word => `"${word}"`).join(' OR ');
+}
+
+// ============================================================================
+// SEARCH FUNCTIONS (UPDATED)
+// ============================================================================
+
 /**
  * Search memories using FTS5 full-text search
  */
@@ -9,9 +155,9 @@ function searchMemories(options) {
   const {
     query,
     limit = 10,
-    types = null,      // Filter by memory types
-    categories = null, // Filter by categories
-    sessionId = null,  // Filter by session
+    types = null,
+    categories = null,
+    sessionId = null,
     minImportance = null,
   } = options;
 
@@ -20,52 +166,69 @@ function searchMemories(options) {
     return [];
   }
 
-  // Build FTS5 query - escape special characters
-  const ftsQuery = prepareFTS5Query(query);
-
-  // Build SQL with filters
-  let sql = `
-    SELECT m.id, m.session_id, m.content, m.type, m.category,
-           m.importance, m.surprise_score, m.access_count, m.decay_factor,
-           m.source_turn_id, m.created_at, m.updated_at, m.last_accessed_at, m.metadata,
-           fts.rank
-    FROM memories_fts fts
-    JOIN memories m ON m.id = fts.rowid
-    WHERE memories_fts MATCH ?
-  `;
-
-  const params = [ftsQuery];
-
-  // Add filters
-  if (sessionId) {
-    sql += ` AND (m.session_id = ? OR m.session_id IS NULL)`;
-    params.push(sessionId);
-  }
-
-  if (types && Array.isArray(types) && types.length > 0) {
-    const placeholders = types.map(() => "?").join(",");
-    sql += ` AND m.type IN (${placeholders})`;
-    params.push(...types);
-  }
-
-  if (categories && Array.isArray(categories) && categories.length > 0) {
-    const placeholders = categories.map(() => "?").join(",");
-    sql += ` AND m.category IN (${placeholders})`;
-    params.push(...categories);
-  }
-
-  if (minImportance !== null && typeof minImportance === "number") {
-    sql += ` AND m.importance >= ?`;
-    params.push(minImportance);
-  }
-
-  // Order by FTS5 rank and importance
-  sql += ` ORDER BY fts.rank, m.importance DESC LIMIT ?`;
-  params.push(limit);
-
   try {
+    // Build FTS5 query - now hardened against syntax errors
+    const ftsQuery = prepareFTS5Query(query);
+    
+    logger.debug({ 
+      originalQuery: query.substring(0, 100), 
+      ftsQuery: ftsQuery.substring(0, 100) 
+    }, 'FTS5 query prepared');
+
+    // Build SQL with filters
+    let sql = `
+      SELECT m.id, m.session_id, m.content, m.type, m.category,
+             m.importance, m.surprise_score, m.access_count, m.decay_factor,
+             m.source_turn_id, m.created_at, m.updated_at, m.last_accessed_at, m.metadata,
+             memories_fts.rank
+      FROM memories_fts
+      JOIN memories m ON m.id = memories_fts.rowid
+      WHERE memories_fts MATCH ?
+    `;
+
+    const params = [ftsQuery];
+
+    // Add filters
+    if (sessionId) {
+      sql += ` AND (m.session_id = ? OR m.session_id IS NULL)`;
+      params.push(sessionId);
+    }
+
+    if (types && Array.isArray(types) && types.length > 0) {
+      const placeholders = types.map(() => "?").join(",");
+      sql += ` AND m.type IN (${placeholders})`;
+      params.push(...types);
+    }
+
+    if (categories && Array.isArray(categories) && categories.length > 0) {
+      const placeholders = categories.map(() => "?").join(",");
+      sql += ` AND m.category IN (${placeholders})`;
+      params.push(...categories);
+    }
+
+    if (minImportance !== null && typeof minImportance === "number") {
+      sql += ` AND m.importance >= ?`;
+      params.push(minImportance);
+    }
+
+    // Order by FTS5 rank and importance
+    sql += ` ORDER BY memories_fts.rank, m.importance DESC LIMIT ?`;
+    params.push(limit);
+
+    const startTime = Date.now();
     const stmt = db.prepare(sql);
     const rows = stmt.all(...params);
+    const duration = Date.now() - startTime;
+
+    // Log slow queries for monitoring
+    if (duration > 100) {
+      logger.warn({
+        query: query.substring(0, 50),
+        ftsQuery: ftsQuery.substring(0, 50),
+        duration,
+        resultCount: rows.length
+      }, 'Slow FTS5 query detected');
+    }
 
     return rows.map((row) => ({
       id: row.id,
@@ -82,15 +245,23 @@ function searchMemories(options) {
       updatedAt: row.updated_at,
       lastAccessedAt: row.last_accessed_at ?? null,
       metadata: row.metadata ? JSON.parse(row.metadata) : {},
-      rank: row.rank, // FTS5 relevance score
+      rank: row.rank,
     }));
   } catch (err) {
-    logger.error({ err, query: ftsQuery }, "FTS5 search failed");
+    logger.error({ 
+      err, 
+      query: query.substring(0, 100),
+      sqliteCode: err.code,
+      message: err.message 
+    }, "FTS5 search failed");
     return [];
   }
 }
 
 /**
+
+ * Search with keyword expansion (UPDATED - now uses sanitized keywords)
+=======
  * Prepare FTS5 query - handle special characters and phrases
  */
 function prepareFTS5Query(query) {
@@ -113,16 +284,20 @@ function prepareFTS5Query(query) {
   // Step 3: Check if query contains FTS5 operators (AND, OR, NOT)
   const hasFTS5Operators = /\b(AND|OR|NOT)\b/i.test(cleaned);
 
-  // Step 4: Remove or escape remaining FTS5 special characters
-  // Characters: * ( ) < > - : [ ]
-  // Strategy: Remove them since they're rarely useful in memory search
-  cleaned = cleaned.replace(/[*()<>\-:\[\]]/g, ' ');
+  // Step 4: ENHANCED - Remove ALL special characters that could break FTS5
+  // Keep only: letters, numbers, spaces
+  // Remove: * ( ) < > - : [ ] | , + = ? ! ; / \ @ # $ % ^ & { }
+  cleaned = cleaned.replace(/[*()<>\-:\[\]|,+=?!;\/\\@#$%^&{}]/g, ' ');
   cleaned = cleaned.replace(/\s+/g, ' ').trim();
 
   // Step 5: Escape double quotes (FTS5 uses "" for literal quote)
   cleaned = cleaned.replace(/"/g, '""');
 
-  // Step 6: Wrap in quotes for phrase search (safest approach)
+  // Step 6: Additional safety - remove any remaining non-alphanumeric except spaces
+  cleaned = cleaned.replace(/[^\w\s""]/g, ' ');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  // Step 7: Wrap in quotes for phrase search (safest approach)
   if (!hasFTS5Operators) {
     // Treat as literal phrase search
     cleaned = `"${cleaned}"`;
@@ -134,26 +309,28 @@ function prepareFTS5Query(query) {
 
 /**
  * Search with keyword expansion (extract key terms)
+
  */
 function searchWithExpansion(options) {
   const { query, limit = 10 } = options;
 
   // Extract keywords from query
   const keywords = extractKeywords(query);
+  const sanitizedKeywords = sanitizeKeywords(keywords);  // ✅ ADDED
 
-  // Search with original query
+  // Search with original query (already sanitized by prepareFTS5Query)
   const results = searchMemories({ ...options, limit: limit * 2 });
 
   // If not enough results, try individual keywords
-  if (results.length < limit && keywords.length > 1) {
+  if (results.length < limit && sanitizedKeywords.length > 1) {
     const seen = new Set(results.map((r) => r.id));
 
-    for (const keyword of keywords) {
+    for (const keyword of sanitizedKeywords) {  // ✅ CHANGED - use sanitized
       if (results.length >= limit) break;
 
       const kwResults = searchMemories({
         ...options,
-        query: keyword,
+        query: keyword,  // Now guaranteed safe
         limit: limit - results.length,
       });
 
@@ -175,31 +352,9 @@ function searchWithExpansion(options) {
 function extractKeywords(text) {
   if (!text) return [];
 
-  // Simple keyword extraction:
-  // - Split on whitespace
-  // - Remove stopwords
-  // - Keep words > 3 characters
-  // - Lowercase
-
   const stopwords = new Set([
-    "the",
-    "is",
-    "at",
-    "which",
-    "on",
-    "and",
-    "or",
-    "not",
-    "this",
-    "that",
-    "with",
-    "from",
-    "for",
-    "to",
-    "in",
-    "of",
-    "a",
-    "an",
+    "the", "is", "at", "which", "on", "and", "or", "not", "this", "that",
+    "with", "from", "for", "to", "in", "of", "a", "an",
   ]);
 
   return text
@@ -210,7 +365,7 @@ function extractKeywords(text) {
 }
 
 /**
- * Find similar memories by keyword overlap
+ * Find similar memories by keyword overlap (UPDATED - sanitized)
  */
 function findSimilar(memoryId, limit = 5) {
   const memory = store.getMemory(memoryId);
@@ -219,28 +374,31 @@ function findSimilar(memoryId, limit = 5) {
   }
 
   const keywords = extractKeywords(memory.content);
-  if (keywords.length === 0) return [];
+  const sanitizedKeywords = sanitizeKeywords(keywords);  // ✅ ADDED
+  
+  if (sanitizedKeywords.length === 0) return [];
 
-  // Build OR query for keywords
-  const query = keywords.join(" OR ");
+  // Build OR query with SANITIZED keywords
+  const query = sanitizedKeywords.join(" OR ");  // ✅ CHANGED - use sanitized
 
   const results = searchMemories({
     query,
-    limit: limit + 1, // +1 to exclude self
+    limit: limit + 1,
   });
 
-  // Filter out the original memory
   return results.filter((r) => r.id !== memoryId).slice(0, limit);
 }
 
 /**
- * Search by content similarity (simple keyword-based)
+ * Search by content similarity (UPDATED - sanitized)
  */
 function searchByContent(content, options = {}) {
   const keywords = extractKeywords(content);
-  if (keywords.length === 0) return [];
+  const sanitizedKeywords = sanitizeKeywords(keywords);  // ✅ ADDED
+  
+  if (sanitizedKeywords.length === 0) return [];
 
-  const query = keywords.slice(0, 5).join(" OR "); // Top 5 keywords
+  const query = sanitizedKeywords.slice(0, 5).join(" OR ");  // ✅ CHANGED
   return searchMemories({ ...options, query });
 }
 
@@ -252,6 +410,10 @@ function countSearchResults(options) {
   return results.length;
 }
 
+// ============================================================================
+// EXPORTS
+// ============================================================================
+
 module.exports = {
   searchMemories,
   searchWithExpansion,
@@ -260,4 +422,6 @@ module.exports = {
   searchByContent,
   countSearchResults,
   prepareFTS5Query,
+  sanitizeKeyword,      // ✅ NEW - exported for testing
+  sanitizeKeywords,     // ✅ NEW - exported for testing
 };
