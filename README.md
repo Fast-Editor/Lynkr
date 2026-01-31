@@ -258,6 +258,7 @@ export OLLAMA_MODEL=qwen2.5-coder:latest
 export OLLAMA_EMBEDDINGS_MODEL=nomic-embed-text
 npm start
 ```
+> 💡 **Tip:** Prevent slow cold starts by keeping Ollama models loaded: `launchctl setenv OLLAMA_KEEP_ALIVE "24h"` (macOS) or set `OLLAMA_KEEP_ALIVE=24h` env var. See [troubleshooting](documentation/troubleshooting.md#slow-first-request--cold-start-warning).
 
 **AWS Bedrock (100+ models)**
 ```bash

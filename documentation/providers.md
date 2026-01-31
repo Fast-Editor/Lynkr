@@ -321,6 +321,37 @@ OLLAMA_MODEL=llama3.1:8b
 OLLAMA_TIMEOUT_MS=120000
 ```
 
+#### Performance Optimization
+
+**Prevent Cold Starts:** Ollama unloads models after 5 minutes of inactivity by default. This causes slow first requests (10-30+ seconds) while the model reloads. To keep models loaded:
+
+**Option 1: Environment Variable (Recommended)**
+```bash
+# Set on Ollama server (not Lynkr)
+# macOS
+launchctl setenv OLLAMA_KEEP_ALIVE "24h"
+
+# Linux (systemd) - edit with: sudo systemctl edit ollama
+[Service]
+Environment="OLLAMA_KEEP_ALIVE=24h"
+
+# Docker
+docker run -e OLLAMA_KEEP_ALIVE=24h -d ollama/ollama
+```
+
+**Option 2: Per-Request Keep Alive**
+```bash
+curl http://localhost:11434/api/generate -d '{"model":"llama3.1:8b","keep_alive":"24h"}'
+```
+
+**Keep Alive Values:**
+| Value | Behavior |
+|-------|----------|
+| `5m` | Default - unload after 5 minutes |
+| `24h` | Keep loaded for 24 hours |
+| `-1` | Never unload (keep forever) |
+| `0` | Unload immediately after request |
+
 #### Installation & Setup
 
 ```bash
