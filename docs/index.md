@@ -86,7 +86,7 @@
       <li><a href="#providers">Providers</a></li>
       <li><a href="#clients">Clients</a></li>
       <li><a href="#quickstart">Quick Start</a></li>
-      <li><a href="https://deepwiki.com/vishalveerareddy123/Lynkr">Docs</a></li>
+      <li><a href="docs.html">Docs</a></li>
     </ul>
     <div class="nav-cta">
       <a href="https://github.com/vishalveerareddy123/Lynkr" class="btn btn-secondary">
@@ -551,7 +551,7 @@ claude</code></pre>
           </svg>
           View on NPM
         </a>
-        <a href="https://deepwiki.com/vishalveerareddy123/Lynkr" class="btn btn-ghost">
+        <a href="docs.html" class="btn btn-ghost">
           Read the Docs →
         </a>
       </div>
@@ -565,7 +565,7 @@ claude</code></pre>
   <div class="footer-links">
     <a href="https://github.com/vishalveerareddy123/Lynkr">GitHub</a>
     <a href="https://www.npmjs.com/package/lynkr">NPM</a>
-    <a href="https://deepwiki.com/vishalveerareddy123/Lynkr">Documentation</a>
+    <a href="docs.html">Documentation</a>
     <a href="https://github.com/vishalveerareddy123/Lynkr/issues">Issues</a>
     <a href="https://github.com/vishalveerareddy123/Lynkr/discussions">Discussions</a>
   </div>

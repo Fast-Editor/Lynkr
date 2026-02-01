@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Documentation - Lynkr</title>
+  <meta name="description" content="Lynkr documentation - Installation, configuration, and guides for the universal LLM proxy.">
+  <link rel="stylesheet" href="docs-style.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%238b5cf6'/><text x='50' y='70' font-size='60' font-weight='bold' text-anchor='middle' fill='white'>L</text></svg>">
+  <!-- Marked.js for Markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+<!-- Navigation -->
+<nav class="doc-nav">
+  <div class="doc-nav-left">
+    <a href="index.html" class="doc-nav-logo">
+      <div class="doc-nav-logo-icon">L</div>
+      <span>Lynkr</span>
+    </a>
+    <a href="index.html" class="doc-nav-back">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M19 12H5M12 19l-7-7 7-7"/>
+      </svg>
+      Back to Home
+    </a>
+  </div>
+  <div class="doc-nav-links">
+    <a href="https://github.com/vishalveerareddy123/Lynkr">GitHub</a>
+    <a href="https://www.npmjs.com/package/lynkr">NPM</a>
+    <a href="https://deepwiki.com/vishalveerareddy123/Lynkr">DeepWiki</a>
+  </div>
+</nav>
+
+<!-- Layout -->
+<div class="doc-layout">
+  <!-- Sidebar -->
+  <aside class="doc-sidebar">
+    <div class="doc-sidebar-section">
+      <div class="doc-sidebar-title">Getting Started</div>
+      <ul class="doc-sidebar-links">
+        <li><a href="?doc=installation" data-doc="installation">Installation</a></li>
+        <li><a href="?doc=providers" data-doc="providers">Provider Configuration</a></li>
+        <li><a href="?doc=claude-code-cli" data-doc="claude-code-cli">Claude Code CLI</a></li>
+        <li><a href="?doc=cursor-integration" data-doc="cursor-integration">Cursor Integration</a></li>
+      </ul>
+    </div>
+
+    <div class="doc-sidebar-section">
+      <div class="doc-sidebar-title">Features</div>
+      <ul class="doc-sidebar-links">
+        <li><a href="?doc=features" data-doc="features">Core Features</a></li>
+        <li><a href="?doc=token-optimization" data-doc="token-optimization">Token Optimization</a></li>
+        <li><a href="?doc=memory-system" data-doc="memory-system">Memory System</a></li>
+        <li><a href="?doc=headroom" data-doc="headroom">Headroom Compression</a></li>
+        <li><a href="?doc=embeddings" data-doc="embeddings">Embeddings</a></li>
+        <li><a href="?doc=tools" data-doc="tools">Tools & MCP</a></li>
+      </ul>
+    </div>
+
+    <div class="doc-sidebar-section">
+      <div class="doc-sidebar-title">Deployment</div>
+      <ul class="doc-sidebar-links">
+        <li><a href="?doc=docker" data-doc="docker">Docker</a></li>
+        <li><a href="?doc=production" data-doc="production">Production Guide</a></li>
+        <li><a href="?doc=api" data-doc="api">API Reference</a></li>
+      </ul>
+    </div>
+
+    <div class="doc-sidebar-section">
+      <div class="doc-sidebar-title">Help</div>
+      <ul class="doc-sidebar-links">
+        <li><a href="?doc=troubleshooting" data-doc="troubleshooting">Troubleshooting</a></li>
+        <li><a href="?doc=faq" data-doc="faq">FAQ</a></li>
+        <li><a href="?doc=contributing" data-doc="contributing">Contributing</a></li>
+        <li><a href="?doc=testing" data-doc="testing">Testing</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="doc-content" id="doc-content">
+    <div class="doc-loading">Loading documentation...</div>
+  </main>
+</div>
+
+<script>
+  // Documentation loader
+  const docContent = document.getElementById('doc-content');
+  const sidebarLinks = document.querySelectorAll('.doc-sidebar-links a');
+
+  // Get doc from URL parameter
+  function getDocFromURL() {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('doc') || 'installation';
+  }
+
+  // Load markdown file
+  async function loadDoc(docName) {
+    docContent.innerHTML = '<div class="doc-loading">Loading...</div>';
+
+    try {
+      // Try to fetch from documentation folder on GitHub raw
+      const response = await fetch(`https://raw.githubusercontent.com/vishalveerareddy123/Lynkr/main/documentation/${docName}.md`);
+
+      if (!response.ok) {
+        throw new Error('Document not found');
+      }
+
+      const markdown = await response.text();
+
+      // Configure marked
+      marked.setOptions({
+        gfm: true,
+        breaks: true,
+        highlight: function(code, lang) {
+          return code;
+        }
+      });
+
+      // Render markdown
+      const html = marked.parse(markdown);
+
+      // Add content with footer
+      docContent.innerHTML = `
+        ${html}
+        <div class="doc-footer">
+          <div class="doc-footer-nav">
+            <!-- Navigation buttons could be added here -->
+          </div>
+          <a href="https://github.com/vishalveerareddy123/Lynkr/edit/main/documentation/${docName}.md" class="doc-edit-link" target="_blank">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+            Edit this page on GitHub
+          </a>
+        </div>
+      `;
+
+      // Update page title
+      const h1 = docContent.querySelector('h1');
+      if (h1) {
+        document.title = `${h1.textContent} - Lynkr Docs`;
+      }
+
+      // Update active sidebar link
+      sidebarLinks.forEach(link => {
+        link.classList.remove('active');
+        if (link.dataset.doc === docName) {
+          link.classList.add('active');
+        }
+      });
+
+    } catch (error) {
+      docContent.innerHTML = `
+        <h1>Documentation</h1>
+        <p>Welcome to the Lynkr documentation. Select a topic from the sidebar to get started.</p>
+        <h2>Quick Links</h2>
+        <ul>
+          <li><a href="?doc=installation">Installation Guide</a></li>
+          <li><a href="?doc=providers">Provider Configuration</a></li>
+          <li><a href="?doc=claude-code-cli">Claude Code CLI Setup</a></li>
+          <li><a href="?doc=cursor-integration">Cursor IDE Integration</a></li>
+        </ul>
+        <h2>Need Help?</h2>
+        <ul>
+          <li><a href="?doc=troubleshooting">Troubleshooting Guide</a></li>
+          <li><a href="?doc=faq">Frequently Asked Questions</a></li>
+          <li><a href="https://github.com/vishalveerareddy123/Lynkr/discussions">GitHub Discussions</a></li>
+        </ul>
+      `;
+    }
+  }
+
+  // Handle sidebar clicks
+  sidebarLinks.forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const docName = link.dataset.doc;
+      history.pushState({}, '', `?doc=${docName}`);
+      loadDoc(docName);
+    });
+  });
+
+  // Handle browser back/forward
+  window.addEventListener('popstate', () => {
+    loadDoc(getDocFromURL());
+  });
+
+  // Initial load
+  loadDoc(getDocFromURL());
+</script>
+
+</body>
+</html>
