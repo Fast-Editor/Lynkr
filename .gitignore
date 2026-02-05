@@ -22,5 +22,5 @@ ROUTER_COMPARISON.md
 TIER_ROUTING_PLAN.md
 docs/GSD_LEARNINGS.md
 LYNKR-TUI-PLAN.md
-HEADROOM_PORT_PLAN.md
-HEADROOM_SIDECAR_PLAN.md
+PLAN-per-client-model-routing.md
+PLAN-worker-thread-pool.md

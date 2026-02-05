@@ -225,8 +225,10 @@ function convertAnthropicToOpenAI(anthropicResponse, model = "claude-3-5-sonnet-
   }
 
   // Build OpenAI response
+  // Ensure ID has the chatcmpl- prefix that OpenAI clients expect
+  const responseId = id && id.startsWith("chatcmpl-") ? id : `chatcmpl-${Date.now()}`;
   const openaiResponse = {
-    id: id || `chatcmpl-${Date.now()}`,
+    id: responseId,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model: model,

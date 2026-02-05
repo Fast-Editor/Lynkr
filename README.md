@@ -47,10 +47,10 @@ Lynkr is a **self-hosted proxy server** that unlocks Claude Code CLI , Cursor ID
 **Option 1: NPM Package (Recommended)**
 ```bash
 # Install globally
+npm install -g pino-pretty 
 npm install -g lynkr
 
-# Or run directly with npx
-npx lynkr
+lynk start
 ```
 
 **Option 2: Git Clone**
