@@ -88,6 +88,10 @@ const TOOL_ALIASES = {
   runtests: "workspace_test_run",
   testsummary: "workspace_test_summary",
   testhistory: "workspace_test_history",
+  // Glob has dedicated tool in src/tools/indexer.js (registerGlobTool)
+  // - returns plain text format instead of JSON
+  // glob: "workspace_list",
+  // Glob: "workspace_list",
 };
 
 function coerceString(value) {
