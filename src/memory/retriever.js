@@ -71,6 +71,17 @@ function retrieveRelevantMemories(query, options = {}) {
       }
     });
 
+    // [MEMORY_DEBUG] Log memories retrieved
+    logger.debug({
+      sessionId,
+      query: query.substring(0, 100),
+      retrievedCount: topMemories.length,
+      memories: topMemories.map(m => ({
+        id: m.id,
+        contentPreview: m.content.substring(0, 50)
+      }))
+    }, '[MEMORY_DEBUG] Retrieved memories');
+
     return topMemories;
   } catch (err) {
     logger.error({ err, query }, 'Memory retrieval failed');
@@ -227,10 +238,26 @@ function injectMemoriesIntoSystem(existingSystem, memories, injectionFormat = 's
     }, 'Memory format optimization applied');
   }
 
+  // [MEMORY_DEBUG] Log formatted memories before injection
+  logger.debug({
+    memoryCount: dedupedMemories.length,
+    formattedLength: formattedMemories.length,
+    preview: formattedMemories.substring(0, 200)
+  }, '[MEMORY_DEBUG] Formatted memories before injection');
+
   if (injectionFormat === 'system') {
-    return existingSystem
+    const result = existingSystem
       ? `${existingSystem}\n\n${formattedMemories}`
       : formattedMemories;
+
+    // [MEMORY_DEBUG] Log after memory injection
+    logger.debug({
+      originalLength: existingSystem?.length ?? 0,
+      finalLength: result.length,
+      memoryBlockLength: formattedMemories.length
+    }, '[MEMORY_DEBUG] After memory injection');
+
+    return result;
   }
 
   if (injectionFormat === 'assistant_preamble') {

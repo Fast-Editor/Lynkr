@@ -2,6 +2,7 @@ const Database = require("better-sqlite3");
 const { invokeModel } = require("../clients/databricks");
 const logger = require("../logger");
 const config = require("../config");
+const { getHeadroomManager } = require("../headroom");
 
 /**
  * Health check endpoints
@@ -63,6 +64,32 @@ async function readinessCheck(req, res) {
   } catch (err) {
     checks.memory = { healthy: false, error: err.message };
     allHealthy = false;
+  }
+
+  // Check Headroom (if enabled)
+  if (config.headroom?.enabled) {
+    try {
+      const headroomManager = getHeadroomManager();
+      const headroomHealth = await headroomManager.getHealth();
+      checks.headroom = {
+        healthy: headroomHealth.healthy,
+        enabled: headroomHealth.enabled,
+        service: headroomHealth.service?.available ? "available" : "unavailable",
+        docker: headroomHealth.docker?.running ? "running" : "stopped",
+        error: headroomHealth.error,
+      };
+      // Don't fail overall health if Headroom is unavailable
+      // It's a non-critical service - compression will be skipped
+      if (!headroomHealth.healthy) {
+        checks.headroom.note = "Compression will be skipped";
+      }
+    } catch (err) {
+      checks.headroom = {
+        healthy: false,
+        error: err.message,
+        note: "Compression will be skipped",
+      };
+    }
   }
 
   // Optional: Check provider (can be slow)

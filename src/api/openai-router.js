@@ -28,6 +28,309 @@ const {
 const router = express.Router();
 
 /**
+ * Client detection - identifies which AI coding tool is making the request
+ * @param {Object} headers - Request headers
+ * @returns {string} Client type: 'codex', 'cline', 'continue', or 'unknown'
+ */
+function detectClient(headers) {
+  const userAgent = (headers?.["user-agent"] || "").toLowerCase();
+  const clientHeader = (headers?.["x-client"] || headers?.["x-client-name"] || "").toLowerCase();
+
+  // Check user-agent and custom headers
+  if (userAgent.includes("codex") || clientHeader.includes("codex")) {
+    return "codex";
+  }
+  // Kilo Code is a fork of Cline - check for both
+  if (userAgent.includes("kilo") || clientHeader.includes("kilo")) {
+    return "kilo";
+  }
+  if (userAgent.includes("cline") || clientHeader.includes("cline") || userAgent.includes("claude-dev")) {
+    return "cline";
+  }
+  if (userAgent.includes("continue") || clientHeader.includes("continue")) {
+    return "continue";
+  }
+
+  return "unknown";
+}
+
+/**
+ * Tool mappings for different AI coding clients
+ * Each client has different tool names and parameter schemas
+ */
+const CLIENT_TOOL_MAPPINGS = {
+  // ============== CODEX CLI ==============
+  // Tools: shell_command, read_file, write_file, apply_patch, glob_file_search, rg, list_dir
+  codex: {
+    "Bash": {
+      name: "shell_command",
+      mapArgs: (a) => ({
+        command: a.command || "",
+        workdir: a.cwd || a.working_directory
+      })
+    },
+    "Read": {
+      name: "read_file",
+      mapArgs: (a) => ({
+        path: a.file_path || a.path || "",
+        offset: a.offset,
+        limit: a.limit
+      })
+    },
+    "Write": {
+      name: "write_file",
+      mapArgs: (a) => ({
+        path: a.file_path || a.path || "",
+        content: a.content || ""
+      })
+    },
+    "Edit": {
+      name: "apply_patch",
+      mapArgs: (a) => ({
+        path: a.file_path || a.path || "",
+        old_string: a.old_string || "",
+        new_string: a.new_string || ""
+      })
+    },
+    "Glob": {
+      name: "glob_file_search",
+      mapArgs: (a) => ({
+        pattern: a.pattern || "",
+        path: a.path
+      })
+    },
+    "Grep": {
+      name: "rg",
+      mapArgs: (a) => ({
+        pattern: a.pattern || "",
+        path: a.path,
+        include: a.glob || a.include,
+        type: a.type
+      })
+    },
+    "ListDir": {
+      name: "list_dir",
+      mapArgs: (a) => ({
+        path: a.path || a.directory
+      })
+    }
+  },
+
+  // ============== CLINE (VS Code Extension) ==============
+  // Tools: execute_command, read_file, write_to_file, replace_in_file, search_files, list_files
+  cline: {
+    "Bash": {
+      name: "execute_command",
+      mapArgs: (a) => ({
+        command: a.command || "",
+        requires_approval: false
+      })
+    },
+    "Read": {
+      name: "read_file",
+      mapArgs: (a) => ({
+        path: a.file_path || a.path || ""
+      })
+    },
+    "Write": {
+      name: "write_to_file",
+      mapArgs: (a) => ({
+        path: a.file_path || a.path || "",
+        content: a.content || ""
+      })
+    },
+    "Edit": {
+      name: "replace_in_file",
+      mapArgs: (a) => ({
+        path: a.file_path || a.path || "",
+        old_str: a.old_string || "",
+        new_str: a.new_string || ""
+      })
+    },
+    "Glob": {
+      name: "list_files",
+      mapArgs: (a) => ({
+        path: a.path || ".",
+        recursive: true
+      })
+    },
+    "Grep": {
+      name: "search_files",
+      mapArgs: (a) => ({
+        path: a.path || ".",
+        regex: a.pattern || "",
+        file_pattern: a.glob || "*"
+      })
+    },
+    "ListDir": {
+      name: "list_files",
+      mapArgs: (a) => ({
+        path: a.path || a.directory || ".",
+        recursive: false
+      })
+    }
+  },
+
+  // ============== KILO CODE (Fork of Cline) ==============
+  // Tools: execute_command, read_file, write_to_file, apply_diff, list_files, search_files, codebase_search
+  kilo: {
+    "Bash": {
+      name: "execute_command",
+      mapArgs: (a) => ({
+        command: a.command || "",
+        requires_approval: false
+      })
+    },
+    "Read": {
+      name: "read_file",
+      mapArgs: (a) => ({
+        path: a.file_path || a.path || ""
+      })
+    },
+    "Write": {
+      name: "write_to_file",
+      mapArgs: (a) => ({
+        path: a.file_path || a.path || "",
+        content: a.content || ""
+      })
+    },
+    "Edit": {
+      name: "apply_diff",
+      mapArgs: (a) => ({
+        path: a.file_path || a.path || "",
+        diff: a.old_string && a.new_string
+          ? `--- a/${a.file_path || a.path}\n+++ b/${a.file_path || a.path}\n@@ -1 +1 @@\n-${a.old_string}\n+${a.new_string}`
+          : ""
+      })
+    },
+    "Glob": {
+      name: "list_files",
+      mapArgs: (a) => ({
+        path: a.path || ".",
+        recursive: true
+      })
+    },
+    "Grep": {
+      name: "search_files",
+      mapArgs: (a) => ({
+        path: a.path || ".",
+        regex: a.pattern || "",
+        file_pattern: a.glob || "*"
+      })
+    },
+    "ListDir": {
+      name: "list_files",
+      mapArgs: (a) => ({
+        path: a.path || a.directory || ".",
+        recursive: false
+      })
+    }
+  },
+
+  // ============== CONTINUE.DEV ==============
+  // Tools: read_file, create_new_file, exact_search, read_currently_open_file
+  continue: {
+    "Bash": {
+      name: "run_terminal_command",
+      mapArgs: (a) => ({
+        command: a.command || ""
+      })
+    },
+    "Read": {
+      name: "read_file",
+      mapArgs: (a) => ({
+        filepath: a.file_path || a.path || ""
+      })
+    },
+    "Write": {
+      name: "create_new_file",
+      mapArgs: (a) => ({
+        filepath: a.file_path || a.path || "",
+        contents: a.content || ""
+      })
+    },
+    "Edit": {
+      name: "edit_existing_file",
+      mapArgs: (a) => ({
+        filepath: a.file_path || a.path || "",
+        old_string: a.old_string || "",
+        new_string: a.new_string || ""
+      })
+    },
+    "Glob": {
+      name: "exact_search",
+      mapArgs: (a) => ({
+        query: a.pattern || ""
+      })
+    },
+    "Grep": {
+      name: "exact_search",
+      mapArgs: (a) => ({
+        query: a.pattern || ""
+      })
+    },
+    "ListDir": {
+      name: "read_file",
+      mapArgs: (a) => ({
+        filepath: a.path || a.directory || "."
+      })
+    }
+  }
+};
+
+/**
+ * Map Lynkr tool names and arguments to client-specific equivalents
+ * @param {string} toolName - Lynkr tool name
+ * @param {string} argsJson - JSON string of tool arguments
+ * @param {string} clientType - Client type (codex, cline, continue)
+ * @returns {{ name: string, arguments: string }} Mapped tool name and arguments
+ */
+function mapToolForClient(toolName, argsJson, clientType) {
+  let args = {};
+  try {
+    args = JSON.parse(argsJson || "{}");
+  } catch (e) {
+    args = {};
+  }
+
+  const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
+  if (!clientMappings) {
+    // Unknown client - return as-is
+    return { name: toolName, arguments: argsJson };
+  }
+
+  const mapping = clientMappings[toolName];
+  if (mapping) {
+    const mappedArgs = mapping.mapArgs(args);
+    // Remove undefined values
+    Object.keys(mappedArgs).forEach(key => {
+      if (mappedArgs[key] === undefined) {
+        delete mappedArgs[key];
+      }
+    });
+    return {
+      name: mapping.name,
+      arguments: JSON.stringify(mappedArgs)
+    };
+  }
+
+  // No mapping found - return as-is (lowercase for convention)
+  return {
+    name: toolName.toLowerCase(),
+    arguments: argsJson
+  };
+}
+
+/**
+ * Check if client is a known AI coding tool that needs tool mapping
+ * @param {Object} headers - Request headers
+ * @returns {boolean}
+ */
+function isKnownClient(headers) {
+  return detectClient(headers) !== "unknown";
+}
+
+/**
  * POST /v1/chat/completions
  *
  * OpenAI-compatible chat completions endpoint.
@@ -38,6 +341,30 @@ router.post("/chat/completions", async (req, res) => {
   const sessionId = req.headers["x-session-id"] || req.headers["authorization"]?.split(" ")[1] || "openai-session";
 
   try {
+    // Validate request body exists
+    if (!req.body || typeof req.body !== 'object') {
+      logger.error({ body: req.body, bodyType: typeof req.body }, "Invalid or missing request body");
+      return res.status(400).json({
+        error: {
+          message: "Invalid or missing request body",
+          type: "invalid_request_error",
+          code: "invalid_body"
+        }
+      });
+    }
+
+    // Validate required fields
+    if (!req.body.messages || !Array.isArray(req.body.messages)) {
+      logger.error({ hasMessages: !!req.body.messages }, "Missing or invalid messages array");
+      return res.status(400).json({
+        error: {
+          message: "Missing required field: messages (must be an array)",
+          type: "invalid_request_error",
+          code: "missing_messages"
+        }
+      });
+    }
+
     logger.info({
       endpoint: "/v1/chat/completions",
       model: req.body.model,
@@ -64,6 +391,8 @@ router.post("/chat/completions", async (req, res) => {
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no"); // Prevent nginx buffering
+      res.flushHeaders(); // Ensure headers are sent immediately
 
       try {
         // For streaming, we need to handle it differently - convert to non-streaming temporarily
@@ -80,9 +409,19 @@ router.post("/chat/completions", async (req, res) => {
         });
 
         // Check if we have a valid response body
+        logger.info({
+          hasResult: !!result,
+          resultKeys: result ? Object.keys(result) : null,
+          hasBody: result && !!result.body,
+          bodyType: result && result.body ? typeof result.body : null,
+          bodyKeys: result && result.body ? Object.keys(result.body) : null,
+          status: result?.status,
+          terminationReason: result?.terminationReason
+        }, "=== ORCHESTRATOR RESULT STRUCTURE ===");
+
         if (!result || !result.body) {
           logger.error({
-            result: result ? JSON.stringify(result) : "null",
+            result: result ? JSON.stringify(result).substring(0, 500) : "null",
             resultKeys: result ? Object.keys(result) : null
           }, "Invalid orchestrator response for streaming");
           throw new Error("Invalid response from orchestrator");
@@ -91,39 +430,88 @@ router.post("/chat/completions", async (req, res) => {
         // Convert to OpenAI format
         const openaiResponse = convertAnthropicToOpenAI(result.body, req.body.model);
 
+        // Debug: Log what we're about to stream
+        logger.info({
+          openaiResponseId: openaiResponse.id,
+          messageContent: openaiResponse.choices[0]?.message?.content?.substring(0, 100),
+          contentLength: openaiResponse.choices[0]?.message?.content?.length || 0,
+          finishReason: openaiResponse.choices[0]?.finish_reason,
+          hasToolCalls: !!openaiResponse.choices[0]?.message?.tool_calls,
+          resultBodyKeys: Object.keys(result.body || {}),
+          resultBodyContent: JSON.stringify(result.body?.content)?.substring(0, 200)
+        }, "=== PREPARING TO STREAM ===");
+
         // Simulate streaming by sending the complete response as chunks
         const content = openaiResponse.choices[0].message.content || "";
-        const words = content.split(" ");
+        const toolCalls = openaiResponse.choices[0].message.tool_calls;
 
-        // Send start chunk
+        // Send start chunk with role
         const startChunk = {
           id: openaiResponse.id,
           object: "chat.completion.chunk",
           created: openaiResponse.created,
           model: req.body.model,
+          system_fingerprint: "fp_lynkr",
           choices: [{
             index: 0,
             delta: { role: "assistant", content: "" },
+            logprobs: null,
             finish_reason: null
           }]
         };
-        res.write(`data: ${JSON.stringify(startChunk)}\n\n`);
 
-        // Send content in word chunks
-        for (let i = 0; i < words.length; i++) {
-          const word = words[i] + (i < words.length - 1 ? " " : "");
-          const chunk = {
+        logger.debug({ chunk: "start", contentLength: content.length }, "Sending start chunk");
+        const startWriteOk = res.write(`data: ${JSON.stringify(startChunk)}\n\n`);
+        if (!startWriteOk) {
+          logger.warn("Start chunk write returned false (backpressure)");
+        }
+
+        // Send content in a single chunk (or character by character for true streaming simulation)
+        if (content) {
+          const contentChunk = {
             id: openaiResponse.id,
             object: "chat.completion.chunk",
             created: openaiResponse.created,
             model: req.body.model,
+            system_fingerprint: "fp_lynkr",
             choices: [{
               index: 0,
-              delta: { content: word },
+              delta: { content: content },
+              logprobs: null,
               finish_reason: null
             }]
           };
-          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          const contentWriteOk = res.write(`data: ${JSON.stringify(contentChunk)}\n\n`);
+          logger.info({ contentPreview: content.substring(0, 50), writeOk: contentWriteOk }, "Sent content chunk");
+        }
+
+        // Send tool calls if present
+        if (toolCalls && toolCalls.length > 0) {
+          for (const toolCall of toolCalls) {
+            const toolChunk = {
+              id: openaiResponse.id,
+              object: "chat.completion.chunk",
+              created: openaiResponse.created,
+              model: req.body.model,
+              choices: [{
+                index: 0,
+                delta: {
+                  tool_calls: [{
+                    index: 0,
+                    id: toolCall.id,
+                    type: "function",
+                    function: {
+                      name: toolCall.function.name,
+                      arguments: toolCall.function.arguments
+                    }
+                  }]
+                },
+                finish_reason: null
+              }]
+            };
+            res.write(`data: ${JSON.stringify(toolChunk)}\n\n`);
+            logger.debug({ toolName: toolCall.function.name }, "Sent tool call chunk");
+          }
         }
 
         // Send finish chunk
@@ -132,14 +520,21 @@ router.post("/chat/completions", async (req, res) => {
           object: "chat.completion.chunk",
           created: openaiResponse.created,
           model: req.body.model,
+          system_fingerprint: "fp_lynkr",
           choices: [{
             index: 0,
             delta: {},
+            logprobs: null,
             finish_reason: openaiResponse.choices[0].finish_reason
           }]
         };
+
+        logger.debug({ chunk: "finish", finishReason: openaiResponse.choices[0].finish_reason }, "Sending finish chunk");
         res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
         res.write("data: [DONE]\n\n");
+
+        // Ensure data is flushed before ending
+        logger.info({ contentLength: content.length, contentPreview: content.substring(0, 50) }, "=== SSE STREAM COMPLETE ===");
         res.end();
 
         logger.info({
@@ -150,7 +545,13 @@ router.post("/chat/completions", async (req, res) => {
         }, "OpenAI streaming completed");
 
       } catch (streamError) {
-        logger.error({ error: streamError.message, stack: streamError.stack }, "Streaming error");
+        logger.error({
+          error: streamError.message,
+          stack: streamError.stack,
+          resultWasNull: !result,
+          resultBodyWasNull: result && !result.body,
+          resultKeys: result ? Object.keys(result) : null
+        }, "=== STREAMING ERROR ===");
 
         // Send error in OpenAI streaming format
         const errorChunk = {
@@ -971,6 +1372,8 @@ router.post("/responses", async (req, res) => {
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no"); // Prevent nginx buffering
+      res.flushHeaders(); // Ensure headers are sent immediately
 
       try {
         // Force non-streaming from orchestrator
@@ -985,65 +1388,305 @@ router.post("/responses", async (req, res) => {
           }
         });
 
+        // Debug: Log what orchestrator returned
+        logger.info({
+          hasResult: !!result,
+          hasBody: !!result?.body,
+          bodyKeys: result?.body ? Object.keys(result.body) : null,
+          bodyContent: result?.body?.content ? JSON.stringify(result.body.content).substring(0, 200) : null,
+          bodyContentLength: result?.body?.content?.length || 0,
+          terminationReason: result?.terminationReason
+        }, "=== ORCHESTRATOR RESULT FOR RESPONSES API ===");
+
         // Convert back: Anthropic → OpenAI → Responses
         const chatResponse = convertAnthropicToOpenAI(result.body, req.body.model);
+
+        logger.info({
+          chatContent: chatResponse.choices?.[0]?.message?.content?.substring(0, 200),
+          chatContentLength: chatResponse.choices?.[0]?.message?.content?.length || 0,
+          hasToolCalls: !!chatResponse.choices?.[0]?.message?.tool_calls,
+          toolCallCount: chatResponse.choices?.[0]?.message?.tool_calls?.length || 0
+        }, "=== CHAT RESPONSE FOR RESPONSES API ===");
+
         const responsesResponse = convertChatToResponses(chatResponse);
 
-        // Simulate streaming using OpenAI Responses API SSE format
+        // Get content and tool calls
         const content = responsesResponse.content || "";
-        const words = content.split(" ");
+        let toolCalls = chatResponse.choices?.[0]?.message?.tool_calls || [];
+        const responseId = responsesResponse.id || `resp_${Date.now()}`;
+        const messageId = `msg_${Date.now()}`;
+        const createdAt = Math.floor(Date.now() / 1000);
+        let sequenceNumber = 0;
+        let outputIndex = 0;
 
-        // Send response.created event
+        // Check if client is a known AI coding tool and map tool names accordingly
+        const clientType = detectClient(req.headers);
+        if (clientType !== "unknown" && toolCalls.length > 0) {
+          logger.info({
+            originalTools: toolCalls.map(t => t.function?.name),
+            clientType,
+            userAgent: req.headers["user-agent"]
+          }, `${clientType} client detected - mapping tool names`);
+
+          // Map Lynkr tools to client-specific equivalents
+          toolCalls = toolCalls.map(tc => {
+            const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);
+            return {
+              ...tc,
+              function: {
+                name: mapped.name,
+                arguments: mapped.arguments
+              }
+            };
+          });
+
+          logger.info({
+            mappedTools: toolCalls.map(t => t.function?.name)
+          }, `Tool names mapped for ${clientType}`);
+        }
+
+        logger.info({
+          content: content.substring(0, 100),
+          contentLength: content.length,
+          toolCallCount: toolCalls.length,
+          toolCallNames: toolCalls.map(t => t.function?.name),
+          clientType
+        }, "=== RESPONSES API STREAMING DATA ===");
+
+        // 1. Send response.created event
         const createdEvent = {
-          id: responsesResponse.id,
-          object: "response.created",
-          created: responsesResponse.created,
-          model: req.body.model
+          type: "response.created",
+          response: {
+            id: responseId,
+            object: "response",
+            status: "in_progress",
+            created_at: createdAt,
+            model: req.body.model,
+            output: [],
+            usage: null
+          },
+          sequence_number: sequenceNumber++
         };
         res.write(`event: response.created\n`);
         res.write(`data: ${JSON.stringify(createdEvent)}\n\n`);
 
-        // Send content in word chunks using response.output_text.delta
-        for (let i = 0; i < words.length; i++) {
-          const word = words[i] + (i < words.length - 1 ? " " : "");
-          const deltaEvent = {
-            id: responsesResponse.id,
-            object: "response.output_text.delta",
-            delta: word,
-            created: responsesResponse.created
+        // 2. Send response.in_progress event
+        const inProgressEvent = {
+          type: "response.in_progress",
+          response: {
+            id: responseId,
+            object: "response",
+            status: "in_progress",
+            created_at: createdAt,
+            model: req.body.model,
+            output: [],
+            usage: null
+          },
+          sequence_number: sequenceNumber++
+        };
+        res.write(`event: response.in_progress\n`);
+        res.write(`data: ${JSON.stringify(inProgressEvent)}\n\n`);
+
+        // Build output array for the final response
+        const outputItems = [];
+
+        // Handle tool calls first (if any)
+        for (const toolCall of toolCalls) {
+          const toolCallId = toolCall.id || `call_${Date.now()}_${outputIndex}`;
+          const functionName = toolCall.function?.name || "unknown";
+          const functionArgs = toolCall.function?.arguments || "{}";
+
+          // Send function_call output item added
+          const functionCallItem = {
+            id: toolCallId,
+            type: "function_call",
+            status: "completed",
+            name: functionName,
+            arguments: functionArgs,
+            call_id: toolCallId
           };
-          res.write(`event: response.output_text.delta\n`);
-          res.write(`data: ${JSON.stringify(deltaEvent)}\n\n`);
+
+          res.write(`event: response.output_item.added\n`);
+          res.write(`data: ${JSON.stringify({
+            type: "response.output_item.added",
+            output_index: outputIndex,
+            item: functionCallItem,
+            sequence_number: sequenceNumber++
+          })}\n\n`);
+
+          // Send function call arguments delta
+          res.write(`event: response.function_call_arguments.delta\n`);
+          res.write(`data: ${JSON.stringify({
+            type: "response.function_call_arguments.delta",
+            item_id: toolCallId,
+            output_index: outputIndex,
+            delta: functionArgs,
+            sequence_number: sequenceNumber++
+          })}\n\n`);
+
+          // Send function call arguments done
+          res.write(`event: response.function_call_arguments.done\n`);
+          res.write(`data: ${JSON.stringify({
+            type: "response.function_call_arguments.done",
+            item_id: toolCallId,
+            output_index: outputIndex,
+            arguments: functionArgs,
+            sequence_number: sequenceNumber++
+          })}\n\n`);
+
+          // Send output item done
+          res.write(`event: response.output_item.done\n`);
+          res.write(`data: ${JSON.stringify({
+            type: "response.output_item.done",
+            output_index: outputIndex,
+            item: functionCallItem,
+            sequence_number: sequenceNumber++
+          })}\n\n`);
+
+          outputItems.push(functionCallItem);
+          outputIndex++;
         }
 
-        // Send response.completed event
+        // Handle text content (if any)
+        if (content) {
+          // 3. Send response.output_item.added event for message
+          const outputItemAddedEvent = {
+            type: "response.output_item.added",
+            output_index: outputIndex,
+            item: {
+              id: messageId,
+              type: "message",
+              status: "in_progress",
+              role: "assistant",
+              content: []
+            },
+            sequence_number: sequenceNumber++
+          };
+          res.write(`event: response.output_item.added\n`);
+          res.write(`data: ${JSON.stringify(outputItemAddedEvent)}\n\n`);
+
+          // 4. Send response.content_part.added event
+          const contentPartAddedEvent = {
+            type: "response.content_part.added",
+            item_id: messageId,
+            output_index: outputIndex,
+            content_index: 0,
+            part: {
+              type: "output_text",
+              text: ""
+            },
+            sequence_number: sequenceNumber++
+          };
+          res.write(`event: response.content_part.added\n`);
+          res.write(`data: ${JSON.stringify(contentPartAddedEvent)}\n\n`);
+
+          // 5. Send content in word chunks using response.output_text.delta
+          const words = content.split(" ");
+          for (let i = 0; i < words.length; i++) {
+            const word = words[i] + (i < words.length - 1 ? " " : "");
+            const deltaEvent = {
+              type: "response.output_text.delta",
+              item_id: messageId,
+              output_index: outputIndex,
+              content_index: 0,
+              delta: word,
+              sequence_number: sequenceNumber++
+            };
+            res.write(`event: response.output_text.delta\n`);
+            res.write(`data: ${JSON.stringify(deltaEvent)}\n\n`);
+          }
+
+          // 6. Send response.output_text.done event
+          const textDoneEvent = {
+            type: "response.output_text.done",
+            item_id: messageId,
+            output_index: outputIndex,
+            content_index: 0,
+            text: content,
+            sequence_number: sequenceNumber++
+          };
+          res.write(`event: response.output_text.done\n`);
+          res.write(`data: ${JSON.stringify(textDoneEvent)}\n\n`);
+
+          // 7. Send response.content_part.done event
+          const contentPartDoneEvent = {
+            type: "response.content_part.done",
+            item_id: messageId,
+            output_index: outputIndex,
+            content_index: 0,
+            part: {
+              type: "output_text",
+              text: content
+            },
+            sequence_number: sequenceNumber++
+          };
+          res.write(`event: response.content_part.done\n`);
+          res.write(`data: ${JSON.stringify(contentPartDoneEvent)}\n\n`);
+
+          // 8. Send response.output_item.done event for message
+          const messageItem = {
+            id: messageId,
+            type: "message",
+            status: "completed",
+            role: "assistant",
+            content: [
+              {
+                type: "output_text",
+                text: content
+              }
+            ]
+          };
+          const outputItemDoneEvent = {
+            type: "response.output_item.done",
+            output_index: outputIndex,
+            item: messageItem,
+            sequence_number: sequenceNumber++
+          };
+          res.write(`event: response.output_item.done\n`);
+          res.write(`data: ${JSON.stringify(outputItemDoneEvent)}\n\n`);
+
+          outputItems.push(messageItem);
+          outputIndex++;
+        }
+
+        // 9. Send response.completed event (OpenAI Responses API format)
         const completedEvent = {
-          id: responsesResponse.id,
-          object: "response.completed",
-          created: responsesResponse.created,
-          model: req.body.model,
-          content: content,
-          stop_reason: responsesResponse.stop_reason,
-          usage: responsesResponse.usage
+          type: "response.completed",
+          response: {
+            id: responseId,
+            object: "response",
+            status: "completed",
+            created_at: createdAt,
+            model: req.body.model,
+            output: outputItems,
+            usage: {
+              input_tokens: responsesResponse.usage?.prompt_tokens || 0,
+              output_tokens: responsesResponse.usage?.completion_tokens || 0,
+              total_tokens: responsesResponse.usage?.total_tokens || 0
+            }
+          },
+          sequence_number: sequenceNumber++
         };
         res.write(`event: response.completed\n`);
         res.write(`data: ${JSON.stringify(completedEvent)}\n\n`);
 
-        // Optional: Send [DONE] marker
-        res.write("data: [DONE]\n\n");
         res.end();
 
         logger.info({
           duration: Date.now() - startTime,
           mode: "streaming",
-          contentLength: content.length
+          contentLength: content.length,
+          toolCallCount: toolCalls.length,
+          sequenceNumber: sequenceNumber
         }, "=== RESPONSES API STREAMING COMPLETE ===");
 
       } catch (streamError) {
         logger.error({ error: streamError.message, stack: streamError.stack }, "Responses API streaming error");
 
         // Send error via SSE
+        res.write(`event: error\n`);
         res.write(`data: ${JSON.stringify({
+          type: "error",
           error: {
             message: streamError.message || "Internal server error",
             type: "server_error",

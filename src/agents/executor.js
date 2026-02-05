@@ -24,6 +24,9 @@ class SubagentExecutor {
       options.mainContext
     );
 
+    // Store client CWD in context for tool execution
+    context.cwd = options.cwd;
+
     try {
       // Set timeout
       const timeout = options.timeout || 120000; // 2 minutes
@@ -159,16 +162,27 @@ class SubagentExecutor {
       payload.tools = filteredTools;
     }
 
+    // Determine provider based on model - subagents should use the specified model
+    let forceProvider = null;
+    if (payload.model?.includes('claude') || payload.model?.includes('sonnet') || payload.model?.includes('haiku') || payload.model?.includes('opus')) {
+      // Route Claude models to the configured Claude provider (azure-openai, databricks, etc.)
+      const config = require('../config');
+      forceProvider = config.modelProvider?.provider || 'azure-openai';
+    } else if (payload.model?.includes('gpt')) {
+      forceProvider = 'azure-openai';
+    }
+
     logger.debug({
       agentId: context.agentId,
       model: payload.model,
+      forceProvider,
       messageCount: context.messages.length,
       toolCount: filteredTools.length,
       toolNames: filteredTools.map(t => t.name)
     }, "Calling model for subagent");
 
-    // Use invokeModel to leverage provider routing
-    const response = await invokeModel(payload);
+    // Use invokeModel with forceProvider to ensure correct model routing
+    const response = await invokeModel(payload, { forceProvider });
 
     if (!response.json) {
       throw new Error("Invalid model response");
@@ -223,6 +237,7 @@ class SubagentExecutor {
         }, {
           sessionId: sessionId,
           agentId: context.agentId,
+          cwd: context.cwd,
           isSubagent: true
         });
 

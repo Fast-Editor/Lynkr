@@ -1,4 +1,5 @@
 const { spawn } = require("child_process");
+const path = require("path");
 const { workspaceRoot, resolveWorkspacePath } = require("../workspace");
 const { isSandboxEnabled, runSandboxProcess } = require("../mcp/sandbox");
 
@@ -48,7 +49,22 @@ async function runProcess({
   if (!command || typeof command !== "string") {
     throw new Error("Command must be a non-empty string.");
   }
-  const resolvedCwd = cwd ? resolveWorkspacePath(cwd) : workspaceRoot;
+  // cwd can be:
+  // 1. An already-resolved absolute path (from normaliseCwd in execution.js)
+  // 2. A relative path that needs resolving against workspaceRoot
+  // 3. null/undefined (use workspaceRoot)
+  let resolvedCwd;
+  if (cwd) {
+    // If it's already an absolute path, use it directly
+    // Otherwise resolve against workspaceRoot
+    if (path.isAbsolute(cwd)) {
+      resolvedCwd = cwd;
+    } else {
+      resolvedCwd = resolveWorkspacePath(cwd);
+    }
+  } else {
+    resolvedCwd = workspaceRoot;
+  }
   const mergedEnv = { ...process.env, ...sanitiseEnv(env) };
   const timeout = normaliseTimeout(timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const sandboxPreference = normaliseSandboxPreference(sandbox);

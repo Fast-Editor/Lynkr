@@ -85,6 +85,28 @@ async function applyFilePatch(targetPath, patchText, options = {}) {
   };
 }
 
+/**
+ * Validate a client-provided CWD path
+ * @param {string} cwd - The path to validate
+ * @returns {string|null} - Resolved absolute path if valid, null otherwise
+ */
+function validateCwd(cwd) {
+  if (!cwd || typeof cwd !== "string") {
+    return null;
+  }
+
+  try {
+    const resolved = path.resolve(cwd);
+    const stats = fs.statSync(resolved);
+    if (!stats.isDirectory()) {
+      return null;
+    }
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   workspaceRoot,
   resolveWorkspacePath,
@@ -92,4 +114,5 @@ module.exports = {
   writeFile,
   fileExists,
   applyFilePatch,
+  validateCwd,
 };

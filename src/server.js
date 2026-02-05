@@ -28,20 +28,40 @@ const { registerTestTools } = require("./tools/tests");
 const { registerMcpTools } = require("./tools/mcp");
 const { registerAgentTaskTool } = require("./tools/agent-task");
 const { initConfigWatcher, getConfigWatcher } = require("./config/watcher");
+const { initializeHeadroom, shutdownHeadroom, getHeadroomManager } = require("./headroom");
+const { getWorkerPool, isWorkerPoolReady } = require("./workers/pool");
+const lazyLoader = require("./tools/lazy-loader");
+const { setLazyLoader } = require("./tools");
 const { waitForOllama } = require("./clients/ollama-startup");
 
+// Initialize MCP
 initialiseMcp();
-registerStubTools();
-registerWorkspaceTools();
-registerExecutionTools();
-registerWebTools();
-registerIndexerTools();
-registerEditTools();
-registerGitTools();
-registerTaskTools();
-registerTestTools();
-registerMcpTools();
-registerAgentTaskTool();
+
+// Set up lazy tool loading
+setLazyLoader(lazyLoader);
+
+// Check if lazy loading is enabled (default: true)
+const LAZY_TOOLS_ENABLED = process.env.LAZY_TOOLS_ENABLED !== "false";
+
+if (LAZY_TOOLS_ENABLED) {
+  // Only load core tools at startup (stubs, workspace, execution)
+  lazyLoader.loadCoreTools();
+  logger.info({ mode: "lazy" }, "Lazy tool loading enabled - other tools will load on demand");
+} else {
+  // Backwards compatibility: load all tools at startup
+  registerStubTools();
+  registerWorkspaceTools();
+  registerExecutionTools();
+  registerWebTools();
+  registerIndexerTools();
+  registerEditTools();
+  registerGitTools();
+  registerTaskTools();
+  registerTestTools();
+  registerMcpTools();
+  registerAgentTaskTool();
+  logger.info({ mode: "eager" }, "All tools loaded at startup");
+}
 
 function createApp() {
   const app = express();
@@ -111,6 +131,30 @@ function createApp() {
     res.json(shedder.getMetrics());
   });
 
+  app.get("/metrics/worker-pool", (req, res) => {
+    if (!isWorkerPoolReady()) {
+      return res.json({ enabled: false, message: "Worker pool not initialized" });
+    }
+    const pool = getWorkerPool();
+    res.json({ enabled: true, ...pool.getStats() });
+  });
+
+  app.get("/metrics/semantic-cache", (req, res) => {
+    const { getSemanticCache, isSemanticCacheEnabled } = require("./cache/semantic");
+    if (!isSemanticCacheEnabled()) {
+      return res.json({ enabled: false, message: "Semantic cache not enabled" });
+    }
+    const cache = getSemanticCache();
+    res.json({ enabled: true, ...cache.getStats() });
+  });
+
+  app.get("/metrics/lazy-tools", (req, res) => {
+    res.json({
+      enabled: LAZY_TOOLS_ENABLED,
+      ...lazyLoader.getLoaderStats(),
+    });
+  });
+
   app.use(router);
 
   // 404 handler (must be after all routes)
@@ -123,6 +167,38 @@ function createApp() {
 }
 
 async function start() {
+  // Initialize Worker Thread Pool (if enabled)
+  // This pre-warms worker threads for CPU-intensive tasks
+  if (config.workerPool?.enabled !== false) {
+    try {
+      const poolOptions = {
+        size: config.workerPool?.size || undefined, // undefined = auto
+        taskTimeout: config.workerPool?.taskTimeoutMs || 5000,
+        offloadThreshold: config.workerPool?.offloadThresholdBytes || 10000,
+      };
+      const pool = getWorkerPool(poolOptions);
+      await pool.initialize();
+      logger.info({ poolSize: pool.size }, "Worker thread pool initialized");
+    } catch (err) {
+      logger.error({ err }, "Worker pool initialization failed, continuing without worker threads");
+    }
+  }
+
+  // Initialize Headroom sidecar (if enabled)
+  // This must happen before the server starts accepting requests
+  if (config.headroom?.enabled) {
+    try {
+      const result = await initializeHeadroom();
+      if (result.success) {
+        logger.info("Headroom sidecar initialized");
+      } else {
+        logger.warn({ error: result.error }, "Headroom initialization failed, continuing without compression");
+      }
+    } catch (err) {
+      logger.error({ err }, "Headroom initialization error, continuing without compression");
+    }
+  }
+
   const app = createApp();
 
   // Wait for Ollama if it's the configured provider or preferred for routing
@@ -144,6 +220,23 @@ async function start() {
   const shutdownManager = getShutdownManager();
   shutdownManager.registerServer(server);
   shutdownManager.setupSignalHandlers();
+
+  // Register Headroom shutdown callback
+  if (config.headroom?.enabled) {
+    shutdownManager.onShutdown(async () => {
+      logger.info("Stopping Headroom sidecar on shutdown");
+      await shutdownHeadroom(false); // Don't remove container on shutdown
+    });
+  }
+
+  // Register Worker Pool shutdown callback
+  if (config.workerPool?.enabled !== false && isWorkerPoolReady()) {
+    shutdownManager.onShutdown(async () => {
+      logger.info("Stopping worker thread pool on shutdown");
+      const pool = getWorkerPool();
+      await pool.shutdown();
+    });
+  }
 
   // Initialize hot reload config watcher
   if (config.hotReload?.enabled !== false) {

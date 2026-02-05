@@ -13,7 +13,7 @@
 
 ### Use Case
 ```
-        Cursor / Cline / Continue / Claude Code
+        Cursor / Cline / Continue / Claude Code / Clawdbot / Codex/ KiloCode
                         ↓
                        Lynkr
                         ↓
@@ -28,6 +28,7 @@ Lynkr is a **self-hosted proxy server** that unlocks Claude Code CLI , Cursor ID
 - 🚀 **Any LLM Provider** - Databricks, AWS Bedrock (100+ models), OpenRouter (100+ models), Ollama (local), llama.cpp, Azure OpenAI, Azure Anthropic, OpenAI, LM Studio
 - 💰 **60-80% Cost Reduction** - Built-in token optimization with smart tool selection, prompt caching, and memory deduplication
 - 🔒 **100% Local/Private** - Run completely offline with Ollama or llama.cpp
+- 🌐 **Remote or Local** - Connect to providers on any IP/hostname (not limited to localhost)
 - 🎯 **Zero Code Changes** - Drop-in replacement for Anthropic's backend
 - 🏢 **Enterprise-Ready** - Circuit breakers, load shedding, Prometheus metrics, health checks
 
@@ -46,10 +47,10 @@ Lynkr is a **self-hosted proxy server** that unlocks Claude Code CLI , Cursor ID
 **Option 1: NPM Package (Recommended)**
 ```bash
 # Install globally
+npm install -g pino-pretty 
 npm install -g lynkr
 
-# Or run directly with npx
-npx lynkr
+lynk start
 ```
 
 **Option 2: Git Clone**
@@ -82,7 +83,7 @@ docker-compose up -d
 
 ## Supported Providers
 
-Lynkr supports **9+ LLM providers**:
+Lynkr supports **10+ LLM providers**:
 
 | Provider | Type | Models | Cost | Privacy |
 |----------|------|--------|------|---------|
@@ -95,6 +96,7 @@ Lynkr supports **9+ LLM providers**:
 | **Azure Anthropic** | Cloud | Claude models | $$$ | Cloud |
 | **OpenAI** | Cloud | GPT-4o, o1, o3 | $$$ | Cloud |
 | **LM Studio** | Local | Local models with GUI | **FREE** | 🔒 100% Local |
+| **MLX OpenAI Server** | Local | Apple Silicon (M1/M2/M3/M4) | **FREE** | 🔒 100% Local |
 
 📖 **[Full Provider Configuration Guide](documentation/providers.md)**
 
@@ -155,9 +157,30 @@ export  OPENAI_API_KEY=dummy
   [model_providers.lynkr]                                                                                                                                                                                                                            
   name = "Lynkr Proxy"                                                                                                                                                                                                                               
   base_url = "http://localhost:8081/v1"                                                                                                                                                                                                              
-  env_key = "OPENAI_API_KEY"     
+  env_key = "OPENAI_API_KEY"
   ```
-                                                          
+
+---
+
+## ClawdBot Integration
+
+Lynkr supports [ClawdBot](https://github.com/openclaw/openclaw) via its OpenAI-compatible API. ClawdBot users can route requests through Lynkr to access any supported provider.
+
+**Configuration in ClawdBot:**
+| Setting | Value |
+|---------|-------|
+| Model/auth provider | `Copilot` |
+| Copilot auth method | `Copilot Proxy (local)` |
+| Copilot Proxy base URL | `http://localhost:8081/v1` |
+| Model IDs | Any model your Lynkr provider supports |
+
+**Available models** (depending on your Lynkr provider):
+`gpt-5.2`, `gpt-5.1-codex`, `claude-opus-4.5`, `claude-sonnet-4.5`, `claude-haiku-4.5`, `gemini-3-pro`, `gemini-3-flash`, and more.
+
+> 🌐 **Remote Support**: ClawdBot can connect to Lynkr on any machine - use any IP/hostname in the Proxy base URL (e.g., `http://192.168.1.100:8081/v1` or `http://gpu-server:8081/v1`).
+
+---
+
 ## Lynkr also supports  Cline, Continue.dev and other OpenAI compatible tools.
 ---
 
@@ -258,6 +281,29 @@ export OLLAMA_MODEL=qwen2.5-coder:latest
 export OLLAMA_EMBEDDINGS_MODEL=nomic-embed-text
 npm start
 ```
+> 💡 **Tip:** Prevent slow cold starts by keeping Ollama models loaded: `launchctl setenv OLLAMA_KEEP_ALIVE "24h"` (macOS) or set `OLLAMA_KEEP_ALIVE=24h` env var. See [troubleshooting](documentation/troubleshooting.md#slow-first-request--cold-start-warning).
+
+**Remote Ollama (GPU Server)**
+```bash
+export MODEL_PROVIDER=ollama
+export OLLAMA_ENDPOINT=http://192.168.1.100:11434  # Any IP or hostname
+export OLLAMA_MODEL=llama3.1:70b
+npm start
+```
+> 🌐 **Note:** All provider endpoints support remote addresses - not limited to localhost. Use any IP, hostname, or domain.
+
+**MLX OpenAI Server (Apple Silicon)**
+```bash
+# Terminal 1: Start MLX server
+mlx-openai-server launch --model-path mlx-community/Qwen2.5-Coder-7B-Instruct-4bit --model-type lm
+
+# Terminal 2: Start Lynkr
+export MODEL_PROVIDER=openai
+export OPENAI_ENDPOINT=http://localhost:8000/v1/chat/completions
+export OPENAI_API_KEY=not-needed
+npm start
+```
+> 🍎 **Apple Silicon optimized** - Native MLX performance on M1/M2/M3/M4 Macs. See [MLX setup guide](documentation/providers.md#10-mlx-openai-server-apple-silicon).
 
 **AWS Bedrock (100+ models)**
 ```bash

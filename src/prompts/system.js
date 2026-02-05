@@ -9,6 +9,47 @@ const logger = require('../logger');
 const config = require('../config');
 
 /**
+ * Agent Delegation Instructions
+ *
+ * These instructions tell all models how to use the Task tool for spawning subagents.
+ * Added to system prompt when Task tool is available.
+ */
+const AGENT_DELEGATION_INSTRUCTIONS = `
+## Task Delegation (Subagents)
+
+You have access to the **Task** tool which spawns specialized agents to handle complex work autonomously.
+
+### WHEN TO USE the Task Tool:
+
+| User Request Keywords | Action |
+|----------------------|--------|
+| "explore", "dig into", "understand", "analyze" the codebase | \`Task(subagent_type="Explore")\` |
+| "plan", "design", "architect" an implementation | \`Task(subagent_type="Plan")\` |
+| Complex multi-file research or investigation | \`Task(subagent_type="general-purpose")\` |
+
+### HOW TO CALL the Task Tool:
+
+\`\`\`
+Task(
+  subagent_type: "Explore",
+  description: "Explore project structure",
+  prompt: "Find main entry points, understand the architecture, read key configuration files, and provide a comprehensive summary of what this project does and how it's organized."
+)
+\`\`\`
+
+### AGENT TYPES:
+
+- **Explore**: Fast codebase exploration using Glob, Grep, Read tools. Use for searching files, understanding project structure, finding code patterns.
+- **Plan**: Implementation planning and architecture design. Use for designing features, planning refactoring, or architectural decisions.
+- **general-purpose**: Complex multi-step tasks with access to all tools.
+
+### IMPORTANT:
+- Subagents run independently and return a summary of their findings
+- Use Explore agent for ANY codebase navigation or search tasks instead of doing it yourself
+- The subagent will handle all the file reading and searching, then return results to you
+`;
+
+/**
  * Compress tool descriptions to minimal format
  *
  * Converts verbose tool schemas to minimal versions by:
@@ -310,6 +351,32 @@ function calculateSavings(original, optimized) {
   };
 }
 
+/**
+ * Inject agent delegation instructions into system prompt
+ * @param {string} systemPrompt - Existing system prompt
+ * @param {Array} tools - Available tools
+ * @returns {string} System prompt with agent instructions added
+ */
+function injectAgentInstructions(systemPrompt, tools = []) {
+  // Check if Task tool is available
+  const hasTaskTool = tools?.some(t =>
+    t.name === 'Task' || t.function?.name === 'Task'
+  );
+
+  if (!hasTaskTool) {
+    return systemPrompt;
+  }
+
+  // Don't add if already present
+  if (systemPrompt && systemPrompt.includes('Task Delegation')) {
+    return systemPrompt;
+  }
+
+  // Append agent instructions
+  const basePrompt = systemPrompt || '';
+  return basePrompt + '\n\n' + AGENT_DELEGATION_INSTRUCTIONS;
+}
+
 module.exports = {
   compressToolDescriptions,
   optimizeSystemPrompt,
@@ -317,4 +384,6 @@ module.exports = {
   calculateSavings,
   compressText,
   flattenBlocks,
+  injectAgentInstructions,
+  AGENT_DELEGATION_INSTRUCTIONS,
 };

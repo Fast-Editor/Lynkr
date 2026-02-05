@@ -19,6 +19,7 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 | **Azure Anthropic** | Cloud | Claude models | $$$ | Cloud | Medium |
 | **OpenAI** | Cloud | GPT-4o, o1, o3 | $$$ | Cloud | Easy |
 | **LM Studio** | Local | Local models with GUI | **FREE** | 🔒 100% Local | Easy |
+| **MLX OpenAI Server** | Local | Apple Silicon optimized | **FREE** | 🔒 100% Local | Easy |
 
 ---
 
@@ -51,6 +52,50 @@ DATABRICKS_API_KEY=dapi1234567890abcdef
 PORT=8081
 LOG_LEVEL=info
 ```
+
+---
+
+## Remote/Network Configuration
+
+**All provider endpoints support remote addresses** - you're not limited to `localhost`. This enables powerful setups like:
+
+- 🖥️ **GPU Server**: Run Ollama/llama.cpp on a dedicated GPU machine
+- 🏢 **Team Sharing**: Multiple developers using one Lynkr instance
+- ☁️ **Hybrid**: Lynkr on local machine, models on cloud VM
+
+### Examples
+
+**Ollama on Remote GPU Server**
+```env
+MODEL_PROVIDER=ollama
+OLLAMA_ENDPOINT=http://192.168.1.100:11434    # Local network IP
+# or
+OLLAMA_ENDPOINT=http://gpu-server.local:11434  # Hostname
+# or
+OLLAMA_ENDPOINT=http://ollama.mycompany.com:11434  # Domain
+```
+
+**llama.cpp on Remote Machine**
+```env
+MODEL_PROVIDER=llamacpp
+LLAMACPP_ENDPOINT=http://10.0.0.50:8080
+```
+
+**LM Studio on Another Computer**
+```env
+MODEL_PROVIDER=lmstudio
+LMSTUDIO_ENDPOINT=http://workstation.local:1234
+```
+
+### Network Requirements
+
+| Setup | Requirement |
+|-------|-------------|
+| Same machine | `localhost` or `127.0.0.1` |
+| Local network | IP address or hostname, firewall allows port |
+| Remote/Internet | Public IP/domain, port forwarding, consider VPN/auth |
+
+> ⚠️ **Security Note**: When exposing endpoints over a network, ensure proper firewall rules and consider using a VPN or SSH tunnel for sensitive deployments.
 
 ---
 
@@ -316,10 +361,43 @@ See [openrouter.ai/models](https://openrouter.ai/models) for complete list with 
 
 ```env
 MODEL_PROVIDER=ollama
-OLLAMA_ENDPOINT=http://localhost:11434
+OLLAMA_ENDPOINT=http://localhost:11434  # Or any remote IP/hostname
 OLLAMA_MODEL=llama3.1:8b
 OLLAMA_TIMEOUT_MS=120000
 ```
+
+> 🌐 **Remote Support**: `OLLAMA_ENDPOINT` can be any address - `http://192.168.1.100:11434`, `http://gpu-server:11434`, etc. See [Remote/Network Configuration](#remotenetwork-configuration).
+
+#### Performance Optimization
+
+**Prevent Cold Starts:** Ollama unloads models after 5 minutes of inactivity by default. This causes slow first requests (10-30+ seconds) while the model reloads. To keep models loaded:
+
+**Option 1: Environment Variable (Recommended)**
+```bash
+# Set on Ollama server (not Lynkr)
+# macOS
+launchctl setenv OLLAMA_KEEP_ALIVE "24h"
+
+# Linux (systemd) - edit with: sudo systemctl edit ollama
+[Service]
+Environment="OLLAMA_KEEP_ALIVE=24h"
+
+# Docker
+docker run -e OLLAMA_KEEP_ALIVE=24h -d ollama/ollama
+```
+
+**Option 2: Per-Request Keep Alive**
+```bash
+curl http://localhost:11434/api/generate -d '{"model":"llama3.1:8b","keep_alive":"24h"}'
+```
+
+**Keep Alive Values:**
+| Value | Behavior |
+|-------|----------|
+| `5m` | Default - unload after 5 minutes |
+| `24h` | Keep loaded for 24 hours |
+| `-1` | Never unload (keep forever) |
+| `0` | Unload immediately after request |
 
 #### Installation & Setup
 
@@ -384,7 +462,7 @@ Lynkr supports **native tool calling** for compatible Ollama models:
 
 ```env
 MODEL_PROVIDER=llamacpp
-LLAMACPP_ENDPOINT=http://localhost:8080
+LLAMACPP_ENDPOINT=http://localhost:8080  # Or any remote IP/hostname
 LLAMACPP_MODEL=qwen2.5-coder-7b
 LLAMACPP_TIMEOUT_MS=120000
 ```
@@ -393,6 +471,8 @@ Optional API key (for secured servers):
 ```env
 LLAMACPP_API_KEY=your-optional-api-key
 ```
+
+> 🌐 **Remote Support**: `LLAMACPP_ENDPOINT` can be any address. See [Remote/Network Configuration](#remotenetwork-configuration).
 
 #### Installation & Setup
 
@@ -602,6 +682,97 @@ LMSTUDIO_API_KEY=your-optional-api-key
 - ✅ **Built-in server** with OpenAI-compatible API
 - ✅ **GPU acceleration** support
 - ✅ **Model presets** and configurations
+
+---
+
+### 10. MLX OpenAI Server (Apple Silicon)
+
+**Best for:** Maximum performance on Apple Silicon Macs (M1/M2/M3/M4)
+
+[MLX OpenAI Server](https://github.com/cubist38/mlx-openai-server) is a high-performance local LLM server optimized for Apple's MLX framework. It provides OpenAI-compatible endpoints for text, vision, audio, and image generation models.
+
+#### Installation
+
+```bash
+# Create virtual environment
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+# Install
+pip install mlx-openai-server
+
+# Optional: for audio transcription
+brew install ffmpeg
+```
+
+#### Start the Server
+
+```bash
+# Text/Code models (recommended for coding)
+mlx-openai-server launch --model-path mlx-community/Qwen2.5-Coder-7B-Instruct-4bit --model-type lm
+
+# Smaller model (faster, less RAM)
+mlx-openai-server launch --model-path mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit --model-type lm
+
+# General purpose
+mlx-openai-server launch --model-path mlx-community/Qwen2.5-3B-Instruct-4bit --model-type lm
+```
+
+Server runs at `http://localhost:8000/v1` by default.
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=openai
+OPENAI_ENDPOINT=http://localhost:8000/v1/chat/completions
+OPENAI_API_KEY=not-needed
+```
+
+> 🌐 **Remote Support**: `OPENAI_ENDPOINT` can be any address (e.g., `http://192.168.1.100:8000/v1/chat/completions` for a Mac Studio GPU server).
+
+#### Recommended Models for Coding
+
+| Model | Size | RAM | Command |
+|-------|------|-----|---------|
+| `Qwen2.5-Coder-1.5B-Instruct-4bit` | ~1GB | 4GB | Fast, simple code tasks |
+| `Qwen2.5-3B-Instruct-4bit` | ~2GB | 6GB | General + code |
+| `Qwen2.5-Coder-7B-Instruct-4bit` | ~4GB | 8GB | Best for coding |
+| `Qwen2.5-Coder-14B-Instruct-4bit` | ~8GB | 16GB | Complex reasoning |
+| `Llama-3.2-3B-Instruct-4bit` | ~2GB | 6GB | General purpose |
+| `Phi-3-mini-4k-instruct-4bit` | ~2GB | 6GB | Reasoning tasks |
+
+#### Server Options
+
+```bash
+mlx-openai-server launch \
+  --model-path mlx-community/Qwen2.5-Coder-7B-Instruct-4bit \
+  --model-type lm \
+  --host 0.0.0.0 \           # Allow remote connections
+  --port 8000 \              # Default port
+  --max-concurrency 2 \      # Parallel requests
+  --context-length 4096      # Max context window
+```
+
+#### MLX vs Ollama Comparison
+
+| Feature | MLX OpenAI Server | Ollama |
+|---------|-------------------|--------|
+| Platform | Apple Silicon only | Cross-platform |
+| Performance | Native MLX optimization | Good on Apple Silicon |
+| Model Format | HuggingFace MLX | Ollama-specific |
+| Vision/Audio | ✅ Built-in | Limited |
+| Image Generation | ✅ Flux support | ❌ |
+| Quantization | 4/8/16-bit flexible | Model-specific |
+
+#### Test Connection
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d '{"model": "default", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+#### Pricing
+
+**100% FREE** - Models run locally on your Apple Silicon Mac.
 
 ---
 
