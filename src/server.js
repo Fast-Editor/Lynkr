@@ -28,6 +28,7 @@ const { registerTestTools } = require("./tools/tests");
 const { registerMcpTools } = require("./tools/mcp");
 const { registerAgentTaskTool } = require("./tools/agent-task");
 const { initConfigWatcher, getConfigWatcher } = require("./config/watcher");
+const { waitForOllama } = require("./clients/ollama-startup");
 
 initialiseMcp();
 registerStubTools();
@@ -121,8 +122,15 @@ function createApp() {
   return app;
 }
 
-function start() {
+async function start() {
   const app = createApp();
+
+  // Wait for Ollama if it's the configured provider or preferred for routing
+  const provider = config.modelProvider?.type?.toLowerCase();
+  if (provider === "ollama" || config.modelProvider?.preferOllama) {
+    await waitForOllama();
+  }
+
   const server = app.listen(config.port, () => {
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
   });
