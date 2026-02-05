@@ -3280,8 +3280,8 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
       for (const block of msg.content) {
         if (block?.type === 'tool_result' && block?.content) {
           const content = typeof block.content === 'string'
-            ? block.content.substring(0, 500)
-            : JSON.stringify(block.content).substring(0, 500);
+            ? block.content
+            : JSON.stringify(block.content);
           if (content && !content.includes('Found 0')) {
             toolResultsSummary += content + "\n";
           }
