@@ -16,11 +16,13 @@ function registerWorkspaceListTool() {
   registerTool(
     "workspace_list",
     async ({ args = {} }) => {
+      // Support both 'pattern' (Glob tool) and 'patterns' (workspace_list)
+      const rawPatterns = args.pattern ?? args.patterns;
       const patterns =
-        typeof args.patterns === "string"
-          ? [args.patterns]
-          : Array.isArray(args.patterns)
-          ? args.patterns
+        typeof rawPatterns === "string"
+          ? [rawPatterns]
+          : Array.isArray(rawPatterns)
+          ? rawPatterns
           : undefined;
       const ignore =
         typeof args.ignore === "string"
@@ -260,6 +262,45 @@ function registerSymbolReferencesTool() {
   );
 }
 
+
+/**
+ * Dedicated Glob tool for Claude Code compatibility (maybe others?).
+ *
+ * Why this exists (instead of using workspace_list alias):
+ * - Claude Code's Glob tool returns plain text (one path per line)
+ * - workspace_list returns JSON with entries array
+ * - Models expect plain text format from Glob tool
+ *
+ * See also: TOOL_ALIASES in src/tools/index.js (commented glob entries)
+ */
+function registerGlobTool() {
+  registerTool(
+    "Glob",
+    async ({ args = {} }) => {
+      const pattern = args.pattern;
+      const basePath = args.path;
+
+      let patterns;
+      if (basePath) {
+        const cleanPath = basePath.replace(/\/+$/, "");
+        patterns = pattern ? [`${cleanPath}/${pattern}`] : [`${cleanPath}/**/*`];
+      } else {
+        patterns = pattern ? [pattern] : undefined;
+      }
+
+      const entries = await listWorkspaceFiles({ patterns, limit: 1000 });
+
+      // Plain text output: one path per line (Claude Code format)
+      return {
+        ok: true,
+        status: 200,
+        content: entries.map((e) => e.path).join("\n"),
+      };
+    },
+    { category: "indexing" },
+  );
+}
+
 function registerGotoDefinitionTool() {
   registerTool(
     "workspace_goto_definition",
@@ -353,6 +394,7 @@ function registerIndexerTools() {
   registerSymbolSearchTool();
   registerSymbolReferencesTool();
   registerGotoDefinitionTool();
+  registerGlobTool();
 }
 
 module.exports = {
