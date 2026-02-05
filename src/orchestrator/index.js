@@ -3192,10 +3192,36 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
       sessionId: session?.id ?? null,
     }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
 
-    // Extract actual tool results from recent messages to include in response
+    // Extract tool results ONLY from CURRENT TURN (after last user text message)
+    // This prevents showing old results from previous questions
     let toolResultsSummary = "";
-    const recentMessages = payload?.messages?.slice(-10) || [];
-    for (const msg of recentMessages) {
+    const messages = payload?.messages || [];
+
+    // Find the last user text message index (same logic as countToolCallsInHistory)
+    let lastUserTextIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg?.role !== 'user') continue;
+      if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
+        lastUserTextIndex = i;
+        break;
+      }
+      if (Array.isArray(msg.content)) {
+        const hasText = msg.content.some(block =>
+          (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+          (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+        );
+        if (hasText) {
+          lastUserTextIndex = i;
+          break;
+        }
+      }
+    }
+
+    // Only extract tool results AFTER the last user text message
+    const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
+    for (let i = startIndex; i < messages.length; i++) {
+      const msg = messages[i];
       if (!msg || !Array.isArray(msg.content)) continue;
       for (const block of msg.content) {
         if (block?.type === 'tool_result' && block?.content) {
@@ -3209,12 +3235,12 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
       }
     }
 
-    // Build response text based on actual results
+    // Build response text based on actual results from CURRENT turn only
     let responseText = `Based on the tool results, here's what I found:\n\n`;
     if (toolResultsSummary.trim()) {
       responseText += toolResultsSummary.trim();
     } else {
-      responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command like "ls -la" directly.`;
+      responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
     }
 
     // Force return a response instead of continuing the loop

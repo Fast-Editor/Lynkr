@@ -693,7 +693,7 @@ var config = {
     ttlMs: Number.isNaN(promptCacheTtlRaw) ? 300000 : promptCacheTtlRaw,
   },
   semanticCache: {
-    enabled: false,  // DISABLED - was causing issues with Claude Code tool loops
+    enabled: true,  // RE-ENABLED for testing
     similarityThreshold: 0.92,  // 92% similarity for cache hit
     maxEntries: 500,
     ttlMs: 3600000,  // 1 hour

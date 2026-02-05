@@ -340,6 +340,21 @@ class SemanticCache {
     if (!lookupResult || lookupResult.hit) return; // Don't store if it was a hit
     if (!response) return;
 
+    // Don't cache forced responses from ToolLoopGuard
+    if (response.id?.startsWith('msg_forced_')) {
+      logger.debug('[SemanticCache] Skipping cache for forced ToolLoopGuard response');
+      return;
+    }
+
+    // Don't cache responses that contain tool_use (intermediate responses)
+    if (Array.isArray(response.content)) {
+      const hasToolUse = response.content.some(block => block?.type === 'tool_use');
+      if (hasToolUse) {
+        logger.debug('[SemanticCache] Skipping cache for response with tool_use');
+        return;
+      }
+    }
+
     const { embedding, prompt, contextHash } = lookupResult;
     if (!embedding || !prompt) return;
 
