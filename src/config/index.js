@@ -513,6 +513,12 @@ const oversizedErrorLogDir =
 	process.env.OVERSIZED_ERROR_LOG_DIR ?? path.join(process.cwd(), "logs", "oversized-errors");
 const oversizedErrorMaxFiles = Number.parseInt(process.env.OVERSIZED_ERROR_MAX_FILES ?? "100", 10);
 
+// Worker Thread Pool Configuration
+const workerPoolEnabled = process.env.WORKER_POOL_ENABLED !== "false"; // default true
+const workerPoolSize = Number.parseInt(process.env.WORKER_POOL_SIZE ?? "0", 10); // 0 = auto (CPU cores - 1)
+const workerTaskTimeoutMs = Number.parseInt(process.env.WORKER_TASK_TIMEOUT_MS ?? "5000", 10);
+const workerOffloadThresholdBytes = Number.parseInt(process.env.WORKER_OFFLOAD_THRESHOLD_BYTES ?? "10000", 10);
+
 var config = {
   env: process.env.NODE_ENV ?? "development",
   port: Number.isNaN(port) ? 8080 : port,
@@ -626,6 +632,7 @@ var config = {
   policy: {
     maxStepsPerTurn: Number.isNaN(policyMaxSteps) ? 8 : policyMaxSteps,
     maxToolCallsPerTurn: Number.isNaN(policyMaxToolCalls) ? 12 : policyMaxToolCalls,
+    toolLoopThreshold: 1, // Max tool results before force-terminating (set to 1 because GPT-5.2 ignores stop instructions)
     disallowedTools: policyDisallowedTools,
     git: {
       allowPush: policyGitAllowPush,
@@ -684,6 +691,12 @@ var config = {
     enabled: promptCacheEnabled,
     maxEntries: Number.isNaN(promptCacheMaxEntriesRaw) ? 64 : promptCacheMaxEntriesRaw,
     ttlMs: Number.isNaN(promptCacheTtlRaw) ? 300000 : promptCacheTtlRaw,
+  },
+  semanticCache: {
+    enabled: false,  // DISABLED - was causing issues with Claude Code tool loops
+    similarityThreshold: 0.92,  // 92% similarity for cache hit
+    maxEntries: 500,
+    ttlMs: 3600000,  // 1 hour
   },
   agents: {
     enabled: agentsEnabled,
@@ -828,6 +841,12 @@ var config = {
     threshold: oversizedErrorThreshold,
     logDir: oversizedErrorLogDir,
     maxFiles: oversizedErrorMaxFiles,
+  },
+  workerPool: {
+    enabled: workerPoolEnabled,
+    size: workerPoolSize || 0, // 0 = auto
+    taskTimeoutMs: Number.isNaN(workerTaskTimeoutMs) ? 5000 : workerTaskTimeoutMs,
+    offloadThresholdBytes: Number.isNaN(workerOffloadThresholdBytes) ? 10000 : workerOffloadThresholdBytes,
   },
 };
 

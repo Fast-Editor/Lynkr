@@ -16,6 +16,9 @@ const { createAuditLogger } = require("../logger/audit-logger");
 const { getResolvedIp, runWithDnsContext } = require("../clients/dns-logger");
 const { getShuttingDown } = require("../api/health");
 const crypto = require("crypto");
+const { asyncClone, asyncTransform, getPoolStats } = require("../workers/helpers");
+const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
+const lazyLoader = require("../tools/lazy-loader");
 
 /**
  * Get destination URL for audit logging based on provider type
@@ -368,6 +371,88 @@ function buildWebSearchSummary(rawContent, options = {}) {
   }
   if (lines.length === 0) return null;
   return `Top search hits:\n${lines.join("\n")}`;
+}
+
+/**
+ * Count tool_use and tool_result blocks in message history.
+ * Only counts tools from the CURRENT TURN (after the last user text message).
+ * This prevents the guard from blocking new questions after a previous loop.
+ */
+function countToolCallsInHistory(messages) {
+  if (!Array.isArray(messages)) return { toolUseCount: 0, toolResultCount: 0 };
+
+  // Find the index of the last user message that contains actual text (not just tool_result)
+  let lastUserTextIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== 'user') continue;
+
+    // Check if this user message has actual text content (not just tool_result)
+    if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
+      lastUserTextIndex = i;
+      break;
+    }
+    if (Array.isArray(msg.content)) {
+      const hasText = msg.content.some(block =>
+        (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+        (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+      );
+      if (hasText) {
+        lastUserTextIndex = i;
+        break;
+      }
+    }
+  }
+
+  // Count only tool_use/tool_result AFTER the last user text message
+  let toolUseCount = 0;
+  let toolResultCount = 0;
+
+  const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
+
+  for (let i = startIndex; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg || !Array.isArray(msg.content)) continue;
+
+    for (const block of msg.content) {
+      if (block?.type === 'tool_use') toolUseCount++;
+      if (block?.type === 'tool_result') toolResultCount++;
+    }
+  }
+
+  return { toolUseCount, toolResultCount, lastUserTextIndex };
+}
+
+/**
+ * Inject a "stop looping" instruction if there are too many tool calls in history.
+ * This helps prevent infinite loops when the model keeps calling tools instead of responding.
+ *
+ * @param {Array} messages - The conversation messages
+ * @param {number} threshold - Max tool results before injection (default: 5)
+ * @returns {Array} - Messages with stop instruction injected if needed
+ */
+function injectToolLoopStopInstruction(messages, threshold = 5) {
+  if (!Array.isArray(messages)) return messages;
+
+  const { toolResultCount } = countToolCallsInHistory(messages);
+
+  if (toolResultCount >= threshold) {
+    logger.warn({
+      toolResultCount,
+      threshold,
+    }, "[ToolLoopGuard] Too many tool results in conversation - injecting stop instruction");
+
+    // Inject instruction to stop tool calls and provide a final answer
+    const stopInstruction = {
+      role: "user",
+      content: `⚠️ IMPORTANT: You have already executed ${toolResultCount} tool calls in this conversation. This is likely an infinite loop. STOP calling tools immediately and provide a direct text response to the user based on the information you have gathered. If you cannot complete the task, explain why. DO NOT call any more tools.`,
+    };
+
+    // Add to end of messages
+    return [...messages, stopInstruction];
+  }
+
+  return messages;
 }
 
 function sanitiseAzureTools(tools) {
@@ -1448,6 +1533,22 @@ async function runAgentLoop({
       } catch (err) {
         logger.warn({ err, sessionId: session?.id }, 'Agent instructions injection failed, continuing without');
       }
+    }
+
+    // Inject tool termination instructions for non-Claude models
+    // This helps models know when to stop calling tools and provide a text response
+    if (steps === 1 && providerType !== 'databricks' && providerType !== 'azure-anthropic') {
+      const toolTerminationInstruction = `
+
+IMPORTANT TOOL USAGE RULES:
+- After receiving tool results, you MUST provide a text response summarizing the results for the user.
+- Do NOT call the same tool repeatedly with the same or similar parameters.
+- If a tool returns results, use those results to answer the user's question.
+- If a tool fails or returns unexpected results, explain this to the user instead of retrying.
+- Maximum 2-3 tool calls per user request. After that, provide your best answer based on available information.
+`;
+      cleanPayload.system = (cleanPayload.system || '') + toolTerminationInstruction;
+      logger.debug({ sessionId: session?.id ?? null }, 'Tool termination instructions injected for non-Claude model');
     }
 
     if (steps === 1 && config.tokenBudget?.enforcement !== false) {
@@ -3071,7 +3172,90 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     typeof headers?.["anthropic-beta"] === "string" &&
     headers["anthropic-beta"].includes("interleaved-thinking");
 
+  // === TOOL LOOP GUARD (EARLY CHECK) ===
+  // Check BEFORE sanitization since sanitizePayload removes conversation history
+  const toolLoopThreshold = config.policy?.toolLoopThreshold ?? 3;
+  const { toolResultCount, toolUseCount } = countToolCallsInHistory(payload?.messages);
+
+  console.log('[ToolLoopGuard EARLY] Checking ORIGINAL messages:', {
+    messageCount: payload?.messages?.length,
+    toolResultCount,
+    toolUseCount,
+    threshold: toolLoopThreshold,
+  });
+
+  if (toolResultCount >= toolLoopThreshold) {
+    logger.error({
+      toolResultCount,
+      toolUseCount,
+      threshold: toolLoopThreshold,
+      sessionId: session?.id ?? null,
+    }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
+
+    // Extract actual tool results from recent messages to include in response
+    let toolResultsSummary = "";
+    const recentMessages = payload?.messages?.slice(-10) || [];
+    for (const msg of recentMessages) {
+      if (!msg || !Array.isArray(msg.content)) continue;
+      for (const block of msg.content) {
+        if (block?.type === 'tool_result' && block?.content) {
+          const content = typeof block.content === 'string'
+            ? block.content.substring(0, 500)
+            : JSON.stringify(block.content).substring(0, 500);
+          if (content && !content.includes('Found 0')) {
+            toolResultsSummary += content + "\n";
+          }
+        }
+      }
+    }
+
+    // Build response text based on actual results
+    let responseText = `Based on the tool results, here's what I found:\n\n`;
+    if (toolResultsSummary.trim()) {
+      responseText += toolResultsSummary.trim();
+    } else {
+      responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command like "ls -la" directly.`;
+    }
+
+    // Force return a response instead of continuing the loop
+    const forcedResponse = {
+      id: `msg_forced_${Date.now()}`,
+      type: "message",
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: responseText,
+        },
+      ],
+      model: requestedModel || "unknown",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 100,
+      },
+    };
+
+    return {
+      status: 200,
+      body: forcedResponse,
+      terminationReason: "tool_loop_guard",
+    };
+  }
+
   const cleanPayload = sanitizePayload(payload);
+
+  // Proactively load tools based on prompt content (lazy loading)
+  try {
+    const { loaded } = lazyLoader.ensureToolsForPrompt(cleanPayload.messages);
+    if (loaded.length > 0) {
+      logger.debug({ loaded }, "Proactively loaded tool categories for prompt");
+    }
+  } catch (err) {
+    logger.debug({ error: err.message }, "Lazy tool loading check failed");
+  }
+
   appendTurnToSession(session, {
     role: "user",
     content: {
@@ -3089,7 +3273,8 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     cacheKey = key;
     if (entry?.value) {
       try {
-        cachedResponse = JSON.parse(JSON.stringify(entry.value));
+        // Use worker pool for large cached responses
+        cachedResponse = await asyncClone(entry.value);
       } catch {
         cachedResponse = entry.value;
       }
@@ -3134,6 +3319,46 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     };
   }
 
+  // Semantic cache lookup (fuzzy matching based on embedding similarity)
+  let semanticLookupResult = null;
+  const semanticCache = getSemanticCache();
+  if (semanticCache.isEnabled()) {
+    try {
+      semanticLookupResult = await semanticCache.lookup(cleanPayload.messages);
+
+      if (semanticLookupResult.hit) {
+        const cachedBody = semanticLookupResult.response;
+        logger.info({
+          sessionId: session?.id ?? null,
+          similarity: semanticLookupResult.similarity?.toFixed(4),
+        }, "Agent response served from semantic cache");
+
+        appendTurnToSession(session, {
+          role: "assistant",
+          type: "message",
+          status: 200,
+          content: cachedBody,
+          metadata: {
+            termination: "completion",
+            semanticCacheHit: true,
+            similarity: semanticLookupResult.similarity,
+          },
+        });
+
+        return {
+          status: 200,
+          body: cachedBody,
+          terminationReason: "completion",
+        };
+      }
+    } catch (err) {
+      logger.debug({ error: err.message }, "Semantic cache lookup failed, continuing without");
+    }
+  }
+
+  // NOTE: Tool loop guard moved to BEFORE sanitizePayload() since sanitization
+  // removes conversation history (consecutive same-role messages)
+
   const loopResult = await runAgentLoop({
     cleanPayload,
     requestedModel,
@@ -3144,6 +3369,17 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     cacheKey,
     providerType: config.modelProvider?.type ?? "databricks",
   });
+
+  // Store successful responses in semantic cache for future fuzzy matching
+  if (semanticCache.isEnabled() && semanticLookupResult && !semanticLookupResult.hit) {
+    if (loopResult.response?.status === 200 && loopResult.response?.body) {
+      try {
+        await semanticCache.store(semanticLookupResult, loopResult.response.body);
+      } catch (err) {
+        logger.debug({ error: err.message }, "Semantic cache store failed");
+      }
+    }
+  }
 
   return loopResult.response;
 }

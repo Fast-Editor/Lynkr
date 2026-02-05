@@ -59,7 +59,9 @@
       "Bash(claude mcp remove:*)",
       "Bash(claude mcp add-json:*)",
       "WebFetch(domain:ui.shadcn.com)",
-      "WebFetch(domain:en.wikipedia.org)"
+      "WebFetch(domain:en.wikipedia.org)",
+      "Bash(node:*)",
+      "Bash(wc:*)"
     ],
     "deny": [],
     "ask": []

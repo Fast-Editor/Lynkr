@@ -4,6 +4,17 @@ const { truncateToolOutput } = require("./truncate");
 const registry = new Map();
 const registryLowercase = new Map();
 
+// Lazy loader reference (set after module load to avoid circular deps)
+let lazyLoader = null;
+
+/**
+ * Set the lazy loader module (called from server.js)
+ * @param {Object} loader - The lazy-loader module
+ */
+function setLazyLoader(loader) {
+  lazyLoader = loader;
+}
+
 const TOOL_ALIASES = {
   bash: "shell",
   shell: "shell",
@@ -189,6 +200,30 @@ async function executeToolCall(call, context = {}) {
       normalisedCall.name = lowerEntry.original;
     }
   }
+
+  // Lazy loading: If tool not found, try to load its category
+  if (!registered && lazyLoader) {
+    const loaded = lazyLoader.loadCategoryForTool(normalisedCall.name);
+    if (loaded) {
+      // Retry lookup after loading
+      registered = registry.get(normalisedCall.name);
+      if (!registered) {
+        const aliasTarget = TOOL_ALIASES[normalisedCall.name.toLowerCase()];
+        if (aliasTarget) {
+          registered = registry.get(aliasTarget);
+          if (registered) normalisedCall.name = aliasTarget;
+        }
+      }
+      if (!registered) {
+        const lowerEntry = registryLowercase.get(normalisedCall.name.toLowerCase());
+        if (lowerEntry) {
+          registered = registry.get(lowerEntry.original);
+          normalisedCall.name = lowerEntry.original;
+        }
+      }
+    }
+  }
+
   if (!registered) {
     const content = coerceString({
       error: "tool_not_registered",
@@ -263,5 +298,6 @@ module.exports = {
   getTool,
   listTools,
   executeToolCall,
+  setLazyLoader,
   TOOL_ALIASES,
 };
