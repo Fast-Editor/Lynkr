@@ -308,6 +308,17 @@ async function invokeOllama(body) {
     },
   };
 
+  // Add keep_alive if configured (controls how long model stays loaded)
+  // Accepts: duration strings ("10m", "24h"), numbers (seconds), -1 (permanent), 0 (immediate unload)
+  if (config.ollama.keepAlive !== undefined) {
+    const keepAlive = config.ollama.keepAlive;
+    // Parse as number if it looks like one, otherwise use string
+    ollamaBody.keep_alive = /^-?\d+$/.test(keepAlive)
+      ? parseInt(keepAlive, 10)
+      : keepAlive;
+    logger.debug({ keepAlive: ollamaBody.keep_alive }, "Ollama keep_alive configured");
+  }
+
   // Inject standard tools if client didn't send any (passthrough mode)
   let toolsToSend = body.tools;
   let toolsInjected = false;
