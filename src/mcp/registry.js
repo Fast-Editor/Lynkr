@@ -213,13 +213,3 @@ module.exports = {
   getClient,
   listClients,
 };
-
-module.exports = {
-  registerServer,
-  listServers,
-  getServer,
-  clearServers,
-  loadFromManifest,
-  loadConfiguredServers,
-  hasLoadedManifest,
-};

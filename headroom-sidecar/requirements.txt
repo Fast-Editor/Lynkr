@@ -1,0 +1,14 @@
+# Headroom Sidecar Dependencies
+
+# Core framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+
+# Headroom SDK
+headroom-ai>=0.1.0
+
+# Optional: LLMLingua support (uncomment for ML compression)
+# llmlingua>=0.2.0
+# torch>=2.0.0
+# transformers>=4.36.0

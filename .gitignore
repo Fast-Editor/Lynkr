@@ -1,6 +1,7 @@
 node_modules/
 data/
 *.db
+logs/
 npm-debug.log
 SUBAGENT_IMPLEMENTATION_PLAN_V2.md
 .DS_Store
@@ -21,5 +22,5 @@ ROUTER_COMPARISON.md
 TIER_ROUTING_PLAN.md
 docs/GSD_LEARNINGS.md
 LYNKR-TUI-PLAN.md
-HEADROOM_PORT_PLAN.md
-HEADROOM_SIDECAR_PLAN.md
+PLAN-worker-thread-pool.md
+PLAN-per-client-model-routing.md

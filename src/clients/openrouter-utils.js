@@ -166,7 +166,8 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
       }
 
       if (!foundMatchingToolCall) {
-        logger.warn({
+        // Log but DON'T remove - the tool result may be valid but IDs mismatched due to format conversion
+        logger.debug({
           messageIndex: i,
           toolCallId: msg.tool_call_id,
           precedingMessages: converted.slice(Math.max(0, i - 3), i).map(m => ({
@@ -174,11 +175,8 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
             hasToolCalls: !!m.tool_calls,
             toolCallIds: m.tool_calls?.map(tc => tc.id)
           }))
-        }, "Orphaned tool message detected - removing from sequence");
-
-        // Remove the orphaned tool message
-        converted.splice(i, 1);
-        i--; // Adjust index after removal
+        }, "Tool message without matching tool_call - keeping for API to validate");
+        // Don't remove - let the API handle validation
       }
     }
   }

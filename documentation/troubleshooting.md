@@ -760,29 +760,58 @@ Restart Lynkr after configuration.
 
 ---
 
-### Slow First Request
+### Slow First Request / Cold Start Warning
 
-**Issue:** First request after startup is very slow
+**Issue:** First request is slow, or you see this warning in logs:
+```
+WARN: Potential cold start detected - duration: 14088
+```
 
-**This is normal:**
-- Model loading (Ollama/llama.cpp): 1-5 seconds
-- Cold start (cloud providers): 2-5 seconds
-- Subsequent requests are fast
+**Why this happens:**
+- **Ollama/llama.cpp**: Model loading into memory (10-30+ seconds for large models)
+- **Cloud providers**: Cold start initialization (2-5 seconds)
+- Ollama unloads models after 5 minutes of inactivity by default
 
-**Solutions:**
+**Solutions for Ollama:**
 
-1. **Keep Ollama models loaded:**
+1. **Keep models loaded with OLLAMA_KEEP_ALIVE** (Recommended):
    ```bash
-   # After starting ollama serve, keep it running
+   # macOS - set environment variable for Ollama
+   launchctl setenv OLLAMA_KEEP_ALIVE "24h"
+   # Then restart Ollama app
+
+   # Linux (systemd)
+   sudo systemctl edit ollama
+   # Add: Environment="OLLAMA_KEEP_ALIVE=24h"
+   sudo systemctl daemon-reload && sudo systemctl restart ollama
+
+   # Docker
+   docker run -e OLLAMA_KEEP_ALIVE=24h -d ollama/ollama
    ```
 
-2. **Warm up after startup:**
+2. **Per-request keep alive:**
+   ```bash
+   curl http://localhost:11434/api/generate \
+     -d '{"model":"llama3.1:8b","keep_alive":"24h"}'
+   ```
+
+3. **Warm up after startup:**
    ```bash
    # Send test request after starting Lynkr
    curl http://localhost:8081/v1/messages \
      -H "Content-Type: application/json" \
      -d '{"model":"claude-3-5-sonnet","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
    ```
+
+**Keep Alive Values:**
+| Value | Behavior |
+|-------|----------|
+| `5m` | Default - unload after 5 minutes idle |
+| `24h` | Keep loaded for 24 hours |
+| `-1` | Never unload |
+| `0` | Unload immediately |
+
+**Note:** The cold start warning is informational - it helps identify latency issues but is not an error.
 
 ---
 

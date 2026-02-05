@@ -10,6 +10,60 @@
 const logger = require("../logger");
 
 /**
+ * Map client tool names back to Lynkr tool names
+ * Used when processing incoming function_call messages from various AI coding clients
+ * Supports: Codex CLI, Cline (VS Code), Continue.dev
+ * @param {string} clientToolName - Client tool name (e.g., shell_command, execute_command, read_file)
+ * @returns {string} Lynkr tool name (e.g., Bash, Read)
+ */
+function mapClientToolToLynkr(clientToolName) {
+  const reverseMapping = {
+    // ============== CODEX CLI ==============
+    "shell_command": "Bash",
+    "read_file": "Read",
+    "write_file": "Write",
+    "apply_patch": "Edit",
+    "glob_file_search": "Glob",
+    "rg": "Grep",
+    "list_dir": "ListDir",
+
+    // ============== CLINE (VS Code) ==============
+    "execute_command": "Bash",
+    // "read_file" already mapped above
+    "write_to_file": "Write",
+    "replace_in_file": "Edit",
+    "search_files": "Grep",
+    "list_files": "ListDir",
+
+    // ============== KILO CODE (Fork of Cline) ==============
+    // Most tools same as Cline, but apply_diff is different
+    "apply_diff": "Edit",
+    "codebase_search": "Grep",
+    "delete_file": "Bash",  // No direct equivalent, use Bash rm
+    "browser_action": "WebFetch",  // Approximate mapping
+
+    // ============== CONTINUE.DEV ==============
+    "run_terminal_command": "Bash",
+    // "read_file" already mapped above
+    "create_new_file": "Write",
+    "edit_existing_file": "Edit",
+    "exact_search": "Grep",
+    "read_currently_open_file": "Read",
+
+    // ============== Lowercase Lynkr tools (pass-through) ==============
+    "bash": "Bash",
+    "read": "Read",
+    "write": "Write",
+    "edit": "Edit",
+    "glob": "Glob",
+    "grep": "Grep",
+    "listdir": "ListDir"
+  };
+
+  return reverseMapping[clientToolName] || clientToolName;
+}
+
+/**
  * Convert Responses API request to Chat Completions format
  * @param {Object} responsesRequest - Responses API format request
  * @returns {Object} Chat Completions format request
@@ -50,19 +104,64 @@ function convertResponsesToChat(responsesRequest) {
     messages = input
       .filter(msg => {
         // Keep messages that have valid role and either content or tool_calls
-        const isValid = msg &&
-                       msg.role &&
-                       (msg.content || msg.tool_calls || msg.tool_call_id);
+        // Also keep function_call_output type messages (tool results)
+        const hasRole = msg && msg.role;
+        const hasContent = msg && (msg.content || msg.tool_calls || msg.tool_call_id);
+        const isFunctionCallOutput = msg && msg.type === 'function_call_output';
+        const isFunctionCall = msg && msg.type === 'function_call';
 
-        if (!isValid) {
-          logger.warn({
-            msg: msg ? {role: msg.role, hasContent: !!msg.content, keys: Object.keys(msg)} : null
-          }, "Filtering out invalid message");
+        const isValid = hasRole && hasContent || isFunctionCallOutput || isFunctionCall;
+
+        if (!isValid && msg) {
+          logger.debug({
+            msg: {
+              role: msg.role,
+              type: msg.type,
+              hasContent: !!msg.content,
+              hasOutput: !!msg.output,
+              hasCallId: !!msg.call_id,
+              keys: Object.keys(msg),
+              rawMsg: JSON.stringify(msg).substring(0, 300)
+            }
+          }, "Filtering out message without role+content or function type");
         }
 
         return isValid;
       })
       .map(msg => {
+        // Handle function_call_output (tool results from client)
+        if (msg.type === 'function_call_output') {
+          return {
+            role: 'tool',
+            tool_call_id: msg.call_id,
+            content: msg.output || ''
+          };
+        }
+
+        // Handle function_call (tool calls - convert to assistant with tool_calls)
+        if (msg.type === 'function_call') {
+          // Map client tool names back to Lynkr names for model consistency
+          // Supports Codex CLI, Cline, Continue.dev
+          const lynkrToolName = mapClientToolToLynkr(msg.name);
+          logger.debug({
+            originalName: msg.name,
+            mappedName: lynkrToolName
+          }, "Mapping client tool name to Lynkr");
+
+          return {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: msg.call_id || msg.id,
+              type: 'function',
+              function: {
+                name: lynkrToolName,
+                arguments: typeof msg.arguments === 'string' ? msg.arguments : JSON.stringify(msg.arguments || {})
+              }
+            }]
+          };
+        }
+
         // Clean up message structure - only keep valid OpenAI Chat Completions fields
         let content = msg.content || null;
 

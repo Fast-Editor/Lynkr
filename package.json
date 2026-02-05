@@ -1,6 +1,6 @@
 {
   "name": "lynkr",
-  "version": "5.0.0",
+  "version": "6.0.1",
   "description": "Self-hosted Claude Code & Cursor proxy with Databricks,AWS BedRock,Azure  adapters, openrouter, Ollama,llamacpp,LM Studio, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
@@ -8,7 +8,9 @@
     "lynkr-setup": "./scripts/setup.js"
   },
   "scripts": {
-    "start": "node index.js",
+    "prestart": "docker compose --profile headroom up -d headroom 2>/dev/null || echo 'Headroom container not started (Docker may not be running)'",
+    "start": "node index.js 2>&1 | npx pino-pretty --sync",
+    "stop": "docker compose --profile headroom down",
     "dev": "nodemon index.js",
     "lint": "eslint src index.js",
     "test": "npm run test:unit && npm run test:performance",
@@ -46,6 +48,7 @@
     "better-sqlite3": "^12.6.2",
     "compression": "^1.7.4",
     "diff": "^5.2.0",
+    "dockerode": "^4.0.2",
     "dotenv": "^16.4.5",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",

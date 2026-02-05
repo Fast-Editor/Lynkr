@@ -176,27 +176,39 @@ const STANDARD_TOOLS = [
   },
   {
     name: "Task",
-    description: "Launch specialized agents for complex multi-step tasks. Available agents: general-purpose (complex tasks), Explore (codebase exploration), Plan (implementation planning), claude-code-guide (Claude Code documentation).",
+    description: `Launch a specialized agent to handle complex, multi-step tasks autonomously.
+
+YOU MUST USE THIS TOOL WHEN the user asks to:
+- "explore", "dig into", "understand", or "analyze" a codebase → use subagent_type="Explore"
+- "plan", "design", or "architect" something → use subagent_type="Plan"
+- perform complex multi-file research or investigation → use subagent_type="general-purpose"
+
+AVAILABLE AGENTS:
+- Explore: Fast codebase exploration using Glob, Grep, Read. Use for searching, finding files, understanding project structure.
+- Plan: Implementation planning and architecture design. Use for planning features or refactoring.
+- general-purpose: Complex multi-step tasks with all tools available.
+
+EXAMPLE: User says "explore this project" → Call Task with subagent_type="Explore", prompt="Explore the codebase structure, find main entry points, read key files, and summarize what this project does"`,
     input_schema: {
       type: "object",
       properties: {
         description: {
           type: "string",
-          description: "A short (3-5 word) description of the task"
+          description: "A short (3-5 word) description of the task, e.g., 'Explore project structure'"
         },
         prompt: {
           type: "string",
-          description: "The detailed task for the agent to perform"
+          description: "Detailed instructions for the agent. Be specific about what to find, read, or analyze."
         },
         subagent_type: {
           type: "string",
           enum: ["general-purpose", "Explore", "Plan", "claude-code-guide"],
-          description: "The type of specialized agent to use"
+          description: "Agent type: Explore (search/read codebase), Plan (design/architecture), general-purpose (complex research)"
         },
         model: {
           type: "string",
           enum: ["sonnet", "opus", "haiku"],
-          description: "Optional model to use (haiku for quick tasks, sonnet for balanced, opus for complex)"
+          description: "Optional model override. Default is appropriate for each agent type."
         }
       },
       required: ["description", "prompt", "subagent_type"]

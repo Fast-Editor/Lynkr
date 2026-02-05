@@ -255,7 +255,18 @@ async function invokeOllama(body) {
 
   // Convert Anthropic messages format to Ollama format
   // Ollama expects content as string, not content blocks array
-  const convertedMessages = (body.messages || []).map(msg => {
+  const convertedMessages = [];
+
+  // Handle system prompt (same pattern as other providers)
+  if (body.system && typeof body.system === "string" && body.system.trim().length > 0) {
+    convertedMessages.push({
+      role: "system",
+      content: body.system.trim()
+    });
+  }
+
+  // Add user/assistant messages
+  (body.messages || []).forEach(msg => {
     let content = msg.content;
 
     // Convert content blocks array to simple string
@@ -266,10 +277,10 @@ async function invokeOllama(body) {
         .join('\n');
     }
 
-    return {
+    convertedMessages.push({
       role: msg.role,
       content: content || ''
-    };
+    });
   });
 
   // FIX: Deduplicate consecutive messages with same role (Ollama may reject this)
@@ -318,43 +329,53 @@ async function invokeOllama(body) {
       : keepAlive;
     logger.debug({ keepAlive: ollamaBody.keep_alive }, "Ollama keep_alive configured");
   }
+  
+  // Check if model supports tools FIRST (before wasteful injection)
+  const supportsTools = await checkOllamaToolSupport(config.ollama.model);
 
   // Inject standard tools if client didn't send any (passthrough mode)
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
   const injectToolsOllama = process.env.INJECT_TOOLS_OLLAMA !== "false";
-  if (injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
-    logger.info({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (Ollama) ===");
-  } else if (!injectToolsOllama) {
-    logger.info({}, "Tool injection disabled for Ollama (INJECT_TOOLS_OLLAMA=false)");
-  }
-
-  // Check if model supports tools
-  const supportsTools = await checkOllamaToolSupport(config.ollama.model);
 
   if (!supportsTools) {
-    logger.warn({
-      model: config.ollama.model,
-      toolCount: toolsToSend?.length || 0
-    }, "Model does not support tool calling - stripping tools from request");
+    // Model doesn't support tools - don't inject them
+    toolsToSend = null;
+  } else if (injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+    // Model supports tools and none provided - inject them
+    toolsToSend = STANDARD_TOOLS;
+    toolsInjected = true;
   }
 
   // Add tools if present AND model supports them
   if (supportsTools && Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     ollamaBody.tools = convertAnthropicToolsToOllama(toolsToSend);
-    logger.info({
-      toolCount: toolsToSend.length,
-      toolNames: toolsToSend.map(t => t.name),
-      toolsInjected
-    }, "Sending tools to Ollama");
   }
+
+  // Single consolidated log message for all cases (easy to grep and compare across models)
+  const toolCount = (supportsTools && Array.isArray(toolsToSend)) ? toolsToSend.length : 0;
+  let logMessage;
+
+  if (!supportsTools) {
+    logMessage = `Tools not supported (0 tools)`;
+  } else if (toolsInjected) {
+    logMessage = `injected ${toolCount} tools`;
+  } else if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+    logMessage = `Using client-provided tools (${toolCount} tools)`;
+  } else if (!injectToolsOllama) {
+    logMessage = `Tool injection disabled (0 tools)`;
+  } else {
+    logMessage = `No tools (0 tools)`;
+  }
+
+  logger.info({
+    model: config.ollama.model,
+    toolCount,
+    toolsInjected,
+    supportsTools,
+    toolNames: (Array.isArray(toolsToSend) && toolsToSend.length > 0) ? toolsToSend.map(t => t.name) : []
+  }, `=== Ollama STANDARD TOOLS INJECTION for ${config.ollama.model} === ${logMessage}`);
 
   return performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
 }
@@ -521,15 +542,271 @@ async function invokeAzureOpenAI(body) {
     return performJsonRequest(endpoint, { headers, body: azureBody }, "Azure OpenAI");
   }
   else if (format === "responses") {
-    azureBody.max_completion_tokens = azureBody.max_tokens;
-    delete azureBody.max_tokens;
-    delete azureBody.temperature;
-    delete azureBody.top_p;
-    return performJsonRequest(endpoint, { headers, body: azureBody }, "Azure OpenAI");
+    // Responses API uses 'input' instead of 'messages' and flat tool format
+    // Convert tools from Chat Completions format to Responses API format
+    const responsesTools = azureBody.tools?.map(tool => {
+      if (tool.type === "function" && tool.function) {
+        // Flatten: {type:"function", function:{name,description,parameters}} -> {type:"function", name, description, parameters}
+        return {
+          type: "function",
+          name: tool.function.name,
+          description: tool.function.description,
+          parameters: tool.function.parameters
+        };
+      }
+      return tool;
+    });
+
+    // Convert messages to Responses API input format
+    // Responses API uses different structure for tool calls and results
+    const responsesInput = [];
+    // Track function call IDs for matching with outputs
+    const pendingCallIds = [];
+
+    for (const msg of azureBody.messages) {
+      if (msg.role === "system") {
+        // System messages become developer messages
+        responsesInput.push({
+          type: "message",
+          role: "developer",
+          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        });
+      } else if (msg.role === "user") {
+        // Check if content contains tool_result blocks (Anthropic format)
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === "tool_result") {
+              // Convert tool_result to function_call_output
+              // Use tool_use_id if available, otherwise pop from pending call IDs
+              const callId = block.tool_use_id || pendingCallIds.shift() || `call_${Date.now()}`;
+              responsesInput.push({
+                type: "function_call_output",
+                call_id: callId,
+                output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || "")
+              });
+            } else if (block.type === "text") {
+              responsesInput.push({
+                type: "message",
+                role: "user",
+                content: block.text || ""
+              });
+            }
+          }
+        } else {
+          responsesInput.push({
+            type: "message",
+            role: "user",
+            content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+          });
+        }
+      } else if (msg.role === "assistant") {
+        // Assistant messages - handle tool_calls (OpenAI format) and tool_use blocks (Anthropic format)
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          // OpenAI format: tool_calls array
+          for (const tc of msg.tool_calls) {
+            const callId = tc.id || `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            pendingCallIds.push(callId);
+            responsesInput.push({
+              type: "function_call",
+              call_id: callId,
+              name: tc.function?.name || tc.name,
+              arguments: typeof tc.function?.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function?.arguments || {})
+            });
+          }
+        }
+        // Handle content - could be string, array with tool_use blocks, or array with text blocks
+        if (Array.isArray(msg.content)) {
+          // Anthropic format: content is array of blocks
+          for (const block of msg.content) {
+            if (block.type === "tool_use") {
+              const callId = block.id || `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+              pendingCallIds.push(callId);
+              responsesInput.push({
+                type: "function_call",
+                call_id: callId,
+                name: block.name,
+                arguments: typeof block.input === 'string' ? block.input : JSON.stringify(block.input || {})
+              });
+            } else if (block.type === "text" && block.text) {
+              responsesInput.push({
+                type: "message",
+                role: "assistant",
+                content: block.text
+              });
+            }
+          }
+        } else if (msg.content) {
+          // String content
+          responsesInput.push({
+            type: "message",
+            role: "assistant",
+            content: msg.content
+          });
+        }
+      } else if (msg.role === "tool") {
+        // Tool results become function_call_output
+        // Use tool_call_id if available, otherwise pop from pending call IDs
+        const callId = msg.tool_call_id || pendingCallIds.shift() || `call_${Date.now()}`;
+        responsesInput.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        });
+      }
+    }
+
+    const responsesBody = {
+      input: responsesInput,
+      model: azureBody.model,
+      max_output_tokens: azureBody.max_tokens,
+      tools: responsesTools,
+      tool_choice: azureBody.tool_choice,
+      stream: false
+    };
+    logger.info({
+      format: "responses",
+      inputCount: responsesBody.input?.length,
+      model: responsesBody.model,
+      hasTools: !!responsesBody.tools
+    }, "Using Responses API format");
+
+    const result = await performJsonRequest(endpoint, { headers, body: responsesBody }, "Azure OpenAI Responses");
+
+    // Convert Responses API response to Chat Completions format
+    if (result.ok && result.json?.output) {
+      const outputArray = result.json.output || [];
+
+      // Find message output (contains text content)
+      const messageOutput = outputArray.find(o => o.type === "message");
+      const textContent = messageOutput?.content?.find(c => c.type === "output_text")?.text || "";
+
+      // Find function_call outputs (tool calls are separate items in output array)
+      const toolCalls = outputArray
+        .filter(o => o.type === "function_call")
+        .map(tc => ({
+          id: tc.call_id || tc.id || `call_${Date.now()}`,
+          type: "function",
+          function: {
+            name: tc.name,
+            arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments || {})
+          }
+        }));
+
+      logger.info({
+        outputTypes: outputArray.map(o => o.type),
+        hasMessage: !!messageOutput,
+        toolCallCount: toolCalls.length,
+        toolCallNames: toolCalls.map(tc => tc.function.name)
+      }, "Parsing Responses API output");
+
+      // Convert to Chat Completions format
+      result.json = {
+        id: result.json.id,
+        object: "chat.completion",
+        created: result.json.created_at,
+        model: result.json.model,
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: textContent,
+            tool_calls: toolCalls.length > 0 ? toolCalls : undefined
+          },
+          finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop"
+        }],
+        usage: result.json.usage
+      };
+
+      logger.info({
+        convertedContent: textContent?.substring(0, 100),
+        hasToolCalls: toolCalls.length > 0,
+        toolCallCount: toolCalls.length
+      }, "Converted Responses API to Chat Completions format");
+
+      // Now convert from Chat Completions format to Anthropic format
+      const anthropicJson = convertOpenAIToAnthropic(result.json);
+      logger.info({
+        anthropicContentTypes: anthropicJson.content?.map(c => c.type),
+        stopReason: anthropicJson.stop_reason
+      }, "Converted to Anthropic format");
+
+      return {
+        ok: result.ok,
+        status: result.status,
+        json: anthropicJson,
+        text: JSON.stringify(anthropicJson),
+        contentType: "application/json",
+        headers: result.headers,
+      };
+    }
+
+    return result;
   }
   else {
     throw new Error(`Unsupported Azure OpenAI endpoint format: ${format}`);
   }
+}
+
+/**
+ * Convert Azure Responses API response to Anthropic format
+ */
+function convertResponsesAPIToAnthropic(response, model) {
+  const content = [];
+  const outputArray = response.output || [];
+
+  // Extract text content from message output
+  const messageOutput = outputArray.find(o => o.type === "message");
+  if (messageOutput?.content) {
+    for (const item of messageOutput.content) {
+      if (item.type === "output_text" && item.text) {
+        content.push({ type: "text", text: item.text });
+      }
+    }
+  }
+
+  // Extract tool calls from function_call outputs
+  const toolCalls = outputArray
+    .filter(o => o.type === "function_call")
+    .map(tc => ({
+      type: "tool_use",
+      id: tc.call_id || tc.id || `call_${Date.now()}`,
+      name: tc.name,
+      input: typeof tc.arguments === 'string' ? JSON.parse(tc.arguments || "{}") : (tc.arguments || {})
+    }));
+
+  content.push(...toolCalls);
+
+  // Handle reasoning_content for thinking models
+  if (content.length === 0 && response.reasoning_content) {
+    content.push({ type: "text", text: response.reasoning_content });
+  }
+
+  // Ensure at least empty text if no content
+  if (content.length === 0) {
+    content.push({ type: "text", text: "" });
+  }
+
+  // Determine stop reason
+  let stopReason = "end_turn";
+  if (toolCalls.length > 0) {
+    stopReason = "tool_use";
+  } else if (response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens") {
+    stopReason = "max_tokens";
+  }
+
+  return {
+    id: response.id || `msg_${Date.now()}`,
+    type: "message",
+    role: "assistant",
+    content,
+    model: model || response.model,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: {
+      input_tokens: response.usage?.input_tokens || 0,
+      output_tokens: response.usage?.output_tokens || 0,
+    }
+  };
 }
 
 async function invokeOpenAI(body) {
@@ -1188,9 +1465,9 @@ function convertOpenAIToAnthropic(response) {
   const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
   if (message.content) {
     content.push({ type: "text", text: message.content });
-  } else if (message.reasoning_content && !message.content && !hasToolCalls) {
-    // Z.AI returns reasoning in reasoning_content - if no final content AND no tool calls, use a placeholder
-    content.push({ type: "text", text: "[Model is still thinking - increase max_tokens for complete response]" });
+  } else if (message.reasoning_content && !message.content) {
+    // Thinking models (Kimi-K2, o1, etc.) return response in reasoning_content
+    content.push({ type: "text", text: message.reasoning_content });
   }
 
   // Convert tool calls

@@ -46,6 +46,7 @@ class PromptCache {
         ? options.pruneIntervalMs
         : 300000;
     this.pruneTimer = null;
+    this.isClosed = false; // Track if database has been closed
 
     // Initialize persistent cache database
     if (this.enabled) {
@@ -169,16 +170,21 @@ class PromptCache {
   }
 
   pruneExpired() {
-    if (!this.enabled || !this.db) return;
+    if (!this.enabled || !this.db || this.isClosed) return;
     if (this.ttlMs <= 0) return;
     try {
+      // Check if database is still open
+      if (!this.db.open) return;
       const now = Date.now();
       const result = this.deleteExpiredStmt.run(now);
       if (result.changes > 0) {
         logger.debug({ deleted: result.changes }, "Pruned expired cache entries");
       }
     } catch (error) {
-      logger.warn({ err: error }, "Failed to prune expired cache entries");
+      // Only log if not a "connection closed" error during shutdown
+      if (!this.isClosed) {
+        logger.warn({ err: error }, "Failed to prune expired cache entries");
+      }
     }
   }
 
@@ -361,15 +367,27 @@ class PromptCache {
 
   // Cleanup method
   close() {
-    this.stopPruning(); // Stop pruning first
-    if (this.db) {
+    if (this.isClosed) return; // Already closed
+    this.stopPruning(); // Stop pruning timer first
+
+    if (this.db && this.db.open) {
       try {
-        this.pruneExpired(); // Final cleanup
+        // Final prune before closing (direct call, not through pruneExpired)
+        if (this.ttlMs > 0 && this.deleteExpiredStmt) {
+          const result = this.deleteExpiredStmt.run(Date.now());
+          if (result.changes > 0) {
+            logger.debug({ deleted: result.changes }, "Final cache prune on close");
+          }
+        }
         this.db.close();
+        logger.debug("Prompt cache database closed");
       } catch (error) {
-        logger.warn({ err: error }, "Failed to close cache database");
+        // Ignore errors during shutdown - database may already be closed
+        logger.debug({ err: error }, "Cache database close (may already be closed)");
       }
     }
+
+    this.isClosed = true; // Mark as closed after cleanup
   }
 }
 

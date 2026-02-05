@@ -207,6 +207,40 @@ const smartToolSelectionTokenBudget = Number.parseInt(
   10
 );
 
+// Headroom sidecar configuration
+const headroomEnabled = process.env.HEADROOM_ENABLED === "true";
+const headroomEndpoint = process.env.HEADROOM_ENDPOINT?.trim() || "http://localhost:8787";
+const headroomTimeoutMs = Number.parseInt(process.env.HEADROOM_TIMEOUT_MS ?? "5000", 10);
+const headroomMinTokens = Number.parseInt(process.env.HEADROOM_MIN_TOKENS ?? "500", 10);
+const headroomMode = (process.env.HEADROOM_MODE ?? "optimize").toLowerCase();
+
+// Headroom Docker container configuration
+const headroomDockerEnabled = process.env.HEADROOM_DOCKER_ENABLED !== "false"; // default true when headroom enabled
+const headroomDockerImage = process.env.HEADROOM_DOCKER_IMAGE ?? "lynkr/headroom-sidecar:latest";
+const headroomDockerContainerName = process.env.HEADROOM_DOCKER_CONTAINER_NAME ?? "lynkr-headroom";
+const headroomDockerPort = Number.parseInt(process.env.HEADROOM_DOCKER_PORT ?? "8787", 10);
+const headroomDockerMemoryLimit = process.env.HEADROOM_DOCKER_MEMORY_LIMIT ?? "512m";
+const headroomDockerCpuLimit = process.env.HEADROOM_DOCKER_CPU_LIMIT ?? "1.0";
+const headroomDockerRestartPolicy = process.env.HEADROOM_DOCKER_RESTART_POLICY ?? "unless-stopped";
+const headroomDockerNetwork = process.env.HEADROOM_DOCKER_NETWORK ?? null;
+const headroomDockerBuildContext = process.env.HEADROOM_DOCKER_BUILD_CONTEXT ?? "./headroom-sidecar";
+const headroomDockerAutoBuild = process.env.HEADROOM_DOCKER_AUTO_BUILD === "true";
+
+// Headroom transform configuration (passed to sidecar)
+const headroomSmartCrusher = process.env.HEADROOM_SMART_CRUSHER !== "false";
+const headroomSmartCrusherMinTokens = Number.parseInt(process.env.HEADROOM_SMART_CRUSHER_MIN_TOKENS ?? "200", 10);
+const headroomSmartCrusherMaxItems = Number.parseInt(process.env.HEADROOM_SMART_CRUSHER_MAX_ITEMS ?? "15", 10);
+const headroomToolCrusher = process.env.HEADROOM_TOOL_CRUSHER !== "false";
+const headroomCacheAligner = process.env.HEADROOM_CACHE_ALIGNER !== "false";
+const headroomRollingWindow = process.env.HEADROOM_ROLLING_WINDOW !== "false";
+const headroomKeepTurns = Number.parseInt(process.env.HEADROOM_KEEP_TURNS ?? "3", 10);
+const headroomCcrEnabled = process.env.HEADROOM_CCR !== "false";
+const headroomCcrTtl = Number.parseInt(process.env.HEADROOM_CCR_TTL ?? "300", 10);
+const headroomLlmlingua = process.env.HEADROOM_LLMLINGUA === "true";
+const headroomLlmlinguaDevice = process.env.HEADROOM_LLMLINGUA_DEVICE ?? "auto";
+const headroomProvider = process.env.HEADROOM_PROVIDER ?? "anthropic";
+const headroomLogLevel = process.env.HEADROOM_LOG_LEVEL ?? "info";
+
 // Only require Databricks credentials if it's the primary provider or used as fallback
 if (modelProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
   throw new Error("Set DATABRICKS_API_BASE and DATABRICKS_API_KEY before starting the proxy.");
@@ -454,7 +488,40 @@ const agentsDefaultModel = process.env.AGENTS_DEFAULT_MODEL ?? "haiku";
 const agentsMaxSteps = Number.parseInt(process.env.AGENTS_MAX_STEPS ?? "15", 10);
 const agentsTimeout = Number.parseInt(process.env.AGENTS_TIMEOUT ?? "120000", 10);
 
-const config = {
+// LLM Audit logging configuration
+const auditEnabled = process.env.LLM_AUDIT_ENABLED === "true"; // default false
+const auditLogFile = process.env.LLM_AUDIT_LOG_FILE ?? path.join(process.cwd(), "logs", "llm-audit.log");
+const auditMaxContentLength = Number.parseInt(process.env.LLM_AUDIT_MAX_CONTENT_LENGTH ?? "5000", 10); // Legacy fallback
+const auditMaxSystemLength = Number.parseInt(process.env.LLM_AUDIT_MAX_SYSTEM_LENGTH ?? "2000", 10);
+const auditMaxUserLength = Number.parseInt(process.env.LLM_AUDIT_MAX_USER_LENGTH ?? "3000", 10);
+const auditMaxResponseLength = Number.parseInt(process.env.LLM_AUDIT_MAX_RESPONSE_LENGTH ?? "3000", 10);
+const auditMaxFiles = Number.parseInt(process.env.LLM_AUDIT_MAX_FILES ?? "30", 10);
+const auditMaxSize = process.env.LLM_AUDIT_MAX_SIZE ?? "100M";
+const auditAnnotations = process.env.LLM_AUDIT_ANNOTATIONS !== "false"; // default true
+
+// LLM Audit deduplication configuration
+const auditDeduplicationEnabled = process.env.LLM_AUDIT_DEDUP_ENABLED !== "false"; // default true
+const auditDeduplicationDictPath =
+  process.env.LLM_AUDIT_DEDUP_DICT_PATH ?? path.join(process.cwd(), "logs", "llm-audit-dictionary.jsonl");
+const auditDeduplicationMinSize = Number.parseInt(process.env.LLM_AUDIT_DEDUP_MIN_SIZE ?? "500", 10);
+const auditDeduplicationCacheSize = Number.parseInt(process.env.LLM_AUDIT_DEDUP_CACHE_SIZE ?? "100", 10);
+const auditDeduplicationSanitize = process.env.LLM_AUDIT_DEDUP_SANITIZE !== "false"; // default true
+const auditDeduplicationSessionCache = process.env.LLM_AUDIT_DEDUP_SESSION_CACHE !== "false"; // default true
+
+// Oversized Error Logging Configuration
+const oversizedErrorLoggingEnabled = process.env.OVERSIZED_ERROR_LOGGING_ENABLED !== "false"; // default true
+const oversizedErrorThreshold = Number.parseInt(process.env.OVERSIZED_ERROR_THRESHOLD ?? "200", 10);
+const oversizedErrorLogDir =
+	process.env.OVERSIZED_ERROR_LOG_DIR ?? path.join(process.cwd(), "logs", "oversized-errors");
+const oversizedErrorMaxFiles = Number.parseInt(process.env.OVERSIZED_ERROR_MAX_FILES ?? "100", 10);
+
+// Worker Thread Pool Configuration
+const workerPoolEnabled = process.env.WORKER_POOL_ENABLED !== "false"; // default true
+const workerPoolSize = Number.parseInt(process.env.WORKER_POOL_SIZE ?? "0", 10); // 0 = auto (CPU cores - 1)
+const workerTaskTimeoutMs = Number.parseInt(process.env.WORKER_TASK_TIMEOUT_MS ?? "5000", 10);
+const workerOffloadThresholdBytes = Number.parseInt(process.env.WORKER_OFFLOAD_THRESHOLD_BYTES ?? "10000", 10);
+
+var config = {
   env: process.env.NODE_ENV ?? "development",
   port: Number.isNaN(port) ? 8080 : port,
   databricks: {
@@ -524,7 +591,7 @@ const config = {
   hotReload: {
     enabled: hotReloadEnabled,
     debounceMs: Number.isNaN(hotReloadDebounceMs) ? 1000 : hotReloadDebounceMs,
-  },
+  },  
   modelProvider: {
     type: modelProvider,
     defaultModel,
@@ -568,6 +635,7 @@ const config = {
   policy: {
     maxStepsPerTurn: Number.isNaN(policyMaxSteps) ? 8 : policyMaxSteps,
     maxToolCallsPerTurn: Number.isNaN(policyMaxToolCalls) ? 12 : policyMaxToolCalls,
+    toolLoopThreshold: 1, // Max tool results before force-terminating (set to 1 because GPT-5.2 ignores stop instructions)
     disallowedTools: policyDisallowedTools,
     git: {
       allowPush: policyGitAllowPush,
@@ -626,6 +694,12 @@ const config = {
     enabled: promptCacheEnabled,
     maxEntries: Number.isNaN(promptCacheMaxEntriesRaw) ? 64 : promptCacheMaxEntriesRaw,
     ttlMs: Number.isNaN(promptCacheTtlRaw) ? 300000 : promptCacheTtlRaw,
+  },
+  semanticCache: {
+    enabled: true,  // RE-ENABLED for testing
+    similarityThreshold: 0.92,  // 92% similarity for cache hit
+    maxEntries: 500,
+    ttlMs: 3600000,  // 1 hour
   },
   agents: {
     enabled: agentsEnabled,
@@ -690,6 +764,92 @@ const config = {
     mode: smartToolSelectionMode,
     tokenBudget: smartToolSelectionTokenBudget,
     minimalMode: false,  // HARDCODED - disabled
+  },
+  headroom: {
+    enabled: headroomEnabled,
+    endpoint: headroomEndpoint,
+    timeoutMs: Number.isNaN(headroomTimeoutMs) ? 5000 : headroomTimeoutMs,
+    minTokens: Number.isNaN(headroomMinTokens) ? 500 : headroomMinTokens,
+    mode: headroomMode,
+    docker: {
+      enabled: headroomDockerEnabled,
+      image: headroomDockerImage,
+      containerName: headroomDockerContainerName,
+      port: Number.isNaN(headroomDockerPort) ? 8787 : headroomDockerPort,
+      memoryLimit: headroomDockerMemoryLimit,
+      cpuLimit: headroomDockerCpuLimit,
+      restartPolicy: headroomDockerRestartPolicy,
+      network: headroomDockerNetwork,
+      buildContext: headroomDockerBuildContext,
+      autoBuild: headroomDockerAutoBuild,
+    },
+    transforms: {
+      smartCrusher: headroomSmartCrusher,
+      smartCrusherMinTokens: Number.isNaN(headroomSmartCrusherMinTokens) ? 200 : headroomSmartCrusherMinTokens,
+      smartCrusherMaxItems: Number.isNaN(headroomSmartCrusherMaxItems) ? 15 : headroomSmartCrusherMaxItems,
+      toolCrusher: headroomToolCrusher,
+      cacheAligner: headroomCacheAligner,
+      rollingWindow: headroomRollingWindow,
+      keepTurns: Number.isNaN(headroomKeepTurns) ? 3 : headroomKeepTurns,
+    },
+    ccr: {
+      enabled: headroomCcrEnabled,
+      ttlSeconds: Number.isNaN(headroomCcrTtl) ? 300 : headroomCcrTtl,
+    },
+    llmlingua: {
+      enabled: headroomLlmlingua,
+      device: headroomLlmlinguaDevice,
+    },
+    provider: headroomProvider,
+    logLevel: headroomLogLevel,
+  },
+  security: {
+    // Content filtering
+    contentFilterEnabled: process.env.SECURITY_CONTENT_FILTER_ENABLED !== "false", // default true
+    blockOnDetection: process.env.SECURITY_BLOCK_ON_DETECTION !== "false", // default true
+
+    // Rate limiting
+    rateLimitEnabled: process.env.SECURITY_RATE_LIMIT_ENABLED !== "false", // default true
+    perIpLimit: Number.parseInt(process.env.SECURITY_PER_IP_LIMIT ?? "100", 10), // requests per minute
+    perEndpointLimit: Number.parseInt(process.env.SECURITY_PER_ENDPOINT_LIMIT ?? "1000", 10), // requests per minute
+
+    // Audit logging
+    auditLogEnabled: process.env.SECURITY_AUDIT_LOG_ENABLED !== "false", // default true
+    auditLogDir: process.env.SECURITY_AUDIT_LOG_DIR ?? path.join(process.cwd(), "logs"),
+  },
+  audit: {
+    enabled: auditEnabled,
+    logFile: auditLogFile,
+    maxContentLength: {
+      systemPrompt: Number.isNaN(auditMaxSystemLength) ? 2000 : auditMaxSystemLength,
+      userMessages: Number.isNaN(auditMaxUserLength) ? 3000 : auditMaxUserLength,
+      response: Number.isNaN(auditMaxResponseLength) ? 3000 : auditMaxResponseLength,
+    },
+    annotations: auditAnnotations,
+    rotation: {
+      maxFiles: Number.isNaN(auditMaxFiles) ? 30 : auditMaxFiles,
+      maxSize: auditMaxSize,
+    },
+    deduplication: {
+      enabled: auditDeduplicationEnabled,
+      dictionaryPath: auditDeduplicationDictPath,
+      minSize: Number.isNaN(auditDeduplicationMinSize) ? 500 : auditDeduplicationMinSize,
+      cacheSize: Number.isNaN(auditDeduplicationCacheSize) ? 100 : auditDeduplicationCacheSize,
+      sanitize: auditDeduplicationSanitize,
+      sessionCache: auditDeduplicationSessionCache,
+    },
+  },
+  oversizedErrorLogging: {
+    enabled: oversizedErrorLoggingEnabled,
+    threshold: oversizedErrorThreshold,
+    logDir: oversizedErrorLogDir,
+    maxFiles: oversizedErrorMaxFiles,
+  },
+  workerPool: {
+    enabled: workerPoolEnabled,
+    size: workerPoolSize || 0, // 0 = auto
+    taskTimeoutMs: Number.isNaN(workerTaskTimeoutMs) ? 5000 : workerTaskTimeoutMs,
+    offloadThresholdBytes: Number.isNaN(workerOffloadThresholdBytes) ? 10000 : workerOffloadThresholdBytes,
   },
 };
 
