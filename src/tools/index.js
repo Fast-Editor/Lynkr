@@ -94,6 +94,37 @@ const TOOL_ALIASES = {
   // Glob: "workspace_list",
 };
 
+/**
+ * Recursively parse string values that look like JSON arrays/objects.
+ * Some providers double-serialize nested parameters (e.g. questions: "[{...}]"
+ * instead of questions: [{...}]), which causes schema validation failures.
+ */
+function deepParseStringifiedJson(obj) {
+  if (typeof obj !== "object" || obj === null) return obj;
+  if (Array.isArray(obj)) return obj.map(deepParseStringifiedJson);
+
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (
+        (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+        (trimmed.startsWith("{") && trimmed.endsWith("}"))
+      ) {
+        try {
+          result[key] = deepParseStringifiedJson(JSON.parse(trimmed));
+          continue;
+        } catch {
+          // Not valid JSON, keep as string
+        }
+      }
+    }
+    result[key] =
+      typeof value === "object" ? deepParseStringifiedJson(value) : value;
+  }
+  return result;
+}
+
 function coerceString(value) {
   if (value === undefined || value === null) return "";
   if (typeof value === "string") return value;
@@ -128,24 +159,65 @@ function normalizeHandlerResult(result) {
   return { ok, status, content, metadata };
 }
 
-function parseArguments(call) {
+function parseArguments(call, providerType = null) {
   const raw = call?.function?.arguments;
-  if (typeof raw !== "string" || raw.trim().length === 0) return {};
+
+  // DEBUG: Log full call structure for diagnosis
+  logger.info({
+    providerType,
+    fullCall: JSON.stringify(call),
+    hasFunction: !!call?.function,
+    functionKeys: call?.function ? Object.keys(call.function) : [],
+    argumentsType: typeof raw,
+    argumentsValue: raw,
+    argumentsIsNull: raw === null,
+    argumentsIsUndefined: raw === undefined,
+  }, "=== PARSING TOOL ARGUMENTS ===");
+
+  // Ollama sends arguments as an object, OpenAI as a JSON string
+  if (typeof raw === "object" && raw !== null) {
+    if (providerType !== "ollama") {
+      logger.warn({
+        providerType,
+        expectedProvider: "ollama",
+        argumentsType: typeof raw,
+        arguments: raw
+      }, `Received object arguments but provider is ${providerType || "unknown"}, expected ollama format. Continuing with object.`);
+    } else {
+      logger.info({
+        type: "object",
+        arguments: raw
+      }, "Tool arguments already parsed (Ollama format)");
+    }
+    return deepParseStringifiedJson(raw);
+  }
+
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    logger.warn({
+      argumentsType: typeof raw,
+      argumentsEmpty: !raw || raw.trim().length === 0,
+      providerType
+    }, "Arguments not a string or empty - returning {}");
+    return {};
+  }
+
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    logger.info({ parsed }, "Parsed JSON string arguments");
+    return deepParseStringifiedJson(parsed);
   } catch (err) {
-    logger.warn({ err }, "Failed to parse tool arguments");
+    logger.warn({ err, raw }, "Failed to parse tool arguments");
     return {};
   }
 }
 
-function normaliseToolCall(call) {
+function normaliseToolCall(call, providerType = null) {
   const name = call?.function?.name ?? call?.name;
   const id = call?.id ?? `${name ?? "tool"}_${Date.now()}`;
   return {
     id,
     name,
-    arguments: parseArguments(call),
+    arguments: parseArguments(call, providerType),
     raw: call,
   };
 }
@@ -186,7 +258,8 @@ function listTools() {
 }
 
 async function executeToolCall(call, context = {}) {
-  const normalisedCall = normaliseToolCall(call);
+  const providerType = context?.providerType || context?.provider || null;  
+  const normalisedCall = normaliseToolCall(call, providerType);
   let registered = registry.get(normalisedCall.name);
   if (!registered) {
     const aliasTarget = TOOL_ALIASES[normalisedCall.name.toLowerCase()];
@@ -229,6 +302,10 @@ async function executeToolCall(call, context = {}) {
   }
 
   if (!registered) {
+    logger.warn({
+      tool: normalisedCall.name,
+      id: normalisedCall.id
+    }, "Tool not registered");
     const content = coerceString({
       error: "tool_not_registered",
       tool: normalisedCall.name,
@@ -245,6 +322,17 @@ async function executeToolCall(call, context = {}) {
     };
   }
 
+  // Log tool invocation with full details for debugging
+  logger.info({
+    tool: normalisedCall.name,
+    id: normalisedCall.id,
+    args: normalisedCall.arguments,
+    argsKeys: Object.keys(normalisedCall.arguments || {}),
+    rawCall: JSON.stringify(normalisedCall.raw)
+  }, "=== EXECUTING TOOL ===");
+
+  startTime = Date.now()
+
   try {
     const result = await registered.handler(
       {
@@ -260,6 +348,18 @@ async function executeToolCall(call, context = {}) {
     // Apply tool output truncation for token efficiency
     const truncatedContent = truncateToolOutput(normalisedCall.name, formatted.content);
 
+    const durationMs = Date.now() - startTime;
+
+    // Log successful execution
+    logger.info({
+      tool: normalisedCall.name,
+      id: normalisedCall.id,
+      status: formatted.status,
+      durationMs,
+      outputLength: truncatedContent?.length || 0,
+      truncated: truncatedContent !== formatted.content
+    }, "Tool execution completed");
+
     return {
       id: normalisedCall.id,
       name: normalisedCall.name,
@@ -271,11 +371,20 @@ async function executeToolCall(call, context = {}) {
         registered: true,
         truncated: truncatedContent !== formatted.content,
         originalLength: formatted.content?.length,
-        truncatedLength: truncatedContent?.length
+        truncatedLength: truncatedContent?.length,
+        durationMs
       },
     };
   } catch (err) {
-    logger.error({ err, tool: normalisedCall.name }, "Tool execution failed");
+    const durationMs = Date.now() - startTime;
+
+    logger.error({
+      err,
+      tool: normalisedCall.name,
+      id: normalisedCall.id,
+      durationMs
+    }, "Tool execution failed");
+
     return {
       id: normalisedCall.id,
       name: normalisedCall.name,
@@ -290,6 +399,7 @@ async function executeToolCall(call, context = {}) {
       metadata: {
         registered: true,
         error: true,
+        durationMs
       },
       error: err,
     };

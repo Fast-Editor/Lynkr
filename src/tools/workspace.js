@@ -30,7 +30,7 @@ function registerWorkspaceTools() {
   registerTool(
     "fs_read",
     async ({ args = {} }) => {
-      const relativePath = validateString(args.path ?? args.file, "path");
+      const relativePath = validateString(args.path ?? args.file ?? args.file_path, "path");
       const encoding = normalizeEncoding(args.encoding);
       const content = await readFile(relativePath, encoding);
       return {
@@ -114,7 +114,7 @@ function registerWorkspaceTools() {
   registerTool(
     "edit_patch",
     async ({ args = {} }, context = {}) => {
-      const relativePath = validateString(args.path ?? args.file, "path");
+      const relativePath = validateString(args.path ?? args.file ?? args.file_path, "path");
       const patch = validateString(args.patch, "patch");
       const encoding = normalizeEncoding(args.encoding);
 

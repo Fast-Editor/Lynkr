@@ -170,6 +170,7 @@ if (!["server", "client", "passthrough"].includes(toolExecutionMode)) {
     "TOOL_EXECUTION_MODE must be one of: server, client, passthrough (default: server)"
   );
 }
+console.log(`[CONFIG] Tool execution mode: ${toolExecutionMode}`);
 
 // Memory system configuration (Titans-inspired long-term memory)
 const memoryEnabled = process.env.MEMORY_ENABLED !== "false"; // default true
@@ -342,6 +343,8 @@ const databricksUrl =
     ? `${rawBaseUrl}${endpointPath.startsWith("/") ? "" : "/"}${endpointPath}`
     : null;
 
+// Set MODEL_DEFAULT env var to use a specific model (e.g. "llama3.1" for Ollama).
+// Without it, the default falls back to a Databricks Claude model regardless of MODEL_PROVIDER.
 const defaultModel =
   process.env.MODEL_DEFAULT ??
   (modelProvider === "azure-anthropic" ? "claude-opus-4-5" : "databricks-claude-sonnet-4-5");
