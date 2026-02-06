@@ -919,6 +919,10 @@ function sanitizePayload(payload) {
         : "claude-opus-4-5";
     clean.model = azureDefaultModel;
   } else if (providerType === "ollama") {
+    // Override client model with Ollama config model
+    const ollamaConfiguredModel = config.ollama?.model;
+    clean.model = ollamaConfiguredModel;
+
     // Ollama format conversion
     // Check if model supports tools
     const { modelNameSupportsTools } = require("../clients/ollama-utils");
@@ -1024,8 +1028,15 @@ function sanitizePayload(payload) {
       }
 
       // Very short messages (< 20 chars) without code/technical keywords
+      // BUT: Common shell commands should NOT be treated as conversational
+      const shellCommands = /^(pwd|ls|cd|cat|echo|grep|find|ps|top|df|du|whoami|which|env)[\s\.\!\?]*$/;
+      if (shellCommands.test(trimmed)) {
+        logger.info({ matched: "shell_command", trimmed }, "Ollama conversational check - SHELL COMMAND detected, keeping tools");
+        return false; // NOT conversational - needs tools!
+      }
+
       if (trimmed.length < 20 && !/code|file|function|error|bug|fix|write|read|create/.test(trimmed)) {
-        logger.debug({ matched: "short", trimmed, length: trimmed.length }, "Ollama conversational check - matched");
+        logger.warn({ matched: "short", trimmed, length: trimmed.length }, "Ollama conversational check - SHORT MESSAGE matched, DELETING TOOLS");
         return true;
       }
 
@@ -1035,13 +1046,15 @@ function sanitizePayload(payload) {
 
     if (isConversational) {
       // Strip all tools for simple conversational messages
+      const originalToolCount = Array.isArray(clean.tools) ? clean.tools.length : 0;
       delete clean.tools;
       delete clean.tool_choice;
-      logger.debug({
+      logger.warn({
         model: config.ollama?.model,
-        message: "Removed tools for conversational message"
-      }, "Ollama conversational mode");
-    } else if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
+        message: "Removed tools for conversational message",
+        originalToolCount,
+        userMessage: clean.messages?.[clean.messages.length - 1]?.content?.substring(0, 50),
+      }, "Ollama conversational mode - ALL TOOLS DELETED!");    } else if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
       // Ollama performance degrades with too many tools
       // Limit to essential tools only
       const OLLAMA_ESSENTIAL_TOOLS = new Set([
@@ -1052,7 +1065,8 @@ function sanitizePayload(payload) {
         "Glob",
         "Grep",
         "WebSearch",
-        "WebFetch"
+        "WebFetch",
+        "shell",  // Tool is registered as "shell" internally
       ]);
 
       const limitedTools = clean.tools.filter(tool =>
@@ -1351,6 +1365,20 @@ async function runAgentLoop({
   const toolCallNames = new Map();
   const toolCallHistory = new Map(); // Track tool calls to detect loops: signature -> count
   let loopWarningInjected = false; // Track if we've already warned about loops
+  const accumulatedToolResults = []; // Track tool results to include in response for CLI display
+
+  // Log agent loop start
+  logger.info(
+    {
+      sessionId: session?.id ?? null,
+      model: requestedModel,
+      maxSteps: settings.maxSteps,
+      maxDurationMs: settings.maxDurationMs,
+      wantsThinking,
+      providerType,
+    },
+    "Agent loop started",
+  );
 
   while (steps < settings.maxSteps) {
     if (Date.now() - start > settings.maxDurationMs) {
@@ -1796,6 +1824,15 @@ IMPORTANT TOOL USAGE RULES:
       });
     }
   }
+    logger.info({
+      messageContent: databricksResponse.json?.message?.content
+        ? (typeof databricksResponse.json.message.content === 'string'
+          ? databricksResponse.json.message.content.substring(0, 500)
+          : JSON.stringify(databricksResponse.json.message.content).substring(0, 500))
+        : 'NO_CONTENT',
+      hasToolCalls: !!databricksResponse.json?.message?.tool_calls,
+      toolCallCount: databricksResponse.json?.message?.tool_calls?.length || 0
+    }, "=== RAW LLM RESPONSE CONTENT ===");
 
     // Handle streaming responses (pass through without buffering)
     if (databricksResponse.stream) {
@@ -1895,11 +1932,13 @@ IMPORTANT TOOL USAGE RULES:
           _anthropic_block: block,
         }));
 
-      logger.debug(
+      logger.info(
         {
           sessionId: session?.id ?? null,
+          step: steps,
           contentBlocks: contentArray.length,
           toolCallsFound: toolCalls.length,
+          toolNames: toolCalls.map(tc => tc.function?.name || tc.name),
           stopReason: databricksResponse.json?.stop_reason,
         },
         "Azure Anthropic response parsed",
@@ -1909,6 +1948,98 @@ IMPORTANT TOOL USAGE RULES:
       const choice = databricksResponse.json?.choices?.[0];
       message = choice?.message ?? {};
       toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+      // Deduplicate tool calls for OpenAI format too
+      if (toolCalls.length > 0) {
+        const uniqueToolCalls = [];
+        const seenSignatures = new Set();
+        let duplicatesRemoved = 0;
+
+        for (const call of toolCalls) {
+          const signature = getToolCallSignature(call);
+          if (!seenSignatures.has(signature)) {
+            seenSignatures.add(signature);
+            uniqueToolCalls.push(call);
+          } else {
+            duplicatesRemoved++;
+            logger.warn({
+              sessionId: session?.id ?? null,
+              toolName: call.function?.name || call.name,
+              toolId: call.id,
+              signature: signature.substring(0, 32),
+            }, "Duplicate tool call removed (same tool with identical parameters in single response)");
+          }
+        }
+
+        toolCalls = uniqueToolCalls;
+
+        logger.info(
+          {
+            sessionId: session?.id ?? null,
+            step: steps,
+            toolCallsFound: toolCalls.length,
+            duplicatesRemoved,
+            toolNames: toolCalls.map(tc => tc.function?.name || tc.name),
+          },
+          "LLM Response: Tool calls requested (after deduplication)",
+        );
+      } else if (providerType === "ollama") {
+        // Ollama format: { message: { role, content, tool_calls }, done }
+        message = databricksResponse.json?.message ?? {};
+        toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+        logger.info({
+          hasMessage: !!databricksResponse.json?.message,
+          hasToolCalls: toolCalls.length > 0,
+          toolCallCount: toolCalls.length,
+          toolNames: toolCalls.map(tc => tc.function?.name),
+          done: databricksResponse.json?.done,
+          fullToolCalls: JSON.stringify(toolCalls),
+          fullResponseMessage: JSON.stringify(databricksResponse.json?.message)
+        }, "=== OLLAMA TOOL CALLS EXTRACTION ===");
+      } else {
+        // OpenAI/Databricks format: { choices: [{ message: { tool_calls: [...] } }] }
+        const choice = databricksResponse.json?.choices?.[0];
+        message = choice?.message ?? {};
+        toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+        // Deduplicate tool calls for OpenAI format too
+        if (toolCalls.length > 0) {
+          const uniqueToolCalls = [];
+          const seenSignatures = new Set();
+          let duplicatesRemoved = 0;
+
+          for (const call of toolCalls) {
+            const signature = getToolCallSignature(call);
+
+            if (!seenSignatures.has(signature)) {
+              seenSignatures.add(signature);
+              uniqueToolCalls.push(call);
+            } else {
+              duplicatesRemoved++;
+              logger.warn({
+                sessionId: session?.id ?? null,
+                toolName: call.function?.name || call.name,
+                toolId: call.id,
+                signature: signature.substring(0, 32),
+              }, "Duplicate tool call removed (same tool with identical parameters in single response)");
+            }
+          }
+
+          toolCalls = uniqueToolCalls;
+
+          logger.info(
+            {
+              sessionId: session?.id ?? null,
+              step: steps,
+              toolCallsFound: toolCalls.length,
+              duplicatesRemoved,
+              toolNames: toolCalls.map(tc => tc.function?.name || tc.name),
+            },
+            "LLM Response: Tool calls requested (after deduplication)",
+          );
+        }
+      }
     }
 
     // Guard: drop hallucinated tool calls when no tools were sent to the model.
@@ -2179,6 +2310,7 @@ IMPORTANT TOOL USAGE RULES:
               session,
               cwd,
               requestMessages: cleanPayload.messages,
+              providerType,
             }))
           );
 
@@ -2224,6 +2356,15 @@ IMPORTANT TOOL USAGE RULES:
             }
 
             cleanPayload.messages.push(toolMessage);
+
+            logger.info(
+              {
+                toolName: execution.name,
+                content: typeof toolMessage.content === 'string'
+                ? toolMessage.content.substring(0, 500)
+                : JSON.stringify(toolMessage.content).substring(0, 500)
+              }, "Tool result content sent to LLM",
+            );
 
             // Convert to Anthropic format for session storage
             let sessionToolResultContent;
@@ -2412,6 +2553,7 @@ IMPORTANT TOOL USAGE RULES:
           session,
           cwd,
           requestMessages: cleanPayload.messages,
+          providerType,
         });
 
         let toolMessage;
@@ -2501,6 +2643,39 @@ IMPORTANT TOOL USAGE RULES:
             registered: execution.metadata?.registered ?? null,
           },
         });
+
+        // Accumulate tool results for CLI display
+        // Build a standardized tool_result block in Anthropic format
+        logger.info({
+          sessionId: session?.id ?? null,
+          callId: call.id,
+          executionId: execution.id,
+          toolName: call.function?.name ?? call.name ?? execution.name,
+          executionOk: execution.ok,
+          contentType: typeof execution.content,
+          accumulatedCountBefore: accumulatedToolResults.length
+        }, "=== ACCUMULATING TOOL RESULT FOR CLI - START ===");
+
+        const toolUseId = call.id ?? execution.id;
+        const toolResultContent = typeof execution.content === "string"
+          ? execution.content
+          : JSON.stringify(execution.content);
+        accumulatedToolResults.push({
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          tool_name: call.function?.name ?? call.name ?? execution.name,
+          content: toolResultContent,
+          is_error: execution.ok === false,
+        });
+
+        logger.info({
+          sessionId: session?.id ?? null,
+          toolUseId,
+          toolName: call.function?.name ?? call.name ?? execution.name,
+          contentLength: toolResultContent.length,
+          contentPreview: toolResultContent.substring(0, 200),
+          accumulatedCountAfter: accumulatedToolResults.length
+        }, "=== ACCUMULATING TOOL RESULT FOR CLI - END ===");
 
         if (execution.ok) {
           logger.debug(
@@ -2624,11 +2799,11 @@ IMPORTANT TOOL USAGE RULES:
       // Return tool results directly to CLI - no more LLM call needed
       // The tool result IS the answer (e.g., file contents for Read)
       if (accumulatedToolResults.length > 0) {
-        auditLog("=== RETURNING TOOL RESULTS DIRECTLY TO CLI ===", {
+        logger.info({
           sessionId: session?.id ?? null,
           toolResultCount: accumulatedToolResults.length,
           toolNames: accumulatedToolResults.map(r => r.tool_name)
-        });
+        }, "=== RETURNING TOOL RESULTS DIRECTLY TO CLI ===");
 
         // Convert tool_result blocks to text blocks for CLI display
         // The CLI only understands text/tool_use in responses, not tool_result
@@ -2656,6 +2831,15 @@ IMPORTANT TOOL USAGE RULES:
           terminationReason: "tool_result_direct",
         };
       }
+
+      logger.info({
+        sessionId: session?.id ?? null,
+        step: steps,
+        toolCallsExecuted: toolCallsExecuted,
+        totalToolCallsInThisStep: toolCalls.length,
+        messageCount: cleanPayload.messages.length,
+        lastMessageRole: cleanPayload.messages[cleanPayload.messages.length - 1]?.role,
+      }, "Tool execution complete - processing next toolCall");
 
       continue; // Only if no tool results (shouldn't happen)
     }
@@ -3104,6 +3288,7 @@ IMPORTANT TOOL USAGE RULES:
             session,
             cwd,
             requestMessages: cleanPayload.messages,
+            providerType,            
           });
 
           const toolResultMessage = createFallbackToolResultMessage(providerType, {
@@ -3246,6 +3431,100 @@ IMPORTANT TOOL USAGE RULES:
       },
       "Agent loop completed successfully",
     );
+
+    // Include accumulated tool results in the response for CLI display
+    // This ensures the client sees actual tool output, not just LLM summaries
+    logger.info({
+      sessionId: session?.id ?? null,
+      accumulatedToolResultsCount: accumulatedToolResults.length,
+      hasAnthropicPayload: !!anthropicPayload,
+      currentContentType: anthropicPayload?.content ? (Array.isArray(anthropicPayload.content) ? 'array' : typeof anthropicPayload.content) : 'none',
+      currentContentLength: anthropicPayload?.content?.length || 0
+    }, "=== BEFORE TOOL RESULTS INCLUSION CHECK ===");
+
+    if (accumulatedToolResults.length > 0) {
+      logger.info({
+        sessionId: session?.id ?? null,
+        toolResultCount: accumulatedToolResults.length,
+        toolNames: accumulatedToolResults.map(r => r.tool_name),
+        toolUseIds: accumulatedToolResults.map(r => r.tool_use_id)
+      }, "=== ENTERING TOOL RESULTS INCLUSION BLOCK ===");
+
+      // Ensure content is an array
+      if (!Array.isArray(anthropicPayload.content)) {
+        logger.info({
+          sessionId: session?.id ?? null,
+          originalContentType: typeof anthropicPayload.content,
+          originalContentValue: anthropicPayload.content ? String(anthropicPayload.content).substring(0, 100) : 'null'
+        }, "=== CONTENT NOT ARRAY - CONVERTING ===");
+
+        anthropicPayload.content = anthropicPayload.content
+          ? [{ type: "text", text: String(anthropicPayload.content) }]
+          : [];
+
+        logger.info({
+          sessionId: session?.id ?? null,
+          convertedContentLength: anthropicPayload.content.length
+        }, "=== CONTENT CONVERTED TO ARRAY ===");
+      } else {
+        logger.info({
+          sessionId: session?.id ?? null,
+          existingContentLength: anthropicPayload.content.length,
+          existingContentTypes: anthropicPayload.content.map(b => b.type)
+        }, "=== CONTENT ALREADY ARRAY ===");
+      }
+
+      // Prepend tool results before text content so they appear in order
+      const contentBeforePrepend = anthropicPayload.content.length;      
+      anthropicPayload.content = [...accumulatedToolResults, ...anthropicPayload.content];
+
+      logger.info({
+        sessionId: session?.id ?? null,
+        toolResultCount: accumulatedToolResults.length,
+        toolNames: accumulatedToolResults.map(r => r.tool_name),
+        contentBeforePrepend,
+        contentAfterPrepend: anthropicPayload.content.length,
+        finalContentTypes: anthropicPayload.content.map(b => b.type)
+      }, "=== TOOL RESULTS PREPENDED TO RESPONSE ===");
+
+      for (const block of anthropicPayload.content) {
+        if (block.type === "tool_result") {
+          logger.info({
+            toolName: block.tool_name,
+            content: typeof block.content === 'string'
+              ? block.content.substring(0, 500)
+              : JSON.stringify(block.content).substring(0, 500)
+          }, "=== TOOL RESULT CONTENT SENT TO CLI ===");          
+        } else if (block.type === "text") {
+          logger.info({
+            text: block.text.substring(0, 500)
+          }, "=== TEXT CONTENT SENT TO CLI ===");
+        }
+      }
+
+    } else {
+      logger.info({
+        sessionId: session?.id ?? null
+      }, "=== NO TOOL RESULTS TO INCLUDE (accumulatedToolResults empty) ===");
+    }
+
+    logger.info({
+      sessionId: session?.id ?? null,
+      finalContentLength: anthropicPayload?.content?.length || 0,
+      finalContentTypes: anthropicPayload?.content?.map(b => b.type) || []
+    }, "=== AFTER TOOL RESULTS INCLUSION CHECK ===");
+
+    // DIAGNOSTIC: Log response being returned
+    logger.info({
+      sessionId: session?.id ?? null,
+      status: 200,
+      hasBody: !!anthropicPayload,
+      bodyKeys: anthropicPayload ? Object.keys(anthropicPayload) : [],
+      contentType: anthropicPayload?.content ? (Array.isArray(anthropicPayload.content) ? 'array' : typeof anthropicPayload.content) : 'none',
+      contentLength: anthropicPayload?.content ? (Array.isArray(anthropicPayload.content) ? anthropicPayload.content.length : String(anthropicPayload.content).length) : 0,
+      stopReason: anthropicPayload?.stop_reason
+    }, "=== RETURNING RESPONSE TO CLIENT ===");
+
     return {
       response: {
         status: 200,
