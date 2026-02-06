@@ -145,7 +145,7 @@ function registerWorkspaceTools() {
   registerTool(
     "edit_patch",
     async ({ args = {} }, context = {}) => {
-      const relativePath = validateString(args.path ?? args.file, "path");
+      const relativePath = validateString(args.path ?? args.file ?? args.file_path, "path");
       const patch = validateString(args.patch, "patch");
       const encoding = normalizeEncoding(args.encoding);
 
