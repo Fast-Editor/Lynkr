@@ -10,6 +10,33 @@ if (!fs.existsSync(workspaceRoot)) {
   fs.mkdirSync(workspaceRoot, { recursive: true });
 }
 
+function expandTilde(targetPath) {
+  if (typeof targetPath !== "string") return targetPath;
+  if (targetPath.startsWith("~")) {
+    const home = process.env.HOME || process.env.USERPROFILE;
+    if (home) {
+      return path.join(home, targetPath.slice(1));
+    }
+  }
+  return targetPath;
+}
+
+function isExternalPath(targetPath) {
+  const expanded = expandTilde(targetPath);
+  const resolved = path.resolve(workspaceRoot, expanded);
+  return !resolved.startsWith(workspaceRoot);
+}
+
+async function readExternalFile(targetPath, encoding = "utf8") {
+  const expanded = expandTilde(targetPath);
+  const resolved = path.resolve(expanded);
+  const stats = await fsp.stat(resolved);
+  if (!stats.isFile()) {
+    throw new Error("Requested path is not a file.");
+  }
+  return { content: await fsp.readFile(resolved, { encoding }), resolvedPath: resolved };
+}
+
 function resolveWorkspacePath(targetPath) {
   if (!targetPath || typeof targetPath !== "string") {
     throw new Error("Path must be a non-empty string.");
@@ -110,6 +137,9 @@ function validateCwd(cwd) {
 module.exports = {
   workspaceRoot,
   resolveWorkspacePath,
+  expandTilde,
+  isExternalPath,
+  readExternalFile,
   readFile,
   writeFile,
   fileExists,

@@ -24,13 +24,17 @@ const STANDARD_TOOLS = [
   },
   {
     name: "Read",
-    description: "Reads a file from the local filesystem. You can access any file directly by using this tool.",
+    description: "Reads a file from the local filesystem. You can access any file directly by using this tool. For files outside the workspace, the user must approve access first.",
     input_schema: {
       type: "object",
       properties: {
         file_path: {
           type: "string",
-          description: "Relative path within workspace (e.g., 'config.js', 'src/index.ts'). DO NOT use absolute paths."
+          description: "Path to the file. Use relative paths for workspace files (e.g., 'src/index.ts'). For files outside the workspace use absolute paths or ~ for the home directory (e.g., '~/Documents/notes.md', '/etc/hosts'). Each call reads ONE file only — do not pass multiple paths."
+        },
+        user_approved: {
+          type: "boolean",
+          description: "Set to true ONLY after the user has explicitly approved reading a file outside the workspace. Never set this to true without asking the user first."
         },
         limit: {
           type: "number",
