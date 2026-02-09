@@ -181,7 +181,7 @@ async function invokeDatabricks(body) {
   const databricksBody = { ...body };
 
   // Inject standard tools if client didn't send any (passthrough mode)
-  if (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0)) {
     databricksBody.tools = STANDARD_TOOLS;
     logger.info({
       injectedToolCount: STANDARD_TOOLS.length,
@@ -222,7 +222,7 @@ async function invokeAzureAnthropic(body) {
   }
 
   // Inject standard tools if client didn't send any (passthrough mode)
-  if (!Array.isArray(body.tools) || body.tools.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(body.tools) || body.tools.length === 0)) {
     body.tools = STANDARD_TOOLS;
     logger.info({
       injectedToolCount: STANDARD_TOOLS.length,
@@ -331,7 +331,7 @@ async function invokeOllama(body) {
   if (!supportsTools) {
     // Model doesn't support tools - don't inject them
     toolsToSend = null;
-  } else if (injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+  } else if (injectToolsOllama && !body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     // Model supports tools and none provided - inject them
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
@@ -411,7 +411,7 @@ async function invokeOpenRouter(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
@@ -492,7 +492,7 @@ async function invokeAzureOpenAI(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
@@ -843,7 +843,7 @@ async function invokeOpenAI(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
@@ -945,7 +945,7 @@ async function invokeLlamaCpp(body) {
   let toolsInjected = false;
 
   const injectToolsLlamacpp = process.env.INJECT_TOOLS_LLAMACPP !== "false";
-  if (injectToolsLlamacpp && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+  if (injectToolsLlamacpp && !body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.info({
@@ -1028,7 +1028,7 @@ async function invokeLMStudio(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.info({
@@ -1075,7 +1075,7 @@ async function invokeBedrock(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.info({
@@ -1359,7 +1359,7 @@ async function invokeZai(body) {
     zaiBody.model = mappedModel;
 
     // Inject standard tools if client didn't send any (passthrough mode)
-    if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
+    if (!body._noToolInjection && (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0)) {
       zaiBody.tools = STANDARD_TOOLS;
       logger.info({
         injectedToolCount: STANDARD_TOOLS.length,
