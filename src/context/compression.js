@@ -2,24 +2,63 @@
  * History Compression for Token Optimization
  *
  * Compresses conversation history to reduce token usage while
- * maintaining context quality. Uses sliding window approach:
- * - Keep recent turns verbatim
- * - Summarize older turns
- * - Compress tool results
+ * maintaining context quality. Uses sliding window approach with
+ * percentage-based tiered compression that scales with recency
+ * and the model's context window size.
  *
+ * Tiers:
+ * - veryRecent (last 4 messages): keep 90% of content
+ * - recent (messages 5-10): keep 50% of content
+ * - old (11+): keep 20% of content
  */
 
 const logger = require('../logger');
 const config = require('../config');
 
+// Compression tiers: ratio = percentage of content to keep, minFloor = minimum chars
+const COMPRESSION_TIERS = {
+  veryRecent: { ratio: 0.9, minFloor: 500 },
+  recent:     { ratio: 0.5, minFloor: 300 },
+  old:        { ratio: 0.2, minFloor: 200 },
+};
+
+// How many of the recent messages count as "very recent"
+const VERY_RECENT_COUNT = 4;
+
+/**
+ * Compute the maximum character cap for a tier based on context window size.
+ *
+ * @param {number} contextWindowTokens - Model's context window in tokens (-1 = unknown)
+ * @param {string} tierName - "veryRecent", "recent", or "old"
+ * @returns {number} Maximum characters for tool result content in this tier
+ */
+function computeMaxCap(contextWindowTokens, tierName) {
+  // Convert tokens to chars (~4 chars/token), default to 8K tokens if unknown
+  const contextChars = (contextWindowTokens === -1 ? 8000 : contextWindowTokens) * 4;
+  const budgetRatios = {
+    veryRecent: 0.25,
+    recent: 0.10,
+    old: 0.03,
+  };
+  return Math.floor(contextChars * (budgetRatios[tierName] ?? 0.03));
+}
+
+/**
+ * Compute the character limit for a piece of content based on tier and context window.
+ *
+ * @param {string} text - The text content
+ * @param {string} tierName - Tier name
+ * @param {number} contextWindowTokens - Context window in tokens
+ * @returns {number} Character limit
+ */
+function computeLimit(text, tierName, contextWindowTokens) {
+  const tier = COMPRESSION_TIERS[tierName] || COMPRESSION_TIERS.old;
+  const maxCap = computeMaxCap(contextWindowTokens, tierName);
+  return Math.min(maxCap, Math.max(tier.minFloor, Math.floor(text.length * tier.ratio)));
+}
+
 /**
  * Compress conversation history to fit within token budget
- *
- * Strategy:
- * 1. Keep last N turns verbatim (fresh context)
- * 2. Summarize older turns (compressed history)
- * 3. Compress tool results to key information only
- * 4. Remove redundant exchanges
  *
  * @param {Array} messages - Conversation history
  * @param {Object} options - Compression options
@@ -27,6 +66,8 @@ const config = require('../config');
  */
 function compressHistory(messages, options = {}) {
   if (!messages || messages.length === 0) return messages;
+
+  const contextWindowTokens = options.contextWindowTokens ?? -1;
 
   const opts = {
     keepRecentTurns: options.keepRecentTurns ?? config.historyCompression?.keepRecentTurns ?? 10,
@@ -58,12 +99,16 @@ function compressHistory(messages, options = {}) {
       compressed.push(summary);
     }
   } else {
-    // Just compress tool results in old messages
-    compressed = oldMessages.map(msg => compressMessage(msg));
+    // Compress tool results in old messages using "old" tier
+    compressed = oldMessages.map(msg => compressMessage(msg, "old", contextWindowTokens));
   }
 
-  // Add recent messages (may compress tool results but keep content)
-  const recentCompressed = recentMessages.map(msg => compressToolResults(msg));
+  // Add recent messages with tiered compression
+  const recentCompressed = recentMessages.map((msg, i) => {
+    const isVeryRecent = i >= recentMessages.length - VERY_RECENT_COUNT;
+    const tierName = isVeryRecent ? "veryRecent" : "recent";
+    return compressToolResults(msg, tierName, contextWindowTokens);
+  });
 
   const finalMessages = [...compressed, ...recentCompressed];
 
@@ -82,7 +127,8 @@ function compressHistory(messages, options = {}) {
       percentage: ((saved / originalLength) * 100).toFixed(1),
       splitIndex,
       oldMessages: oldMessages.length,
-      recentMessages: recentMessages.length
+      recentMessages: recentMessages.length,
+      contextWindowTokens,
     }, 'History compression applied');
   }
 
@@ -149,15 +195,17 @@ function summarizeOldHistory(messages) {
 }
 
 /**
- * Compress a single message
- *
- * Reduces message size while preserving essential information.
+ * Compress a single message (used for old messages outside the recent window)
  *
  * @param {Object} message - Message to compress
+ * @param {string} tierName - Compression tier
+ * @param {number} contextWindowTokens - Context window in tokens
  * @returns {Object} Compressed message
  */
-function compressMessage(message) {
+function compressMessage(message, tierName = "old", contextWindowTokens = -1) {
   if (!message) return message;
+
+  const limit = computeLimit("x".repeat(300), tierName, contextWindowTokens);
 
   const compressed = {
     role: message.role
@@ -165,10 +213,10 @@ function compressMessage(message) {
 
   // Compress content based on type
   if (typeof message.content === 'string') {
-    compressed.content = compressText(message.content, 300);
+    compressed.content = compressText(message.content, limit);
   } else if (Array.isArray(message.content)) {
     compressed.content = message.content
-      .map(block => compressContentBlock(block))
+      .map(block => compressContentBlock(block, tierName, contextWindowTokens))
       .filter(Boolean);
   } else {
     compressed.content = message.content;
@@ -180,13 +228,12 @@ function compressMessage(message) {
 /**
  * Compress tool results in a message while keeping other content
  *
- * Tool results can be very large. This compresses them while
- * keeping user and assistant text intact.
- *
  * @param {Object} message - Message to process
+ * @param {string} tierName - Compression tier
+ * @param {number} contextWindowTokens - Context window in tokens
  * @returns {Object} Message with compressed tool results
  */
-function compressToolResults(message) {
+function compressToolResults(message, tierName = "recent", contextWindowTokens = -1) {
   if (!message) return message;
 
   const compressed = {
@@ -199,7 +246,7 @@ function compressToolResults(message) {
     compressed.content = message.content.map(block => {
       // Compress tool_result blocks
       if (block.type === 'tool_result') {
-        return compressToolResultBlock(block);
+        return compressToolResultBlock(block, tierName, contextWindowTokens);
       }
       // Keep other blocks as-is
       return block;
@@ -215,16 +262,20 @@ function compressToolResults(message) {
  * Compress a content block
  *
  * @param {Object} block - Content block
+ * @param {string} tierName - Compression tier
+ * @param {number} contextWindowTokens - Context window in tokens
  * @returns {Object|null} Compressed block or null if removed
  */
-function compressContentBlock(block) {
+function compressContentBlock(block, tierName = "old", contextWindowTokens = -1) {
   if (!block) return null;
+
+  const limit = computeLimit("x".repeat(300), tierName, contextWindowTokens);
 
   switch (block.type) {
     case 'text':
       return {
         type: 'text',
-        text: compressText(block.text, 300)
+        text: compressText(block.text, limit)
       };
 
     case 'tool_use':
@@ -237,7 +288,7 @@ function compressContentBlock(block) {
       };
 
     case 'tool_result':
-      return compressToolResultBlock(block);
+      return compressToolResultBlock(block, tierName, contextWindowTokens);
 
     default:
       return block;
@@ -247,13 +298,15 @@ function compressContentBlock(block) {
 /**
  * Compress tool result block
  *
- * Tool results can be very large (file contents, bash output).
- * Compress while preserving essential information.
+ * Uses dynamic limits based on compression tier and context window size
+ * instead of a hardcoded character limit.
  *
  * @param {Object} block - tool_result block
+ * @param {string} tierName - Compression tier
+ * @param {number} contextWindowTokens - Context window in tokens
  * @returns {Object} Compressed tool_result
  */
-function compressToolResultBlock(block) {
+function compressToolResultBlock(block, tierName = "old", contextWindowTokens = -1) {
   if (!block || block.type !== 'tool_result') return block;
 
   const compressed = {
@@ -261,17 +314,20 @@ function compressToolResultBlock(block) {
     tool_use_id: block.tool_use_id,
   };
 
-  // Compress content
+  // Compress content using dynamic limits
   if (typeof block.content === 'string') {
-    compressed.content = compressText(block.content, 500);
+    const limit = computeLimit(block.content, tierName, contextWindowTokens);
+    compressed.content = compressText(block.content, limit);
   } else if (Array.isArray(block.content)) {
     compressed.content = block.content.map(item => {
       if (typeof item === 'string') {
-        return compressText(item, 500);
+        const limit = computeLimit(item, tierName, contextWindowTokens);
+        return compressText(item, limit);
       } else if (item.type === 'text') {
+        const limit = computeLimit(item.text || "", tierName, contextWindowTokens);
         return {
           type: 'text',
-          text: compressText(item.text, 500)
+          text: compressText(item.text, limit)
         };
       }
       return item;
@@ -456,4 +512,6 @@ module.exports = {
   calculateCompressionStats,
   needsCompression,
   summarizeOldHistory,
+  COMPRESSION_TIERS,
+  computeMaxCap,
 };

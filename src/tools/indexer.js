@@ -55,10 +55,62 @@ function registerWorkspaceListTool() {
   );
 }
 
+/**
+ * Search recent conversation context for content matching a query.
+ *
+ * Scans the last 10 messages for tool_result content that matches
+ * the query words. Returns matches sorted by relevance.
+ *
+ * @param {string} query - Search query
+ * @param {Array} messages - Recent conversation messages
+ * @returns {Array} Matching context snippets
+ */
+function searchRecentContext(query, messages) {
+  if (!query || !messages || !Array.isArray(messages)) return [];
+
+  const queryLower = query.toLowerCase();
+  const queryWords = queryLower.split(/\s+/).filter((w) => w.length > 2);
+  if (queryWords.length === 0) return [];
+
+  const matches = [];
+
+  // Scan last 10 messages for tool_result content
+  const recent = messages.slice(-10);
+  for (const msg of recent) {
+    if (msg.role !== "tool" && msg.role !== "user") continue;
+
+    const content =
+      typeof msg.content === "string"
+        ? msg.content
+        : Array.isArray(msg.content)
+          ? msg.content
+              .filter((b) => b.type === "tool_result" || b.type === "text")
+              .map((b) => b.content ?? b.text ?? "")
+              .join("\n")
+          : "";
+
+    if (!content || content.length < 20) continue;
+
+    // Check if any query words appear in the content
+    const contentLower = content.toLowerCase();
+    const matchCount = queryWords.filter((w) => contentLower.includes(w)).length;
+
+    if (matchCount > 0 && matchCount / queryWords.length >= 0.3) {
+      matches.push({
+        source: "conversation_context",
+        relevance: matchCount / queryWords.length,
+        preview: content.substring(0, 500),
+      });
+    }
+  }
+
+  return matches.sort((a, b) => b.relevance - a.relevance).slice(0, 3);
+}
+
 function registerWorkspaceSearchTool() {
   registerTool(
     "workspace_search",
-    async ({ args = {} }) => {
+    async ({ args = {} }, context = {}) => {
       const query = args.query ?? args.term ?? args.pattern;
       const regex = args.regex === true || args.is_regex === true;
       const limit = Number.isInteger(args.limit) ? args.limit : undefined;
@@ -69,6 +121,9 @@ function registerWorkspaceSearchTool() {
           ? args.ignore
           : undefined;
 
+      // Check recent conversation context for matching content
+      const contextMatches = searchRecentContext(query, context.requestMessages);
+
       const result = await searchWorkspace({
         query,
         regex,
@@ -76,12 +131,21 @@ function registerWorkspaceSearchTool() {
         ignore,
       });
 
+      // Prepend context matches if found
+      if (contextMatches.length > 0) {
+        result.context_matches = contextMatches;
+        result.note =
+          "Results from recently read files are listed in context_matches. " +
+          "Prefer these over workspace matches when answering about previously read content.";
+      }
+
       return {
         ok: true,
         status: 200,
         content: JSON.stringify(result, null, 2),
         metadata: {
           total: result.matches.length,
+          contextTotal: contextMatches.length,
           engine: result.engine,
         },
       };

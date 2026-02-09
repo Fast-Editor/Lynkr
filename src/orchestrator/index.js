@@ -10,6 +10,7 @@ const tokens = require("../utils/tokens");
 const systemPrompt = require("../prompts/system");
 const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
+const { getContextWindow } = require("../providers/context-window");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
 const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = require("../headroom");
 const { createAuditLogger } = require("../logger/audit-logger");
@@ -1049,6 +1050,7 @@ function sanitizePayload(payload) {
       const originalToolCount = Array.isArray(clean.tools) ? clean.tools.length : 0;
       delete clean.tools;
       delete clean.tool_choice;
+      clean._noToolInjection = true;
       logger.warn({
         model: config.ollama?.model,
         message: "Removed tools for conversational message",
@@ -1154,6 +1156,9 @@ function sanitizePayload(payload) {
     }
 
     clean.tools = selectedTools.length > 0 ? selectedTools : undefined;
+    if (!selectedTools.length) {
+      clean._noToolInjection = true;
+    }
   }
 
   clean.stream = payload.stream ?? false;
@@ -1356,6 +1361,9 @@ async function runAgentLoop({
   console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length);
   logger.info({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop ENTERED');
   const settings = resolveLoopOptions(options);
+  // Detect context window size for intelligent compression
+  const contextWindowTokens = await getContextWindow();
+  console.log('[DEBUG] Context window detected:', contextWindowTokens, 'tokens for provider:', providerType);
   // Initialize audit logger (no-op if disabled)
   const auditLogger = createAuditLogger(config.audit);
   const start = Date.now();
@@ -1365,7 +1373,7 @@ async function runAgentLoop({
   const toolCallNames = new Map();
   const toolCallHistory = new Map(); // Track tool calls to detect loops: signature -> count
   let loopWarningInjected = false; // Track if we've already warned about loops
-  const accumulatedToolResults = []; // Track tool results to include in response for CLI display
+  let emptyResponseRetried = false; // Track if we've retried after an empty LLM response
 
   // Log agent loop start
   logger.info(
@@ -1415,7 +1423,6 @@ async function runAgentLoop({
     }
 
     steps += 1;
-    console.log('[LOOP DEBUG] Entered while loop - step:', steps);
     logger.debug(
       {
         sessionId: session?.id ?? null,
@@ -1446,7 +1453,8 @@ async function runAgentLoop({
           cleanPayload.messages = historyCompression.compressHistory(originalMessages, {
             keepRecentTurns: config.historyCompression?.keepRecentTurns ?? 10,
             summarizeOlder: config.historyCompression?.summarizeOlder ?? true,
-            enabled: true
+            enabled: true,
+            contextWindowTokens,
           });
 
           if (cleanPayload.messages !== originalMessages) {
@@ -2057,6 +2065,67 @@ IMPORTANT TOOL USAGE RULES:
       // If there's also no text content, treat as empty response (handled below)
     }
 
+    // === EMPTY RESPONSE DETECTION (primary) ===
+    // Check raw extracted message for empty content before tool handling or conversion
+    const rawTextContent = (() => {
+      if (typeof message.content === 'string') return message.content.trim();
+      if (Array.isArray(message.content)) {
+        return message.content
+          .filter(b => b.type === 'text')
+          .map(b => b.text || '')
+          .join('')
+          .trim();
+      }
+      return '';
+    })();
+
+    if (toolCalls.length === 0 && !rawTextContent) {
+      console.log('[EMPTY RESPONSE] No text content and no tool calls - step:', steps, 'retried:', emptyResponseRetried);
+      logger.warn({
+        sessionId: session?.id ?? null,
+        step: steps,
+        messageKeys: Object.keys(message),
+        contentType: typeof message.content,
+        rawContentPreview: String(message.content || '').substring(0, 100),
+      }, "Empty LLM response detected (no text, no tool calls)");
+
+      // Retry once with a nudge
+      if (steps < settings.maxSteps && !emptyResponseRetried) {
+        emptyResponseRetried = true;
+        cleanPayload.messages.push({
+          role: "assistant",
+          content: "",
+        });
+        cleanPayload.messages.push({
+          role: "user",
+          content: "Please provide a response to the user's message.",
+        });
+        logger.info({ sessionId: session?.id ?? null }, "Retrying after empty response with nudge");
+        continue;
+      }
+
+      // Fallback after retry also returned empty
+      logger.warn({ sessionId: session?.id ?? null, steps }, "Empty response persisted after retry");
+      return {
+        response: {
+          status: 200,
+          body: {
+            id: `msg_${Date.now()}`,
+            type: "message",
+            role: "assistant",
+            model: requestedModel,
+            content: [{ type: "text", text: "I wasn't able to generate a response. Could you try rephrasing your message?" }],
+            stop_reason: "end_turn",
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+          terminationReason: "empty_response_fallback",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "empty_response_fallback",
+      };
+    }
+
     if (toolCalls.length > 0) {
       // Convert OpenAI/OpenRouter format to Anthropic format for session storage
       let sessionContent;
@@ -2556,6 +2625,15 @@ IMPORTANT TOOL USAGE RULES:
           providerType,
         });
 
+        logger.debug(
+          {
+            id: execution.id ?? null,
+            name: execution.name ?? null,
+            arguments: execution.arguments ?? null,
+            content: execution.content ?? null,
+            is_error: execution.ok === false,
+          }, "executeToolCall response" );
+
         let toolMessage;
         if (providerType === "azure-anthropic") {
           const parsedContent = parseExecutionContent(execution.content);
@@ -2643,39 +2721,6 @@ IMPORTANT TOOL USAGE RULES:
             registered: execution.metadata?.registered ?? null,
           },
         });
-
-        // Accumulate tool results for CLI display
-        // Build a standardized tool_result block in Anthropic format
-        logger.info({
-          sessionId: session?.id ?? null,
-          callId: call.id,
-          executionId: execution.id,
-          toolName: call.function?.name ?? call.name ?? execution.name,
-          executionOk: execution.ok,
-          contentType: typeof execution.content,
-          accumulatedCountBefore: accumulatedToolResults.length
-        }, "=== ACCUMULATING TOOL RESULT FOR CLI - START ===");
-
-        const toolUseId = call.id ?? execution.id;
-        const toolResultContent = typeof execution.content === "string"
-          ? execution.content
-          : JSON.stringify(execution.content);
-        accumulatedToolResults.push({
-          type: "tool_result",
-          tool_use_id: toolUseId,
-          tool_name: call.function?.name ?? call.name ?? execution.name,
-          content: toolResultContent,
-          is_error: execution.ok === false,
-        });
-
-        logger.info({
-          sessionId: session?.id ?? null,
-          toolUseId,
-          toolName: call.function?.name ?? call.name ?? execution.name,
-          contentLength: toolResultContent.length,
-          contentPreview: toolResultContent.substring(0, 200),
-          accumulatedCountAfter: accumulatedToolResults.length
-        }, "=== ACCUMULATING TOOL RESULT FOR CLI - END ===");
 
         if (execution.ok) {
           logger.debug(
@@ -2796,52 +2841,7 @@ IMPORTANT TOOL USAGE RULES:
         lastMessageRole: cleanPayload.messages[cleanPayload.messages.length - 1]?.role,
       }, "Tool execution complete");
 
-      // Return tool results directly to CLI - no more LLM call needed
-      // The tool result IS the answer (e.g., file contents for Read)
-      if (accumulatedToolResults.length > 0) {
-        logger.info({
-          sessionId: session?.id ?? null,
-          toolResultCount: accumulatedToolResults.length,
-          toolNames: accumulatedToolResults.map(r => r.tool_name)
-        }, "=== RETURNING TOOL RESULTS DIRECTLY TO CLI ===");
-
-        // Convert tool_result blocks to text blocks for CLI display
-        // The CLI only understands text/tool_use in responses, not tool_result
-        const directResponse = {
-          id: `msg_${Date.now()}`,
-          type: "message",
-          role: "assistant",
-          content: accumulatedToolResults.map(r => ({
-            type: "text",
-            text: r.content
-          })),
-          model: requestedModel,
-          stop_reason: "end_turn",
-          usage: { input_tokens: 0, output_tokens: 0 }
-        };
-
-        return {
-          response: {
-            status: 200,
-            body: directResponse,
-            terminationReason: "tool_result_direct",
-          },
-          steps,
-          durationMs: Date.now() - start,
-          terminationReason: "tool_result_direct",
-        };
-      }
-
-      logger.info({
-        sessionId: session?.id ?? null,
-        step: steps,
-        toolCallsExecuted: toolCallsExecuted,
-        totalToolCallsInThisStep: toolCalls.length,
-        messageCount: cleanPayload.messages.length,
-        lastMessageRole: cleanPayload.messages[cleanPayload.messages.length - 1]?.role,
-      }, "Tool execution complete - processing next toolCall");
-
-      continue; // Only if no tool results (shouldn't happen)
+      continue; // Loop back to invoke model with tool results in context
     }
 
     let anthropicPayload;
@@ -3101,6 +3101,68 @@ IMPORTANT TOOL USAGE RULES:
         wantsThinking,
       );
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+    }
+
+    // === EMPTY RESPONSE DETECTION (safety net — post-conversion) ===
+    // Primary detection is earlier (before tool handling). This catches edge cases
+    // where conversion produces empty content from non-empty raw data.
+    const hasTextContent = (() => {
+      if (Array.isArray(anthropicPayload.content)) {
+        return anthropicPayload.content.some(b => b.type === "text" && b.text?.trim());
+      }
+      if (typeof anthropicPayload.content === "string") {
+        return anthropicPayload.content.trim().length > 0;
+      }
+      return false;
+    })();
+
+    const hasToolUseBlocks = Array.isArray(anthropicPayload.content) &&
+      anthropicPayload.content.some(b => b.type === "tool_use");
+
+    if (!hasToolUseBlocks && !hasTextContent) {
+      logger.warn({
+        sessionId: session?.id ?? null,
+        step: steps,
+        messageKeys: Object.keys(anthropicPayload),
+        contentType: typeof anthropicPayload.content,
+        contentLength: Array.isArray(anthropicPayload.content) ? anthropicPayload.content.length : String(anthropicPayload.content || "").length,
+      }, "Empty LLM response detected (no text, no tool calls)");
+
+      // Retry once with a nudge
+      if (steps < settings.maxSteps && !emptyResponseRetried) {
+        emptyResponseRetried = true;
+        cleanPayload.messages.push({
+          role: "assistant",
+          content: "",
+        });
+        cleanPayload.messages.push({
+          role: "user",
+          content: "Please provide a response to the user's message.",
+        });
+        logger.info({ sessionId: session?.id ?? null }, "Retrying after empty response with nudge");
+        continue;  // Go back to top of while loop
+      }
+
+      // If retry also returned empty, return a fallback message
+      logger.warn({ sessionId: session?.id ?? null, steps }, "Empty response persisted after retry");
+      return {
+        response: {
+          status: 200,
+          body: {
+            id: `msg_${Date.now()}`,
+            type: "message",
+            role: "assistant",
+            model: requestedModel,
+            content: [{ type: "text", text: "I wasn't able to generate a response. Could you try rephrasing your message?" }],
+            stop_reason: "end_turn",
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+          terminationReason: "empty_response_fallback",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "empty_response_fallback",
+      };
     }
 
     // Ensure content is an array before calling .find()
@@ -3431,88 +3493,6 @@ IMPORTANT TOOL USAGE RULES:
       },
       "Agent loop completed successfully",
     );
-
-    // Include accumulated tool results in the response for CLI display
-    // This ensures the client sees actual tool output, not just LLM summaries
-    logger.info({
-      sessionId: session?.id ?? null,
-      accumulatedToolResultsCount: accumulatedToolResults.length,
-      hasAnthropicPayload: !!anthropicPayload,
-      currentContentType: anthropicPayload?.content ? (Array.isArray(anthropicPayload.content) ? 'array' : typeof anthropicPayload.content) : 'none',
-      currentContentLength: anthropicPayload?.content?.length || 0
-    }, "=== BEFORE TOOL RESULTS INCLUSION CHECK ===");
-
-    if (accumulatedToolResults.length > 0) {
-      logger.info({
-        sessionId: session?.id ?? null,
-        toolResultCount: accumulatedToolResults.length,
-        toolNames: accumulatedToolResults.map(r => r.tool_name),
-        toolUseIds: accumulatedToolResults.map(r => r.tool_use_id)
-      }, "=== ENTERING TOOL RESULTS INCLUSION BLOCK ===");
-
-      // Ensure content is an array
-      if (!Array.isArray(anthropicPayload.content)) {
-        logger.info({
-          sessionId: session?.id ?? null,
-          originalContentType: typeof anthropicPayload.content,
-          originalContentValue: anthropicPayload.content ? String(anthropicPayload.content).substring(0, 100) : 'null'
-        }, "=== CONTENT NOT ARRAY - CONVERTING ===");
-
-        anthropicPayload.content = anthropicPayload.content
-          ? [{ type: "text", text: String(anthropicPayload.content) }]
-          : [];
-
-        logger.info({
-          sessionId: session?.id ?? null,
-          convertedContentLength: anthropicPayload.content.length
-        }, "=== CONTENT CONVERTED TO ARRAY ===");
-      } else {
-        logger.info({
-          sessionId: session?.id ?? null,
-          existingContentLength: anthropicPayload.content.length,
-          existingContentTypes: anthropicPayload.content.map(b => b.type)
-        }, "=== CONTENT ALREADY ARRAY ===");
-      }
-
-      // Prepend tool results before text content so they appear in order
-      const contentBeforePrepend = anthropicPayload.content.length;      
-      anthropicPayload.content = [...accumulatedToolResults, ...anthropicPayload.content];
-
-      logger.info({
-        sessionId: session?.id ?? null,
-        toolResultCount: accumulatedToolResults.length,
-        toolNames: accumulatedToolResults.map(r => r.tool_name),
-        contentBeforePrepend,
-        contentAfterPrepend: anthropicPayload.content.length,
-        finalContentTypes: anthropicPayload.content.map(b => b.type)
-      }, "=== TOOL RESULTS PREPENDED TO RESPONSE ===");
-
-      for (const block of anthropicPayload.content) {
-        if (block.type === "tool_result") {
-          logger.info({
-            toolName: block.tool_name,
-            content: typeof block.content === 'string'
-              ? block.content.substring(0, 500)
-              : JSON.stringify(block.content).substring(0, 500)
-          }, "=== TOOL RESULT CONTENT SENT TO CLI ===");          
-        } else if (block.type === "text") {
-          logger.info({
-            text: block.text.substring(0, 500)
-          }, "=== TEXT CONTENT SENT TO CLI ===");
-        }
-      }
-
-    } else {
-      logger.info({
-        sessionId: session?.id ?? null
-      }, "=== NO TOOL RESULTS TO INCLUDE (accumulatedToolResults empty) ===");
-    }
-
-    logger.info({
-      sessionId: session?.id ?? null,
-      finalContentLength: anthropicPayload?.content?.length || 0,
-      finalContentTypes: anthropicPayload?.content?.map(b => b.type) || []
-    }, "=== AFTER TOOL RESULTS INCLUSION CHECK ===");
 
     // DIAGNOSTIC: Log response being returned
     logger.info({
