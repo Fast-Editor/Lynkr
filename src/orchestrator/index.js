@@ -1253,6 +1253,15 @@ function sanitizePayload(payload) {
     toolCount: clean.tools?.length ?? 0
   }, '[CONTEXT_FLOW] After sanitizePayload');
 
+  // === Suggestion mode: tag request and override model if configured ===
+  const { isSuggestionMode: isSuggestion } = detectSuggestionMode(clean.messages);
+  clean._requestMode = isSuggestion ? "suggestion" : "main";
+  const smConfig = config.modelProvider?.suggestionModeModel ?? "default";
+  if (isSuggestion && smConfig.toLowerCase() !== "default" && smConfig.toLowerCase() !== "none") {
+    clean.model = smConfig;
+    clean._suggestionModeModel = smConfig;
+  }
+
   return clean;
 }
 
@@ -1349,7 +1358,7 @@ async function runAgentLoop({
   providerType,
   headers,
 }) {
-  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length);
+  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length, 'mode:', cleanPayload._requestMode || 'main', 'model:', cleanPayload.model);
   logger.info({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop ENTERED');
   const settings = resolveLoopOptions(options);
   // Detect context window size for intelligent compression
@@ -1730,7 +1739,62 @@ IMPORTANT TOOL USAGE RULES:
     });
   }
 
+  // === DEBUG: Log request to LLM ===
+  console.log('\n[LLM REQUEST]', new Date().toISOString(), 'step:', steps, 'model:', cleanPayload.model, 'provider:', providerType, 'mode:', cleanPayload._requestMode || 'main');
+  console.log('[LLM REQUEST] messages (' + (cleanPayload.messages?.length ?? 0) + '):');
+  for (const m of (cleanPayload.messages || [])) {
+    const preview = typeof m.content === 'string'
+      ? m.content.substring(0, 200)
+      : Array.isArray(m.content)
+        ? m.content.map(b => b.type + ':' + (b.text || b.name || b.tool_use_id || '').substring(0, 80)).join(' | ')
+        : JSON.stringify(m.content).substring(0, 200);
+    console.log('  [' + m.role + '] ' + preview);
+  }
+  console.log('[LLM REQUEST] tools:', (cleanPayload.tools || []).map(t => t.name || t.function?.name).join(', ') || '(none)');
+  console.log('[LLM REQUEST] _noToolInjection:', !!cleanPayload._noToolInjection);
+
   const databricksResponse = await invokeModel(cleanPayload);
+
+  // === DEBUG: Log response from LLM ===
+  console.log('\n[LLM RESPONSE]', new Date().toISOString(), 'ok:', databricksResponse.ok, 'status:', databricksResponse.status, 'stream:', !!databricksResponse.stream, 'mode:', cleanPayload._requestMode || 'main');
+  if (databricksResponse.json) {
+    const rj = databricksResponse.json;
+    // Anthropic format
+    if (rj.content) {
+      console.log('[LLM RESPONSE] Anthropic format - content blocks:', Array.isArray(rj.content) ? rj.content.length : typeof rj.content);
+      if (Array.isArray(rj.content)) {
+        for (const b of rj.content) {
+          if (b.type === 'text') console.log('  [text] ' + (b.text || '').substring(0, 300));
+          else if (b.type === 'tool_use') console.log('  [tool_use] ' + b.name + '(' + JSON.stringify(b.input).substring(0, 200) + ')');
+          else console.log('  [' + b.type + ']');
+        }
+      }
+      console.log('[LLM RESPONSE] stop_reason:', rj.stop_reason);
+    }
+    // OpenAI format
+    if (rj.choices) {
+      const msg = rj.choices[0]?.message;
+      console.log('[LLM RESPONSE] OpenAI format - finish_reason:', rj.choices[0]?.finish_reason);
+      console.log('  [content] ' + (msg?.content || '(null)').substring(0, 300));
+      if (msg?.tool_calls?.length) {
+        for (const tc of msg.tool_calls) {
+          console.log('  [tool_call] ' + (tc.function?.name || tc.name) + '(' + (tc.function?.arguments || '').substring(0, 200) + ')');
+        }
+      }
+    }
+    // Ollama format
+    if (rj.message && !rj.choices && !rj.content) {
+      console.log('[LLM RESPONSE] Ollama format - done:', rj.done);
+      console.log('  [content] ' + (rj.message.content || '(empty)').substring(0, 300));
+      if (rj.message.tool_calls?.length) {
+        for (const tc of rj.message.tool_calls) {
+          console.log('  [tool_call] ' + (tc.function?.name || tc.name) + '(' + JSON.stringify(tc.function?.arguments || {}).substring(0, 200) + ')');
+        }
+      }
+    }
+  } else {
+    console.log('[LLM RESPONSE] no json body - raw:', String(databricksResponse.body || '').substring(0, 300));
+  }
   // Extract and log actual token usage
   const actualUsage = databricksResponse.ok && config.tokenTracking?.enabled !== false
     ? tokens.extractUsageFromResponse(databricksResponse.json)
@@ -2075,11 +2139,27 @@ IMPORTANT TOOL USAGE RULES:
       };
     }
 
+    // Guard: drop hallucinated tool calls when no tools were sent to the model.
+    // Some models (e.g. Llama 3.1) hallucinate tool_call blocks from conversation
+    // history even when the request contained zero tool definitions.
+    const toolsWereSent = Array.isArray(cleanPayload.tools) && cleanPayload.tools.length > 0;
+    if (toolCalls.length > 0 && !toolsWereSent) {
+      console.log('[HALLUCINATION GUARD] Model returned', toolCalls.length, 'tool call(s) but no tools were offered — ignoring:', toolCalls.map(tc => tc.function?.name || tc.name));
+      logger.warn({
+        sessionId: session?.id ?? null,
+        step: steps,
+        hallucinated: toolCalls.map(tc => tc.function?.name || tc.name),
+        noToolInjection: !!cleanPayload._noToolInjection,
+      }, "Dropped hallucinated tool calls (no tools were sent to model)");
+      toolCalls = [];
+      // If there's also no text content, treat as empty response (handled below)
+    }
+
     if (toolCalls.length > 0) {
       // Convert OpenAI/OpenRouter format to Anthropic format for session storage
       let sessionContent;
       if (providerType === "azure-anthropic") {
-        // Azure Anthropic already returns content in Anthropic format
+        // Azure Anthropic already returns content in Anthropic
         sessionContent = databricksResponse.json?.content ?? [];
       } else {
         // Convert OpenAI/OpenRouter format to Anthropic content blocks
@@ -3520,6 +3600,34 @@ IMPORTANT TOOL USAGE RULES:
   };
 }
 
+/**
+ * Detect if the current request is a suggestion mode call.
+ * Scans the last user message for the [SUGGESTION MODE: marker.
+ * @param {Array} messages - The conversation messages
+ * @returns {{ isSuggestionMode: boolean }}
+ */
+function detectSuggestionMode(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { isSuggestionMode: false };
+  }
+  // Scan from the end to find the last user message
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== 'user') continue;
+    const content = typeof msg.content === 'string'
+      ? msg.content
+      : Array.isArray(msg.content)
+        ? msg.content.map(b => b.text || '').join(' ')
+        : '';
+    if (content.includes('[SUGGESTION MODE:')) {
+      return { isSuggestionMode: true };
+    }
+    // Only check the last user message
+    break;
+  }
+  return { isSuggestionMode: false };
+}
+
 async function processMessage({ payload, headers, session, cwd, options = {} }) {
   const requestedModel =
     payload?.model ??
@@ -3528,6 +3636,32 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
   const wantsThinking =
     typeof headers?.["anthropic-beta"] === "string" &&
     headers["anthropic-beta"].includes("interleaved-thinking");
+
+  // === SUGGESTION MODE: Early return when SUGGESTION_MODE_MODEL=none ===
+  const { isSuggestionMode } = detectSuggestionMode(payload?.messages);
+  const suggestionModelConfig = config.modelProvider?.suggestionModeModel ?? "default";
+  if (isSuggestionMode && suggestionModelConfig.toLowerCase() === "none") {
+    console.log('[SUGGESTION MODE] Skipping LLM call (SUGGESTION_MODE_MODEL=none)');
+    return {
+      response: {
+        json: {
+          id: `msg_suggestion_skip_${Date.now()}`,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "" }],
+          model: requestedModel,
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+        ok: true,
+        status: 200,
+      },
+      steps: 0,
+      durationMs: 0,
+      terminationReason: "suggestion_mode_skip",
+    };
+  }
 
   // === TOOL LOOP GUARD (EARLY CHECK) ===
   // Check BEFORE sanitization since sanitizePayload removes conversation history
