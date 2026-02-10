@@ -1753,7 +1753,33 @@ IMPORTANT TOOL USAGE RULES:
   console.log('[LLM REQUEST] tools:', (cleanPayload.tools || []).map(t => t.name || t.function?.name).join(', ') || '(none)');
   console.log('[LLM REQUEST] _noToolInjection:', !!cleanPayload._noToolInjection);
 
-  const databricksResponse = await invokeModel(cleanPayload);
+  let databricksResponse;
+  try {
+    databricksResponse = await invokeModel(cleanPayload);
+  } catch (modelError) {
+    const isConnectionError = modelError.cause?.code === 'ECONNREFUSED'
+      || modelError.message?.includes('fetch failed')
+      || modelError.code === 'ECONNREFUSED';
+    if (isConnectionError) {
+      console.error(`[LLM ERROR] ${new Date().toISOString()} Provider ${providerType} is unreachable (connection refused). Is it running?`);
+      return {
+        response: {
+          status: 503,
+          body: {
+            error: {
+              type: "provider_unreachable",
+              message: `Provider ${providerType} is unreachable. Is the service running?`,
+            },
+          },
+          terminationReason: "provider_unreachable",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "provider_unreachable",
+      };
+    }
+    throw modelError;
+  }
 
   // === DEBUG: Log response from LLM ===
   console.log('\n[LLM RESPONSE]', new Date().toISOString(), 'ok:', databricksResponse.ok, 'status:', databricksResponse.status, 'stream:', !!databricksResponse.stream, 'mode:', cleanPayload._requestMode || 'main');
@@ -3644,7 +3670,7 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     console.log('[SUGGESTION MODE] Skipping LLM call (SUGGESTION_MODE_MODEL=none)');
     return {
       response: {
-        json: {
+        body: {
           id: `msg_suggestion_skip_${Date.now()}`,
           type: "message",
           role: "assistant",
