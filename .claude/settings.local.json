@@ -74,7 +74,8 @@
       "WebFetch(domain:dev.to)",
       "WebFetch(domain:models.dev)",
       "Bash(npm view:*)",
-      "Bash(kill:*)"
+      "Bash(kill:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

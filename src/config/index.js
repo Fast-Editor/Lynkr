@@ -383,6 +383,7 @@ const webSearchMaxRetries = Number.parseInt(process.env.WEB_SEARCH_MAX_RETRIES ?
 
 const policyMaxSteps = Number.parseInt(process.env.POLICY_MAX_STEPS ?? "8", 10);
 const policyMaxToolCalls = Number.parseInt(process.env.POLICY_MAX_TOOL_CALLS ?? "12", 10);
+const policyToolLoopThreshold = Number.parseInt(process.env.POLICY_TOOL_LOOP_THRESHOLD ?? "10", 10);
 const policyDisallowedTools =
   process.env.POLICY_DISALLOWED_TOOLS?.split(",")
     .map((tool) => tool.trim())
@@ -635,7 +636,7 @@ var config = {
   policy: {
     maxStepsPerTurn: Number.isNaN(policyMaxSteps) ? 8 : policyMaxSteps,
     maxToolCallsPerTurn: Number.isNaN(policyMaxToolCalls) ? 12 : policyMaxToolCalls,
-    toolLoopThreshold: 1, // Max tool results before force-terminating (set to 1 because GPT-5.2 ignores stop instructions)
+    toolLoopThreshold: Number.isNaN(policyToolLoopThreshold) ? 10 : policyToolLoopThreshold, // Max tool results before force-terminating
     disallowedTools: policyDisallowedTools,
     git: {
       allowPush: policyGitAllowPush,
