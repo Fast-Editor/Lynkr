@@ -329,6 +329,7 @@ async function invokeOllama(body) {
       : keepAlive;
     logger.debug({ keepAlive: ollamaBody.keep_alive }, "Ollama keep_alive configured");
   }
+
   // Check if model supports tools FIRST (before wasteful injection)
   const supportsTools = await checkOllamaToolSupport(config.ollama.model);
 
