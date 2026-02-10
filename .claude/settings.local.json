@@ -75,7 +75,9 @@
       "WebFetch(domain:models.dev)",
       "Bash(npm view:*)",
       "Bash(kill:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "WebFetch(domain:opencode.ai)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

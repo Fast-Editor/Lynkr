@@ -145,26 +145,70 @@ Configure Cursor IDE to use Lynkr:
 
 📖 **[Full Cursor Setup Guide](documentation/cursor-integration.md)** | **[Embeddings Configuration](documentation/embeddings.md)**
 ---
-## Codex CLI with Lynkr                                                                                                                                                                                                                    
-Configure Codex Cli to use Lynkr                                                                                                                                                                                                                                                
-  Option 1: **Environment Variable (simplest)**                                                                                                                                                                                                          
- ``` 
-export OPENAI_BASE_URL=http://localhost:8081/v1                                                                                                                                                                                                    
-export  OPENAI_API_KEY=dummy                                                                                                                                                                                                                        
-  codex 
-  ```
-                                                                                                                                                                                                                                                     
-  Option 2: **Config File (~/.codex/config.toml)**
-  ```
-  model_provider = "lynkr"
+## Codex CLI Integration
 
-  [model_providers.lynkr]
-  name = "Lynkr Proxy"
-  base_url = "http://localhost:8081/v1"
-  env_key = "OPENAI_API_KEY"
-  ```
+Configure [OpenAI Codex CLI](https://github.com/openai/codex) to use Lynkr as its backend.
 
-> **Note:** For multi-step tool workflows, ensure `POLICY_TOOL_LOOP_THRESHOLD` is set high enough (default: 10).
+### Option 1: Environment Variables (Quick Start)
+
+```bash
+export OPENAI_BASE_URL=http://localhost:8081/v1
+export OPENAI_API_KEY=dummy
+
+codex
+```
+
+### Option 2: Config File (Recommended)
+
+Edit `~/.codex/config.toml`:
+
+```toml
+# Set Lynkr as the default provider
+model_provider = "lynkr"
+model = "gpt-4o"
+
+# Define the Lynkr provider
+[model_providers.lynkr]
+name = "Lynkr Proxy"
+base_url = "http://localhost:8081/v1"
+wire_api = "responses"
+
+# Optional: Trust your project directories
+[projects."/path/to/your/project"]
+trust_level = "trusted"
+```
+
+### Configuration Options
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `model_provider` | Active provider name | `"lynkr"` |
+| `model` | Model to request (mapped by Lynkr) | `"gpt-4o"`, `"claude-sonnet-4-5"` |
+| `base_url` | Lynkr endpoint | `"http://localhost:8081/v1"` |
+| `wire_api` | API format (`responses` or `chat`) | `"responses"` |
+| `trust_level` | Project trust (`trusted`, `sandboxed`) | `"trusted"` |
+
+### Remote Lynkr Server
+
+To connect Codex to a remote Lynkr instance:
+
+```toml
+[model_providers.lynkr-remote]
+name = "Remote Lynkr"
+base_url = "http://192.168.1.100:8081/v1"
+wire_api = "responses"
+```
+
+### Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Same response for all queries | Disable semantic cache: `SEMANTIC_CACHE_ENABLED=false` |
+| Tool calls not executing | Increase threshold: `POLICY_TOOL_LOOP_THRESHOLD=15` |
+| Slow first request | Keep Ollama loaded: `OLLAMA_KEEP_ALIVE=24h` |
+| Connection refused | Ensure Lynkr is running: `npm start` |
+
+> **Note:** Codex uses the OpenAI Responses API format. Lynkr automatically converts this to your configured provider's format.
 
 ---
 
@@ -197,8 +241,9 @@ Lynkr supports [ClawdBot](https://github.com/openclaw/openclaw) via its OpenAI-c
 - ⚙️ **[Provider Configuration](documentation/providers.md)** - Complete setup for all 9+ providers
 - 🎯 **[Quick Start Examples](documentation/installation.md#quick-start-examples)** - Copy-paste configs
 
-### IDE Integration
+### IDE & CLI Integration
 - 🖥️ **[Claude Code CLI Setup](documentation/claude-code-cli.md)** - Connect Claude Code CLI
+- 🤖 **[Codex CLI Setup](documentation/codex-cli.md)** - Configure OpenAI Codex CLI with config.toml
 - 🎨 **[Cursor IDE Setup](documentation/cursor-integration.md)** - Full Cursor integration with troubleshooting
 - 🔍 **[Embeddings Guide](documentation/embeddings.md)** - Enable @Codebase semantic search (4 options: Ollama, llama.cpp, OpenRouter, OpenAI)
 

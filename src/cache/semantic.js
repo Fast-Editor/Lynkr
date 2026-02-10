@@ -142,9 +142,9 @@ class SemanticCache {
 
   /**
    * Extract cacheable text from messages
-   * IMPORTANT: Only extracts user message content, NOT system prompt.
-   * System prompt is handled separately via hash for exact matching.
-   * This prevents false cache hits when system prompts are large and similar.
+   * IMPORTANT: Only extracts the ACTUAL user query, NOT system-like content.
+   * When messages are merged (e.g., Codex sends AGENTS.md as user role),
+   * we need to extract only the real user query from the end.
    *
    * @param {Array} messages - Chat messages
    * @returns {string|null} - Extracted user prompt or null
@@ -169,10 +169,119 @@ class SemanticCache {
         .join('\n');
     }
 
-    // REMOVED: System prompt inclusion was causing false cache hits
-    // The system prompt is now handled via hash matching instead
+    // Extract ONLY the actual user query when content contains merged system-like prefixes
+    // Codex and other clients send AGENTS.md, environment_context, etc. as user role messages
+    // which get merged into one large user message. We need to extract just the real query.
+    const originalLength = content.length;
+    content = this._extractActualUserQuery(content);
+
+    // Log extraction for debugging
+    if (originalLength !== content.length) {
+      logger.info({
+        originalLength,
+        extractedLength: content.length,
+        extracted: content.substring(0, 100),
+      }, '[SemanticCache] Extracted user query from merged content');
+    }
 
     return content.trim() || null;
+  }
+
+  /**
+   * Extract the actual user query from potentially merged content.
+   * Codex and other clients merge system instructions with user queries.
+   * We need to find the ACTUAL user query, which is usually short and at the end.
+   *
+   * @param {string} content - Potentially merged user content
+   * @returns {string} - The actual user query
+   */
+  _extractActualUserQuery(content) {
+    if (!content) return content;
+
+    // Short content is likely the actual query - no extraction needed
+    if (content.length < 100) {
+      return content;
+    }
+
+    // Patterns that indicate SYSTEM/INSTRUCTION content (NOT user queries)
+    const systemPatterns = [
+      /^#\s*(AGENTS|CLAUDE|README)/i,           // Markdown doc headers
+      /^<[a-z_-]+[\s>]/i,                       // XML-like tags
+      /^```/,                                   // Code blocks
+      /^---\s*$/m,                              // YAML/markdown separators
+      /^IMPORTANT:/i,                           // Instruction markers
+      /^(permissions|environment|collaboration|context|instructions|Focus on)/i,
+      /sandboxing|workspace|cwd|shell/i,        // Environment info
+      /Do not summarize|respond ONLY/i,         // Instruction text
+    ];
+
+    // Split content by double newlines or single newlines
+    const segments = content.split(/\n\n+|\n(?=[A-Z#<])/);
+
+    // Strategy 1: Find the LAST SHORT segment that looks like a real query
+    // Real user queries are usually short (< 200 chars) and don't match system patterns
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const segment = segments[i].trim();
+
+      // Skip empty or very short segments (< 2 chars)
+      if (!segment || segment.length < 2) continue;
+
+      // Skip if too long (system content tends to be verbose)
+      if (segment.length > 300) continue;
+
+      // Check if this looks like system content
+      const isSystemContent = systemPatterns.some(pattern => pattern.test(segment));
+
+      if (!isSystemContent) {
+        // Found a non-system segment - likely the real query
+        logger.debug({
+          originalLength: content.length,
+          extractedLength: segment.length,
+          extracted: segment.substring(0, 100),
+        }, '[SemanticCache] Extracted actual user query');
+        return segment;
+      }
+    }
+
+    // Strategy 2: Look for content after the last XML closing tag
+    const afterXmlMatch = content.match(/<\/[^>]+>\s*\n*([^<\n]{2,200})$/);
+    if (afterXmlMatch) {
+      const extracted = afterXmlMatch[1].trim();
+      if (extracted.length >= 2) {
+        logger.debug({
+          extractedLength: extracted.length,
+          extracted: extracted.substring(0, 100),
+        }, '[SemanticCache] Extracted query after XML tag');
+        return extracted;
+      }
+    }
+
+    // Strategy 3: Take the very last line if it's short
+    const lines = content.split('\n').filter(l => l.trim());
+    const lastLine = lines[lines.length - 1]?.trim();
+    if (lastLine && lastLine.length >= 2 && lastLine.length <= 200) {
+      const isSystem = systemPatterns.some(p => p.test(lastLine));
+      if (!isSystem) {
+        logger.debug({
+          extractedLength: lastLine.length,
+          extracted: lastLine.substring(0, 100),
+        }, '[SemanticCache] Extracted last line as query');
+        return lastLine;
+      }
+    }
+
+    // Strategy 4: If all else fails, return last 150 chars
+    // This ensures we don't cache based on system prompt prefix
+    if (content.length > 500) {
+      const tail = content.slice(-150).trim();
+      logger.debug({
+        originalLength: content.length,
+        extractedLength: tail.length,
+      }, '[SemanticCache] Using tail extraction fallback');
+      return tail;
+    }
+
+    return content;
   }
 
   /**
