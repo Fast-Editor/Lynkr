@@ -670,53 +670,11 @@ function normaliseToolChoice(choice) {
 }
 
 /**
- * Strip thinking-style reasoning from Ollama model outputs
- * Patterns to remove:
- * - Lines starting with bullet points (●, •, -, *)
- * - Explanatory reasoning before the actual response
- * - Multiple newlines used to separate thinking from response
+ * Strip <think>...</think> tags that some models (DeepSeek, Qwen) emit for chain-of-thought reasoning.
  */
-function stripThinkingBlocks(text) {
+function stripThinkTags(text) {
   if (typeof text !== "string") return text;
-
-  // Split into lines
-  const lines = text.split("\n");
-  const cleanedLines = [];
-  let inThinkingBlock = false;
-  let consecutiveEmptyLines = 0;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Detect thinking block markers (bullet points followed by reasoning)
-    if (/^[●•\-\*]\s/.test(trimmed)) {
-      inThinkingBlock = true;
-      continue;
-    }
-
-    // Empty lines might separate thinking from response
-    if (trimmed === "") {
-      consecutiveEmptyLines++;
-      // If we've seen 2+ empty lines, likely end of thinking block
-      if (consecutiveEmptyLines >= 2) {
-        inThinkingBlock = false;
-      }
-      continue;
-    }
-
-    // Reset empty line counter
-    consecutiveEmptyLines = 0;
-
-    // Skip lines that are part of thinking block
-    if (inThinkingBlock) {
-      continue;
-    }
-
-    // Keep this line
-    cleanedLines.push(line);
-  }
-
-  return cleanedLines.join("\n").trim();
+  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 }
 
 function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
@@ -733,7 +691,7 @@ function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
 
   // Add text content if present, after stripping thinking blocks
   if (typeof rawContent === "string" && rawContent.trim()) {
-    const cleanedContent = stripThinkingBlocks(rawContent);
+    const cleanedContent = stripThinkTags(rawContent);
     if (cleanedContent) {
       contentItems.push({ type: "text", text: cleanedContent });
     }
@@ -1262,6 +1220,19 @@ function sanitizePayload(payload) {
     clean._suggestionModeModel = smConfig;
   }
 
+  // === Topic detection: tag request and override model if configured ===
+  if (clean._requestMode === "main") {
+    const { isTopicDetection: isTopic } = detectTopicDetection(clean);
+    if (isTopic) {
+      clean._requestMode = "topic";
+      const tdConfig = config.modelProvider?.topicDetectionModel ?? "default";
+      if (tdConfig.toLowerCase() !== "default") {
+        clean.model = tdConfig;
+        clean._topicDetectionModel = tdConfig;
+      }
+    }
+  }
+
   return clean;
 }
 
@@ -1371,7 +1342,7 @@ async function runAgentLoop({
   let toolCallsExecuted = 0;
   let fallbackPerformed = false;
   const toolCallNames = new Map();
-  const toolCallHistory = new Map(); // Track tool calls to detect loops: signature -> count
+  const toolCallHistory = new Map(); // Track tool calls to detect loops: signature -> counta
   let loopWarningInjected = false; // Track if we've already warned about loops
   let emptyResponseRetried = false; // Track if we've retried after an empty LLM response
 
@@ -1801,25 +1772,25 @@ IMPORTANT TOOL USAGE RULES:
     if (rj.choices) {
       const msg = rj.choices[0]?.message;
       console.log('[LLM RESPONSE] OpenAI format - finish_reason:', rj.choices[0]?.finish_reason);
-      console.log('  [content] ' + (msg?.content || '(null)').substring(0, 300));
+      console.log('  [content] ' + (msg?.content || '(null)'));
       if (msg?.tool_calls?.length) {
         for (const tc of msg.tool_calls) {
-          console.log('  [tool_call] ' + (tc.function?.name || tc.name) + '(' + (tc.function?.arguments || '').substring(0, 200) + ')');
+          console.log('  [tool_call] ' + (tc.function?.name || tc.name) + '(' + (tc.function?.arguments || '') + ')');
         }
       }
     }
     // Ollama format
     if (rj.message && !rj.choices && !rj.content) {
       console.log('[LLM RESPONSE] Ollama format - done:', rj.done);
-      console.log('  [content] ' + (rj.message.content || '(empty)').substring(0, 300));
+      console.log('  [content] ' + (rj.message.content || '(empty)'));
       if (rj.message.tool_calls?.length) {
         for (const tc of rj.message.tool_calls) {
-          console.log('  [tool_call] ' + (tc.function?.name || tc.name) + '(' + JSON.stringify(tc.function?.arguments || {}).substring(0, 200) + ')');
+          console.log('  [tool_call] ' + (tc.function?.name || tc.name) + '(' + JSON.stringify(tc.function?.arguments || {}) + ')');
         }
       }
     }
   } else {
-    console.log('[LLM RESPONSE] no json body - raw:', String(databricksResponse.body || '').substring(0, 300));
+    console.log('[LLM RESPONSE] no json body - raw:', String(databricksResponse.body || ''));
   }
   // Extract and log actual token usage
   const actualUsage = databricksResponse.ok && config.tokenTracking?.enabled !== false
@@ -3652,6 +3623,86 @@ function detectSuggestionMode(messages) {
     break;
   }
   return { isSuggestionMode: false };
+}
+
+/**
+ * Detect if the current request is a topic detection/classification call.
+ * These requests typically have a system prompt asking to classify conversation
+ * topics, with no tools and very short messages. They waste GPU time on large
+ * models (30-90s just to classify a topic).
+ *
+ * Detection heuristics:
+ *  1. System prompt contains topic classification instructions
+ *  2. No tools in the payload (topic detection never needs tools)
+ *  3. Short message count (typically 1-3 messages)
+ *
+ * @param {Object} payload - The request payload
+ * @returns {{ isTopicDetection: boolean }}
+ */
+function detectTopicDetection(payload) {
+  if (!payload) return { isTopicDetection: false };
+
+  // Topic detection requests have no tools
+  if (Array.isArray(payload.tools) && payload.tools.length > 0) {
+    return { isTopicDetection: false };
+  }
+
+  // Check system prompt for topic classification patterns
+  const systemText = typeof payload.system === 'string'
+    ? payload.system
+    : Array.isArray(payload.system)
+      ? payload.system.map(b => b.text || '').join(' ')
+      : '';
+
+  // Also check first message if system prompt is embedded there
+  let firstMsgText = '';
+  if (Array.isArray(payload.messages) && payload.messages.length > 0) {
+    const first = payload.messages[0];
+    if (first?.role === 'user' || first?.role === 'system') {
+      firstMsgText = typeof first.content === 'string'
+        ? first.content
+        : Array.isArray(first.content)
+          ? first.content.map(b => b.text || '').join(' ')
+          : '';
+    }
+  }
+
+  const combined = systemText + ' ' + firstMsgText;
+  const lc = combined.toLowerCase();
+
+  // Match patterns that Claude Code uses for topic detection
+  const topicPatterns = [
+    'new conversation topic',
+    'topic change',
+    'classify the topic',
+    'classify this message',
+    'conversation topic',
+    'topic classification',
+    'determines the topic',
+    'determine the topic',
+    'categorize the topic',
+    'what topic',
+    'identify the topic',
+  ];
+
+  const hasTopicPattern = topicPatterns.some(p => lc.includes(p));
+
+  if (hasTopicPattern) {
+    return { isTopicDetection: true };
+  }
+
+  // Additional heuristic: very short payload with no tools and system prompt
+  // mentioning "topic" or "classify"
+  if (
+    !payload.tools &&
+    Array.isArray(payload.messages) &&
+    payload.messages.length <= 3 &&
+    (lc.includes('topic') || lc.includes('classify'))
+  ) {
+    return { isTopicDetection: true };
+  }
+
+  return { isTopicDetection: false };
 }
 
 async function processMessage({ payload, headers, session, cwd, options = {} }) {
