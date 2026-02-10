@@ -136,6 +136,10 @@ const zaiModel = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
 const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
 const vertexModel = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
 
+// Topic detection model override
+// Values: "default" (use main model) or a model name to redirect topic detection to a lighter model
+const topicDetectionModel = (process.env.TOPIC_DETECTION_MODEL ?? "default").trim();
+
 // Hot reload configuration
 const hotReloadEnabled = process.env.HOT_RELOAD_ENABLED !== "false"; // default true
 const hotReloadDebounceMs = Number.parseInt(process.env.HOT_RELOAD_DEBOUNCE_MS ?? "1000", 10);
@@ -596,6 +600,7 @@ var config = {
   modelProvider: {
     type: modelProvider,
     defaultModel,
+    topicDetectionModel,
     // Hybrid routing settings
     preferOllama,
     fallbackEnabled,
@@ -885,6 +890,7 @@ function reloadConfig() {
   config.modelProvider.preferOllama = process.env.PREFER_OLLAMA === "true";
   config.modelProvider.fallbackEnabled = process.env.FALLBACK_ENABLED !== "false";
   config.modelProvider.fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
+  config.modelProvider.topicDetectionModel = (process.env.TOPIC_DETECTION_MODEL ?? "default").trim();
 
   // Log level
   config.logger.level = process.env.LOG_LEVEL ?? "info";
