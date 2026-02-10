@@ -177,6 +177,9 @@ if (!["server", "client", "passthrough"].includes(toolExecutionMode)) {
   );
 }
 console.log(`[CONFIG] Tool execution mode: ${toolExecutionMode}`);
+if (suggestionModeModel.toLowerCase() !== "default") {
+  console.log(`[CONFIG] Suggestion mode model: ${suggestionModeModel}`);
+}
 
 // Memory system configuration (Titans-inspired long-term memory)
 const memoryEnabled = process.env.MEMORY_ENABLED !== "false"; // default true

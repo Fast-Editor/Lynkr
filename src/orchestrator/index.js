@@ -1358,7 +1358,7 @@ async function runAgentLoop({
   providerType,
   headers,
 }) {
-  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length);
+  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length, 'mode:', cleanPayload._requestMode || 'main', 'model:', cleanPayload.model);
   logger.info({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop ENTERED');
   const settings = resolveLoopOptions(options);
   // Detect context window size for intelligent compression
@@ -2124,6 +2124,22 @@ IMPORTANT TOOL USAGE RULES:
         durationMs: Date.now() - start,
         terminationReason: "empty_response_fallback",
       };
+    }
+
+    // Guard: drop hallucinated tool calls when no tools were sent to the model.
+    // Some models (e.g. Llama 3.1) hallucinate tool_call blocks from conversation
+    // history even when the request contained zero tool definitions.
+    const toolsWereSent = Array.isArray(cleanPayload.tools) && cleanPayload.tools.length > 0;
+    if (toolCalls.length > 0 && !toolsWereSent) {
+      console.log('[HALLUCINATION GUARD] Model returned', toolCalls.length, 'tool call(s) but no tools were offered — ignoring:', toolCalls.map(tc => tc.function?.name || tc.name));
+      logger.warn({
+        sessionId: session?.id ?? null,
+        step: steps,
+        hallucinated: toolCalls.map(tc => tc.function?.name || tc.name),
+        noToolInjection: !!cleanPayload._noToolInjection,
+      }, "Dropped hallucinated tool calls (no tools were sent to model)");
+      toolCalls = [];
+      // If there's also no text content, treat as empty response (handled below)
     }
 
     if (toolCalls.length > 0) {
