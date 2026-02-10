@@ -1,7 +1,9 @@
 const path = require("path");
 const dotenv = require("dotenv");
 
-dotenv.config();
+// .env must be authoritative over shell env vars (e.g. stale exports in .bashrc).
+// Skip override in test mode so tests can set process.env before requiring config.
+dotenv.config({ override: process.env.NODE_ENV !== "test" });
 
 function trimTrailingSlash(value) {
   if (typeof value !== "string") return value;
@@ -140,6 +142,10 @@ const vertexModel = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
 // Values: "default" (use MODEL_DEFAULT), "none" (skip LLM call), or a model name
 const suggestionModeModel = (process.env.SUGGESTION_MODE_MODEL ?? "default").trim();
 
+// Topic detection model override
+// Values: "default" (use main model) or a model name to redirect topic detection to a lighter model
+const topicDetectionModel = (process.env.TOPIC_DETECTION_MODEL ?? "default").trim();
+
 // Hot reload configuration
 const hotReloadEnabled = process.env.HOT_RELOAD_ENABLED !== "false"; // default true
 const hotReloadDebounceMs = Number.parseInt(process.env.HOT_RELOAD_DEBOUNCE_MS ?? "1000", 10);
@@ -177,6 +183,12 @@ if (!["server", "client", "passthrough"].includes(toolExecutionMode)) {
   );
 }
 console.log(`[CONFIG] Tool execution mode: ${toolExecutionMode}`);
+if (suggestionModeModel.toLowerCase() !== "default") {
+  console.log(`[CONFIG] Suggestion mode model: ${suggestionModeModel}`);
+}
+if (topicDetectionModel.toLowerCase() !== "default") {
+  console.log(`[CONFIG] Topic detection model: ${topicDetectionModel}`);
+}
 
 // Memory system configuration (Titans-inspired long-term memory)
 const memoryEnabled = process.env.MEMORY_ENABLED !== "false"; // default true
@@ -604,6 +616,7 @@ var config = {
     type: modelProvider,
     defaultModel,
     suggestionModeModel,
+    topicDetectionModel,
     // Hybrid routing settings
     preferOllama,
     fallbackEnabled,
@@ -894,6 +907,7 @@ function reloadConfig() {
   config.modelProvider.fallbackEnabled = process.env.FALLBACK_ENABLED !== "false";
   config.modelProvider.fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
   config.modelProvider.suggestionModeModel = (process.env.SUGGESTION_MODE_MODEL ?? "default").trim();
+  config.modelProvider.topicDetectionModel = (process.env.TOPIC_DETECTION_MODEL ?? "default").trim();
 
   // Log level
   config.logger.level = process.env.LOG_LEVEL ?? "info";
