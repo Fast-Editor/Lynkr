@@ -1234,6 +1234,15 @@ function sanitizePayload(payload) {
     toolCount: clean.tools?.length ?? 0
   }, '[CONTEXT_FLOW] After sanitizePayload');
 
+  // === Suggestion mode: tag request and override model if configured ===
+  const { isSuggestionMode: isSuggestion } = detectSuggestionMode(clean.messages);
+  clean._requestMode = isSuggestion ? "suggestion" : "main";
+  const smConfig = config.modelProvider?.suggestionModeModel ?? "default";
+  if (isSuggestion && smConfig.toLowerCase() !== "default" && smConfig.toLowerCase() !== "none") {
+    clean.model = smConfig;
+    clean._suggestionModeModel = smConfig;
+  }
+
   return clean;
 }
 
@@ -1876,11 +1885,26 @@ IMPORTANT TOOL USAGE RULES:
       toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
     }
 
+    // Guard: drop hallucinated tool calls when no tools were sent to the model.
+    // Some models (e.g. Llama 3.1) hallucinate tool_call blocks from conversation
+    // history even when the request contained zero tool definitions.
+    const toolsWereSent = Array.isArray(cleanPayload.tools) && cleanPayload.tools.length > 0;
+    if (toolCalls.length > 0 && !toolsWereSent) {
+      logger.warn({
+        sessionId: session?.id ?? null,
+        step: steps,
+        hallucinated: toolCalls.map(tc => tc.function?.name || tc.name),
+        noToolInjection: !!cleanPayload._noToolInjection,
+      }, "Dropped hallucinated tool calls (no tools were sent to model)");
+      toolCalls = [];
+      // If there's also no text content, treat as empty response (handled below)
+    }
+
     if (toolCalls.length > 0) {
       // Convert OpenAI/OpenRouter format to Anthropic format for session storage
       let sessionContent;
       if (providerType === "azure-anthropic") {
-        // Azure Anthropic already returns content in Anthropic format
+        // Azure Anthropic already returns content in Anthropic
         sessionContent = databricksResponse.json?.content ?? [];
       } else {
         // Convert OpenAI/OpenRouter format to Anthropic content blocks
@@ -3217,6 +3241,34 @@ IMPORTANT TOOL USAGE RULES:
   };
 }
 
+/**
+ * Detect if the current request is a suggestion mode call.
+ * Scans the last user message for the [SUGGESTION MODE: marker.
+ * @param {Array} messages - The conversation messages
+ * @returns {{ isSuggestionMode: boolean }}
+ */
+function detectSuggestionMode(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { isSuggestionMode: false };
+  }
+  // Scan from the end to find the last user message
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== 'user') continue;
+    const content = typeof msg.content === 'string'
+      ? msg.content
+      : Array.isArray(msg.content)
+        ? msg.content.map(b => b.text || '').join(' ')
+        : '';
+    if (content.includes('[SUGGESTION MODE:')) {
+      return { isSuggestionMode: true };
+    }
+    // Only check the last user message
+    break;
+  }
+  return { isSuggestionMode: false };
+}
+
 async function processMessage({ payload, headers, session, cwd, options = {} }) {
   const requestedModel =
     payload?.model ??
@@ -3225,6 +3277,32 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
   const wantsThinking =
     typeof headers?.["anthropic-beta"] === "string" &&
     headers["anthropic-beta"].includes("interleaved-thinking");
+
+  // === SUGGESTION MODE: Early return when SUGGESTION_MODE_MODEL=none ===
+  const { isSuggestionMode } = detectSuggestionMode(payload?.messages);
+  const suggestionModelConfig = config.modelProvider?.suggestionModeModel ?? "default";
+  if (isSuggestionMode && suggestionModelConfig.toLowerCase() === "none") {
+    logger.info('Suggestion mode: skipping LLM call (SUGGESTION_MODE_MODEL=none)');
+    return {
+      response: {
+        json: {
+          id: `msg_suggestion_skip_${Date.now()}`,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "" }],
+          model: requestedModel,
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+        ok: true,
+        status: 200,
+      },
+      steps: 0,
+      durationMs: 0,
+      terminationReason: "suggestion_mode_skip",
+    };
+  }
 
   // === TOOL LOOP GUARD (EARLY CHECK) ===
   // Check BEFORE sanitization since sanitizePayload removes conversation history

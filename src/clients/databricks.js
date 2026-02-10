@@ -309,7 +309,7 @@ async function invokeOllama(body) {
   }
 
   const ollamaBody = {
-    model: config.ollama.model,
+    model: body._suggestionModeModel || config.ollama.model,
     messages: deduplicated,
     stream: false,  // Force non-streaming for Ollama - streaming format conversion not yet implemented
     options: {
@@ -410,7 +410,7 @@ async function invokeOpenRouter(body) {
   }
 
   const openRouterBody = {
-    model: config.openrouter.model,
+    model: body._suggestionModeModel || config.openrouter.model,
     messages,
     temperature: body.temperature ?? 0.7,
     max_tokens: body.max_tokens ?? 4096,
@@ -496,7 +496,7 @@ async function invokeAzureOpenAI(body) {
     max_tokens: Math.min(body.max_tokens ?? 4096, 16384),  // Cap at Azure OpenAI's limit
     top_p: body.top_p ?? 1.0,
     stream: false,  // Force non-streaming for Azure OpenAI - streaming format conversion not yet implemented
-    model: config.azureOpenAI.deployment
+    model: body._suggestionModeModel || config.azureOpenAI.deployment
   };
 
   // Add tools - inject standard tools if client didn't send any (passthrough mode)
@@ -842,7 +842,7 @@ async function invokeOpenAI(body) {
   }
 
   const openAIBody = {
-    model: config.openai.model || "gpt-4o",
+    model: body._suggestionModeModel || config.openai.model || "gpt-4o",
     messages,
     temperature: body.temperature ?? 0.7,
     max_tokens: body.max_tokens ?? 4096,
