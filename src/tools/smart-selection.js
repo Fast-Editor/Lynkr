@@ -9,6 +9,9 @@
 
 const logger = require('../logger');
 
+// Strip system-reminder blocks injected by the CLI before classification
+const SYSTEM_REMINDER_PATTERN = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+
 // Pre-compiled regex patterns for performance (avoid recompiling on every request)
 const GREETING_PATTERN = /^(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings|sup|yo)[\s\.\!\?]*$/i;
 const QUESTION_PATTERN = /^(what is|what's|how does|when|where|why|explain|define|tell me about|can you explain)/i;
@@ -190,7 +193,10 @@ function classifyRequestType(payload) {
     return { type: 'coding', confidence: 0.5, keywords: [] };
   }
 
-  const content = extractContent(lastMessage);
+  const rawContent = extractContent(lastMessage);
+  // Strip <system-reminder> blocks before classification to prevent
+  // CLI-injected keywords (search, explain, documentation) from polluting results
+  const content = rawContent.replace(SYSTEM_REMINDER_PATTERN, '').trim();
   const contentLower = content.toLowerCase();
   const messageCount = payload.messages?.length ?? 0;
 
