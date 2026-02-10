@@ -10,7 +10,7 @@ const DEFAULT_CONFIG = {
   backoffMultiplier: 2,
   jitterFactor: 0.1, // 10% jitter
   retryableStatuses: [429, 500, 502, 503, 504],
-  retryableErrors: ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'ENETUNREACH'],
+  retryableErrors: ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'ENETUNREACH', 'ECONNREFUSED'],
 };
 
 /**
@@ -41,6 +41,11 @@ function isRetryable(error, response, config) {
 
   // Check error codes
   if (error && error.code && config.retryableErrors.includes(error.code)) {
+    return true;
+  }
+
+  // Check nested cause (Node undici wraps connection errors as TypeError)
+  if (error && error.cause?.code && config.retryableErrors.includes(error.cause.code)) {
     return true;
   }
 

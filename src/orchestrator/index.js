@@ -1694,7 +1694,33 @@ IMPORTANT TOOL USAGE RULES:
     });
   }
 
-  const databricksResponse = await invokeModel(cleanPayload);
+  let databricksResponse;
+  try {
+    databricksResponse = await invokeModel(cleanPayload);
+  } catch (modelError) {
+    const isConnectionError = modelError.cause?.code === 'ECONNREFUSED'
+      || modelError.message?.includes('fetch failed')
+      || modelError.code === 'ECONNREFUSED';
+    if (isConnectionError) {
+      logger.error(`Provider ${providerType} is unreachable (connection refused). Is it running?`);
+      return {
+        response: {
+          status: 503,
+          body: {
+            error: {
+              type: "provider_unreachable",
+              message: `Provider ${providerType} is unreachable. Is the service running?`,
+            },
+          },
+          terminationReason: "provider_unreachable",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "provider_unreachable",
+      };
+    }
+    throw modelError;
+  }
 
   // Extract and log actual token usage
   const actualUsage = databricksResponse.ok && config.tokenTracking?.enabled !== false
