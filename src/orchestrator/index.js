@@ -3631,7 +3631,7 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     logger.info('Suggestion mode: skipping LLM call (SUGGESTION_MODE_MODEL=none)');
     return {
       response: {
-        json: {
+        body: {
           id: `msg_suggestion_skip_${Date.now()}`,
           type: "message",
           role: "assistant",
