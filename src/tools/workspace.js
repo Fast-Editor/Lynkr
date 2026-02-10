@@ -1,8 +1,12 @@
+const path = require("path");
 const {
   readFile,
   writeFile,
   applyFilePatch,
   resolveWorkspacePath,
+  expandTilde,
+  isExternalPath,
+  readExternalFile,
   fileExists,
   workspaceRoot,
 } = require("../workspace");
@@ -30,17 +34,44 @@ function registerWorkspaceTools() {
   registerTool(
     "fs_read",
     async ({ args = {} }) => {
-      const relativePath = validateString(args.path ?? args.file, "path");
+      const targetPath = validateString(args.path ?? args.file ?? args.file_path, "path");
       const encoding = normalizeEncoding(args.encoding);
-      const content = await readFile(relativePath, encoding);
+
+      // Check if path is outside workspace
+      if (isExternalPath(targetPath)) {
+        if (args.user_approved !== true) {
+          const expanded = expandTilde(targetPath);
+          const resolved = path.resolve(expanded);
+          return {
+            ok: false,
+            status: 403,
+            content: JSON.stringify({
+              error: "external_path_requires_approval",
+              message: `The file "${targetPath}" resolves to "${resolved}" which is outside the workspace. You MUST ask the user for permission before reading this file. If the user approves, call this tool again with the same path and set user_approved to true.`,
+              resolved_path: resolved,
+            }),
+          };
+        }
+        // User approved — read external file
+        const { content, resolvedPath } = await readExternalFile(targetPath, encoding);
+        return {
+          ok: true,
+          status: 200,
+          content,
+          metadata: { path: targetPath, encoding, resolved_path: resolvedPath },
+        };
+      }
+
+      // Normal workspace read (unchanged)
+      const content = await readFile(targetPath, encoding);
       return {
         ok: true,
         status: 200,
         content,
         metadata: {
-          path: relativePath,
+          path: targetPath,
           encoding,
-          resolved_path: resolveWorkspacePath(relativePath),
+          resolved_path: resolveWorkspacePath(targetPath),
         },
       };
     },
