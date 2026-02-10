@@ -1,4 +1,9 @@
-const Database = require('better-sqlite3');
+let Database;
+try {
+  Database = require('better-sqlite3');
+} catch {
+  Database = null;
+}
 const path = require('path');
 const fs = require('fs');
 const logger = require('../logger');
@@ -6,7 +11,10 @@ const logger = require('../logger');
 class BudgetManager {
   constructor(options = {}) {
     this.enabled = options.enabled !== false;
-    if (!this.enabled) return;
+    if (!this.enabled || !Database) {
+      this.enabled = false;
+      return;
+    }
 
     const dbPath = path.join(process.cwd(), 'data', 'budgets.db');
     const dbDir = path.dirname(dbPath);

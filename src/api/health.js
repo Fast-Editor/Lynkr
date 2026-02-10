@@ -1,4 +1,9 @@
-const Database = require("better-sqlite3");
+let Database;
+try {
+  Database = require("better-sqlite3");
+} catch {
+  Database = null;
+}
 const { invokeModel } = require("../clients/databricks");
 const logger = require("../logger");
 const config = require("../config");
@@ -133,6 +138,10 @@ async function checkDatabase() {
     const dbPath = config.sessionStore?.dbPath;
     if (!dbPath) {
       return { healthy: true, note: "No database configured" };
+    }
+
+    if (!Database) {
+      return { healthy: true, note: "better-sqlite3 not available, skipping database check" };
     }
 
     // Quick query to verify database is accessible
