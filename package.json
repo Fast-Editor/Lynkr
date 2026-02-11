@@ -10,7 +10,7 @@
   "scripts": {
     "prestart": "node -e \"if(process.env.HEADROOM_ENABLED==='true'&&process.env.HEADROOM_DOCKER_ENABLED!=='false'){process.exit(0)}else{process.exit(1)}\" && docker compose --profile headroom up -d headroom 2>/dev/null || echo 'Headroom skipped (disabled or Docker not running)'",
     "start": "node index.js 2>&1 | npx pino-pretty --sync",
-    "stop": "docker compose --profile headroom down",
+    "stop": "node -e \"if(process.env.HEADROOM_ENABLED==='true'&&process.env.HEADROOM_DOCKER_ENABLED!=='false'){process.exit(0)}else{process.exit(1)}\" && docker compose --profile headroom down || echo 'Headroom skipped (disabled or Docker not running)'",
     "dev": "nodemon index.js",
     "lint": "eslint src index.js",
     "test": "npm run test:unit && npm run test:performance",
