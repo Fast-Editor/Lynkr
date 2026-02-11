@@ -5,12 +5,17 @@
  * Provides automatic container creation, health checking, and graceful shutdown.
  */
 
-const Docker = require("dockerode");
+let Docker;
+try {
+  Docker = require("dockerode");
+} catch {
+  Docker = null;
+}
 const logger = require("../logger");
 const config = require("../config");
 
-// Initialize Docker client
-const docker = new Docker();
+// Initialize Docker client (only if dockerode is available)
+const docker = Docker ? new Docker() : null;
 
 // Launcher state
 let containerInstance = null;

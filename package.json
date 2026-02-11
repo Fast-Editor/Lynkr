@@ -1,6 +1,6 @@
 {
   "name": "lynkr",
-  "version": "7.2.3",
+  "version": "7.2.5",
   "description": "Self-hosted Claude Code & Cursor proxy with Databricks,AWS BedRock,Azure  adapters, openrouter, Ollama,llamacpp,LM Studio, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
@@ -49,7 +49,6 @@
     "@babel/traverse": "^7.29.0",
     "compression": "^1.7.4",
     "diff": "^5.2.0",
-    "dockerode": "^4.0.2",
     "dotenv": "^16.4.5",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
@@ -62,6 +61,7 @@
   },
   "optionalDependencies": {
     "better-sqlite3": "^12.6.2",
+    "dockerode": "^4.0.2",
     "tree-sitter": "^0.21.1",
     "tree-sitter-javascript": "^0.21.0",
     "tree-sitter-python": "^0.21.0",
