@@ -21,10 +21,9 @@ const orchestrator = require("../orchestrator");
 const { getSession } = require("../sessions");
 const {
   convertOpenAIToAnthropic,
-  convertAnthropicToOpenAI,
-  convertAnthropicStreamChunkToOpenAI
+  convertAnthropicToOpenAI
 } = require("../clients/openai-format");
-const { IDE_SAFE_TOOLS, IDE_SAFE_TOOL_NAMES } = require("../clients/standard-tools");
+const { IDE_SAFE_TOOLS } = require("../clients/standard-tools");
 
 const router = express.Router();
 
@@ -335,14 +334,7 @@ function mapToolForClient(toolName, argsJson, clientType) {
   };
 }
 
-/**
- * Check if client is a known AI coding tool that needs tool mapping
- * @param {Object} headers - Request headers
- * @returns {boolean}
- */
-function isKnownClient(headers) {
-  return detectClient(headers) !== "unknown";
-}
+
 
 /**
  * POST /v1/chat/completions
