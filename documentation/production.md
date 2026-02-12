@@ -190,15 +190,35 @@ METRICS_ENABLED=true  # default: true
 
 ### 6. Structured Logging
 
-JSON logs with request ID correlation.
+JSON logs with request ID correlation via [Pino](https://github.com/pinojs/pino).
 
-**Configuration:**
+**Log Level Philosophy:**
+- **`info`** — Meaningful milestones: request received (minimal), request completed (duration + tokens), errors, retries, fallbacks
+- **`debug`** — Operational details: request body previews, tool injection, streaming chunks, intermediate conversions, tool mapping
+
+**Console Configuration:**
 ```bash
-LOG_LEVEL=info  # options: error, warn, info, debug
-REQUEST_LOGGING_ENABLED=true  # default: true
+LOG_LEVEL=info                  # options: error, warn, info, debug (default: info)
+REQUEST_LOGGING_ENABLED=true    # default: true
 ```
 
-**Log format:**
+In development mode (`NODE_ENV=development`), logs are pretty-printed via `pino-pretty`.
+
+**File Logging (optional):**
+
+Persistent log files with automatic daily rotation via [pino-roll](https://github.com/pinojs/pino-roll). Enable by setting `LOG_FILE_ENABLED=true`.
+
+```bash
+LOG_FILE_ENABLED=true           # default: false
+LOG_FILE_PATH=./logs/lynkr.log  # default: <cwd>/logs/lynkr.log
+LOG_FILE_LEVEL=debug            # default: debug (captures all levels)
+LOG_FILE_FREQUENCY=daily        # options: daily, hourly, custom (default: daily)
+LOG_FILE_MAX_FILES=14           # rotated files to keep (default: 14)
+```
+
+Rotated files are named with timestamps (e.g., `lynkr.log.2025-07-12`). The log directory is created automatically.
+
+**Log format (JSON):**
 ```json
 {
   "level": "info",
@@ -216,10 +236,25 @@ REQUEST_LOGGING_ENABLED=true  # default: true
 }
 ```
 
+**Querying log files:**
+```bash
+# Tail live logs
+tail -f ./logs/lynkr.log | npx pino-pretty
+
+# Find errors in the last 24 hours
+cat ./logs/lynkr.log | jq 'select(.level >= 50)'
+
+# Filter by provider
+cat ./logs/lynkr.log | jq 'select(.provider == "databricks")'
+
+# Search for slow requests (>2s)
+cat ./logs/lynkr.log | jq 'select(.duration > 2000)'
+```
+
 **Log aggregation:**
-- Stdout (captured by Docker/K8s)
-- Parse with structured log tools
-- Send to Elasticsearch, Splunk, etc.
+- **Stdout** — Captured by Docker/K8s log drivers
+- **File rotation** — For standalone deployments or local debugging
+- **External** — Forward JSON logs to Elasticsearch, Splunk, Grafana Loki, etc.
 
 ### 7. Health Checks
 

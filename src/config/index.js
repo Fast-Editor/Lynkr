@@ -620,6 +620,13 @@ var config = {
   },
   logger: {
     level: process.env.LOG_LEVEL ?? "info",
+    file: {
+      enabled: process.env.LOG_FILE_ENABLED === "true",
+      path: process.env.LOG_FILE_PATH ?? path.join(process.cwd(), "logs", "lynkr.log"),
+      level: process.env.LOG_FILE_LEVEL ?? "debug",      // File captures everything
+      frequency: process.env.LOG_FILE_FREQUENCY ?? "daily", // daily | hourly | <milliseconds>
+      maxFiles: parseInt(process.env.LOG_FILE_MAX_FILES ?? "14", 10),
+    },
   },
   sessionStore: {
     dbPath: sessionDbPath,
