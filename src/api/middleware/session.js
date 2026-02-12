@@ -45,8 +45,21 @@ function sessionMiddleware(req, res, next) {
     // Add sessionId to logger context for this request
     req.log = logger.child({ sessionId });
 
-    const session = getOrCreateSession(sessionId);
-    req.session = session;
+    // Skip DB persistence for auto-generated (ephemeral) session IDs.
+    // These are created when the client doesn't send a session header,
+    // so storing them just bloats the DB with throwaway records.
+    if (req.generatedSessionId) {
+      req.session = {
+        id: sessionId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        metadata: {},
+        history: [],
+        _ephemeral: true,
+      };
+    } else {
+      req.session = getOrCreateSession(sessionId);
+    }
     return next();
   } catch (err) {
     return next(err);

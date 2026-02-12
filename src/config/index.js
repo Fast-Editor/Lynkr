@@ -620,6 +620,13 @@ var config = {
   },
   logger: {
     level: process.env.LOG_LEVEL ?? "info",
+    file: {
+      enabled: process.env.LOG_FILE_ENABLED === "true",
+      path: process.env.LOG_FILE_PATH ?? path.join(process.cwd(), "logs", "lynkr.log"),
+      level: process.env.LOG_FILE_LEVEL ?? "debug",      // File captures everything
+      frequency: process.env.LOG_FILE_FREQUENCY ?? "daily", // daily | hourly | <milliseconds>
+      maxFiles: parseInt(process.env.LOG_FILE_MAX_FILES ?? "14", 10),
+    },
   },
   sessionStore: {
     dbPath: sessionDbPath,
@@ -704,8 +711,8 @@ var config = {
   semanticCache: {
     enabled: process.env.SEMANTIC_CACHE_ENABLED !== 'false',  // Disable via env if needed
     similarityThreshold: parseFloat(process.env.SEMANTIC_CACHE_THRESHOLD || '0.95'),  // Higher threshold
-    maxEntries: 500,
-    ttlMs: 3600000,  // 1 hour
+    maxEntries: Number.parseInt(process.env.SEMANTIC_CACHE_MAX_ENTRIES ?? "50", 10),  // Reduced from 500 to prevent memory bloat
+    ttlMs: Number.parseInt(process.env.SEMANTIC_CACHE_TTL_MS ?? "300000", 10),  // 5 minutes (was 1 hour)
   },
   agents: {
     enabled: agentsEnabled,
@@ -857,6 +864,23 @@ var config = {
     taskTimeoutMs: Number.isNaN(workerTaskTimeoutMs) ? 5000 : workerTaskTimeoutMs,
     offloadThresholdBytes: Number.isNaN(workerOffloadThresholdBytes) ? 10000 : workerOffloadThresholdBytes,
   },
+
+  // Intelligent Routing
+  routing: {
+    weightedScoring: true,
+    costOptimization: true,
+    agenticDetection: true,
+  },
+
+  // Model Tier Configuration (REQUIRED)
+  // Format: TIER_<LEVEL>=provider:model (e.g., TIER_SIMPLE=ollama:llama3.2)
+  modelTiers: {
+    enabled: true,
+    SIMPLE: process.env.TIER_SIMPLE?.trim() || null,
+    MEDIUM: process.env.TIER_MEDIUM?.trim() || null,
+    COMPLEX: process.env.TIER_COMPLEX?.trim() || null,
+    REASONING: process.env.TIER_REASONING?.trim() || null,
+  },
 };
 
 /**
@@ -901,5 +925,20 @@ function reloadConfig() {
 
 // Make config mutable for hot reload
 config.reloadConfig = reloadConfig;
+
+// Validate TIER_* configuration (warn if missing, don't crash)
+const missingTiers = [];
+if (!config.modelTiers.SIMPLE) missingTiers.push('TIER_SIMPLE');
+if (!config.modelTiers.MEDIUM) missingTiers.push('TIER_MEDIUM');
+if (!config.modelTiers.COMPLEX) missingTiers.push('TIER_COMPLEX');
+if (!config.modelTiers.REASONING) missingTiers.push('TIER_REASONING');
+
+if (missingTiers.length > 0) {
+  config.modelTiers.enabled = false;
+  console.warn(
+    `[WARN] Missing tier configuration: ${missingTiers.join(', ')} — tiered routing disabled.\n` +
+    `  Set TIER_<LEVEL>=provider:model to enable (e.g., TIER_SIMPLE=ollama:llama3.2)`
+  );
+}
 
 module.exports = config;

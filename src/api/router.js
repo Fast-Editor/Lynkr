@@ -71,6 +71,99 @@ router.get("/routing/stats", (req, res) => {
   });
 });
 
+// Model registry info (from LiteLLM + models.dev APIs)
+router.get("/routing/models", async (req, res) => {
+  try {
+    const { getModelRegistry } = require("../routing/model-registry");
+    const registry = await getModelRegistry();
+    res.json({
+      status: "ok",
+      ...registry.getStats(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get specific model info
+router.get("/routing/models/:model", async (req, res) => {
+  try {
+    const { getModelRegistry } = require("../routing/model-registry");
+    const registry = await getModelRegistry();
+    const model = registry.getModel(req.params.model);
+    if (!model || model.source === "default") {
+      return res.status(404).json({ error: "Model not found", model: req.params.model });
+    }
+    res.json({ status: "ok", model: req.params.model, ...model });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Routing tier information
+router.get("/routing/tiers", (req, res) => {
+  try {
+    const { getModelTierSelector } = require("../routing/model-tiers");
+    const selector = getModelTierSelector();
+    res.json({
+      status: "ok",
+      ...selector.getTierStats(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cost optimization stats
+router.get("/metrics/cost-optimization", (req, res) => {
+  try {
+    const { getCostOptimizer } = require("../routing/cost-optimizer");
+    const optimizer = getCostOptimizer();
+    res.json({
+      status: "ok",
+      ...optimizer.getStats(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Request analysis test endpoint
+router.post("/routing/analyze", async (req, res) => {
+  try {
+    const { getAgenticDetector } = require("../routing/agentic-detector");
+    const { getModelTierSelector } = require("../routing/model-tiers");
+    const { getModelRegistry } = require("../routing/model-registry");
+
+    const analysis = analyzeComplexity(req.body, { weighted: req.query.weighted === "true" });
+    const agentic = getAgenticDetector().detect(req.body);
+    const selector = getModelTierSelector();
+    const tier = selector.getTier(analysis.score);
+
+    // Get recommended model for tier
+    const provider = req.query.provider || "openai";
+    const modelSelection = selector.selectModel(tier, provider);
+
+    // Get model cost info
+    let modelInfo = null;
+    if (modelSelection.model) {
+      const registry = await getModelRegistry();
+      modelInfo = registry.getCost(modelSelection.model);
+    }
+
+    res.json({
+      status: "ok",
+      analysis,
+      agentic,
+      tier,
+      modelSelection,
+      modelInfo,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get("/debug/session", (req, res) => {
   if (!req.sessionId) {
     return res.status(400).json({ error: "missing_session_id", message: "Provide x-session-id header" });

@@ -19,6 +19,7 @@ const crypto = require("crypto");
 const { asyncClone, asyncTransform, getPoolStats } = require("../workers/helpers");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
 const lazyLoader = require("../tools/lazy-loader");
+const { isGPTProvider, getGPTToolLoopThreshold, areSimilarToolCalls } = require("../clients/gpt-utils");
 
 /**
  * Get destination URL for audit logging based on provider type
@@ -516,12 +517,50 @@ function parseExecutionContent(content) {
     const trimmed = content.trim();
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
-        return JSON.parse(trimmed);
+        const parsed = JSON.parse(trimmed);
+        // Handle Anthropic content blocks array - extract text
+        if (Array.isArray(parsed)) {
+          const textParts = parsed
+            .filter(block => block && typeof block === 'object')
+            .map(block => {
+              if (block.type === 'text' && typeof block.text === 'string') {
+                return block.text;
+              }
+              // Handle other block types gracefully
+              if (block.text) return block.text;
+              if (block.content) return typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+              return null;
+            })
+            .filter(text => text !== null);
+
+          if (textParts.length > 0) {
+            return textParts.join('\n');
+          }
+        }
+        return parsed;
       } catch {
         return content;
       }
     }
     return content;
+  }
+  // Handle content that's already an array (content blocks)
+  if (Array.isArray(content)) {
+    const textParts = content
+      .filter(block => block && typeof block === 'object')
+      .map(block => {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          return block.text;
+        }
+        if (block.text) return block.text;
+        if (block.content) return typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+        return null;
+      })
+      .filter(text => text !== null);
+
+    if (textParts.length > 0) {
+      return textParts.join('\n');
+    }
   }
   return content;
 }
@@ -995,12 +1034,10 @@ function sanitizePayload(payload) {
     // Check if this is a simple conversational message (no tools needed)
     const isConversational = (() => {
       if (!Array.isArray(clean.messages) || clean.messages.length === 0) {
-        logger.debug({ reason: "No messages array" }, "Ollama conversational check");
         return false;
       }
       const lastMessage = clean.messages[clean.messages.length - 1];
       if (lastMessage?.role !== "user") {
-        logger.debug({ role: lastMessage?.role }, "Ollama conversational check - not user");
         return false;
       }
 
@@ -1008,28 +1045,18 @@ function sanitizePayload(payload) {
         ? lastMessage.content
         : "";
 
-      logger.debug({
-        contentType: typeof lastMessage.content,
-        isString: typeof lastMessage.content === "string",
-        contentLength: typeof lastMessage.content === "string" ? lastMessage.content.length : "N/A",
-        actualContent: typeof lastMessage.content === "string" ? lastMessage.content.substring(0, 100) : JSON.stringify(lastMessage.content).substring(0, 100)
-      }, "Ollama conversational check - analyzing content");
-
       const trimmed = content.trim().toLowerCase();
 
       // Simple greetings
       if (/^(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings)[\s\.\!\?]*$/.test(trimmed)) {
-        logger.debug({ matched: "greeting", trimmed }, "Ollama conversational check - matched");
-        return true;
+        return "greeting";
       }
 
       // Very short messages (< 20 chars) without code/technical keywords
       if (trimmed.length < 20 && !/code|file|function|error|bug|fix|write|read|create/.test(trimmed)) {
-        logger.debug({ matched: "short", trimmed, length: trimmed.length }, "Ollama conversational check - matched");
-        return true;
+        return "short_message";
       }
 
-      logger.debug({ trimmed: trimmed.substring(0, 50), length: trimmed.length }, "Ollama conversational check - not matched");
       return false;
     })();
 
@@ -1039,8 +1066,8 @@ function sanitizePayload(payload) {
       delete clean.tool_choice;
       logger.debug({
         model: config.ollama?.model,
-        message: "Removed tools for conversational message"
-      }, "Ollama conversational mode");
+        reason: isConversational,
+      }, "Ollama conversational mode - tools removed");
     } else if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
       // Ollama performance degrades with too many tools
       // Limit to essential tools only
@@ -1210,7 +1237,7 @@ function sanitizePayload(payload) {
     }
 
     if (merged.length !== clean.messages.length) {
-      logger.info({
+      logger.debug({
         originalCount: clean.messages.length,
         mergedCount: merged.length,
         reduced: clean.messages.length - merged.length
@@ -1220,19 +1247,11 @@ function sanitizePayload(payload) {
     clean.messages = merged;
   }
 
-  // [CONTEXT_FLOW] Log payload after sanitization
   logger.debug({
     providerType: config.modelProvider?.type ?? "databricks",
-    phase: "after_sanitize",
-    systemField: typeof clean.system === 'string'
-      ? { type: 'string', length: clean.system.length }
-      : clean.system
-        ? { type: typeof clean.system, value: clean.system }
-        : undefined,
     messageCount: clean.messages?.length ?? 0,
-    firstMessageHasSystem: clean.messages?.[0]?.content?.includes?.('You are Claude Code') ?? false,
     toolCount: clean.tools?.length ?? 0
-  }, '[CONTEXT_FLOW] After sanitizePayload');
+  }, 'After sanitizePayload');
 
   // === Suggestion mode: tag request and override model if configured ===
   const { isSuggestionMode: isSuggestion } = detectSuggestionMode(clean.messages);
@@ -1339,8 +1358,7 @@ async function runAgentLoop({
   providerType,
   headers,
 }) {
-  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length);
-  logger.info({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop ENTERED');
+  logger.debug({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop entered');
   const settings = resolveLoopOptions(options);
   // Initialize audit logger (no-op if disabled)
   const auditLogger = createAuditLogger(config.audit);
@@ -1387,7 +1405,6 @@ async function runAgentLoop({
     }
 
     steps += 1;
-    console.log('[LOOP DEBUG] Entered while loop - step:', steps);
     logger.debug(
       {
         sessionId: session?.id ?? null,
@@ -1396,6 +1413,19 @@ async function runAgentLoop({
       },
       "Agent loop step",
     );
+
+    // Trim messages when they grow too large to prevent OOM.
+    // Keep the first message (system/user) and the last MAX_LOOP_MESSAGES.
+    const MAX_LOOP_MESSAGES = 40;
+    if (cleanPayload.messages && cleanPayload.messages.length > MAX_LOOP_MESSAGES) {
+      const excess = cleanPayload.messages.length - MAX_LOOP_MESSAGES;
+      // Keep first 2 messages (system context + initial user) and trim from the middle
+      cleanPayload.messages.splice(2, excess);
+      logger.debug(
+        { trimmed: excess, remaining: cleanPayload.messages.length },
+        "Trimmed intermediate messages to prevent memory growth",
+      );
+    }
 
     // Debug: Log payload before sending to Azure
     if (providerType === "azure-anthropic") {
@@ -1481,14 +1511,11 @@ async function runAgentLoop({
       }
     }
 
-    // [CONTEXT_FLOW] Log after memory injection
     logger.debug({
       sessionId: session?.id ?? null,
-      phase: "after_memory",
-      systemPromptLength: cleanPayload.system?.length ?? 0,
       messageCount: cleanPayload.messages?.length ?? 0,
       toolCount: cleanPayload.tools?.length ?? 0
-    }, '[CONTEXT_FLOW] After memory injection');
+    }, 'After memory injection');
 
     if (steps === 1 && (config.systemPrompt?.mode === 'dynamic' || config.systemPrompt?.toolDescriptions === 'minimal')) {
       try {
@@ -1618,7 +1645,6 @@ IMPORTANT TOOL USAGE RULES:
     }
 
     // Track estimated token usage before model call
-  console.log('[TOKEN DEBUG] About to track token usage - step:', steps);
   const estimatedTokens = config.tokenTracking?.enabled !== false
     ? tokens.countPayloadTokens(cleanPayload)
     : null;
@@ -1632,15 +1658,6 @@ IMPORTANT TOOL USAGE RULES:
   }
 
   // Apply Headroom compression if enabled
-  const headroomEstTokens = Math.ceil(JSON.stringify(cleanPayload.messages || []).length / 4);
-  logger.info({
-    headroomEnabled: isHeadroomEnabled(),
-    messageCount: cleanPayload.messages?.length ?? 0,
-    estimatedTokens: headroomEstTokens,
-    threshold: config.headroom?.minTokens || 500,
-    willCompress: isHeadroomEnabled() && headroomEstTokens >= (config.headroom?.minTokens || 500),
-  }, 'Headroom compression check');
-
   if (isHeadroomEnabled() && cleanPayload.messages && cleanPayload.messages.length > 0) {
     try {
       const compressionResult = await headroomCompress(
@@ -1652,33 +1669,21 @@ IMPORTANT TOOL USAGE RULES:
         }
       );
 
-      logger.info({
-        compressed: compressionResult.compressed,
-        tokensBefore: compressionResult.stats?.tokens_before,
-        tokensAfter: compressionResult.stats?.tokens_after,
-        savings: compressionResult.stats?.savings_percent ? `${compressionResult.stats.savings_percent}%` : 'N/A',
-        reason: compressionResult.stats?.reason || compressionResult.stats?.transforms_applied?.join(', ') || 'none',
-      }, 'Headroom compression result');
-
       if (compressionResult.compressed) {
         cleanPayload.messages = compressionResult.messages;
         if (compressionResult.tools) {
           cleanPayload.tools = compressionResult.tools;
         }
-        logger.info({
-          sessionId: session?.id ?? null,
-          tokensBefore: compressionResult.stats?.tokens_before,
-          tokensAfter: compressionResult.stats?.tokens_after,
-          saved: compressionResult.stats?.tokens_saved,
-          savingsPercent: compressionResult.stats?.savings_percent,
-          transforms: compressionResult.stats?.transforms_applied,
-        }, 'Headroom compression applied to request');
-      } else {
-        logger.debug({
-          sessionId: session?.id ?? null,
-          reason: compressionResult.stats?.reason,
-        }, 'Headroom compression skipped');
       }
+
+      logger.debug({
+        sessionId: session?.id ?? null,
+        outcome: compressionResult.compressed ? 'applied' : 'skipped',
+        tokensBefore: compressionResult.stats?.tokens_before,
+        tokensAfter: compressionResult.stats?.tokens_after,
+        savingsPercent: compressionResult.stats?.savings_percent,
+        reason: compressionResult.stats?.reason || compressionResult.stats?.transforms_applied?.join(', ') || 'none',
+      }, 'Headroom compression');
     } catch (headroomErr) {
       logger.warn({ err: headroomErr, sessionId: session?.id ?? null }, 'Headroom compression failed, using original messages');
     }
@@ -2043,7 +2048,7 @@ IMPORTANT TOOL USAGE RULES:
       // If in passthrough/client mode and there are client-side tools, return them to client
       // Server-side tools (Task, Web) will be executed below
       if ((executionMode === "passthrough" || executionMode === "client") && clientSideToolCalls.length > 0) {
-        logger.info(
+        logger.debug(
           {
             sessionId: session?.id ?? null,
             totalToolCount: toolCalls.length,
@@ -2105,7 +2110,7 @@ IMPORTANT TOOL USAGE RULES:
         // Override toolCalls to only include Server-side tools for server execution
         toolCalls = serverSideToolCalls;
 
-        logger.info(
+        logger.debug(
           {
             sessionId: session?.id ?? null,
             serverToolCount: serverSideToolCalls.length,
@@ -2114,7 +2119,7 @@ IMPORTANT TOOL USAGE RULES:
         );
       } else if (executionMode === "passthrough" || executionMode === "client") {
         // Only Server-side tools, no Client-side tools - execute all server-side
-        logger.info(
+        logger.debug(
           {
             sessionId: session?.id ?? null,
             serverToolCount: serverSideToolCalls.length,
@@ -2179,6 +2184,7 @@ IMPORTANT TOOL USAGE RULES:
               session,
               cwd,
               requestMessages: cleanPayload.messages,
+              provider: providerType,  // Pass provider for GPT-specific formatting
             }))
           );
 
@@ -2412,6 +2418,7 @@ IMPORTANT TOOL USAGE RULES:
           session,
           cwd,
           requestMessages: cleanPayload.messages,
+          provider: providerType,  // Pass provider for GPT-specific formatting
         });
 
         let toolMessage;
@@ -2527,33 +2534,59 @@ IMPORTANT TOOL USAGE RULES:
       // === TOOL CALL LOOP DETECTION ===
       // Track tool calls to detect infinite loops where the model calls the same tool
       // repeatedly with identical parameters
+      // GPT models get stricter thresholds (2 vs 3) and similarity-based detection
+      const isGPT = isGPTProvider(providerType);
+      const loopThreshold = isGPT ? getGPTToolLoopThreshold() : 3;
+
       for (const call of toolCalls) {
         const signature = getToolCallSignature(call);
-        const count = (toolCallHistory.get(signature) || 0) + 1;
-        toolCallHistory.set(signature, count);
+        const existingEntry = toolCallHistory.get(signature);
+        let count = (existingEntry?.count || 0) + 1;
+        toolCallHistory.set(signature, { count, call });
 
         const toolName = call.function?.name ?? call.name ?? 'unknown';
 
-        if (count === 3 && !loopWarningInjected) {
+        // For GPT models, also check for similar (not just identical) tool calls
+        // This catches cases where GPT slightly varies parameters but is essentially looping
+        if (isGPT) {
+          for (const [existingSig, existingData] of toolCallHistory.entries()) {
+            if (existingSig !== signature && areSimilarToolCalls(call, existingData.call)) {
+              // Found a similar call - increase count to trigger loop detection earlier
+              count = Math.max(count, existingData.count + 1);
+              logger.debug({
+                tool: toolName,
+                currentSignature: signature,
+                similarSignature: existingSig,
+                combinedCount: count,
+              }, "GPT similar tool call detected - combining counts");
+            }
+          }
+        }
+
+        if (count === loopThreshold && !loopWarningInjected) {
           logger.warn(
             {
               sessionId: session?.id ?? null,
               correlationId: options?.correlationId,
               tool: toolName,
               loopCount: count,
+              loopThreshold,
+              isGPT,
               signature: signature,
               action: 'warning_injected',
               totalSteps: steps,
               remainingSteps: settings.maxSteps - steps,
             },
-            "Tool call loop detected - same tool called 3 times with identical parameters",
+            `Tool call loop detected - same tool called ${loopThreshold} times with identical/similar parameters`,
           );
 
-          // Inject warning message to model
+          // Inject warning message to model - GPT gets a more explicit message
           loopWarningInjected = true;
           const warningMessage = {
             role: "user",
-            content: "⚠️ System Warning: You have called the same tool with identical parameters 3 times in this request. This may indicate an infinite loop. Please provide a final answer to the user instead of calling the same tool again, or explain why you need to continue retrying with the same parameters.",
+            content: isGPT
+              ? `⚠️ CRITICAL SYSTEM WARNING: You have called the "${toolName}" tool ${count} times with identical or similar parameters. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response to the user based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Summarize your findings and respond.`
+              : `⚠️ System Warning: You have called the same tool with identical parameters ${count} times in this request. This may indicate an infinite loop. Please provide a final answer to the user instead of calling the same tool again, or explain why you need to continue retrying with the same parameters.`,
           };
 
           cleanPayload.messages.push(warningMessage);
@@ -2568,11 +2601,13 @@ IMPORTANT TOOL USAGE RULES:
                 reason: "tool_call_loop_warning",
                 toolName,
                 loopCount: count,
+                isGPT,
+                loopThreshold,
               },
             });
           }
-        } else if (count > 3) {
-          // Force termination after 3 identical calls
+        } else if (count > loopThreshold) {
+          // Force termination after threshold exceeded
           // Log FULL context for debugging why the loop occurred
           logger.error(
             {
@@ -2580,6 +2615,8 @@ IMPORTANT TOOL USAGE RULES:
               correlationId: options?.correlationId,
               tool: toolName,
               loopCount: count,
+              loopThreshold,
+              isGPT,
               signature: signature,
               action: 'request_terminated',
               totalSteps: steps,
@@ -2600,7 +2637,7 @@ IMPORTANT TOOL USAGE RULES:
               body: {
                 error: {
                   type: "tool_call_loop_detected",
-                  message: `Tool call loop detected: The model called the same tool ("${toolName}") with identical parameters ${count} times. This indicates an infinite loop and execution has been terminated. Please try rephrasing your request or provide different parameters.`,
+                  message: `Tool call loop detected: The model called the same tool ("${toolName}") with identical parameters ${count} times (threshold: ${loopThreshold}). This indicates an infinite loop and execution has been terminated. Please try rephrasing your request or provide different parameters.`,
                 },
               },
               terminationReason: "tool_call_loop",
@@ -3059,6 +3096,7 @@ IMPORTANT TOOL USAGE RULES:
             session,
             cwd,
             requestMessages: cleanPayload.messages,
+            provider: providerType,  // Pass provider for GPT-specific formatting
           });
 
           const toolResultMessage = createFallbackToolResultMessage(providerType, {
@@ -3332,21 +3370,22 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   // === TOOL LOOP GUARD (EARLY CHECK) ===
   // Check BEFORE sanitization since sanitizePayload removes conversation history
-  const toolLoopThreshold = config.policy?.toolLoopThreshold ?? 3;
+  // GPT models get a lower threshold (2) to catch loops earlier
+  const providerType = config.modelProvider?.type ?? "databricks";
+  const isGPT = isGPTProvider(providerType);
+  const toolLoopThreshold = isGPT
+    ? getGPTToolLoopThreshold()  // Hardcoded: 2 for GPT
+    : (config.policy?.toolLoopThreshold ?? 3);
   const { toolResultCount, toolUseCount } = countToolCallsInHistory(payload?.messages);
 
-  console.log('[ToolLoopGuard EARLY] Checking ORIGINAL messages:', {
-    messageCount: payload?.messages?.length,
-    toolResultCount,
-    toolUseCount,
-    threshold: toolLoopThreshold,
-  });
+  // Temporarily increase threshold in client mode to allow tool execution flow
+  const effectiveThreshold = config.toolExecutionMode === 'client' ? 10 : toolLoopThreshold;
 
-  if (toolResultCount >= toolLoopThreshold) {
+  if (toolResultCount >= effectiveThreshold) {
     logger.error({
       toolResultCount,
       toolUseCount,
-      threshold: toolLoopThreshold,
+      threshold: effectiveThreshold,
       sessionId: session?.id ?? null,
     }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
 

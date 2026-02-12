@@ -76,7 +76,7 @@ const STANDARD_TOOLS = [
   },
   {
     name: "Bash",
-    description: "Executes a bash command in a persistent shell session. Use for terminal operations like git, npm, docker, etc. DO NOT use for file operations - use specialized tools instead.",
+    description: "Executes a bash command in a persistent shell session. Use for terminal operations like git, npm, docker, listing files (ls), etc. PREFERRED for listing directory contents - use 'ls' command. DO NOT use for reading file contents - use Read tool instead.",
     input_schema: {
       type: "object",
       properties: {
@@ -98,7 +98,7 @@ const STANDARD_TOOLS = [
   },
   {
     name: "Glob",
-    description: "Fast file pattern matching tool. Supports glob patterns like '**/*.js' or 'src/**/*.ts'. Returns matching file paths sorted by modification time.",
+    description: "File pattern matching for finding files by name pattern. Use ONLY when you need to find files matching a specific pattern like '**/*.js'. For simple directory listing, use Bash with 'ls' instead.",
     input_schema: {
       type: "object",
       properties: {
@@ -143,6 +143,66 @@ const STANDARD_TOOLS = [
         }
       },
       required: ["pattern"]
+    }
+  },
+  {
+    name: "MultiEdit",
+    description: "Makes multiple edits to a single file in one atomic operation. More efficient than calling Edit multiple times. Each edit is an exact string replacement.",
+    input_schema: {
+      type: "object",
+      properties: {
+        file_path: {
+          type: "string",
+          description: "Relative path within workspace. DO NOT use absolute paths."
+        },
+        edits: {
+          type: "array",
+          description: "Array of edits to apply to the file",
+          items: {
+            type: "object",
+            properties: {
+              old_string: {
+                type: "string",
+                description: "The text to replace"
+              },
+              new_string: {
+                type: "string",
+                description: "The text to replace it with"
+              }
+            },
+            required: ["old_string", "new_string"]
+          }
+        }
+      },
+      required: ["file_path", "edits"]
+    }
+  },
+  {
+    name: "LS",
+    description: "Lists files and directories in a given path. Returns a structured listing with file types and sizes. Use for quick directory overview.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "The directory to list. Defaults to current working directory."
+        }
+      },
+      required: []
+    }
+  },
+  {
+    name: "NotebookRead",
+    description: "Reads and displays the contents of a Jupyter notebook (.ipynb file), including all cells with their outputs, combining code, text, and visualizations.",
+    input_schema: {
+      type: "object",
+      properties: {
+        notebook_path: {
+          type: "string",
+          description: "Relative path to the Jupyter notebook (e.g., 'analysis.ipynb'). DO NOT use absolute paths."
+        }
+      },
+      required: ["notebook_path"]
     }
   },
   {
@@ -354,4 +414,17 @@ EXAMPLE: User says "explore this project" → Call Task with subagent_type="Expl
   }
 ];
 
-module.exports = { STANDARD_TOOLS };
+// Pre-computed name list to avoid re-mapping on every log call
+const STANDARD_TOOL_NAMES = STANDARD_TOOLS.map(t => t.name);
+
+// Tools that cannot work through a proxy (require bidirectional user interaction).
+// All other tools are safe — per-client filtering via CLIENT_TOOL_MAPPINGS in
+// openai-router.js handles excluding tools that specific clients don't support
+// (e.g. Codex has no equivalent for Task, WebFetch, NotebookEdit).
+const IDE_UNSUPPORTED_TOOLS = new Set(['AskUserQuestion']);
+
+// Filtered tool set for IDE clients — excludes tools with no IDE equivalent
+const IDE_SAFE_TOOLS = STANDARD_TOOLS.filter(t => !IDE_UNSUPPORTED_TOOLS.has(t.name));
+const IDE_SAFE_TOOL_NAMES = IDE_SAFE_TOOLS.map(t => t.name);
+
+module.exports = { STANDARD_TOOLS, STANDARD_TOOL_NAMES, IDE_SAFE_TOOLS, IDE_SAFE_TOOL_NAMES, IDE_UNSUPPORTED_TOOLS };

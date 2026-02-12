@@ -4,9 +4,9 @@ const { cleanupOldSessions, cleanupOldHistory } = require("./store");
 class SessionCleanupManager {
   constructor(options = {}) {
     this.enabled = options.enabled !== false;
-    this.intervalMs = options.intervalMs || 3600000; // 1 hour
-    this.sessionMaxAgeMs = options.sessionMaxAgeMs || 7 * 24 * 60 * 60 * 1000; // 7 days
-    this.historyMaxAgeMs = options.historyMaxAgeMs || 30 * 24 * 60 * 60 * 1000; // 30 days
+    this.intervalMs = options.intervalMs || 300000; // 5 minutes (was 1 hour)
+    this.sessionMaxAgeMs = options.sessionMaxAgeMs || 24 * 60 * 60 * 1000; // 1 day (was 7 days)
+    this.historyMaxAgeMs = options.historyMaxAgeMs || 7 * 24 * 60 * 60 * 1000; // 7 days (was 30 days)
     this.timer = null;
   }
 

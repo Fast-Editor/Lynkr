@@ -30,6 +30,7 @@ Connect Lynkr to your development tools:
 Understand Lynkr's capabilities:
 
 - **[Architecture & Features](features.md)** - System architecture, request flow, format conversion, and core capabilities
+- **[Routing & Model Tiering](routing.md)** - 4-tier model system, 15-dimension complexity scoring, agentic workflow detection, and cost optimization
 - **[Memory System](memory-system.md)** - Titans-inspired long-term memory with surprise-based filtering and decay
 - **[Token Optimization](token-optimization.md)** - Achieve 60-80% cost reduction through smart tool selection, prompt caching, and memory deduplication
 - **[Headroom Compression](headroom.md)** - 47-92% token reduction through intelligent context compression (Smart Crusher, CCR, LLMLingua)
@@ -73,7 +74,7 @@ Get help and contribute:
 - [Installation](installation.md) | [Providers](providers.md) | [Claude Code](claude-code-cli.md) | [Codex CLI](codex-cli.md) | [Cursor](cursor-integration.md) | [Embeddings](embeddings.md)
 
 ### Features & Optimization
-- [Features](features.md) | [Memory System](memory-system.md) | [Token Optimization](token-optimization.md) | [Headroom](headroom.md) | [Tools](tools.md)
+- [Features](features.md) | [Routing](routing.md) | [Memory System](memory-system.md) | [Token Optimization](token-optimization.md) | [Headroom](headroom.md) | [Tools](tools.md)
 
 ### Deployment & Production
 - [Docker](docker.md) | [Production](production.md) | [API Reference](api.md)

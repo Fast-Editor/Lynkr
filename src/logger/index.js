@@ -1,4 +1,6 @@
 const pino = require("pino");
+const fs = require("fs");
+const path = require("path");
 const config = require("../config");
 const { createOversizedErrorStream } = require("./oversized-error-stream");
 
@@ -63,6 +65,27 @@ streams.push({
 				})
 			: process.stdout,
 });
+
+// File rotation stream (if enabled via LOG_FILE_ENABLED=true)
+if (config.logger.file?.enabled) {
+	const fileConfig = config.logger.file;
+	// Ensure log directory exists
+	const logDir = path.dirname(fileConfig.path);
+	fs.mkdirSync(logDir, { recursive: true });
+
+	streams.push({
+		level: fileConfig.level,
+		stream: pino.transport({
+			target: "pino-roll",
+			options: {
+				file: fileConfig.path,
+				frequency: fileConfig.frequency,
+				limit: { count: fileConfig.maxFiles },
+				mkdir: true,
+			},
+		}),
+	});
+}
 
 // Oversized error stream (if enabled)
 if (config.oversizedErrorLogging?.enabled) {

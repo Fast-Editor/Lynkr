@@ -6,11 +6,12 @@ const { getCircuitBreakerRegistry } = require("./circuit-breaker");
 const { getMetricsCollector } = require("../observability/metrics");
 const { getHealthTracker } = require("../observability/health-tracker");
 const logger = require("../logger");
-const { STANDARD_TOOLS } = require("./standard-tools");
+const { STANDARD_TOOLS, STANDARD_TOOL_NAMES } = require("./standard-tools");
 const { convertAnthropicToolsToOpenRouter } = require("./openrouter-utils");
 const {
   detectModelFamily
 } = require("./bedrock-utils");
+const { getGPTSystemPromptAddendum } = require("./gpt-utils");
 
 
 
@@ -183,9 +184,9 @@ async function invokeDatabricks(body) {
   // Inject standard tools if client didn't send any (passthrough mode)
   if (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0) {
     databricksBody.tools = STANDARD_TOOLS;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (Databricks) ===");
   }
@@ -224,9 +225,9 @@ async function invokeAzureAnthropic(body) {
   // Inject standard tools if client didn't send any (passthrough mode)
   if (!Array.isArray(body.tools) || body.tools.length === 0) {
     body.tools = STANDARD_TOOLS;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (Azure Anthropic) ===");
   }
@@ -299,7 +300,7 @@ async function invokeOllama(body) {
   }
 
   if (deduplicated.length !== convertedMessages.length) {
-    logger.info({
+    logger.debug({
       originalCount: convertedMessages.length,
       deduplicatedCount: deduplicated.length,
       removed: convertedMessages.length - deduplicated.length,
@@ -369,7 +370,7 @@ async function invokeOllama(body) {
     logMessage = `No tools (0 tools)`;
   }
 
-  logger.info({
+  logger.debug({
     model: config.ollama.model,
     toolCount,
     toolsInjected,
@@ -426,16 +427,16 @@ async function invokeOpenRouter(body) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (OpenRouter) ===");
   }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     openRouterBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
@@ -490,6 +491,9 @@ async function invokeAzureOpenAI(body) {
     });
   }
 
+  // System prompt injection disabled - breaks model response
+  // Tool guidance now provided via tool descriptions instead
+
   const azureBody = {
     messages,
     temperature: body.temperature ?? 0.3,  // Lower temperature for more deterministic, action-oriented behavior
@@ -507,18 +511,18 @@ async function invokeAzureOpenAI(body) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS ===");
   }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     azureBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
-    azureBody.parallel_tool_calls = true;  // Enable parallel tool calling for better performance
+    azureBody.parallel_tool_calls = true;  // Enable parallel tool calls
     azureBody.tool_choice = "auto";  // Explicitly enable tool use (helps GPT models understand they should use tools)
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected,
@@ -529,7 +533,7 @@ async function invokeAzureOpenAI(body) {
     }, "=== SENDING TOOLS TO AZURE OPENAI ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     hasTools: !!azureBody.tools,
     toolCount: azureBody.tools?.length || 0,
@@ -563,14 +567,83 @@ async function invokeAzureOpenAI(body) {
     // Track function call IDs for matching with outputs
     const pendingCallIds = [];
 
+    // Detect if this is a continuation request (has tool results)
+    // Azure content filter triggers on full system prompt in continuations
+    // Check for:
+    // 1. tool_result blocks in user messages (Anthropic format)
+    // 2. tool messages (OpenAI format)
+    // 3. assistant messages with tool_use or tool_calls (indicates prior tool invocation)
+    // 4. Flattened continuation pattern from orchestrator (contains "IMPORTANT: Focus on")
+    const hasToolResults = (body.messages || []).some(msg => {
+      // Check for Anthropic format tool_result in user messages
+      if (msg.role === "user" && Array.isArray(msg.content)) {
+        if (msg.content.some(block => block.type === "tool_result")) return true;
+      }
+      // Check for OpenAI format tool messages
+      if (msg.role === "tool") return true;
+      // Check for assistant messages with tool_use (Anthropic) or tool_calls (OpenAI)
+      // If there's a prior tool use, this is a continuation
+      if (msg.role === "assistant") {
+        if (Array.isArray(msg.content)) {
+          if (msg.content.some(block => block.type === "tool_use")) return true;
+        }
+        if (msg.tool_calls && msg.tool_calls.length > 0) return true;
+      }
+      return false;
+    }) || azureBody.messages.some(msg => {
+      // Also check converted messages for flattened continuation pattern
+      // The orchestrator flattens tool results into user message with this marker
+      if (msg.role === "user" && typeof msg.content === "string") {
+        if (msg.content.includes("IMPORTANT: Focus on and respond ONLY to my most recent request")) return true;
+      }
+      return false;
+    });
+
+    if (hasToolResults) {
+      logger.debug({
+        hasToolResults: true,
+        originalMessageCount: (body.messages || []).length,
+        convertedMessageCount: azureBody.messages.length,
+        messageRoles: (body.messages || []).map(m => m.role),
+      }, "=== CONTINUATION REQUEST DETECTED - using minimal system prompt to avoid Azure content filter ===");
+    } else {
+      logger.debug({
+        hasToolResults: false,
+        originalMessageCount: (body.messages || []).length,
+        messageRoles: (body.messages || []).map(m => m.role),
+      }, "Initial request - using full system prompt");
+    }
+
+    // Helper function to strip <system-reminder> tags and meta-instructions from content
+    // Azure's jailbreak filter triggers on these instructions in continuation requests
+    const stripSystemReminders = (content) => {
+      if (!content || typeof content !== 'string') return content;
+      // Remove <system-reminder>...</system-reminder> blocks
+      let cleaned = content.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '');
+      // Remove the continuation marker that orchestrator adds
+      cleaned = cleaned.replace(/---\s*IMPORTANT:\s*Focus on and respond ONLY to my most recent request[^\n]*/gi, '');
+      // Trim whitespace
+      return cleaned.trim();
+    };
+
     for (const msg of azureBody.messages) {
       if (msg.role === "system") {
-        // System messages become developer messages
-        responsesInput.push({
-          type: "message",
-          role: "developer",
-          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-        });
+        // For continuation requests, use minimal system prompt to avoid content filter
+        // Azure's jailbreak detection triggers on security-related text in continuations
+        if (hasToolResults) {
+          responsesInput.push({
+            type: "message",
+            role: "developer",
+            content: "You are a helpful coding assistant. Continue helping the user based on the tool results."
+          });
+        } else {
+          // Initial request - use full system prompt
+          responsesInput.push({
+            type: "message",
+            role: "developer",
+            content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+          });
+        }
       } else if (msg.role === "user") {
         // Check if content contains tool_result blocks (Anthropic format)
         if (Array.isArray(msg.content)) {
@@ -585,19 +658,30 @@ async function invokeAzureOpenAI(body) {
                 output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || "")
               });
             } else if (block.type === "text") {
-              responsesInput.push({
-                type: "message",
-                role: "user",
-                content: block.text || ""
-              });
+              // For continuation requests, strip system-reminder tags to avoid jailbreak filter
+              const textContent = hasToolResults ? stripSystemReminders(block.text || "") : (block.text || "");
+              if (textContent) {  // Only add if there's content after stripping
+                responsesInput.push({
+                  type: "message",
+                  role: "user",
+                  content: textContent
+                });
+              }
             }
           }
         } else {
-          responsesInput.push({
-            type: "message",
-            role: "user",
-            content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-          });
+          // For continuation requests, strip system-reminder tags to avoid jailbreak filter
+          let userContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+          if (hasToolResults) {
+            userContent = stripSystemReminders(userContent);
+          }
+          if (userContent) {  // Only add if there's content after stripping
+            responsesInput.push({
+              type: "message",
+              role: "user",
+              content: userContent
+            });
+          }
         }
       } else if (msg.role === "assistant") {
         // Assistant messages - handle tool_calls (OpenAI format) and tool_use blocks (Anthropic format)
@@ -663,7 +747,7 @@ async function invokeAzureOpenAI(body) {
       tool_choice: azureBody.tool_choice,
       stream: false
     };
-    logger.info({
+    logger.debug({
       format: "responses",
       inputCount: responsesBody.input?.length,
       model: responsesBody.model,
@@ -681,7 +765,7 @@ async function invokeAzureOpenAI(body) {
       const textContent = messageOutput?.content?.find(c => c.type === "output_text")?.text || "";
 
       // Find function_call outputs (tool calls are separate items in output array)
-      const toolCalls = outputArray
+      const rawToolCalls = outputArray
         .filter(o => o.type === "function_call")
         .map(tc => ({
           id: tc.call_id || tc.id || `call_${Date.now()}`,
@@ -692,7 +776,30 @@ async function invokeAzureOpenAI(body) {
           }
         }));
 
-      logger.info({
+      // Deduplicate identical tool calls (GPT sometimes returns multiple identical calls)
+      const seenSignatures = new Set();
+      const toolCalls = rawToolCalls.filter(tc => {
+        const signature = `${tc.function.name}:${tc.function.arguments}`;
+        if (seenSignatures.has(signature)) {
+          logger.warn({
+            toolName: tc.function.name,
+            signature: signature.substring(0, 100),
+          }, "Filtered duplicate tool call from GPT response");
+          return false;
+        }
+        seenSignatures.add(signature);
+        return true;
+      });
+
+      if (rawToolCalls.length !== toolCalls.length) {
+        logger.debug({
+          originalCount: rawToolCalls.length,
+          dedupedCount: toolCalls.length,
+          removed: rawToolCalls.length - toolCalls.length,
+        }, "Deduplicated identical tool calls from single response");
+      }
+
+      logger.debug({
         outputTypes: outputArray.map(o => o.type),
         hasMessage: !!messageOutput,
         toolCallCount: toolCalls.length,
@@ -717,7 +824,7 @@ async function invokeAzureOpenAI(body) {
         usage: result.json.usage
       };
 
-      logger.info({
+      logger.debug({
         convertedContent: textContent?.substring(0, 100),
         hasToolCalls: toolCalls.length > 0,
         toolCallCount: toolCalls.length
@@ -725,7 +832,7 @@ async function invokeAzureOpenAI(body) {
 
       // Now convert from Chat Completions format to Anthropic format
       const anthropicJson = convertOpenAIToAnthropic(result.json);
-      logger.info({
+      logger.debug({
         anthropicContentTypes: anthropicJson.content?.map(c => c.type),
         stopReason: anthropicJson.stop_reason
       }, "Converted to Anthropic format");
@@ -841,6 +948,8 @@ async function invokeOpenAI(body) {
     });
   }
 
+  // System prompt injection disabled - breaks model response
+
   const openAIBody = {
     model: body._suggestionModeModel || config.openai.model || "gpt-4o",
     messages,
@@ -858,25 +967,25 @@ async function invokeOpenAI(body) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (OpenAI) ===");
   }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     openAIBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
-    openAIBody.parallel_tool_calls = true;  // Enable parallel tool calling
+    openAIBody.parallel_tool_calls = false;  // Disable parallel tool calls - GPT often makes duplicate calls
     openAIBody.tool_choice = "auto";  // Let the model decide when to use tools
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
     }, "=== SENDING TOOLS TO OPENAI ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     model: openAIBody.model,
     hasTools: !!openAIBody.tools,
@@ -934,7 +1043,7 @@ async function invokeLlamaCpp(body) {
   }
 
   if (deduplicated.length !== messages.length) {
-    logger.info({
+    logger.debug({
       originalCount: messages.length,
       deduplicatedCount: deduplicated.length,
       removed: messages.length - deduplicated.length,
@@ -959,26 +1068,26 @@ async function invokeLlamaCpp(body) {
   if (injectToolsLlamacpp && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (llama.cpp) ===");
   } else if (!injectToolsLlamacpp) {
-    logger.info({}, "Tool injection disabled for llama.cpp (INJECT_TOOLS_LLAMACPP=false)");
+    logger.debug({}, "Tool injection disabled for llama.cpp (INJECT_TOOLS_LLAMACPP=false)");
   }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     llamacppBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     llamacppBody.tool_choice = "auto";
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
     }, "=== SENDING TOOLS TO LLAMA.CPP ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     hasTools: !!llamacppBody.tools,
     toolCount: llamacppBody.tools?.length || 0,
@@ -1042,9 +1151,9 @@ async function invokeLMStudio(body) {
   if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (LM Studio) ===");
   }
@@ -1052,14 +1161,14 @@ async function invokeLMStudio(body) {
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     lmstudioBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     lmstudioBody.tool_choice = "auto";
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
     }, "=== SENDING TOOLS TO LM STUDIO ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     hasTools: !!lmstudioBody.tools,
     toolCount: lmstudioBody.tools?.length || 0,
@@ -1080,7 +1189,7 @@ async function invokeBedrock(body) {
   }
 
   const bearerToken = config.bedrock.apiKey;
-  logger.info({ authMethod: "Bearer Token" }, "=== BEDROCK AUTH ===");
+  logger.debug({ authMethod: "Bearer Token" }, "=== BEDROCK AUTH ===");
 
   // 2. Inject standard tools if needed
   let toolsToSend = body.tools;
@@ -1089,9 +1198,9 @@ async function invokeBedrock(body) {
   if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (Bedrock) ===");
   }
@@ -1102,7 +1211,7 @@ async function invokeBedrock(body) {
   const modelId = config.bedrock.modelId;
   const modelFamily = detectModelFamily(modelId);
 
-  logger.info({
+  logger.debug({
     modelId,
     modelFamily,
     hasTools: !!bedrockBody.tools,
@@ -1167,7 +1276,7 @@ async function invokeBedrock(body) {
   const host = `bedrock-runtime.${config.bedrock.region}.amazonaws.com`;
   const endpoint = `https://${host}${path}`;
 
-  logger.info({
+  logger.debug({
     endpoint,
     authMethod: "Bearer Token",
     hasSystem: !!converseBody.system,
@@ -1200,7 +1309,7 @@ async function invokeBedrock(body) {
     // Parse Converse API response (already parsed by performJsonRequest)
     const converseResponse = response.json;  // Use property, not method
 
-    logger.info({
+    logger.debug({
       stopReason: converseResponse.stopReason,
       inputTokens: converseResponse.usage?.inputTokens || 0,
       outputTokens: converseResponse.usage?.outputTokens || 0,
@@ -1357,7 +1466,7 @@ async function invokeZai(body) {
       // "required" was forcing tools even for simple greetings
       zaiBody.tool_choice = "auto";
       // Also enable parallel tool calls
-      zaiBody.parallel_tool_calls = true;
+      zaiBody.parallel_tool_calls = false;  // Disable parallel tool calls - GPT often makes duplicate calls
     }
 
     headers = {
@@ -1372,9 +1481,9 @@ async function invokeZai(body) {
     // Inject standard tools if client didn't send any (passthrough mode)
     if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
       zaiBody.tools = STANDARD_TOOLS;
-      logger.info({
+      logger.debug({
         injectedToolCount: STANDARD_TOOLS.length,
-        injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+        injectedToolNames: STANDARD_TOOL_NAMES,
         reason: "Client did not send tools (passthrough mode)"
       }, "=== INJECTING STANDARD TOOLS (Z.AI Anthropic) ===");
     }
@@ -1386,7 +1495,7 @@ async function invokeZai(body) {
     };
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     format: isOpenAIFormat ? "openai" : "anthropic",
     model: zaiBody.model,
@@ -1416,7 +1525,7 @@ async function invokeZai(body) {
 
     const response = await performJsonRequest(endpoint, { headers, body: zaiBody }, "Z.AI");
 
-    logger.info({
+    logger.debug({
       responseOk: response?.ok,
       responseStatus: response?.status,
       hasJson: !!response?.json,
@@ -1428,7 +1537,7 @@ async function invokeZai(body) {
     // Convert OpenAI response back to Anthropic format if needed
     if (isOpenAIFormat && response?.ok && response?.json) {
       const anthropicJson = convertOpenAIToAnthropic(response.json);
-      logger.info({
+      logger.debug({
         convertedContent: JSON.stringify(anthropicJson.content).substring(0, 200),
       }, "=== Z.AI CONVERTED RESPONSE ===");
       // Return in the same format as other providers (with ok, status, json)
@@ -1626,7 +1735,7 @@ async function invokeVertex(body) {
     "Content-Type": "application/json",
   };
 
-  logger.info({
+  logger.debug({
     endpoint: endpoint.replace(apiKey, "***"),
     model: geminiModel,
     originalModel: requestedModel,
@@ -1655,7 +1764,7 @@ async function invokeVertex(body) {
   // Convert Gemini response to Anthropic format
   if (response?.json) {
     const anthropicJson = convertGeminiToAnthropic(response.json, requestedModel);
-    logger.info({
+    logger.debug({
       convertedContent: JSON.stringify(anthropicJson.content).substring(0, 200),
     }, "=== VERTEX AI (GEMINI) CONVERTED RESPONSE ===");
     return {

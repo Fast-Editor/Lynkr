@@ -52,17 +52,19 @@ Complete guide to Lynkr's architecture, request flow, and core capabilities.
 
 ### 2. Provider Routing
 
-**Smart Routing Logic:**
+**4-Tier Intelligent Routing:**
 
-```javascript
-if (PREFER_OLLAMA && toolCount <= OLLAMA_MAX_TOOLS_FOR_ROUTING) {
-  provider = "ollama";  // Local, fast, free
-} else if (toolCount <= OPENROUTER_MAX_TOOLS_FOR_ROUTING) {
-  provider = "openrouter";  // Cloud, moderate complexity
-} else {
-  provider = fallbackProvider;  // Databricks/Azure, complex
-}
-```
+Lynkr uses a multi-phase complexity analysis to route each request to the optimal model tier:
+
+| Tier | Score | Routes To |
+|------|-------|-----------|
+| SIMPLE (0-25) | Greetings, simple Q&A | Cheap/local models (Ollama, llama.cpp) |
+| MEDIUM (26-50) | Code reading, simple edits | Mid-range models (GPT-4o, Claude Sonnet) |
+| COMPLEX (51-75) | Multi-file changes, debugging | Capable models (o1-mini, Claude Sonnet) |
+| REASONING (76-100) | Security audits, architecture | Best models (o1, Claude Opus) |
+
+Includes agentic workflow detection, 15-dimension weighted scoring, and cost optimization.
+See **[Routing & Model Tiering](routing.md)** for full details.
 
 **Automatic Fallback:**
 - If primary provider fails → Use FALLBACK_PROVIDER
@@ -276,9 +278,10 @@ data: {}
 - Local: Ollama, llama.cpp, LM Studio
 
 **Hybrid Routing:**
-- Automatic provider selection
-- Transparent failover
-- Cost optimization
+- [4-tier intelligent routing](routing.md) with complexity scoring
+- Automatic provider selection and transparent failover
+- Agentic workflow detection with tier upgrades
+- Cost optimization with multi-source pricing
 
 ### 2. Token Optimization
 
@@ -383,6 +386,7 @@ PROMPT_CACHE_MAX_ENTRIES=256
 
 ## Next Steps
 
+- **[Routing & Model Tiering](routing.md)** - Intelligent routing and scoring algorithm
 - **[Memory System](memory-system.md)** - Long-term memory details
 - **[Token Optimization](token-optimization.md)** - Cost reduction strategies
 - **[Production Guide](production.md)** - Deploy to production
