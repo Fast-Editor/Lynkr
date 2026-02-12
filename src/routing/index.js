@@ -19,6 +19,11 @@ const {
   analyzeWithEmbeddings,
 } = require('./complexity-analyzer');
 
+// Intelligent routing modules
+const { getAgenticDetector, AGENT_TYPES } = require('./agentic-detector');
+const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
+const { getCostOptimizer } = require('./cost-optimizer');
+
 // Local providers
 const LOCAL_PROVIDERS = ['ollama', 'llamacpp', 'lmstudio'];
 
@@ -196,7 +201,8 @@ async function determineProviderSmart(payload, options = {}) {
   }
 
   // Full complexity analysis for non-tool requests
-  const analysis = analyzeComplexity(payload);
+  const useWeightedScoring = config.routing?.weightedScoring ?? false;
+  const analysis = analyzeComplexity(payload, { weighted: useWeightedScoring });
 
   // Phase 4: Optional embeddings adjustment
   let embeddingsResult = null;
@@ -214,25 +220,116 @@ async function determineProviderSmart(payload, options = {}) {
     }
   }
 
-  // Apply routing decision based on complexity
-  let provider;
-  let method = 'complexity';
+  // Agentic workflow detection
+  let agenticResult = null;
+  if (config.routing?.agenticDetection !== false) {
+    try {
+      const detector = getAgenticDetector();
+      agenticResult = detector.detect(payload);
 
-  if (analysis.recommendation === 'local') {
-    provider = getBestLocalProvider();
-  } else {
-    // Cloud recommendation
-    if (isFallbackEnabled()) {
-      provider = getBestCloudProvider({ toolCount });
-    } else {
-      // Fallback disabled, use local anyway
-      provider = getBestLocalProvider();
-      method = 'fallback_disabled';
+      // Boost complexity score for agentic workflows
+      if (agenticResult.isAgentic) {
+        analysis.score = Math.min(100, analysis.score + agenticResult.scoreBoost);
+        analysis.agenticBoost = agenticResult.scoreBoost;
+        analysis.agentType = agenticResult.agentType;
+
+        logger.debug({
+          agentType: agenticResult.agentType,
+          boost: agenticResult.scoreBoost,
+          newScore: analysis.score,
+        }, '[Routing] Agentic workflow detected, boosting score');
+
+        // Force cloud for autonomous workflows
+        if (agenticResult.agentType === 'AUTONOMOUS' && isFallbackEnabled()) {
+          const provider = getBestCloudProvider({ toolCount });
+          const decision = {
+            provider,
+            method: 'agentic',
+            reason: 'autonomous_workflow',
+            score: analysis.score,
+            agenticResult,
+          };
+          routingMetrics.record(decision);
+          return decision;
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, 'Agentic detection failed');
+    }
+  }
+
+  // Tier-based model selection
+  let selectedModel = null;
+  let tier = null;
+  if (config.modelTiers?.enabled) {
+    try {
+      const selector = getModelTierSelector();
+      tier = selector.getTier(analysis.score);
+
+      // Check if agentic detection requires a higher tier
+      if (agenticResult?.minTier) {
+        const agenticTierPriority = TIER_DEFINITIONS[agenticResult.minTier]?.priority || 0;
+        const currentTierPriority = TIER_DEFINITIONS[tier]?.priority || 0;
+        if (agenticTierPriority > currentTierPriority) {
+          tier = agenticResult.minTier;
+          logger.debug({ from: selector.getTier(analysis.score), to: tier }, '[Routing] Upgrading tier for agentic workflow');
+        }
+      }
+
+      // Select model for the tier (will be applied after provider selection)
+      analysis.tier = tier;
+    } catch (err) {
+      logger.debug({ err: err.message }, 'Tier selection failed');
+    }
+  }
+
+  // Apply routing decision based on tier config (TIER_* env vars are mandatory)
+  let provider;
+  let method = 'tier_config';
+
+  const selector = getModelTierSelector();
+  const modelSelection = selector.selectModel(tier, null);
+
+  provider = modelSelection.provider;
+  selectedModel = modelSelection.model;
+  logger.debug({ tier, provider, model: selectedModel }, '[Routing] Using tier config');
+
+  // Cost optimization: check if cheaper model can handle this tier
+  let costOptimized = false;
+  if (config.routing?.costOptimization && tier) {
+    try {
+      const optimizer = getCostOptimizer();
+      const availableProviders = [provider];
+
+      // Also consider local provider if not already selected
+      const localProvider = getBestLocalProvider();
+      if (localProvider !== provider) {
+        availableProviders.push(localProvider);
+      }
+
+      const cheapest = optimizer.findCheapestForTier(tier, availableProviders);
+      if (cheapest && cheapest.provider !== provider) {
+        logger.debug({
+          from: provider,
+          to: cheapest.provider,
+          tier,
+          savings: `${cheapest.model} is cheaper`,
+        }, '[Routing] Cost optimization: switching provider');
+
+        provider = cheapest.provider;
+        selectedModel = cheapest.model;
+        costOptimized = true;
+        method = 'cost_optimized';
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, 'Cost optimization failed');
     }
   }
 
   const decision = {
     provider,
+    model: selectedModel,
+    tier,
     method,
     reason: analysis.recommendation,
     score: analysis.score,
@@ -240,6 +337,8 @@ async function determineProviderSmart(payload, options = {}) {
     mode: analysis.mode,
     analysis,
     embeddingsResult,
+    agenticResult,
+    costOptimized,
   };
 
   // Phase 3: Record metrics
@@ -343,6 +442,23 @@ function getRoutingHeaders(decision) {
     headers['X-Lynkr-Routing-Reason'] = decision.reason;
   }
 
+  // Tier and model headers
+  if (decision.tier) {
+    headers['X-Lynkr-Tier'] = decision.tier;
+  }
+
+  if (decision.model) {
+    headers['X-Lynkr-Model'] = decision.model;
+  }
+
+  if (decision.agenticResult?.isAgentic) {
+    headers['X-Lynkr-Agentic'] = decision.agenticResult.agentType;
+  }
+
+  if (decision.costOptimized) {
+    headers['X-Lynkr-Cost-Optimized'] = 'true';
+  }
+
   return headers;
 }
 
@@ -372,4 +488,11 @@ module.exports = {
 
   // Re-export analyzer for direct access
   analyzeComplexity: require('./complexity-analyzer').analyzeComplexity,
+
+  // Intelligent routing modules
+  getAgenticDetector,
+  getModelTierSelector,
+  getCostOptimizer,
+  AGENT_TYPES,
+  TIER_DEFINITIONS,
 };

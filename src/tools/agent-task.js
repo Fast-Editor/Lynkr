@@ -2,6 +2,50 @@ const { registerTool } = require(".");
 const { spawnAgent, autoSelectAgent } = require("../agents");
 const logger = require("../logger");
 
+/**
+ * Extract text from Anthropic content blocks format
+ * Handles: [{"type":"text","text":"..."}] -> "..."
+ */
+function extractTextFromContentBlocks(content) {
+  if (typeof content !== 'string') {
+    return content;
+  }
+
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('[')) {
+    return content;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) {
+      return content;
+    }
+
+    // Extract text from content blocks
+    const textParts = parsed
+      .filter(block => block && typeof block === 'object')
+      .map(block => {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          return block.text;
+        }
+        if (typeof block.text === 'string') {
+          return block.text;
+        }
+        return null;
+      })
+      .filter(text => text !== null);
+
+    if (textParts.length > 0) {
+      return textParts.join('\n\n');
+    }
+
+    return content;
+  } catch {
+    return content;
+  }
+}
+
 function registerAgentTaskTool() {
   registerTool(
     "Task",
@@ -49,10 +93,13 @@ function registerAgentTaskTool() {
         });
 
         if (result.success) {
+          // Extract text from Anthropic content blocks if present
+          const cleanContent = extractTextFromContentBlocks(result.result);
+
           return {
             ok: true,
             status: 200,
-            content: result.result,
+            content: cleanContent,
             metadata: {
               agentType: subagentType,
               agentId: result.stats.agentId,

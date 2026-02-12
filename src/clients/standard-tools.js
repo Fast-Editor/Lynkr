@@ -76,7 +76,7 @@ const STANDARD_TOOLS = [
   },
   {
     name: "Bash",
-    description: "Executes a bash command in a persistent shell session. Use for terminal operations like git, npm, docker, etc. DO NOT use for file operations - use specialized tools instead.",
+    description: "Executes a bash command in a persistent shell session. Use for terminal operations like git, npm, docker, listing files (ls), etc. PREFERRED for listing directory contents - use 'ls' command. DO NOT use for reading file contents - use Read tool instead.",
     input_schema: {
       type: "object",
       properties: {
@@ -98,7 +98,7 @@ const STANDARD_TOOLS = [
   },
   {
     name: "Glob",
-    description: "Fast file pattern matching tool. Supports glob patterns like '**/*.js' or 'src/**/*.ts'. Returns matching file paths sorted by modification time.",
+    description: "File pattern matching for finding files by name pattern. Use ONLY when you need to find files matching a specific pattern like '**/*.js'. For simple directory listing, use Bash with 'ls' instead.",
     input_schema: {
       type: "object",
       properties: {
@@ -354,4 +354,7 @@ EXAMPLE: User says "explore this project" → Call Task with subagent_type="Expl
   }
 ];
 
-module.exports = { STANDARD_TOOLS };
+// Pre-computed name list to avoid re-mapping on every log call
+const STANDARD_TOOL_NAMES = STANDARD_TOOLS.map(t => t.name);
+
+module.exports = { STANDARD_TOOLS, STANDARD_TOOL_NAMES };

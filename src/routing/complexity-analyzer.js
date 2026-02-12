@@ -88,6 +88,58 @@ const FORCE_LOCAL_PATTERNS = [
   /^(help|menu|commands?|options?)[\s\.\!\?]*$/i,
 ];
 
+// Weighted Scoring (15 Dimensions)
+const DIMENSION_WEIGHTS = {
+  // Content Analysis (35%)
+  tokenCount: 0.08,
+  promptComplexity: 0.10,
+  technicalDepth: 0.10,
+  domainSpecificity: 0.07,
+  // Tool Analysis (25%)
+  toolCount: 0.08,
+  toolComplexity: 0.10,
+  toolChainPotential: 0.07,
+  // Reasoning Requirements (25%)
+  multiStepReasoning: 0.10,
+  codeGeneration: 0.08,
+  analysisDepth: 0.07,
+  // Context Factors (15%)
+  conversationDepth: 0.05,
+  priorToolUsage: 0.05,
+  ambiguity: 0.05,
+};
+
+// Tool complexity weights (higher = more complex)
+const TOOL_COMPLEXITY_WEIGHTS = {
+  Bash: 0.9,
+  bash: 0.9,
+  shell: 0.9,
+  Write: 0.8,
+  write_file: 0.8,
+  Edit: 0.7,
+  edit_file: 0.7,
+  NotebookEdit: 0.7,
+  Task: 0.9,
+  agent_task: 0.9,
+  WebSearch: 0.5,
+  WebFetch: 0.4,
+  Read: 0.3,
+  read_file: 0.3,
+  Glob: 0.2,
+  Grep: 0.2,
+  default: 0.5,
+};
+
+// Domain-specific keywords for complexity
+const DOMAIN_KEYWORDS = {
+  security: /\b(auth|encrypt|vulnerability|injection|xss|csrf|jwt|oauth|password|credential|secret)\b/i,
+  ml: /\b(model|train|inference|tensor|embedding|neural|llm|gpt|transformer|pytorch|tensorflow)\b/i,
+  distributed: /\b(microservice|kafka|redis|queue|scale|cluster|replicate|kubernetes|docker|container)\b/i,
+  database: /\b(sql|nosql|migration|index|query|transaction|orm|postgres|mongodb|mysql)\b/i,
+  frontend: /\b(react|vue|angular|svelte|css|html|component|state|redux|hooks)\b/i,
+  devops: /\b(ci\/cd|pipeline|deploy|terraform|ansible|github\s*actions|jenkins)\b/i,
+};
+
 // ============================================================================
 // PHASE 3: Metrics Tracking
 // ============================================================================
@@ -360,6 +412,116 @@ function scoreReasoning(content) {
   return { score: Math.min(score, 15), reasons };
 }
 
+// ============================================================================
+// WEIGHTED SCORING FUNCTION (15 Dimensions)
+// ============================================================================
+
+/**
+ * Calculate weighted complexity score (0-100)
+ * Uses 15 dimensions with configurable weights
+ * @param {Object} payload - Request payload
+ * @param {string} content - Extracted content
+ * @returns {Object} Weighted score result
+ */
+function calculateWeightedScore(payload, content) {
+  const dimensions = {};
+
+  // 1. Token count (0-100)
+  const tokens = estimateTokens(payload);
+  dimensions.tokenCount = tokens < 500 ? 10 : tokens < 2000 ? 30 : tokens < 5000 ? 50 : tokens < 10000 ? 70 : 90;
+
+  // 2. Prompt complexity (sentence structure, avg length)
+  const sentences = content.split(/[.!?]+/).filter(s => s.trim().length > 0);
+  const avgLength = content.length / Math.max(sentences.length, 1);
+  dimensions.promptComplexity = Math.min(avgLength / 2, 100);
+
+  // 3. Technical depth (keyword density)
+  const techMatches = (content.match(PATTERNS.technical) || []).length;
+  dimensions.technicalDepth = Math.min(techMatches * 15, 100);
+
+  // 4. Domain specificity (how many domains are touched)
+  let domainScore = 0;
+  const domainsMatched = [];
+  for (const [domain, regex] of Object.entries(DOMAIN_KEYWORDS)) {
+    if (regex.test(content)) {
+      domainScore += 20;
+      domainsMatched.push(domain);
+    }
+  }
+  dimensions.domainSpecificity = Math.min(domainScore, 100);
+
+  // 5. Tool count
+  const toolCount = payload?.tools?.length ?? 0;
+  dimensions.toolCount = toolCount === 0 ? 0 :
+    toolCount <= 3 ? 20 :
+    toolCount <= 6 ? 40 :
+    toolCount <= 10 ? 60 :
+    toolCount <= 15 ? 80 : 100;
+
+  // 6. Tool complexity (weighted by tool types)
+  if (payload?.tools?.length > 0) {
+    const totalWeight = payload.tools.reduce((sum, t) => {
+      const name = t.name || t.function?.name || '';
+      return sum + (TOOL_COMPLEXITY_WEIGHTS[name] || TOOL_COMPLEXITY_WEIGHTS.default);
+    }, 0);
+    const avgWeight = totalWeight / payload.tools.length;
+    dimensions.toolComplexity = avgWeight * 100;
+  } else {
+    dimensions.toolComplexity = 0;
+  }
+
+  // 7. Tool chain potential (sequential operations)
+  dimensions.toolChainPotential = /\b(then|after|next|finally|first.*then|step\s*\d+)\b/i.test(content) ? 70 : 20;
+
+  // 8. Multi-step reasoning
+  dimensions.multiStepReasoning = ADVANCED_PATTERNS.reasoning.stepByStep.test(content) ? 80 :
+    ADVANCED_PATTERNS.reasoning.planning.test(content) ? 60 : 20;
+
+  // 9. Code generation requirement
+  dimensions.codeGeneration = /\b(write|create|implement|build|generate)\s+(a\s+)?(new\s+)?(function|class|module|api|endpoint|service|component)/i.test(content) ? 80 : 20;
+
+  // 10. Analysis depth
+  dimensions.analysisDepth = ADVANCED_PATTERNS.reasoning.tradeoffs.test(content) ? 80 :
+    ADVANCED_PATTERNS.reasoning.analysis.test(content) ? 60 : 20;
+
+  // 11. Conversation depth
+  const messageCount = payload?.messages?.length ?? 0;
+  dimensions.conversationDepth = messageCount < 3 ? 10 :
+    messageCount < 6 ? 30 :
+    messageCount < 10 ? 50 : 70;
+
+  // 12. Prior tool usage (tool results in conversation)
+  const toolResults = (payload?.messages || []).filter(m =>
+    m.role === 'user' && Array.isArray(m.content) && m.content.some(c => c.type === 'tool_result')
+  ).length;
+  dimensions.priorToolUsage = toolResults === 0 ? 10 :
+    toolResults < 3 ? 40 :
+    toolResults < 6 ? 60 : 80;
+
+  // 13. Ambiguity (inverse of specificity)
+  const hasSpecifics = /\b(file|function|line\s*\d+|error|bug|at\s+[\w.]+:\d+|\/[\w/]+\.\w+)\b/i.test(content);
+  dimensions.ambiguity = hasSpecifics ? 20 : content.length < 50 ? 70 : 40;
+
+  // Calculate weighted total
+  let weightedTotal = 0;
+  for (const [dimension, weight] of Object.entries(DIMENSION_WEIGHTS)) {
+    weightedTotal += (dimensions[dimension] || 0) * weight;
+  }
+
+  return {
+    score: Math.round(weightedTotal),
+    dimensions,
+    weights: DIMENSION_WEIGHTS,
+    meta: {
+      tokens,
+      toolCount,
+      messageCount,
+      toolResults,
+      domainsMatched,
+    },
+  };
+}
+
 /**
  * Get threshold based on SMART_TOOL_SELECTION_MODE
  */
@@ -381,13 +543,45 @@ function getThreshold() {
  * Analyze request complexity and return full analysis
  *
  * @param {Object} payload - Request payload
+ * @param {Object} options - Analysis options
  * @returns {Object} Complexity analysis result
  */
-function analyzeComplexity(payload) {
+function analyzeComplexity(payload, options = {}) {
   const content = extractContent(payload);
   const messageCount = payload?.messages?.length ?? 0;
+  const useWeighted = options.weighted ?? config.routing?.weightedScoring ?? false;
 
-  // Calculate individual scores
+  // Use weighted scoring if enabled
+  if (useWeighted) {
+    const weighted = calculateWeightedScore(payload, content);
+    const threshold = getThreshold();
+    const mode = config.smartToolSelection?.mode ?? 'heuristic';
+
+    // Check force patterns
+    const taskTypeResult = scoreTaskType(content);
+    let recommendation;
+    if (taskTypeResult.reason === 'force_local') {
+      recommendation = 'local';
+    } else if (taskTypeResult.reason === 'force_cloud') {
+      recommendation = 'cloud';
+    } else {
+      recommendation = weighted.score >= threshold ? 'cloud' : 'local';
+    }
+
+    return {
+      score: weighted.score,
+      threshold,
+      mode: 'weighted',
+      recommendation,
+      breakdown: weighted.dimensions,
+      weights: weighted.weights,
+      meta: weighted.meta,
+      forceReason: taskTypeResult.reason?.startsWith('force_') ? taskTypeResult.reason : null,
+      content: content.slice(0, 100) + (content.length > 100 ? '...' : ''),
+    };
+  }
+
+  // Standard scoring (original logic)
   const tokenScore = scoreTokens(payload);
   const toolScore = scoreTools(payload);
   const taskTypeResult = scoreTaskType(content);
@@ -577,6 +771,9 @@ module.exports = {
   scoreCodeComplexity,
   scoreReasoning,
 
+  // Weighted scoring
+  calculateWeightedScore,
+
   // Configuration
   getThreshold,
 
@@ -592,4 +789,7 @@ module.exports = {
   ADVANCED_PATTERNS,
   FORCE_CLOUD_PATTERNS,
   FORCE_LOCAL_PATTERNS,
+  DIMENSION_WEIGHTS,
+  TOOL_COMPLEXITY_WEIGHTS,
+  DOMAIN_KEYWORDS,
 };

@@ -704,8 +704,8 @@ var config = {
   semanticCache: {
     enabled: process.env.SEMANTIC_CACHE_ENABLED !== 'false',  // Disable via env if needed
     similarityThreshold: parseFloat(process.env.SEMANTIC_CACHE_THRESHOLD || '0.95'),  // Higher threshold
-    maxEntries: 500,
-    ttlMs: 3600000,  // 1 hour
+    maxEntries: Number.parseInt(process.env.SEMANTIC_CACHE_MAX_ENTRIES ?? "50", 10),  // Reduced from 500 to prevent memory bloat
+    ttlMs: Number.parseInt(process.env.SEMANTIC_CACHE_TTL_MS ?? "300000", 10),  // 5 minutes (was 1 hour)
   },
   agents: {
     enabled: agentsEnabled,
@@ -857,6 +857,23 @@ var config = {
     taskTimeoutMs: Number.isNaN(workerTaskTimeoutMs) ? 5000 : workerTaskTimeoutMs,
     offloadThresholdBytes: Number.isNaN(workerOffloadThresholdBytes) ? 10000 : workerOffloadThresholdBytes,
   },
+
+  // Intelligent Routing
+  routing: {
+    weightedScoring: true,
+    costOptimization: true,
+    agenticDetection: true,
+  },
+
+  // Model Tier Configuration (REQUIRED)
+  // Format: TIER_<LEVEL>=provider:model (e.g., TIER_SIMPLE=ollama:llama3.2)
+  modelTiers: {
+    enabled: true,
+    SIMPLE: process.env.TIER_SIMPLE?.trim() || null,
+    MEDIUM: process.env.TIER_MEDIUM?.trim() || null,
+    COMPLEX: process.env.TIER_COMPLEX?.trim() || null,
+    REASONING: process.env.TIER_REASONING?.trim() || null,
+  },
 };
 
 /**
@@ -901,5 +918,24 @@ function reloadConfig() {
 
 // Make config mutable for hot reload
 config.reloadConfig = reloadConfig;
+
+// Validate mandatory TIER_* configuration
+const missingTiers = [];
+if (!config.modelTiers.SIMPLE) missingTiers.push('TIER_SIMPLE');
+if (!config.modelTiers.MEDIUM) missingTiers.push('TIER_MEDIUM');
+if (!config.modelTiers.COMPLEX) missingTiers.push('TIER_COMPLEX');
+if (!config.modelTiers.REASONING) missingTiers.push('TIER_REASONING');
+
+if (missingTiers.length > 0) {
+  throw new Error(
+    `Missing required tier configuration: ${missingTiers.join(', ')}\n` +
+    `Format: TIER_<LEVEL>=provider:model\n` +
+    `Example:\n` +
+    `  TIER_SIMPLE=ollama:llama3.2\n` +
+    `  TIER_MEDIUM=azure-openai:gpt-4o\n` +
+    `  TIER_COMPLEX=azure-openai:gpt-4o\n` +
+    `  TIER_REASONING=openai:o1`
+  );
+}
 
 module.exports = config;

@@ -77,7 +77,11 @@
       "Bash(kill:*)",
       "Bash(grep:*)",
       "WebFetch(domain:opencode.ai)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "WebFetch(domain:www.databricks.com)",
+      "WebFetch(domain:docs.databricks.com)",
+      "Bash(env:*)",
+      "Bash(DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test:*)"
     ],
     "deny": [],
     "ask": []

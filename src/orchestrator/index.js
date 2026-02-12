@@ -19,6 +19,7 @@ const crypto = require("crypto");
 const { asyncClone, asyncTransform, getPoolStats } = require("../workers/helpers");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
 const lazyLoader = require("../tools/lazy-loader");
+const { isGPTProvider, getGPTToolLoopThreshold, areSimilarToolCalls } = require("../clients/gpt-utils");
 
 /**
  * Get destination URL for audit logging based on provider type
@@ -516,12 +517,50 @@ function parseExecutionContent(content) {
     const trimmed = content.trim();
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
-        return JSON.parse(trimmed);
+        const parsed = JSON.parse(trimmed);
+        // Handle Anthropic content blocks array - extract text
+        if (Array.isArray(parsed)) {
+          const textParts = parsed
+            .filter(block => block && typeof block === 'object')
+            .map(block => {
+              if (block.type === 'text' && typeof block.text === 'string') {
+                return block.text;
+              }
+              // Handle other block types gracefully
+              if (block.text) return block.text;
+              if (block.content) return typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+              return null;
+            })
+            .filter(text => text !== null);
+
+          if (textParts.length > 0) {
+            return textParts.join('\n');
+          }
+        }
+        return parsed;
       } catch {
         return content;
       }
     }
     return content;
+  }
+  // Handle content that's already an array (content blocks)
+  if (Array.isArray(content)) {
+    const textParts = content
+      .filter(block => block && typeof block === 'object')
+      .map(block => {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          return block.text;
+        }
+        if (block.text) return block.text;
+        if (block.content) return typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+        return null;
+      })
+      .filter(text => text !== null);
+
+    if (textParts.length > 0) {
+      return textParts.join('\n');
+    }
   }
   return content;
 }
@@ -1397,6 +1436,19 @@ async function runAgentLoop({
       "Agent loop step",
     );
 
+    // Trim messages when they grow too large to prevent OOM.
+    // Keep the first message (system/user) and the last MAX_LOOP_MESSAGES.
+    const MAX_LOOP_MESSAGES = 40;
+    if (cleanPayload.messages && cleanPayload.messages.length > MAX_LOOP_MESSAGES) {
+      const excess = cleanPayload.messages.length - MAX_LOOP_MESSAGES;
+      // Keep first 2 messages (system context + initial user) and trim from the middle
+      cleanPayload.messages.splice(2, excess);
+      logger.info(
+        { trimmed: excess, remaining: cleanPayload.messages.length },
+        "Trimmed intermediate messages to prevent memory growth",
+      );
+    }
+
     // Debug: Log payload before sending to Azure
     if (providerType === "azure-anthropic") {
       logger.debug(
@@ -2179,6 +2231,7 @@ IMPORTANT TOOL USAGE RULES:
               session,
               cwd,
               requestMessages: cleanPayload.messages,
+              provider: providerType,  // Pass provider for GPT-specific formatting
             }))
           );
 
@@ -2412,6 +2465,7 @@ IMPORTANT TOOL USAGE RULES:
           session,
           cwd,
           requestMessages: cleanPayload.messages,
+          provider: providerType,  // Pass provider for GPT-specific formatting
         });
 
         let toolMessage;
@@ -2527,33 +2581,59 @@ IMPORTANT TOOL USAGE RULES:
       // === TOOL CALL LOOP DETECTION ===
       // Track tool calls to detect infinite loops where the model calls the same tool
       // repeatedly with identical parameters
+      // GPT models get stricter thresholds (2 vs 3) and similarity-based detection
+      const isGPT = isGPTProvider(providerType);
+      const loopThreshold = isGPT ? getGPTToolLoopThreshold() : 3;
+
       for (const call of toolCalls) {
         const signature = getToolCallSignature(call);
-        const count = (toolCallHistory.get(signature) || 0) + 1;
-        toolCallHistory.set(signature, count);
+        const existingEntry = toolCallHistory.get(signature);
+        let count = (existingEntry?.count || 0) + 1;
+        toolCallHistory.set(signature, { count, call });
 
         const toolName = call.function?.name ?? call.name ?? 'unknown';
 
-        if (count === 3 && !loopWarningInjected) {
+        // For GPT models, also check for similar (not just identical) tool calls
+        // This catches cases where GPT slightly varies parameters but is essentially looping
+        if (isGPT) {
+          for (const [existingSig, existingData] of toolCallHistory.entries()) {
+            if (existingSig !== signature && areSimilarToolCalls(call, existingData.call)) {
+              // Found a similar call - increase count to trigger loop detection earlier
+              count = Math.max(count, existingData.count + 1);
+              logger.debug({
+                tool: toolName,
+                currentSignature: signature,
+                similarSignature: existingSig,
+                combinedCount: count,
+              }, "GPT similar tool call detected - combining counts");
+            }
+          }
+        }
+
+        if (count === loopThreshold && !loopWarningInjected) {
           logger.warn(
             {
               sessionId: session?.id ?? null,
               correlationId: options?.correlationId,
               tool: toolName,
               loopCount: count,
+              loopThreshold,
+              isGPT,
               signature: signature,
               action: 'warning_injected',
               totalSteps: steps,
               remainingSteps: settings.maxSteps - steps,
             },
-            "Tool call loop detected - same tool called 3 times with identical parameters",
+            `Tool call loop detected - same tool called ${loopThreshold} times with identical/similar parameters`,
           );
 
-          // Inject warning message to model
+          // Inject warning message to model - GPT gets a more explicit message
           loopWarningInjected = true;
           const warningMessage = {
             role: "user",
-            content: "⚠️ System Warning: You have called the same tool with identical parameters 3 times in this request. This may indicate an infinite loop. Please provide a final answer to the user instead of calling the same tool again, or explain why you need to continue retrying with the same parameters.",
+            content: isGPT
+              ? `⚠️ CRITICAL SYSTEM WARNING: You have called the "${toolName}" tool ${count} times with identical or similar parameters. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response to the user based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Summarize your findings and respond.`
+              : `⚠️ System Warning: You have called the same tool with identical parameters ${count} times in this request. This may indicate an infinite loop. Please provide a final answer to the user instead of calling the same tool again, or explain why you need to continue retrying with the same parameters.`,
           };
 
           cleanPayload.messages.push(warningMessage);
@@ -2568,11 +2648,13 @@ IMPORTANT TOOL USAGE RULES:
                 reason: "tool_call_loop_warning",
                 toolName,
                 loopCount: count,
+                isGPT,
+                loopThreshold,
               },
             });
           }
-        } else if (count > 3) {
-          // Force termination after 3 identical calls
+        } else if (count > loopThreshold) {
+          // Force termination after threshold exceeded
           // Log FULL context for debugging why the loop occurred
           logger.error(
             {
@@ -2580,6 +2662,8 @@ IMPORTANT TOOL USAGE RULES:
               correlationId: options?.correlationId,
               tool: toolName,
               loopCount: count,
+              loopThreshold,
+              isGPT,
               signature: signature,
               action: 'request_terminated',
               totalSteps: steps,
@@ -2600,7 +2684,7 @@ IMPORTANT TOOL USAGE RULES:
               body: {
                 error: {
                   type: "tool_call_loop_detected",
-                  message: `Tool call loop detected: The model called the same tool ("${toolName}") with identical parameters ${count} times. This indicates an infinite loop and execution has been terminated. Please try rephrasing your request or provide different parameters.`,
+                  message: `Tool call loop detected: The model called the same tool ("${toolName}") with identical parameters ${count} times (threshold: ${loopThreshold}). This indicates an infinite loop and execution has been terminated. Please try rephrasing your request or provide different parameters.`,
                 },
               },
               terminationReason: "tool_call_loop",
@@ -3059,6 +3143,7 @@ IMPORTANT TOOL USAGE RULES:
             session,
             cwd,
             requestMessages: cleanPayload.messages,
+            provider: providerType,  // Pass provider for GPT-specific formatting
           });
 
           const toolResultMessage = createFallbackToolResultMessage(providerType, {
@@ -3332,7 +3417,12 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   // === TOOL LOOP GUARD (EARLY CHECK) ===
   // Check BEFORE sanitization since sanitizePayload removes conversation history
-  const toolLoopThreshold = config.policy?.toolLoopThreshold ?? 3;
+  // GPT models get a lower threshold (2) to catch loops earlier
+  const providerType = config.modelProvider?.type ?? "databricks";
+  const isGPT = isGPTProvider(providerType);
+  const toolLoopThreshold = isGPT
+    ? getGPTToolLoopThreshold()  // Hardcoded: 2 for GPT
+    : (config.policy?.toolLoopThreshold ?? 3);
   const { toolResultCount, toolUseCount } = countToolCallsInHistory(payload?.messages);
 
   console.log('[ToolLoopGuard EARLY] Checking ORIGINAL messages:', {
@@ -3340,13 +3430,18 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     toolResultCount,
     toolUseCount,
     threshold: toolLoopThreshold,
+    isGPT,
+    providerType,
   });
 
-  if (toolResultCount >= toolLoopThreshold) {
+  // Temporarily increase threshold in client mode to allow tool execution flow
+  const effectiveThreshold = config.toolExecutionMode === 'client' ? 10 : toolLoopThreshold;
+
+  if (toolResultCount >= effectiveThreshold) {
     logger.error({
       toolResultCount,
       toolUseCount,
-      threshold: toolLoopThreshold,
+      threshold: effectiveThreshold,
       sessionId: session?.id ?? null,
     }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
 
