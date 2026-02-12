@@ -64,23 +64,15 @@ services:
       # ============================================================
       # AZURE OPENAI CONFIGURATION
       # ============================================================
-      # Required when MODEL_PROVIDER=azure-openai
-      # IMPORTANT: Use FULL endpoint URL including deployment path and API version
-      # Format: https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT/chat/completions?api-version=2025-01-01-preview
-      # Get credentials from: https://portal.azure.com → Azure OpenAI → Keys and Endpoint
-      # Deployment options: gpt-4o, gpt-4o-mini, gpt-5-chat, o1-preview, o3-mini
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2024-08-01-preview}
 
       # ============================================================
       # HYBRID ROUTING & FALLBACK
       # ============================================================
-      # Enable/disable fallback to cloud providers
       FALLBACK_ENABLED: ${FALLBACK_ENABLED:-true}
-      # Fallback provider when Ollama can't handle request
-      # Options: databricks, azure-openai, azure-anthropic, openrouter, bedrock, openai
-      # Note: Local providers (ollama, llamacpp, lmstudio) cannot be used as fallback
       FALLBACK_PROVIDER: ${FALLBACK_PROVIDER:-databricks}
 
       # ============================================================
@@ -94,12 +86,11 @@ services:
       # ============================================================
       AZURE_ANTHROPIC_ENDPOINT: ${AZURE_ANTHROPIC_ENDPOINT:-}
       AZURE_ANTHROPIC_API_KEY: ${AZURE_ANTHROPIC_API_KEY:-}
+      AZURE_ANTHROPIC_VERSION: ${AZURE_ANTHROPIC_VERSION:-2023-06-01}
 
       # ============================================================
       # AWS BEDROCK CONFIGURATION (OPTIONAL)
       # ============================================================
-      # Supports Claude, Titan, Llama, Jurassic, Cohere, Mistral models
-      # Get API key from AWS Console → Bedrock → API Keys
       AWS_BEDROCK_API_KEY: ${AWS_BEDROCK_API_KEY:-}
       AWS_BEDROCK_REGION: ${AWS_BEDROCK_REGION:-us-east-1}
       AWS_BEDROCK_MODEL_ID: ${AWS_BEDROCK_MODEL_ID:-anthropic.claude-3-5-sonnet-20241022-v2:0}
@@ -107,11 +98,17 @@ services:
       # ============================================================
       # LLAMA.CPP CONFIGURATION (OPTIONAL)
       # ============================================================
-      # For local GGUF models
       LLAMACPP_ENDPOINT: ${LLAMACPP_ENDPOINT:-http://localhost:8080}
       LLAMACPP_MODEL: ${LLAMACPP_MODEL:-default}
       LLAMACPP_EMBEDDINGS_ENDPOINT: ${LLAMACPP_EMBEDDINGS_ENDPOINT:-http://localhost:8080/embeddings}
       LLAMACPP_TIMEOUT_MS: ${LLAMACPP_TIMEOUT_MS:-120000}
+
+      # ============================================================
+      # LM STUDIO CONFIGURATION (OPTIONAL)
+      # ============================================================
+      LMSTUDIO_ENDPOINT: ${LMSTUDIO_ENDPOINT:-http://localhost:1234}
+      LMSTUDIO_MODEL: ${LMSTUDIO_MODEL:-default}
+      LMSTUDIO_TIMEOUT_MS: ${LMSTUDIO_TIMEOUT_MS:-120000}
 
       # ============================================================
       # OPENAI CONFIGURATION (OPTIONAL)
@@ -121,10 +118,21 @@ services:
       OPENAI_ENDPOINT: ${OPENAI_ENDPOINT:-https://api.openai.com/v1/chat/completions}
 
       # ============================================================
+      # Z.AI CONFIGURATION (OPTIONAL)
+      # ============================================================
+      ZAI_API_KEY: ${ZAI_API_KEY:-}
+      ZAI_ENDPOINT: ${ZAI_ENDPOINT:-https://api.z.ai/api/anthropic/v1/messages}
+      ZAI_MODEL: ${ZAI_MODEL:-GLM-4.7}
+
+      # ============================================================
+      # GOOGLE VERTEX AI CONFIGURATION (OPTIONAL)
+      # ============================================================
+      VERTEX_API_KEY: ${VERTEX_API_KEY:-}
+      VERTEX_MODEL: ${VERTEX_MODEL:-gemini-2.0-flash}
+
+      # ============================================================
       # EMBEDDINGS PROVIDER OVERRIDE (OPTIONAL)
       # ============================================================
-      # Options: ollama, llamacpp, openrouter, openai
-      # By default, uses same provider as MODEL_PROVIDER
       EMBEDDINGS_PROVIDER: ${EMBEDDINGS_PROVIDER:-}
 
       # ============================================================
@@ -132,15 +140,126 @@ services:
       # ============================================================
       PORT: ${PORT:-8081}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      NODE_ENV: ${NODE_ENV:-production}
+      REQUEST_JSON_LIMIT: ${REQUEST_JSON_LIMIT:-1gb}
+      SESSION_DB_PATH: /app/data/sessions.db
       WEB_SEARCH_ENDPOINT: ${WEB_SEARCH_ENDPOINT:-http://searxng:8888/search}
       WORKSPACE_ROOT: /workspace
 
       # ============================================================
-      # PRODUCTION HARDENING (OPTIONAL)
+      # FILE LOGGING (pino-roll rotation)
+      # ============================================================
+      LOG_FILE_ENABLED: ${LOG_FILE_ENABLED:-false}
+      LOG_FILE_PATH: /app/logs/lynkr.log
+      LOG_FILE_LEVEL: ${LOG_FILE_LEVEL:-debug}
+      LOG_FILE_FREQUENCY: ${LOG_FILE_FREQUENCY:-daily}
+      LOG_FILE_MAX_FILES: ${LOG_FILE_MAX_FILES:-14}
+
+      # ============================================================
+      # TOOL INJECTION & SUGGESTION MODE
+      # ============================================================
+      INJECT_TOOLS_LLAMACPP: ${INJECT_TOOLS_LLAMACPP:-true}
+      INJECT_TOOLS_OLLAMA: ${INJECT_TOOLS_OLLAMA:-true}
+      SUGGESTION_MODE_MODEL: ${SUGGESTION_MODE_MODEL:-default}
+
+      # ============================================================
+      # RATE LIMITING
+      # ============================================================
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      RATE_LIMIT_KEY_BY: ${RATE_LIMIT_KEY_BY:-session}
+
+      # ============================================================
+      # WEB SEARCH
+      # ============================================================
+      WEB_SEARCH_ALLOW_ALL: ${WEB_SEARCH_ALLOW_ALL:-true}
+      WEB_SEARCH_TIMEOUT_MS: ${WEB_SEARCH_TIMEOUT_MS:-10000}
+      WEB_FETCH_BODY_PREVIEW_MAX: ${WEB_FETCH_BODY_PREVIEW_MAX:-10000}
+      WEB_SEARCH_RETRY_ENABLED: ${WEB_SEARCH_RETRY_ENABLED:-true}
+      WEB_SEARCH_MAX_RETRIES: ${WEB_SEARCH_MAX_RETRIES:-2}
+
+      # ============================================================
+      # POLICY CONFIGURATION
+      # ============================================================
+      POLICY_MAX_STEPS: ${POLICY_MAX_STEPS:-20}
+      POLICY_MAX_TOOL_CALLS: ${POLICY_MAX_TOOL_CALLS:-12}
+      POLICY_TOOL_LOOP_THRESHOLD: ${POLICY_TOOL_LOOP_THRESHOLD:-10}
+      POLICY_GIT_ALLOW_PUSH: ${POLICY_GIT_ALLOW_PUSH:-false}
+      POLICY_GIT_ALLOW_PULL: ${POLICY_GIT_ALLOW_PULL:-true}
+      POLICY_GIT_ALLOW_COMMIT: ${POLICY_GIT_ALLOW_COMMIT:-true}
+      POLICY_GIT_REQUIRE_TESTS: ${POLICY_GIT_REQUIRE_TESTS:-false}
+      POLICY_GIT_AUTOSTASH: ${POLICY_GIT_AUTOSTASH:-false}
+      POLICY_FILE_BLOCKED_PATHS: ${POLICY_FILE_BLOCKED_PATHS:-/.env,.env,/etc/passwd,/etc/shadow}
+      POLICY_SAFE_COMMANDS_ENABLED: ${POLICY_SAFE_COMMANDS_ENABLED:-true}
+
+      # ============================================================
+      # AGENTS CONFIGURATION
+      # ============================================================
+      AGENTS_ENABLED: ${AGENTS_ENABLED:-true}
+      AGENTS_MAX_CONCURRENT: ${AGENTS_MAX_CONCURRENT:-10}
+      AGENTS_DEFAULT_MODEL: ${AGENTS_DEFAULT_MODEL:-haiku}
+      AGENTS_MAX_STEPS: ${AGENTS_MAX_STEPS:-15}
+      AGENTS_TIMEOUT: ${AGENTS_TIMEOUT:-300000}
+
+      # ============================================================
+      # PROMPT & SEMANTIC CACHE
+      # ============================================================
+      PROMPT_CACHE_ENABLED: ${PROMPT_CACHE_ENABLED:-true}
+      PROMPT_CACHE_MAX_ENTRIES: ${PROMPT_CACHE_MAX_ENTRIES:-1000}
+      PROMPT_CACHE_TTL_MS: ${PROMPT_CACHE_TTL_MS:-300000}
+      SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
+      SEMANTIC_CACHE_THRESHOLD: ${SEMANTIC_CACHE_THRESHOLD:-0.95}
+
+      # ============================================================
+      # PRODUCTION HARDENING
       # ============================================================
       CIRCUIT_BREAKER_FAILURE_THRESHOLD: ${CIRCUIT_BREAKER_FAILURE_THRESHOLD:-5}
       CIRCUIT_BREAKER_TIMEOUT: ${CIRCUIT_BREAKER_TIMEOUT:-60000}
       LOAD_SHEDDING_MEMORY_THRESHOLD: ${LOAD_SHEDDING_MEMORY_THRESHOLD:-0.85}
+
+      # ============================================================
+      # LONG-TERM MEMORY (Titans-inspired)
+      # ============================================================
+      MEMORY_ENABLED: ${MEMORY_ENABLED:-true}
+      MEMORY_RETRIEVAL_LIMIT: ${MEMORY_RETRIEVAL_LIMIT:-5}
+      MEMORY_SURPRISE_THRESHOLD: ${MEMORY_SURPRISE_THRESHOLD:-0.3}
+      MEMORY_MAX_AGE_DAYS: ${MEMORY_MAX_AGE_DAYS:-90}
+      MEMORY_MAX_COUNT: ${MEMORY_MAX_COUNT:-10000}
+      MEMORY_INCLUDE_GLOBAL: ${MEMORY_INCLUDE_GLOBAL:-true}
+      MEMORY_INJECTION_FORMAT: ${MEMORY_INJECTION_FORMAT:-system}
+      MEMORY_EXTRACTION_ENABLED: ${MEMORY_EXTRACTION_ENABLED:-true}
+      MEMORY_DECAY_ENABLED: ${MEMORY_DECAY_ENABLED:-true}
+      MEMORY_DECAY_HALF_LIFE: ${MEMORY_DECAY_HALF_LIFE:-30}
+
+      # ============================================================
+      # TOKEN OPTIMIZATION (60-80% cost reduction)
+      # ============================================================
+      TOKEN_TRACKING_ENABLED: ${TOKEN_TRACKING_ENABLED:-true}
+      TOOL_TRUNCATION_ENABLED: ${TOOL_TRUNCATION_ENABLED:-true}
+      MEMORY_FORMAT: ${MEMORY_FORMAT:-compact}
+      MEMORY_DEDUP_ENABLED: ${MEMORY_DEDUP_ENABLED:-true}
+      MEMORY_DEDUP_LOOKBACK: ${MEMORY_DEDUP_LOOKBACK:-5}
+      SYSTEM_PROMPT_MODE: ${SYSTEM_PROMPT_MODE:-dynamic}
+      TOOL_DESCRIPTIONS: ${TOOL_DESCRIPTIONS:-minimal}
+      HISTORY_COMPRESSION_ENABLED: ${HISTORY_COMPRESSION_ENABLED:-true}
+      HISTORY_KEEP_RECENT_TURNS: ${HISTORY_KEEP_RECENT_TURNS:-10}
+      HISTORY_SUMMARIZE_OLDER: ${HISTORY_SUMMARIZE_OLDER:-true}
+      TOKEN_BUDGET_WARNING: ${TOKEN_BUDGET_WARNING:-100000}
+      TOKEN_BUDGET_MAX: ${TOKEN_BUDGET_MAX:-180000}
+      TOKEN_BUDGET_ENFORCEMENT: ${TOKEN_BUDGET_ENFORCEMENT:-true}
+
+      # ============================================================
+      # SMART TOOL SELECTION
+      # ============================================================
+      SMART_TOOL_SELECTION_MODE: ${SMART_TOOL_SELECTION_MODE:-heuristic}
+      SMART_TOOL_SELECTION_TOKEN_BUDGET: ${SMART_TOOL_SELECTION_TOKEN_BUDGET:-2500}
+
+      # ============================================================
+      # HOT RELOAD
+      # ============================================================
+      HOT_RELOAD_ENABLED: ${HOT_RELOAD_ENABLED:-true}
+      HOT_RELOAD_DEBOUNCE_MS: ${HOT_RELOAD_DEBOUNCE_MS:-1000}
 
       # ============================================================
       # HEADROOM CONTEXT COMPRESSION (OPTIONAL)
@@ -163,9 +282,20 @@ services:
       HEADROOM_CCR_TTL: ${HEADROOM_CCR_TTL:-300}
       HEADROOM_LLMLINGUA: ${HEADROOM_LLMLINGUA:-false}
 
+      # ============================================================
+      # TIERED MODEL ROUTING (OPTIONAL)
+      # ============================================================
+      # Format: TIER_<LEVEL>=provider:model
+      # All 4 must be set to enable tiered routing
+      # TIER_SIMPLE: ${TIER_SIMPLE:-}
+      # TIER_MEDIUM: ${TIER_MEDIUM:-}
+      # TIER_COMPLEX: ${TIER_COMPLEX:-}
+      # TIER_REASONING: ${TIER_REASONING:-}
+
     volumes:
-      - ./data:/app/data  # Persist SQLite databases
-      - .:/workspace      # Mount workspace
+      - ./data:/app/data    # Persist SQLite databases
+      - ./logs:/app/logs    # Persist log files
+      - .:/workspace        # Mount workspace
     restart: unless-stopped
     networks:
       - lynkr-network
