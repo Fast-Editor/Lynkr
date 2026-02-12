@@ -146,6 +146,66 @@ const STANDARD_TOOLS = [
     }
   },
   {
+    name: "MultiEdit",
+    description: "Makes multiple edits to a single file in one atomic operation. More efficient than calling Edit multiple times. Each edit is an exact string replacement.",
+    input_schema: {
+      type: "object",
+      properties: {
+        file_path: {
+          type: "string",
+          description: "Relative path within workspace. DO NOT use absolute paths."
+        },
+        edits: {
+          type: "array",
+          description: "Array of edits to apply to the file",
+          items: {
+            type: "object",
+            properties: {
+              old_string: {
+                type: "string",
+                description: "The text to replace"
+              },
+              new_string: {
+                type: "string",
+                description: "The text to replace it with"
+              }
+            },
+            required: ["old_string", "new_string"]
+          }
+        }
+      },
+      required: ["file_path", "edits"]
+    }
+  },
+  {
+    name: "LS",
+    description: "Lists files and directories in a given path. Returns a structured listing with file types and sizes. Use for quick directory overview.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "The directory to list. Defaults to current working directory."
+        }
+      },
+      required: []
+    }
+  },
+  {
+    name: "NotebookRead",
+    description: "Reads and displays the contents of a Jupyter notebook (.ipynb file), including all cells with their outputs, combining code, text, and visualizations.",
+    input_schema: {
+      type: "object",
+      properties: {
+        notebook_path: {
+          type: "string",
+          description: "Relative path to the Jupyter notebook (e.g., 'analysis.ipynb'). DO NOT use absolute paths."
+        }
+      },
+      required: ["notebook_path"]
+    }
+  },
+  {
     name: "TodoWrite",
     description: "Create and manage a structured task list for tracking progress and organizing complex tasks. Use proactively for multi-step tasks or when user provides multiple tasks.",
     input_schema: {
@@ -357,4 +417,14 @@ EXAMPLE: User says "explore this project" → Call Task with subagent_type="Expl
 // Pre-computed name list to avoid re-mapping on every log call
 const STANDARD_TOOL_NAMES = STANDARD_TOOLS.map(t => t.name);
 
-module.exports = { STANDARD_TOOLS, STANDARD_TOOL_NAMES };
+// Tools that cannot work through a proxy (require bidirectional user interaction).
+// All other tools are safe — per-client filtering via CLIENT_TOOL_MAPPINGS in
+// openai-router.js handles excluding tools that specific clients don't support
+// (e.g. Codex has no equivalent for Task, WebFetch, NotebookEdit).
+const IDE_UNSUPPORTED_TOOLS = new Set(['AskUserQuestion']);
+
+// Filtered tool set for IDE clients — excludes tools with no IDE equivalent
+const IDE_SAFE_TOOLS = STANDARD_TOOLS.filter(t => !IDE_UNSUPPORTED_TOOLS.has(t.name));
+const IDE_SAFE_TOOL_NAMES = IDE_SAFE_TOOLS.map(t => t.name);
+
+module.exports = { STANDARD_TOOLS, STANDARD_TOOL_NAMES, IDE_SAFE_TOOLS, IDE_SAFE_TOOL_NAMES, IDE_UNSUPPORTED_TOOLS };

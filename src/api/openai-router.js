@@ -24,6 +24,7 @@ const {
   convertAnthropicToOpenAI,
   convertAnthropicStreamChunkToOpenAI
 } = require("../clients/openai-format");
+const { IDE_SAFE_TOOLS, IDE_SAFE_TOOL_NAMES } = require("../clients/standard-tools");
 
 const router = express.Router();
 
@@ -60,13 +61,14 @@ function detectClient(headers) {
  */
 const CLIENT_TOOL_MAPPINGS = {
   // ============== CODEX CLI ==============
-  // Tools: shell_command, read_file, write_file, apply_patch, glob_file_search, rg, list_dir
+  // Confirmed tools: shell, apply_patch, read_file, write_file, list_dir, glob_file_search,
+  //   rg, web_search, update_plan, view_image, memory
+  // NOT supported: spawn_agent/spawn_thread (Task has no Codex equivalent)
   codex: {
     "Bash": {
-      name: "shell_command",
+      name: "shell",
       mapArgs: (a) => ({
-        command: a.command || "",
-        workdir: a.cwd || a.working_directory
+        command: ["bash", "-c", a.command || ""]
       })
     },
     "Read": {
@@ -112,6 +114,18 @@ const CLIENT_TOOL_MAPPINGS = {
       name: "list_dir",
       mapArgs: (a) => ({
         path: a.path || a.directory
+      })
+    },
+    "TodoWrite": {
+      name: "update_plan",
+      mapArgs: (a) => ({
+        todos: a.todos || []
+      })
+    },
+    "WebSearch": {
+      name: "web_search",
+      mapArgs: (a) => ({
+        query: a.query || ""
       })
     }
   },
@@ -393,6 +407,30 @@ router.post("/chat/completions", async (req, res) => {
     // Convert OpenAI request to Anthropic format
     const anthropicRequest = convertOpenAIToAnthropic(req.body);
 
+    // Inject tools if client didn't send any.
+    // Two-layer filtering:
+    //   1. IDE_SAFE_TOOLS = STANDARD_TOOLS minus AskUserQuestion (can't work through proxy)
+    //   2. For known clients (codex, cline, etc.), further filter to only tools
+    //      that have a mapping in CLIENT_TOOL_MAPPINGS — this ensures clients like
+    //      Codex don't see tools they can't handle (Task, WebFetch, NotebookEdit)
+    //      while Claude Code (unknown client) gets the full IDE_SAFE_TOOLS set.
+    const clientType = detectClient(req.headers);
+    if (!anthropicRequest.tools || anthropicRequest.tools.length === 0) {
+      const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
+      const clientTools = clientMappings
+        ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
+        : IDE_SAFE_TOOLS;
+      anthropicRequest.tools = clientTools;
+      logger.info({
+        clientType,
+        injectedToolCount: clientTools.length,
+        injectedToolNames: clientTools.map(t => t.name),
+        reason: clientMappings
+          ? `Known client '${clientType}' — filtered to mapped tools only`
+          : "Unknown client — injecting full IDE_SAFE_TOOLS"
+      }, "=== INJECTING TOOLS ===");
+    }
+
     // Get or create session
     const session = getSession(sessionId);
 
@@ -454,7 +492,25 @@ router.post("/chat/completions", async (req, res) => {
 
         // Simulate streaming by sending the complete response as chunks
         const content = openaiResponse.choices[0].message.content || "";
-        const toolCalls = openaiResponse.choices[0].message.tool_calls;
+        let toolCalls = openaiResponse.choices[0].message.tool_calls;
+
+        // Map tool names for known IDE clients
+        if (clientType !== "unknown" && toolCalls && toolCalls.length > 0) {
+          toolCalls = toolCalls.map(tc => {
+            const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);
+            return {
+              ...tc,
+              function: {
+                name: mapped.name,
+                arguments: mapped.arguments
+              }
+            };
+          });
+          logger.info({
+            mappedTools: toolCalls.map(t => t.function?.name),
+            clientType
+          }, "Tool names mapped for streaming chat/completions");
+        }
 
         // Send start chunk with role
         const startChunk = {
@@ -605,6 +661,24 @@ router.post("/chat/completions", async (req, res) => {
 
       // Convert Anthropic response to OpenAI format
       const openaiResponse = convertAnthropicToOpenAI(result.body, req.body.model);
+
+      // Map tool names for known IDE clients
+      if (clientType !== "unknown" && openaiResponse.choices?.[0]?.message?.tool_calls?.length > 0) {
+        openaiResponse.choices[0].message.tool_calls = openaiResponse.choices[0].message.tool_calls.map(tc => {
+          const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);
+          return {
+            ...tc,
+            function: {
+              name: mapped.name,
+              arguments: mapped.arguments
+            }
+          };
+        });
+        logger.info({
+          mappedTools: openaiResponse.choices[0].message.tool_calls.map(t => t.function?.name),
+          clientType
+        }, "Tool names mapped for non-streaming chat/completions");
+      }
 
       logger.info({
         duration: Date.now() - startTime,
@@ -1373,6 +1447,24 @@ router.post("/responses", async (req, res) => {
         hasContent: !!m.content
       }))
     }, "After Chat→Anthropic conversion");
+
+    // Inject tools if client didn't send any (same two-layer filtering as chat/completions).
+    const clientType = detectClient(req.headers);
+    if (!anthropicRequest.tools || anthropicRequest.tools.length === 0) {
+      const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
+      const clientTools = clientMappings
+        ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
+        : IDE_SAFE_TOOLS;
+      anthropicRequest.tools = clientTools;
+      logger.info({
+        clientType,
+        injectedToolCount: clientTools.length,
+        injectedToolNames: clientTools.map(t => t.name),
+        reason: clientMappings
+          ? `Known client '${clientType}' — filtered to mapped tools only`
+          : "Unknown client — injecting full IDE_SAFE_TOOLS"
+      }, "=== INJECTING TOOLS (responses) ===");
+    }
 
     // Get session
     const session = getSession(sessionId);
