@@ -184,7 +184,7 @@ async function invokeDatabricks(body) {
   // Inject standard tools if client didn't send any (passthrough mode)
   if (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0) {
     databricksBody.tools = STANDARD_TOOLS;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
       injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
@@ -225,7 +225,7 @@ async function invokeAzureAnthropic(body) {
   // Inject standard tools if client didn't send any (passthrough mode)
   if (!Array.isArray(body.tools) || body.tools.length === 0) {
     body.tools = STANDARD_TOOLS;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
       injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
@@ -300,7 +300,7 @@ async function invokeOllama(body) {
   }
 
   if (deduplicated.length !== convertedMessages.length) {
-    logger.info({
+    logger.debug({
       originalCount: convertedMessages.length,
       deduplicatedCount: deduplicated.length,
       removed: convertedMessages.length - deduplicated.length,
@@ -370,7 +370,7 @@ async function invokeOllama(body) {
     logMessage = `No tools (0 tools)`;
   }
 
-  logger.info({
+  logger.debug({
     model: config.ollama.model,
     toolCount,
     toolsInjected,
@@ -427,7 +427,7 @@ async function invokeOpenRouter(body) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
       injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
@@ -436,7 +436,7 @@ async function invokeOpenRouter(body) {
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     openRouterBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
@@ -511,7 +511,7 @@ async function invokeAzureOpenAI(body) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
       injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
@@ -522,7 +522,7 @@ async function invokeAzureOpenAI(body) {
     azureBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     azureBody.parallel_tool_calls = true;  // Enable parallel tool calls
     azureBody.tool_choice = "auto";  // Explicitly enable tool use (helps GPT models understand they should use tools)
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected,
@@ -533,7 +533,7 @@ async function invokeAzureOpenAI(body) {
     }, "=== SENDING TOOLS TO AZURE OPENAI ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     hasTools: !!azureBody.tools,
     toolCount: azureBody.tools?.length || 0,
@@ -600,7 +600,7 @@ async function invokeAzureOpenAI(body) {
     });
 
     if (hasToolResults) {
-      logger.info({
+      logger.debug({
         hasToolResults: true,
         originalMessageCount: (body.messages || []).length,
         convertedMessageCount: azureBody.messages.length,
@@ -747,7 +747,7 @@ async function invokeAzureOpenAI(body) {
       tool_choice: azureBody.tool_choice,
       stream: false
     };
-    logger.info({
+    logger.debug({
       format: "responses",
       inputCount: responsesBody.input?.length,
       model: responsesBody.model,
@@ -792,14 +792,14 @@ async function invokeAzureOpenAI(body) {
       });
 
       if (rawToolCalls.length !== toolCalls.length) {
-        logger.info({
+        logger.debug({
           originalCount: rawToolCalls.length,
           dedupedCount: toolCalls.length,
           removed: rawToolCalls.length - toolCalls.length,
         }, "Deduplicated identical tool calls from single response");
       }
 
-      logger.info({
+      logger.debug({
         outputTypes: outputArray.map(o => o.type),
         hasMessage: !!messageOutput,
         toolCallCount: toolCalls.length,
@@ -824,7 +824,7 @@ async function invokeAzureOpenAI(body) {
         usage: result.json.usage
       };
 
-      logger.info({
+      logger.debug({
         convertedContent: textContent?.substring(0, 100),
         hasToolCalls: toolCalls.length > 0,
         toolCallCount: toolCalls.length
@@ -832,7 +832,7 @@ async function invokeAzureOpenAI(body) {
 
       // Now convert from Chat Completions format to Anthropic format
       const anthropicJson = convertOpenAIToAnthropic(result.json);
-      logger.info({
+      logger.debug({
         anthropicContentTypes: anthropicJson.content?.map(c => c.type),
         stopReason: anthropicJson.stop_reason
       }, "Converted to Anthropic format");
@@ -967,7 +967,7 @@ async function invokeOpenAI(body) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
       injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
@@ -978,14 +978,14 @@ async function invokeOpenAI(body) {
     openAIBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     openAIBody.parallel_tool_calls = false;  // Disable parallel tool calls - GPT often makes duplicate calls
     openAIBody.tool_choice = "auto";  // Let the model decide when to use tools
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
     }, "=== SENDING TOOLS TO OPENAI ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     model: openAIBody.model,
     hasTools: !!openAIBody.tools,
@@ -1043,7 +1043,7 @@ async function invokeLlamaCpp(body) {
   }
 
   if (deduplicated.length !== messages.length) {
-    logger.info({
+    logger.debug({
       originalCount: messages.length,
       deduplicatedCount: deduplicated.length,
       removed: messages.length - deduplicated.length,
@@ -1068,26 +1068,26 @@ async function invokeLlamaCpp(body) {
   if (injectToolsLlamacpp && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
       injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (llama.cpp) ===");
   } else if (!injectToolsLlamacpp) {
-    logger.info({}, "Tool injection disabled for llama.cpp (INJECT_TOOLS_LLAMACPP=false)");
+    logger.debug({}, "Tool injection disabled for llama.cpp (INJECT_TOOLS_LLAMACPP=false)");
   }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     llamacppBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     llamacppBody.tool_choice = "auto";
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
     }, "=== SENDING TOOLS TO LLAMA.CPP ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     hasTools: !!llamacppBody.tools,
     toolCount: llamacppBody.tools?.length || 0,
@@ -1151,7 +1151,7 @@ async function invokeLMStudio(body) {
   if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
       injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
@@ -1161,14 +1161,14 @@ async function invokeLMStudio(body) {
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     lmstudioBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     lmstudioBody.tool_choice = "auto";
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
     }, "=== SENDING TOOLS TO LM STUDIO ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     hasTools: !!lmstudioBody.tools,
     toolCount: lmstudioBody.tools?.length || 0,
@@ -1189,7 +1189,7 @@ async function invokeBedrock(body) {
   }
 
   const bearerToken = config.bedrock.apiKey;
-  logger.info({ authMethod: "Bearer Token" }, "=== BEDROCK AUTH ===");
+  logger.debug({ authMethod: "Bearer Token" }, "=== BEDROCK AUTH ===");
 
   // 2. Inject standard tools if needed
   let toolsToSend = body.tools;
@@ -1198,7 +1198,7 @@ async function invokeBedrock(body) {
   if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
       injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
@@ -1211,7 +1211,7 @@ async function invokeBedrock(body) {
   const modelId = config.bedrock.modelId;
   const modelFamily = detectModelFamily(modelId);
 
-  logger.info({
+  logger.debug({
     modelId,
     modelFamily,
     hasTools: !!bedrockBody.tools,
@@ -1276,7 +1276,7 @@ async function invokeBedrock(body) {
   const host = `bedrock-runtime.${config.bedrock.region}.amazonaws.com`;
   const endpoint = `https://${host}${path}`;
 
-  logger.info({
+  logger.debug({
     endpoint,
     authMethod: "Bearer Token",
     hasSystem: !!converseBody.system,
@@ -1309,7 +1309,7 @@ async function invokeBedrock(body) {
     // Parse Converse API response (already parsed by performJsonRequest)
     const converseResponse = response.json;  // Use property, not method
 
-    logger.info({
+    logger.debug({
       stopReason: converseResponse.stopReason,
       inputTokens: converseResponse.usage?.inputTokens || 0,
       outputTokens: converseResponse.usage?.outputTokens || 0,
@@ -1481,7 +1481,7 @@ async function invokeZai(body) {
     // Inject standard tools if client didn't send any (passthrough mode)
     if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
       zaiBody.tools = STANDARD_TOOLS;
-      logger.info({
+      logger.debug({
         injectedToolCount: STANDARD_TOOLS.length,
         injectedToolNames: STANDARD_TOOL_NAMES,
         reason: "Client did not send tools (passthrough mode)"
@@ -1495,7 +1495,7 @@ async function invokeZai(body) {
     };
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     format: isOpenAIFormat ? "openai" : "anthropic",
     model: zaiBody.model,
@@ -1525,7 +1525,7 @@ async function invokeZai(body) {
 
     const response = await performJsonRequest(endpoint, { headers, body: zaiBody }, "Z.AI");
 
-    logger.info({
+    logger.debug({
       responseOk: response?.ok,
       responseStatus: response?.status,
       hasJson: !!response?.json,
@@ -1537,7 +1537,7 @@ async function invokeZai(body) {
     // Convert OpenAI response back to Anthropic format if needed
     if (isOpenAIFormat && response?.ok && response?.json) {
       const anthropicJson = convertOpenAIToAnthropic(response.json);
-      logger.info({
+      logger.debug({
         convertedContent: JSON.stringify(anthropicJson.content).substring(0, 200),
       }, "=== Z.AI CONVERTED RESPONSE ===");
       // Return in the same format as other providers (with ok, status, json)
@@ -1735,7 +1735,7 @@ async function invokeVertex(body) {
     "Content-Type": "application/json",
   };
 
-  logger.info({
+  logger.debug({
     endpoint: endpoint.replace(apiKey, "***"),
     model: geminiModel,
     originalModel: requestedModel,
@@ -1764,7 +1764,7 @@ async function invokeVertex(body) {
   // Convert Gemini response to Anthropic format
   if (response?.json) {
     const anthropicJson = convertGeminiToAnthropic(response.json, requestedModel);
-    logger.info({
+    logger.debug({
       convertedContent: JSON.stringify(anthropicJson.content).substring(0, 200),
     }, "=== VERTEX AI (GEMINI) CONVERTED RESPONSE ===");
     return {

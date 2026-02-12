@@ -1034,12 +1034,10 @@ function sanitizePayload(payload) {
     // Check if this is a simple conversational message (no tools needed)
     const isConversational = (() => {
       if (!Array.isArray(clean.messages) || clean.messages.length === 0) {
-        logger.debug({ reason: "No messages array" }, "Ollama conversational check");
         return false;
       }
       const lastMessage = clean.messages[clean.messages.length - 1];
       if (lastMessage?.role !== "user") {
-        logger.debug({ role: lastMessage?.role }, "Ollama conversational check - not user");
         return false;
       }
 
@@ -1047,28 +1045,18 @@ function sanitizePayload(payload) {
         ? lastMessage.content
         : "";
 
-      logger.debug({
-        contentType: typeof lastMessage.content,
-        isString: typeof lastMessage.content === "string",
-        contentLength: typeof lastMessage.content === "string" ? lastMessage.content.length : "N/A",
-        actualContent: typeof lastMessage.content === "string" ? lastMessage.content.substring(0, 100) : JSON.stringify(lastMessage.content).substring(0, 100)
-      }, "Ollama conversational check - analyzing content");
-
       const trimmed = content.trim().toLowerCase();
 
       // Simple greetings
       if (/^(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings)[\s\.\!\?]*$/.test(trimmed)) {
-        logger.debug({ matched: "greeting", trimmed }, "Ollama conversational check - matched");
-        return true;
+        return "greeting";
       }
 
       // Very short messages (< 20 chars) without code/technical keywords
       if (trimmed.length < 20 && !/code|file|function|error|bug|fix|write|read|create/.test(trimmed)) {
-        logger.debug({ matched: "short", trimmed, length: trimmed.length }, "Ollama conversational check - matched");
-        return true;
+        return "short_message";
       }
 
-      logger.debug({ trimmed: trimmed.substring(0, 50), length: trimmed.length }, "Ollama conversational check - not matched");
       return false;
     })();
 
@@ -1078,8 +1066,8 @@ function sanitizePayload(payload) {
       delete clean.tool_choice;
       logger.debug({
         model: config.ollama?.model,
-        message: "Removed tools for conversational message"
-      }, "Ollama conversational mode");
+        reason: isConversational,
+      }, "Ollama conversational mode - tools removed");
     } else if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
       // Ollama performance degrades with too many tools
       // Limit to essential tools only
@@ -1249,7 +1237,7 @@ function sanitizePayload(payload) {
     }
 
     if (merged.length !== clean.messages.length) {
-      logger.info({
+      logger.debug({
         originalCount: clean.messages.length,
         mergedCount: merged.length,
         reduced: clean.messages.length - merged.length
@@ -1259,19 +1247,11 @@ function sanitizePayload(payload) {
     clean.messages = merged;
   }
 
-  // [CONTEXT_FLOW] Log payload after sanitization
   logger.debug({
     providerType: config.modelProvider?.type ?? "databricks",
-    phase: "after_sanitize",
-    systemField: typeof clean.system === 'string'
-      ? { type: 'string', length: clean.system.length }
-      : clean.system
-        ? { type: typeof clean.system, value: clean.system }
-        : undefined,
     messageCount: clean.messages?.length ?? 0,
-    firstMessageHasSystem: clean.messages?.[0]?.content?.includes?.('You are Claude Code') ?? false,
     toolCount: clean.tools?.length ?? 0
-  }, '[CONTEXT_FLOW] After sanitizePayload');
+  }, 'After sanitizePayload');
 
   // === Suggestion mode: tag request and override model if configured ===
   const { isSuggestionMode: isSuggestion } = detectSuggestionMode(clean.messages);
@@ -1378,8 +1358,7 @@ async function runAgentLoop({
   providerType,
   headers,
 }) {
-  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length);
-  logger.info({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop ENTERED');
+  logger.debug({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop entered');
   const settings = resolveLoopOptions(options);
   // Initialize audit logger (no-op if disabled)
   const auditLogger = createAuditLogger(config.audit);
@@ -1426,7 +1405,6 @@ async function runAgentLoop({
     }
 
     steps += 1;
-    console.log('[LOOP DEBUG] Entered while loop - step:', steps);
     logger.debug(
       {
         sessionId: session?.id ?? null,
@@ -1443,7 +1421,7 @@ async function runAgentLoop({
       const excess = cleanPayload.messages.length - MAX_LOOP_MESSAGES;
       // Keep first 2 messages (system context + initial user) and trim from the middle
       cleanPayload.messages.splice(2, excess);
-      logger.info(
+      logger.debug(
         { trimmed: excess, remaining: cleanPayload.messages.length },
         "Trimmed intermediate messages to prevent memory growth",
       );
@@ -1533,14 +1511,11 @@ async function runAgentLoop({
       }
     }
 
-    // [CONTEXT_FLOW] Log after memory injection
     logger.debug({
       sessionId: session?.id ?? null,
-      phase: "after_memory",
-      systemPromptLength: cleanPayload.system?.length ?? 0,
       messageCount: cleanPayload.messages?.length ?? 0,
       toolCount: cleanPayload.tools?.length ?? 0
-    }, '[CONTEXT_FLOW] After memory injection');
+    }, 'After memory injection');
 
     if (steps === 1 && (config.systemPrompt?.mode === 'dynamic' || config.systemPrompt?.toolDescriptions === 'minimal')) {
       try {
@@ -1670,7 +1645,6 @@ IMPORTANT TOOL USAGE RULES:
     }
 
     // Track estimated token usage before model call
-  console.log('[TOKEN DEBUG] About to track token usage - step:', steps);
   const estimatedTokens = config.tokenTracking?.enabled !== false
     ? tokens.countPayloadTokens(cleanPayload)
     : null;
@@ -1684,15 +1658,6 @@ IMPORTANT TOOL USAGE RULES:
   }
 
   // Apply Headroom compression if enabled
-  const headroomEstTokens = Math.ceil(JSON.stringify(cleanPayload.messages || []).length / 4);
-  logger.info({
-    headroomEnabled: isHeadroomEnabled(),
-    messageCount: cleanPayload.messages?.length ?? 0,
-    estimatedTokens: headroomEstTokens,
-    threshold: config.headroom?.minTokens || 500,
-    willCompress: isHeadroomEnabled() && headroomEstTokens >= (config.headroom?.minTokens || 500),
-  }, 'Headroom compression check');
-
   if (isHeadroomEnabled() && cleanPayload.messages && cleanPayload.messages.length > 0) {
     try {
       const compressionResult = await headroomCompress(
@@ -1704,33 +1669,21 @@ IMPORTANT TOOL USAGE RULES:
         }
       );
 
-      logger.info({
-        compressed: compressionResult.compressed,
-        tokensBefore: compressionResult.stats?.tokens_before,
-        tokensAfter: compressionResult.stats?.tokens_after,
-        savings: compressionResult.stats?.savings_percent ? `${compressionResult.stats.savings_percent}%` : 'N/A',
-        reason: compressionResult.stats?.reason || compressionResult.stats?.transforms_applied?.join(', ') || 'none',
-      }, 'Headroom compression result');
-
       if (compressionResult.compressed) {
         cleanPayload.messages = compressionResult.messages;
         if (compressionResult.tools) {
           cleanPayload.tools = compressionResult.tools;
         }
-        logger.info({
-          sessionId: session?.id ?? null,
-          tokensBefore: compressionResult.stats?.tokens_before,
-          tokensAfter: compressionResult.stats?.tokens_after,
-          saved: compressionResult.stats?.tokens_saved,
-          savingsPercent: compressionResult.stats?.savings_percent,
-          transforms: compressionResult.stats?.transforms_applied,
-        }, 'Headroom compression applied to request');
-      } else {
-        logger.debug({
-          sessionId: session?.id ?? null,
-          reason: compressionResult.stats?.reason,
-        }, 'Headroom compression skipped');
       }
+
+      logger.debug({
+        sessionId: session?.id ?? null,
+        outcome: compressionResult.compressed ? 'applied' : 'skipped',
+        tokensBefore: compressionResult.stats?.tokens_before,
+        tokensAfter: compressionResult.stats?.tokens_after,
+        savingsPercent: compressionResult.stats?.savings_percent,
+        reason: compressionResult.stats?.reason || compressionResult.stats?.transforms_applied?.join(', ') || 'none',
+      }, 'Headroom compression');
     } catch (headroomErr) {
       logger.warn({ err: headroomErr, sessionId: session?.id ?? null }, 'Headroom compression failed, using original messages');
     }
@@ -2095,7 +2048,7 @@ IMPORTANT TOOL USAGE RULES:
       // If in passthrough/client mode and there are client-side tools, return them to client
       // Server-side tools (Task, Web) will be executed below
       if ((executionMode === "passthrough" || executionMode === "client") && clientSideToolCalls.length > 0) {
-        logger.info(
+        logger.debug(
           {
             sessionId: session?.id ?? null,
             totalToolCount: toolCalls.length,
@@ -2157,7 +2110,7 @@ IMPORTANT TOOL USAGE RULES:
         // Override toolCalls to only include Server-side tools for server execution
         toolCalls = serverSideToolCalls;
 
-        logger.info(
+        logger.debug(
           {
             sessionId: session?.id ?? null,
             serverToolCount: serverSideToolCalls.length,
@@ -2166,7 +2119,7 @@ IMPORTANT TOOL USAGE RULES:
         );
       } else if (executionMode === "passthrough" || executionMode === "client") {
         // Only Server-side tools, no Client-side tools - execute all server-side
-        logger.info(
+        logger.debug(
           {
             sessionId: session?.id ?? null,
             serverToolCount: serverSideToolCalls.length,
@@ -3424,15 +3377,6 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     ? getGPTToolLoopThreshold()  // Hardcoded: 2 for GPT
     : (config.policy?.toolLoopThreshold ?? 3);
   const { toolResultCount, toolUseCount } = countToolCallsInHistory(payload?.messages);
-
-  console.log('[ToolLoopGuard EARLY] Checking ORIGINAL messages:', {
-    messageCount: payload?.messages?.length,
-    toolResultCount,
-    toolUseCount,
-    threshold: toolLoopThreshold,
-    isGPT,
-    providerType,
-  });
 
   // Temporarily increase threshold in client mode to allow tool execution flow
   const effectiveThreshold = config.toolExecutionMode === 'client' ? 10 : toolLoopThreshold;

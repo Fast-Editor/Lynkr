@@ -919,7 +919,7 @@ function reloadConfig() {
 // Make config mutable for hot reload
 config.reloadConfig = reloadConfig;
 
-// Validate mandatory TIER_* configuration
+// Validate TIER_* configuration (warn if missing, don't crash)
 const missingTiers = [];
 if (!config.modelTiers.SIMPLE) missingTiers.push('TIER_SIMPLE');
 if (!config.modelTiers.MEDIUM) missingTiers.push('TIER_MEDIUM');
@@ -927,14 +927,10 @@ if (!config.modelTiers.COMPLEX) missingTiers.push('TIER_COMPLEX');
 if (!config.modelTiers.REASONING) missingTiers.push('TIER_REASONING');
 
 if (missingTiers.length > 0) {
-  throw new Error(
-    `Missing required tier configuration: ${missingTiers.join(', ')}\n` +
-    `Format: TIER_<LEVEL>=provider:model\n` +
-    `Example:\n` +
-    `  TIER_SIMPLE=ollama:llama3.2\n` +
-    `  TIER_MEDIUM=azure-openai:gpt-4o\n` +
-    `  TIER_COMPLEX=azure-openai:gpt-4o\n` +
-    `  TIER_REASONING=openai:o1`
+  config.modelTiers.enabled = false;
+  console.warn(
+    `[WARN] Missing tier configuration: ${missingTiers.join(', ')} — tiered routing disabled.\n` +
+    `  Set TIER_<LEVEL>=provider:model to enable (e.g., TIER_SIMPLE=ollama:llama3.2)`
   );
 }
 
