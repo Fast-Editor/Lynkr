@@ -14,12 +14,12 @@
     "dev": "nodemon index.js",
     "lint": "eslint src index.js",
     "test": "npm run test:unit && npm run test:performance",
-    "test:unit": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js test/hybrid-routing-integration.test.js test/web-tools.test.js test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js test/azure-openai-config.test.js test/azure-openai-format-conversion.test.js test/azure-openai-routing.test.js test/azure-openai-streaming.test.js test/azure-openai-error-resilience.test.js test/azure-openai-integration.test.js test/openai-integration.test.js test/llamacpp-integration.test.js test/memory/store.test.js test/memory/surprise.test.js test/memory/extractor.test.js test/memory/search.test.js test/memory/retriever.test.js",
-    "test:memory": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/memory/store.test.js test/memory/surprise.test.js test/memory/extractor.test.js test/memory/search.test.js test/memory/retriever.test.js",
-    "test:new-features": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js",
-    "test:performance": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/hybrid-routing-performance.test.js && DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-tests.js",
-    "test:benchmark": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-benchmark.js",
-    "test:quick": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js",
+    "test:unit": "NODE_ENV=test DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js test/hybrid-routing-integration.test.js test/web-tools.test.js test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js test/azure-openai-config.test.js test/azure-openai-format-conversion.test.js test/azure-openai-routing.test.js test/azure-openai-streaming.test.js test/azure-openai-error-resilience.test.js test/azure-openai-integration.test.js test/openai-integration.test.js test/llamacpp-integration.test.js test/memory/store.test.js test/memory/surprise.test.js test/memory/extractor.test.js test/memory/search.test.js test/memory/retriever.test.js",
+    "test:memory": "NODE_ENV=test DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/memory/store.test.js test/memory/surprise.test.js test/memory/extractor.test.js test/memory/search.test.js test/memory/retriever.test.js",
+    "test:new-features": "NODE_ENV=test DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js",
+    "test:performance": "NODE_ENV=test DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/hybrid-routing-performance.test.js && NODE_ENV=test DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-tests.js",
+    "test:benchmark": "NODE_ENV=test DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-benchmark.js",
+    "test:quick": "NODE_ENV=test DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js",
     "test:all": "npm run test:unit && npm run test:performance && npm run test:benchmark"
   },
   "keywords": [

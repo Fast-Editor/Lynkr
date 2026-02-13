@@ -10,6 +10,7 @@ const tokens = require("../utils/tokens");
 const systemPrompt = require("../prompts/system");
 const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
+const { getContextWindow } = require("../providers/context-window");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
 const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = require("../headroom");
 const { createAuditLogger } = require("../logger/audit-logger");
@@ -669,53 +670,11 @@ function normaliseToolChoice(choice) {
 }
 
 /**
- * Strip thinking-style reasoning from Ollama model outputs
- * Patterns to remove:
- * - Lines starting with bullet points (●, •, -, *)
- * - Explanatory reasoning before the actual response
- * - Multiple newlines used to separate thinking from response
+ * Strip <think>...</think> tags that some models (DeepSeek, Qwen) emit for chain-of-thought reasoning.
  */
-function stripThinkingBlocks(text) {
+function stripThinkTags(text) {
   if (typeof text !== "string") return text;
-
-  // Split into lines
-  const lines = text.split("\n");
-  const cleanedLines = [];
-  let inThinkingBlock = false;
-  let consecutiveEmptyLines = 0;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Detect thinking block markers (bullet points followed by reasoning)
-    if (/^[●•\-\*]\s/.test(trimmed)) {
-      inThinkingBlock = true;
-      continue;
-    }
-
-    // Empty lines might separate thinking from response
-    if (trimmed === "") {
-      consecutiveEmptyLines++;
-      // If we've seen 2+ empty lines, likely end of thinking block
-      if (consecutiveEmptyLines >= 2) {
-        inThinkingBlock = false;
-      }
-      continue;
-    }
-
-    // Reset empty line counter
-    consecutiveEmptyLines = 0;
-
-    // Skip lines that are part of thinking block
-    if (inThinkingBlock) {
-      continue;
-    }
-
-    // Keep this line
-    cleanedLines.push(line);
-  }
-
-  return cleanedLines.join("\n").trim();
+  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 }
 
 function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
@@ -732,7 +691,7 @@ function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
 
   // Add text content if present, after stripping thinking blocks
   if (typeof rawContent === "string" && rawContent.trim()) {
-    const cleanedContent = stripThinkingBlocks(rawContent);
+    const cleanedContent = stripThinkTags(rawContent);
     if (cleanedContent) {
       contentItems.push({ type: "text", text: cleanedContent });
     }
@@ -919,6 +878,10 @@ function sanitizePayload(payload) {
         : "claude-opus-4-5";
     clean.model = azureDefaultModel;
   } else if (providerType === "ollama") {
+    // Override client model with Ollama config model
+    const ollamaConfiguredModel = config.ollama?.model;
+    clean.model = ollamaConfiguredModel;
+
     // Ollama format conversion
     // Check if model supports tools
     const { modelNameSupportsTools } = require("../clients/ollama-utils");
@@ -1024,8 +987,15 @@ function sanitizePayload(payload) {
       }
 
       // Very short messages (< 20 chars) without code/technical keywords
+      // BUT: Common shell commands should NOT be treated as conversational
+      const shellCommands = /^(pwd|ls|cd|cat|echo|grep|find|ps|top|df|du|whoami|which|env)[\s\.\!\?]*$/;
+      if (shellCommands.test(trimmed)) {
+        logger.info({ matched: "shell_command", trimmed }, "Ollama conversational check - SHELL COMMAND detected, keeping tools");
+        return false; // NOT conversational - needs tools!
+      }
+
       if (trimmed.length < 20 && !/code|file|function|error|bug|fix|write|read|create/.test(trimmed)) {
-        logger.debug({ matched: "short", trimmed, length: trimmed.length }, "Ollama conversational check - matched");
+        logger.warn({ matched: "short", trimmed, length: trimmed.length }, "Ollama conversational check - SHORT MESSAGE matched, DELETING TOOLS");
         return true;
       }
 
@@ -1035,13 +1005,16 @@ function sanitizePayload(payload) {
 
     if (isConversational) {
       // Strip all tools for simple conversational messages
+      const originalToolCount = Array.isArray(clean.tools) ? clean.tools.length : 0;
       delete clean.tools;
       delete clean.tool_choice;
-      logger.debug({
+      clean._noToolInjection = true;
+      logger.warn({
         model: config.ollama?.model,
-        message: "Removed tools for conversational message"
-      }, "Ollama conversational mode");
-    } else if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
+        message: "Removed tools for conversational message",
+        originalToolCount,
+        userMessage: clean.messages?.[clean.messages.length - 1]?.content?.substring(0, 50),
+      }, "Ollama conversational mode - ALL TOOLS DELETED!");    } else if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
       // Ollama performance degrades with too many tools
       // Limit to essential tools only
       const OLLAMA_ESSENTIAL_TOOLS = new Set([
@@ -1052,7 +1025,8 @@ function sanitizePayload(payload) {
         "Glob",
         "Grep",
         "WebSearch",
-        "WebFetch"
+        "WebFetch",
+        "shell",  // Tool is registered as "shell" internally
       ]);
 
       const limitedTools = clean.tools.filter(tool =>
@@ -1140,6 +1114,9 @@ function sanitizePayload(payload) {
     }
 
     clean.tools = selectedTools.length > 0 ? selectedTools : undefined;
+    if (!selectedTools.length) {
+      clean._noToolInjection = true;
+    }
   }
 
   clean.stream = payload.stream ?? false;
@@ -1243,6 +1220,19 @@ function sanitizePayload(payload) {
     clean._suggestionModeModel = smConfig;
   }
 
+  // === Topic detection: tag request and override model if configured ===
+  if (clean._requestMode === "main") {
+    const { isTopicDetection: isTopic } = detectTopicDetection(clean);
+    if (isTopic) {
+      clean._requestMode = "topic";
+      const tdConfig = config.modelProvider?.topicDetectionModel ?? "default";
+      if (tdConfig.toLowerCase() !== "default") {
+        clean.model = tdConfig;
+        clean._topicDetectionModel = tdConfig;
+      }
+    }
+  }
+
   return clean;
 }
 
@@ -1339,9 +1329,12 @@ async function runAgentLoop({
   providerType,
   headers,
 }) {
-  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length);
+  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length, 'mode:', cleanPayload._requestMode || 'main', 'model:', cleanPayload.model);
   logger.info({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop ENTERED');
   const settings = resolveLoopOptions(options);
+  // Detect context window size for intelligent compression
+  const contextWindowTokens = await getContextWindow();
+  console.log('[DEBUG] Context window detected:', contextWindowTokens, 'tokens for provider:', providerType);
   // Initialize audit logger (no-op if disabled)
   const auditLogger = createAuditLogger(config.audit);
   const start = Date.now();
@@ -1349,8 +1342,22 @@ async function runAgentLoop({
   let toolCallsExecuted = 0;
   let fallbackPerformed = false;
   const toolCallNames = new Map();
-  const toolCallHistory = new Map(); // Track tool calls to detect loops: signature -> count
+  const toolCallHistory = new Map(); // Track tool calls to detect loops: signature -> counta
   let loopWarningInjected = false; // Track if we've already warned about loops
+  let emptyResponseRetried = false; // Track if we've retried after an empty LLM response
+
+  // Log agent loop start
+  logger.info(
+    {
+      sessionId: session?.id ?? null,
+      model: requestedModel,
+      maxSteps: settings.maxSteps,
+      maxDurationMs: settings.maxDurationMs,
+      wantsThinking,
+      providerType,
+    },
+    "Agent loop started",
+  );
 
   while (steps < settings.maxSteps) {
     if (Date.now() - start > settings.maxDurationMs) {
@@ -1387,7 +1394,6 @@ async function runAgentLoop({
     }
 
     steps += 1;
-    console.log('[LOOP DEBUG] Entered while loop - step:', steps);
     logger.debug(
       {
         sessionId: session?.id ?? null,
@@ -1418,7 +1424,8 @@ async function runAgentLoop({
           cleanPayload.messages = historyCompression.compressHistory(originalMessages, {
             keepRecentTurns: config.historyCompression?.keepRecentTurns ?? 10,
             summarizeOlder: config.historyCompression?.summarizeOlder ?? true,
-            enabled: true
+            enabled: true,
+            contextWindowTokens,
           });
 
           if (cleanPayload.messages !== originalMessages) {
@@ -1796,6 +1803,15 @@ IMPORTANT TOOL USAGE RULES:
       });
     }
   }
+    logger.info({
+      messageContent: databricksResponse.json?.message?.content
+        ? (typeof databricksResponse.json.message.content === 'string'
+          ? databricksResponse.json.message.content.substring(0, 500)
+          : JSON.stringify(databricksResponse.json.message.content).substring(0, 500))
+        : 'NO_CONTENT',
+      hasToolCalls: !!databricksResponse.json?.message?.tool_calls,
+      toolCallCount: databricksResponse.json?.message?.tool_calls?.length || 0
+    }, "=== RAW LLM RESPONSE CONTENT ===");
 
     // Handle streaming responses (pass through without buffering)
     if (databricksResponse.stream) {
@@ -1895,11 +1911,13 @@ IMPORTANT TOOL USAGE RULES:
           _anthropic_block: block,
         }));
 
-      logger.debug(
+      logger.info(
         {
           sessionId: session?.id ?? null,
+          step: steps,
           contentBlocks: contentArray.length,
           toolCallsFound: toolCalls.length,
+          toolNames: toolCalls.map(tc => tc.function?.name || tc.name),
           stopReason: databricksResponse.json?.stop_reason,
         },
         "Azure Anthropic response parsed",
@@ -1909,6 +1927,98 @@ IMPORTANT TOOL USAGE RULES:
       const choice = databricksResponse.json?.choices?.[0];
       message = choice?.message ?? {};
       toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+      // Deduplicate tool calls for OpenAI format too
+      if (toolCalls.length > 0) {
+        const uniqueToolCalls = [];
+        const seenSignatures = new Set();
+        let duplicatesRemoved = 0;
+
+        for (const call of toolCalls) {
+          const signature = getToolCallSignature(call);
+          if (!seenSignatures.has(signature)) {
+            seenSignatures.add(signature);
+            uniqueToolCalls.push(call);
+          } else {
+            duplicatesRemoved++;
+            logger.warn({
+              sessionId: session?.id ?? null,
+              toolName: call.function?.name || call.name,
+              toolId: call.id,
+              signature: signature.substring(0, 32),
+            }, "Duplicate tool call removed (same tool with identical parameters in single response)");
+          }
+        }
+
+        toolCalls = uniqueToolCalls;
+
+        logger.info(
+          {
+            sessionId: session?.id ?? null,
+            step: steps,
+            toolCallsFound: toolCalls.length,
+            duplicatesRemoved,
+            toolNames: toolCalls.map(tc => tc.function?.name || tc.name),
+          },
+          "LLM Response: Tool calls requested (after deduplication)",
+        );
+      } else if (providerType === "ollama") {
+        // Ollama format: { message: { role, content, tool_calls }, done }
+        message = databricksResponse.json?.message ?? {};
+        toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+        logger.info({
+          hasMessage: !!databricksResponse.json?.message,
+          hasToolCalls: toolCalls.length > 0,
+          toolCallCount: toolCalls.length,
+          toolNames: toolCalls.map(tc => tc.function?.name),
+          done: databricksResponse.json?.done,
+          fullToolCalls: JSON.stringify(toolCalls),
+          fullResponseMessage: JSON.stringify(databricksResponse.json?.message)
+        }, "=== OLLAMA TOOL CALLS EXTRACTION ===");
+      } else {
+        // OpenAI/Databricks format: { choices: [{ message: { tool_calls: [...] } }] }
+        const choice = databricksResponse.json?.choices?.[0];
+        message = choice?.message ?? {};
+        toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+        // Deduplicate tool calls for OpenAI format too
+        if (toolCalls.length > 0) {
+          const uniqueToolCalls = [];
+          const seenSignatures = new Set();
+          let duplicatesRemoved = 0;
+
+          for (const call of toolCalls) {
+            const signature = getToolCallSignature(call);
+
+            if (!seenSignatures.has(signature)) {
+              seenSignatures.add(signature);
+              uniqueToolCalls.push(call);
+            } else {
+              duplicatesRemoved++;
+              logger.warn({
+                sessionId: session?.id ?? null,
+                toolName: call.function?.name || call.name,
+                toolId: call.id,
+                signature: signature.substring(0, 32),
+              }, "Duplicate tool call removed (same tool with identical parameters in single response)");
+            }
+          }
+
+          toolCalls = uniqueToolCalls;
+
+          logger.info(
+            {
+              sessionId: session?.id ?? null,
+              step: steps,
+              toolCallsFound: toolCalls.length,
+              duplicatesRemoved,
+              toolNames: toolCalls.map(tc => tc.function?.name || tc.name),
+            },
+            "LLM Response: Tool calls requested (after deduplication)",
+          );
+        }
+      }
     }
 
     // Guard: drop hallucinated tool calls when no tools were sent to the model.
@@ -1916,6 +2026,83 @@ IMPORTANT TOOL USAGE RULES:
     // history even when the request contained zero tool definitions.
     const toolsWereSent = Array.isArray(cleanPayload.tools) && cleanPayload.tools.length > 0;
     if (toolCalls.length > 0 && !toolsWereSent) {
+      logger.warn({
+        sessionId: session?.id ?? null,
+        step: steps,
+        hallucinated: toolCalls.map(tc => tc.function?.name || tc.name),
+        noToolInjection: !!cleanPayload._noToolInjection,
+      }, "Dropped hallucinated tool calls (no tools were sent to model)");
+      toolCalls = [];
+      // If there's also no text content, treat as empty response (handled below)
+    }
+
+    // === EMPTY RESPONSE DETECTION (primary) ===
+    // Check raw extracted message for empty content before tool handling or conversion
+    const rawTextContent = (() => {
+      if (typeof message.content === 'string') return message.content.trim();
+      if (Array.isArray(message.content)) {
+        return message.content
+          .filter(b => b.type === 'text')
+          .map(b => b.text || '')
+          .join('')
+          .trim();
+      }
+      return '';
+    })();
+
+    if (toolCalls.length === 0 && !rawTextContent) {
+      console.log('[EMPTY RESPONSE] No text content and no tool calls - step:', steps, 'retried:', emptyResponseRetried);
+      logger.warn({
+        sessionId: session?.id ?? null,
+        step: steps,
+        messageKeys: Object.keys(message),
+        contentType: typeof message.content,
+        rawContentPreview: String(message.content || '').substring(0, 100),
+      }, "Empty LLM response detected (no text, no tool calls)");
+
+      // Retry once with a nudge
+      if (steps < settings.maxSteps && !emptyResponseRetried) {
+        emptyResponseRetried = true;
+        cleanPayload.messages.push({
+          role: "assistant",
+          content: "",
+        });
+        cleanPayload.messages.push({
+          role: "user",
+          content: "Please provide a response to the user's message.",
+        });
+        logger.info({ sessionId: session?.id ?? null }, "Retrying after empty response with nudge");
+        continue;
+      }
+
+      // Fallback after retry also returned empty
+      logger.warn({ sessionId: session?.id ?? null, steps }, "Empty response persisted after retry");
+      return {
+        response: {
+          status: 200,
+          body: {
+            id: `msg_${Date.now()}`,
+            type: "message",
+            role: "assistant",
+            model: requestedModel,
+            content: [{ type: "text", text: "I wasn't able to generate a response. Could you try rephrasing your message?" }],
+            stop_reason: "end_turn",
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+          terminationReason: "empty_response_fallback",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "empty_response_fallback",
+      };
+    }
+
+    // Guard: drop hallucinated tool calls when no tools were sent to the model.
+    // Some models (e.g. Llama 3.1) hallucinate tool_call blocks from conversation
+    // history even when the request contained zero tool definitions.
+    const toolsWereSent = Array.isArray(cleanPayload.tools) && cleanPayload.tools.length > 0;
+    if (toolCalls.length > 0 && !toolsWereSent) {
+      console.log('[HALLUCINATION GUARD] Model returned', toolCalls.length, 'tool call(s) but no tools were offered — ignoring:', toolCalls.map(tc => tc.function?.name || tc.name));
       logger.warn({
         sessionId: session?.id ?? null,
         step: steps,
@@ -2179,6 +2366,7 @@ IMPORTANT TOOL USAGE RULES:
               session,
               cwd,
               requestMessages: cleanPayload.messages,
+              providerType,
             }))
           );
 
@@ -2224,6 +2412,15 @@ IMPORTANT TOOL USAGE RULES:
             }
 
             cleanPayload.messages.push(toolMessage);
+
+            logger.info(
+              {
+                toolName: execution.name,
+                content: typeof toolMessage.content === 'string'
+                ? toolMessage.content.substring(0, 500)
+                : JSON.stringify(toolMessage.content).substring(0, 500)
+              }, "Tool result content sent to LLM",
+            );
 
             // Convert to Anthropic format for session storage
             let sessionToolResultContent;
@@ -2412,7 +2609,17 @@ IMPORTANT TOOL USAGE RULES:
           session,
           cwd,
           requestMessages: cleanPayload.messages,
+          providerType,
         });
+
+        logger.debug(
+          {
+            id: execution.id ?? null,
+            name: execution.name ?? null,
+            arguments: execution.arguments ?? null,
+            content: execution.content ?? null,
+            is_error: execution.ok === false,
+          }, "executeToolCall response" );
 
         let toolMessage;
         if (providerType === "azure-anthropic") {
@@ -2612,7 +2819,16 @@ IMPORTANT TOOL USAGE RULES:
         }
       }
 
-      continue;
+      logger.info({
+        sessionId: session?.id ?? null,
+        step: steps,
+        toolCallsExecuted: toolCallsExecuted,
+        totalToolCallsInThisStep: toolCalls.length,
+        messageCount: cleanPayload.messages.length,
+        lastMessageRole: cleanPayload.messages[cleanPayload.messages.length - 1]?.role,
+      }, "Tool execution complete");
+
+      continue; // Loop back to invoke model with tool results in context
     }
 
     let anthropicPayload;
@@ -2874,6 +3090,68 @@ IMPORTANT TOOL USAGE RULES:
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     }
 
+    // === EMPTY RESPONSE DETECTION (safety net — post-conversion) ===
+    // Primary detection is earlier (before tool handling). This catches edge cases
+    // where conversion produces empty content from non-empty raw data.
+    const hasTextContent = (() => {
+      if (Array.isArray(anthropicPayload.content)) {
+        return anthropicPayload.content.some(b => b.type === "text" && b.text?.trim());
+      }
+      if (typeof anthropicPayload.content === "string") {
+        return anthropicPayload.content.trim().length > 0;
+      }
+      return false;
+    })();
+
+    const hasToolUseBlocks = Array.isArray(anthropicPayload.content) &&
+      anthropicPayload.content.some(b => b.type === "tool_use");
+
+    if (!hasToolUseBlocks && !hasTextContent) {
+      logger.warn({
+        sessionId: session?.id ?? null,
+        step: steps,
+        messageKeys: Object.keys(anthropicPayload),
+        contentType: typeof anthropicPayload.content,
+        contentLength: Array.isArray(anthropicPayload.content) ? anthropicPayload.content.length : String(anthropicPayload.content || "").length,
+      }, "Empty LLM response detected (no text, no tool calls)");
+
+      // Retry once with a nudge
+      if (steps < settings.maxSteps && !emptyResponseRetried) {
+        emptyResponseRetried = true;
+        cleanPayload.messages.push({
+          role: "assistant",
+          content: "",
+        });
+        cleanPayload.messages.push({
+          role: "user",
+          content: "Please provide a response to the user's message.",
+        });
+        logger.info({ sessionId: session?.id ?? null }, "Retrying after empty response with nudge");
+        continue;  // Go back to top of while loop
+      }
+
+      // If retry also returned empty, return a fallback message
+      logger.warn({ sessionId: session?.id ?? null, steps }, "Empty response persisted after retry");
+      return {
+        response: {
+          status: 200,
+          body: {
+            id: `msg_${Date.now()}`,
+            type: "message",
+            role: "assistant",
+            model: requestedModel,
+            content: [{ type: "text", text: "I wasn't able to generate a response. Could you try rephrasing your message?" }],
+            stop_reason: "end_turn",
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+          terminationReason: "empty_response_fallback",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "empty_response_fallback",
+      };
+    }
+
     // Ensure content is an array before calling .find()
     const content = Array.isArray(anthropicPayload.content) ? anthropicPayload.content : [];
     const fallbackCandidate = content.find(
@@ -3059,6 +3337,7 @@ IMPORTANT TOOL USAGE RULES:
             session,
             cwd,
             requestMessages: cleanPayload.messages,
+            providerType,            
           });
 
           const toolResultMessage = createFallbackToolResultMessage(providerType, {
@@ -3201,6 +3480,18 @@ IMPORTANT TOOL USAGE RULES:
       },
       "Agent loop completed successfully",
     );
+
+    // DIAGNOSTIC: Log response being returned
+    logger.info({
+      sessionId: session?.id ?? null,
+      status: 200,
+      hasBody: !!anthropicPayload,
+      bodyKeys: anthropicPayload ? Object.keys(anthropicPayload) : [],
+      contentType: anthropicPayload?.content ? (Array.isArray(anthropicPayload.content) ? 'array' : typeof anthropicPayload.content) : 'none',
+      contentLength: anthropicPayload?.content ? (Array.isArray(anthropicPayload.content) ? anthropicPayload.content.length : String(anthropicPayload.content).length) : 0,
+      stopReason: anthropicPayload?.stop_reason
+    }, "=== RETURNING RESPONSE TO CLIENT ===");
+
     return {
       response: {
         status: 200,
@@ -3295,6 +3586,86 @@ function detectSuggestionMode(messages) {
   return { isSuggestionMode: false };
 }
 
+/**
+ * Detect if the current request is a topic detection/classification call.
+ * These requests typically have a system prompt asking to classify conversation
+ * topics, with no tools and very short messages. They waste GPU time on large
+ * models (30-90s just to classify a topic).
+ *
+ * Detection heuristics:
+ *  1. System prompt contains topic classification instructions
+ *  2. No tools in the payload (topic detection never needs tools)
+ *  3. Short message count (typically 1-3 messages)
+ *
+ * @param {Object} payload - The request payload
+ * @returns {{ isTopicDetection: boolean }}
+ */
+function detectTopicDetection(payload) {
+  if (!payload) return { isTopicDetection: false };
+
+  // Topic detection requests have no tools
+  if (Array.isArray(payload.tools) && payload.tools.length > 0) {
+    return { isTopicDetection: false };
+  }
+
+  // Check system prompt for topic classification patterns
+  const systemText = typeof payload.system === 'string'
+    ? payload.system
+    : Array.isArray(payload.system)
+      ? payload.system.map(b => b.text || '').join(' ')
+      : '';
+
+  // Also check first message if system prompt is embedded there
+  let firstMsgText = '';
+  if (Array.isArray(payload.messages) && payload.messages.length > 0) {
+    const first = payload.messages[0];
+    if (first?.role === 'user' || first?.role === 'system') {
+      firstMsgText = typeof first.content === 'string'
+        ? first.content
+        : Array.isArray(first.content)
+          ? first.content.map(b => b.text || '').join(' ')
+          : '';
+    }
+  }
+
+  const combined = systemText + ' ' + firstMsgText;
+  const lc = combined.toLowerCase();
+
+  // Match patterns that Claude Code uses for topic detection
+  const topicPatterns = [
+    'new conversation topic',
+    'topic change',
+    'classify the topic',
+    'classify this message',
+    'conversation topic',
+    'topic classification',
+    'determines the topic',
+    'determine the topic',
+    'categorize the topic',
+    'what topic',
+    'identify the topic',
+  ];
+
+  const hasTopicPattern = topicPatterns.some(p => lc.includes(p));
+
+  if (hasTopicPattern) {
+    return { isTopicDetection: true };
+  }
+
+  // Additional heuristic: very short payload with no tools and system prompt
+  // mentioning "topic" or "classify"
+  if (
+    !payload.tools &&
+    Array.isArray(payload.messages) &&
+    payload.messages.length <= 3 &&
+    (lc.includes('topic') || lc.includes('classify'))
+  ) {
+    return { isTopicDetection: true };
+  }
+
+  return { isTopicDetection: false };
+}
+
 async function processMessage({ payload, headers, session, cwd, options = {} }) {
   const requestedModel =
     payload?.model ??
@@ -3311,7 +3682,7 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     logger.info('Suggestion mode: skipping LLM call (SUGGESTION_MODE_MODEL=none)');
     return {
       response: {
-        json: {
+        body: {
           id: `msg_suggestion_skip_${Date.now()}`,
           type: "message",
           role: "assistant",

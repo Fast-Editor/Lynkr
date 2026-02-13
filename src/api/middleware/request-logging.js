@@ -25,13 +25,14 @@ function requestLoggingMiddleware(req, res, next) {
   // Add to response headers
   res.setHeader("X-Request-ID", requestId);
 
-  // Log request start
+// Log request start with full body
   logger.info(
     {
       requestId,
       method: req.method,
       path: req.path || req.url,
       query: req.query,
+      body: req.body, // Full request body without truncation
       ip: req.ip || req.socket.remoteAddress,
       userAgent: req.headers["user-agent"],
     },
@@ -43,7 +44,18 @@ function requestLoggingMiddleware(req, res, next) {
   res.send = function (body) {
     const duration = Date.now() - startTime;
 
-    // Log request completion
+    // Parse body if it's a string
+    let responseBody = body;
+    if (typeof body === 'string') {
+      try {
+        responseBody = JSON.parse(body);
+      } catch (e) {
+        // Keep as string if not JSON
+        responseBody = body;
+      }
+    }
+
+    // Log request completion with full request and response bodies
     logger.info(
       {
         requestId,
@@ -52,6 +64,8 @@ function requestLoggingMiddleware(req, res, next) {
         status: res.statusCode,
         duration,
         contentLength: res.getHeader("content-length"),
+        requestBody: req.body, // Full request body for reference
+        responseBody, // Full response body without truncation
       },
       "Request completed"
     );

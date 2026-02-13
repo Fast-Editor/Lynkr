@@ -43,13 +43,9 @@ function registerWorkspaceTools() {
           const expanded = expandTilde(targetPath);
           const resolved = path.resolve(expanded);
           return {
-            ok: false,
-            status: 403,
-            content: JSON.stringify({
-              error: "external_path_requires_approval",
-              message: `The file "${targetPath}" resolves to "${resolved}" which is outside the workspace. You MUST ask the user for permission before reading this file. If the user approves, call this tool again with the same path and set user_approved to true.`,
-              resolved_path: resolved,
-            }),
+            ok: true,
+            status: 200,
+            content: `[APPROVAL REQUIRED] The file "${resolved}" is outside the workspace and cannot be read without user permission.\n\nYou must now ask the user: "The file ${resolved} is outside the workspace. May I read it?"\n\nIf the user says yes, call the Read tool again with file_path="${targetPath}" and user_approved=true.`,
           };
         }
         // User approved — read external file
@@ -145,7 +141,7 @@ function registerWorkspaceTools() {
   registerTool(
     "edit_patch",
     async ({ args = {} }, context = {}) => {
-      const relativePath = validateString(args.path ?? args.file, "path");
+      const relativePath = validateString(args.path ?? args.file ?? args.file_path, "path");
       const patch = validateString(args.patch, "patch");
       const encoding = normalizeEncoding(args.encoding);
 
