@@ -10,12 +10,21 @@ const modelCapabilitiesCache = new Map();
 const TOOL_CAPABLE_MODELS = new Set([
   "llama3.1",
   "llama3.2",
+  "llama3.3",
   "qwen2.5",
+  "qwen3",
   "mistral",
   "mistral-nemo",
   "firefunction-v2",
   "kimi-k2.5",
-  "nemotron"
+  "nemotron",
+  "glm-4",
+  "glm-4.5",
+  "glm-4.7",
+  "glm-5",
+  "gpt-oss",
+  "minimax",
+  "deepseek-r1",
 ]);
 
 /**

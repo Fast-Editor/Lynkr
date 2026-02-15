@@ -1,6 +1,7 @@
 const config = require("../config");
 const { invokeModel } = require("../clients/databricks");
 const { appendTurnToSession } = require("../sessions/record");
+const { upsertSession } = require("../sessions/store");
 const { executeToolCall } = require("../tools");
 const policy = require("../policy");
 const logger = require("../logger");
@@ -19,7 +20,7 @@ const crypto = require("crypto");
 const { asyncClone, asyncTransform, getPoolStats } = require("../workers/helpers");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
 const lazyLoader = require("../tools/lazy-loader");
-const { isGPTProvider, getGPTToolLoopThreshold, areSimilarToolCalls } = require("../clients/gpt-utils");
+const { areSimilarToolCalls } = require("../clients/gpt-utils");
 
 /**
  * Get destination URL for audit logging based on provider type
@@ -454,6 +455,192 @@ function injectToolLoopStopInstruction(messages, threshold = 5) {
   }
 
   return messages;
+}
+
+// === CROSS-REQUEST TOOL CALL DEDUP TRACKING ===
+// These helpers track tool call signatures across multiple HTTP requests within
+// the same session (client/passthrough mode). The inner-loop detection in
+// runAgentLoop() only sees one request at a time, so repeated calls across
+// requests escape it.
+
+const DEDUP_MAX_SIGNATURES = 50;
+const DEDUP_WARN_THRESHOLD = 2;
+const DEDUP_TERMINATE_THRESHOLD = 3;
+
+/**
+ * Initialise session.metadata.toolCallDedup if missing.
+ * @param {Object} session
+ */
+function ensureDedupStructure(session) {
+  if (!session || !session.metadata) return;
+  if (!session.metadata.toolCallDedup) {
+    session.metadata.toolCallDedup = {
+      signatures: {},
+      similarGroups: {},
+      lastResetAt: Date.now(),
+      warningInjected: false,
+    };
+  }
+}
+
+/**
+ * Record a tool call into the cross-request dedup tracker.
+ * Handles similarity merging and enforces the 50-entry cap.
+ * @param {Object} session
+ * @param {Object} toolCall - tool_use block (Anthropic format: { name, input, id })
+ */
+function recordCrossRequestToolCall(session, toolCall) {
+  if (!session?.metadata) return;
+  ensureDedupStructure(session);
+
+  const dedup = session.metadata.toolCallDedup;
+  const signature = getToolCallSignature(toolCall);
+  const toolName = toolCall.function?.name ?? toolCall.name ?? 'unknown';
+  const args = toolCall.function?.arguments ?? toolCall.input;
+  const argsPreview = (typeof args === 'string' ? args : JSON.stringify(args ?? {})).substring(0, 200);
+  const now = Date.now();
+
+  // Check if this signature maps to a canonical via similarity groups
+  const canonicalSig = dedup.similarGroups[signature] || signature;
+
+  if (dedup.signatures[canonicalSig]) {
+    dedup.signatures[canonicalSig].count += 1;
+    dedup.signatures[canonicalSig].lastSeen = now;
+  } else {
+    // Check for similar existing entries before creating a new one
+    let mergedInto = null;
+    for (const [existingSig, existingData] of Object.entries(dedup.signatures)) {
+      // Build a fake call object from stored data to compare with areSimilarToolCalls
+      const existingCall = {
+        name: existingData.toolName,
+        input: existingData.argsPreview,
+      };
+      if (areSimilarToolCalls(toolCall, existingCall)) {
+        // Merge: map this signature to the existing canonical
+        dedup.similarGroups[signature] = existingSig;
+        dedup.signatures[existingSig].count += 1;
+        dedup.signatures[existingSig].lastSeen = now;
+        mergedInto = existingSig;
+        logger.debug({
+          newSignature: signature,
+          canonicalSignature: existingSig,
+          toolName,
+          count: dedup.signatures[existingSig].count,
+        }, "Cross-request tool dedup: merged similar call");
+        break;
+      }
+    }
+
+    if (!mergedInto) {
+      // New unique signature
+      dedup.signatures[signature] = {
+        count: 1,
+        toolName,
+        firstSeen: now,
+        lastSeen: now,
+        argsPreview,
+      };
+    }
+  }
+
+  // Enforce cap: evict oldest entries if over limit
+  const sigKeys = Object.keys(dedup.signatures);
+  if (sigKeys.length > DEDUP_MAX_SIGNATURES) {
+    const sorted = sigKeys.sort(
+      (a, b) => dedup.signatures[a].lastSeen - dedup.signatures[b].lastSeen
+    );
+    const toRemove = sorted.slice(0, sigKeys.length - DEDUP_MAX_SIGNATURES);
+    for (const key of toRemove) {
+      delete dedup.signatures[key];
+      // Also clean up any similarGroups pointing to this key
+      for (const [groupSig, canonical] of Object.entries(dedup.similarGroups)) {
+        if (canonical === key) delete dedup.similarGroups[groupSig];
+      }
+    }
+  }
+}
+
+/**
+ * Return the highest dedup count, the associated tool name, and signature.
+ * @param {Object} session
+ * @returns {{ maxCount: number, toolName: string|null, signature: string|null }}
+ */
+function getMaxDedupCount(session) {
+  if (!session?.metadata?.toolCallDedup?.signatures) {
+    return { maxCount: 0, toolName: null, signature: null };
+  }
+  const sigs = session.metadata.toolCallDedup.signatures;
+  let maxCount = 0;
+  let toolName = null;
+  let signature = null;
+  for (const [sig, data] of Object.entries(sigs)) {
+    if (data.count > maxCount) {
+      maxCount = data.count;
+      toolName = data.toolName;
+      signature = sig;
+    }
+  }
+  return { maxCount, toolName, signature };
+}
+
+/**
+ * Extract tool_use blocks from messages that appear after the last user text message.
+ * These are the tool calls from the current assistant turn that the client is sending back.
+ * @param {Array} messages
+ * @returns {Array} - Array of tool_use-like objects
+ */
+function extractToolUseFromCurrentTurn(messages) {
+  if (!Array.isArray(messages)) return [];
+
+  // Find last user text message
+  let lastUserTextIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== 'user') continue;
+    if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
+      lastUserTextIndex = i;
+      break;
+    }
+    if (Array.isArray(msg.content)) {
+      const hasText = msg.content.some(block =>
+        (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+        (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+      );
+      if (hasText) {
+        lastUserTextIndex = i;
+        break;
+      }
+    }
+  }
+
+  const toolUseBlocks = [];
+  const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
+  for (let i = startIndex; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg?.role !== 'assistant') continue;
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (block?.type === 'tool_use') {
+        toolUseBlocks.push(block);
+      }
+    }
+  }
+  return toolUseBlocks;
+}
+
+/**
+ * Reset dedup tracking. Called when a new user question is detected.
+ * @param {Object} session
+ */
+function resetDedupTracking(session) {
+  if (!session?.metadata) return;
+  session.metadata.toolCallDedup = {
+    signatures: {},
+    similarGroups: {},
+    lastResetAt: Date.now(),
+    warningInjected: false,
+  };
+  logger.debug({ sessionId: session?.id ?? null }, "Cross-request tool dedup: reset tracking for new user question");
 }
 
 function sanitiseAzureTools(tools) {
@@ -2094,6 +2281,27 @@ IMPORTANT TOOL USAGE RULES:
         // then continue the conversation loop. For now, let's fall through to execute server-side tools.
         if (serverSideToolCalls.length === 0) {
           // No server-side tools - pure passthrough
+          // Record outbound client-side tool calls into cross-request dedup tracker
+          if (session && clientSideToolCalls.length > 0) {
+            ensureDedupStructure(session);
+            for (const call of clientSideToolCalls) {
+              recordCrossRequestToolCall(session, call);
+            }
+            // Persist dedup state (non-ephemeral sessions only)
+            if (session.id && !session._ephemeral) {
+              try { upsertSession(session.id, { metadata: session.metadata }); } catch (e) {
+                logger.debug({ err: e.message }, "Failed to persist outbound dedup state");
+              }
+            }
+            const { maxCount, toolName: dedupTool } = getMaxDedupCount(session);
+            logger.debug({
+              sessionId: session?.id ?? null,
+              clientToolCount: clientSideToolCalls.length,
+              maxDedupCount: maxCount,
+              maxDedupTool: dedupTool,
+            }, "Cross-request tool dedup: recorded outbound tool calls");
+          }
+
           return {
             response: {
               status: 200,
@@ -2533,10 +2741,9 @@ IMPORTANT TOOL USAGE RULES:
 
       // === TOOL CALL LOOP DETECTION ===
       // Track tool calls to detect infinite loops where the model calls the same tool
-      // repeatedly with identical parameters
-      // GPT models get stricter thresholds (2 vs 3) and similarity-based detection
-      const isGPT = isGPTProvider(providerType);
-      const loopThreshold = isGPT ? getGPTToolLoopThreshold() : 3;
+      // repeatedly with identical or similar parameters
+      // All providers use threshold 2 and similarity-based detection
+      const loopThreshold = 2;
 
       for (const call of toolCalls) {
         const signature = getToolCallSignature(call);
@@ -2546,20 +2753,18 @@ IMPORTANT TOOL USAGE RULES:
 
         const toolName = call.function?.name ?? call.name ?? 'unknown';
 
-        // For GPT models, also check for similar (not just identical) tool calls
-        // This catches cases where GPT slightly varies parameters but is essentially looping
-        if (isGPT) {
-          for (const [existingSig, existingData] of toolCallHistory.entries()) {
-            if (existingSig !== signature && areSimilarToolCalls(call, existingData.call)) {
-              // Found a similar call - increase count to trigger loop detection earlier
-              count = Math.max(count, existingData.count + 1);
-              logger.debug({
-                tool: toolName,
-                currentSignature: signature,
-                similarSignature: existingSig,
-                combinedCount: count,
-              }, "GPT similar tool call detected - combining counts");
-            }
+        // Check for similar (not just identical) tool calls across all providers
+        // This catches cases where the model slightly varies parameters but is essentially looping
+        for (const [existingSig, existingData] of toolCallHistory.entries()) {
+          if (existingSig !== signature && areSimilarToolCalls(call, existingData.call)) {
+            // Found a similar call - increase count to trigger loop detection earlier
+            count = Math.max(count, existingData.count + 1);
+            logger.debug({
+              tool: toolName,
+              currentSignature: signature,
+              similarSignature: existingSig,
+              combinedCount: count,
+            }, "Similar tool call detected - combining counts");
           }
         }
 
@@ -2571,7 +2776,6 @@ IMPORTANT TOOL USAGE RULES:
               tool: toolName,
               loopCount: count,
               loopThreshold,
-              isGPT,
               signature: signature,
               action: 'warning_injected',
               totalSteps: steps,
@@ -2580,13 +2784,11 @@ IMPORTANT TOOL USAGE RULES:
             `Tool call loop detected - same tool called ${loopThreshold} times with identical/similar parameters`,
           );
 
-          // Inject warning message to model - GPT gets a more explicit message
+          // Inject warning message to model
           loopWarningInjected = true;
           const warningMessage = {
             role: "user",
-            content: isGPT
-              ? `⚠️ CRITICAL SYSTEM WARNING: You have called the "${toolName}" tool ${count} times with identical or similar parameters. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response to the user based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Summarize your findings and respond.`
-              : `⚠️ System Warning: You have called the same tool with identical parameters ${count} times in this request. This may indicate an infinite loop. Please provide a final answer to the user instead of calling the same tool again, or explain why you need to continue retrying with the same parameters.`,
+            content: `⚠️ CRITICAL SYSTEM WARNING: You have called the "${toolName}" tool ${count} times with identical or similar parameters. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response to the user based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Summarize your findings and respond.`,
           };
 
           cleanPayload.messages.push(warningMessage);
@@ -2601,7 +2803,6 @@ IMPORTANT TOOL USAGE RULES:
                 reason: "tool_call_loop_warning",
                 toolName,
                 loopCount: count,
-                isGPT,
                 loopThreshold,
               },
             });
@@ -2616,7 +2817,6 @@ IMPORTANT TOOL USAGE RULES:
               tool: toolName,
               loopCount: count,
               loopThreshold,
-              isGPT,
               signature: signature,
               action: 'request_terminated',
               totalSteps: steps,
@@ -3370,101 +3570,289 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   // === TOOL LOOP GUARD (EARLY CHECK) ===
   // Check BEFORE sanitization since sanitizePayload removes conversation history
-  // GPT models get a lower threshold (2) to catch loops earlier
+  // All providers use threshold 2 to catch loops early
   const providerType = config.modelProvider?.type ?? "databricks";
-  const isGPT = isGPTProvider(providerType);
-  const toolLoopThreshold = isGPT
-    ? getGPTToolLoopThreshold()  // Hardcoded: 2 for GPT
-    : (config.policy?.toolLoopThreshold ?? 3);
+  const toolLoopThreshold = 2;
   const { toolResultCount, toolUseCount } = countToolCallsInHistory(payload?.messages);
 
-  // Temporarily increase threshold in client mode to allow tool execution flow
-  const effectiveThreshold = config.toolExecutionMode === 'client' ? 10 : toolLoopThreshold;
+  const executionMode = config.toolExecutionMode || "server";
+  const isClientMode = executionMode === "client" || executionMode === "passthrough";
 
-  if (toolResultCount >= effectiveThreshold) {
-    logger.error({
-      toolResultCount,
-      toolUseCount,
-      threshold: effectiveThreshold,
-      sessionId: session?.id ?? null,
-    }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
+  if (isClientMode && session) {
+    // === CROSS-REQUEST DEDUP (CLIENT/PASSTHROUGH MODE) ===
+    // The inner-loop guard resets each HTTP request so repeated calls across
+    // requests escape detection. Track signatures in session metadata instead.
+    ensureDedupStructure(session);
 
-    // Extract tool results ONLY from CURRENT TURN (after last user text message)
-    // This prevents showing old results from previous questions
-    let toolResultsSummary = "";
-    const messages = payload?.messages || [];
-
-    // Find the last user text message index (same logic as countToolCallsInHistory)
-    let lastUserTextIndex = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg?.role !== 'user') continue;
-      if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
-        lastUserTextIndex = i;
-        break;
+    // Detect new user question → reset dedup tracking
+    const dedup = session.metadata.toolCallDedup;
+    const incomingToolUse = extractToolUseFromCurrentTurn(payload?.messages);
+    // A user text message with no preceding tool_use means a brand-new question
+    const hasNewUserText = (() => {
+      const msgs = payload?.messages || [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i];
+        if (msg?.role === 'user') {
+          if (typeof msg.content === 'string' && msg.content.trim().length > 0) return true;
+          if (Array.isArray(msg.content)) {
+            return msg.content.some(block =>
+              (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+              (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+            );
+          }
+        }
+        break; // Only check the very last message
       }
-      if (Array.isArray(msg.content)) {
-        const hasText = msg.content.some(block =>
-          (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
-          (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
-        );
-        if (hasText) {
+      return false;
+    })();
+
+    if (hasNewUserText && incomingToolUse.length === 0) {
+      // Pure user text with no tool results → new question
+      resetDedupTracking(session);
+    } else {
+      // Record each tool_use from the incoming messages into the dedup tracker
+      for (const toolUseBlock of incomingToolUse) {
+        recordCrossRequestToolCall(session, toolUseBlock);
+      }
+
+      const { maxCount, toolName: dedupToolName, signature: dedupSig } = getMaxDedupCount(session);
+
+      if (maxCount >= DEDUP_TERMINATE_THRESHOLD) {
+        // Force-terminate: same pattern as existing tool_loop_guard
+        logger.error({
+          toolName: dedupToolName,
+          count: maxCount,
+          threshold: DEDUP_TERMINATE_THRESHOLD,
+          signature: dedupSig,
+          sessionId: session?.id ?? null,
+        }, "[CrossRequestDedup] FORCE TERMINATING - repeated tool call across requests");
+
+        // Extract tool results summary from current turn
+        let toolResultsSummary = "";
+        const messages = payload?.messages || [];
+        const { lastUserTextIndex: luIdx } = countToolCallsInHistory(messages);
+        const startIdx = luIdx >= 0 ? luIdx : 0;
+        for (let i = startIdx; i < messages.length; i++) {
+          const msg = messages[i];
+          if (!msg || !Array.isArray(msg.content)) continue;
+          for (const block of msg.content) {
+            if (block?.type === 'tool_result' && block?.content) {
+              const content = typeof block.content === 'string'
+                ? block.content
+                : JSON.stringify(block.content);
+              if (content && !content.includes('Found 0')) {
+                toolResultsSummary += content + "\n";
+              }
+            }
+          }
+        }
+
+        let responseText = `Based on the tool results, here's what I found:\n\n`;
+        if (toolResultsSummary.trim()) {
+          responseText += toolResultsSummary.trim();
+        } else {
+          responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
+        }
+
+        const forcedResponse = {
+          id: `msg_forced_${Date.now()}`,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: responseText }],
+          model: requestedModel || "unknown",
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 100 },
+        };
+
+        // Reset dedup after termination so next question starts fresh
+        resetDedupTracking(session);
+        // Persist to DB (non-ephemeral sessions only)
+        if (session.id && !session._ephemeral) {
+          try { upsertSession(session.id, { metadata: session.metadata }); } catch (e) {
+            logger.debug({ err: e.message }, "Failed to persist dedup reset");
+          }
+        }
+
+        return {
+          status: 200,
+          body: forcedResponse,
+          terminationReason: "tool_loop_guard",
+        };
+      }
+
+      if (maxCount >= DEDUP_WARN_THRESHOLD && !dedup.warningInjected) {
+        logger.warn({
+          toolName: dedupToolName,
+          count: maxCount,
+          threshold: DEDUP_WARN_THRESHOLD,
+          signature: dedupSig,
+          sessionId: session?.id ?? null,
+        }, "[CrossRequestDedup] Warning - repeated tool call detected across requests");
+
+        dedup.warningInjected = true;
+
+        // Inject a strict warning into the payload so the model sees it
+        if (Array.isArray(payload?.messages)) {
+          payload.messages.push({
+            role: "user",
+            content: `⚠️ CRITICAL SYSTEM WARNING: You have called the "${dedupToolName}" tool ${maxCount} times with identical or similar parameters across multiple requests. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Summarize your findings and respond.`,
+          });
+        }
+      }
+
+      // Persist dedup state (non-ephemeral sessions only)
+      if (session.id && !session._ephemeral) {
+        try { upsertSession(session.id, { metadata: session.metadata }); } catch (e) {
+          logger.debug({ err: e.message }, "Failed to persist dedup state");
+        }
+      }
+    }
+
+    // Client mode still uses the relaxed per-request threshold for the count-based guard
+    const effectiveThreshold = 10;
+    if (toolResultCount >= effectiveThreshold) {
+      logger.error({
+        toolResultCount,
+        toolUseCount,
+        threshold: effectiveThreshold,
+        sessionId: session?.id ?? null,
+      }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
+
+      let toolResultsSummary = "";
+      const messages = payload?.messages || [];
+      let lastUserTextIndex = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg?.role !== 'user') continue;
+        if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
           lastUserTextIndex = i;
           break;
         }
-      }
-    }
-
-    // Only extract tool results AFTER the last user text message
-    const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
-    for (let i = startIndex; i < messages.length; i++) {
-      const msg = messages[i];
-      if (!msg || !Array.isArray(msg.content)) continue;
-      for (const block of msg.content) {
-        if (block?.type === 'tool_result' && block?.content) {
-          const content = typeof block.content === 'string'
-            ? block.content
-            : JSON.stringify(block.content);
-          if (content && !content.includes('Found 0')) {
-            toolResultsSummary += content + "\n";
+        if (Array.isArray(msg.content)) {
+          const hasText = msg.content.some(block =>
+            (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+            (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+          );
+          if (hasText) {
+            lastUserTextIndex = i;
+            break;
           }
         }
       }
+      const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
+      for (let i = startIndex; i < messages.length; i++) {
+        const msg = messages[i];
+        if (!msg || !Array.isArray(msg.content)) continue;
+        for (const block of msg.content) {
+          if (block?.type === 'tool_result' && block?.content) {
+            const content = typeof block.content === 'string'
+              ? block.content
+              : JSON.stringify(block.content);
+            if (content && !content.includes('Found 0')) {
+              toolResultsSummary += content + "\n";
+            }
+          }
+        }
+      }
+
+      let responseText = `Based on the tool results, here's what I found:\n\n`;
+      if (toolResultsSummary.trim()) {
+        responseText += toolResultsSummary.trim();
+      } else {
+        responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
+      }
+
+      const forcedResponse = {
+        id: `msg_forced_${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: responseText }],
+        model: requestedModel || "unknown",
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 100 },
+      };
+
+      return {
+        status: 200,
+        body: forcedResponse,
+        terminationReason: "tool_loop_guard",
+      };
     }
+  } else {
+    // Server mode: use existing threshold 2 with countToolCallsInHistory
+    const effectiveThreshold = toolLoopThreshold;
 
-    // Build response text based on actual results from CURRENT turn only
-    let responseText = `Based on the tool results, here's what I found:\n\n`;
-    if (toolResultsSummary.trim()) {
-      responseText += toolResultsSummary.trim();
-    } else {
-      responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
+    if (toolResultCount >= effectiveThreshold) {
+      logger.error({
+        toolResultCount,
+        toolUseCount,
+        threshold: effectiveThreshold,
+        sessionId: session?.id ?? null,
+      }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
+
+      let toolResultsSummary = "";
+      const messages = payload?.messages || [];
+      let lastUserTextIndex = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg?.role !== 'user') continue;
+        if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
+          lastUserTextIndex = i;
+          break;
+        }
+        if (Array.isArray(msg.content)) {
+          const hasText = msg.content.some(block =>
+            (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+            (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+          );
+          if (hasText) {
+            lastUserTextIndex = i;
+            break;
+          }
+        }
+      }
+      const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
+      for (let i = startIndex; i < messages.length; i++) {
+        const msg = messages[i];
+        if (!msg || !Array.isArray(msg.content)) continue;
+        for (const block of msg.content) {
+          if (block?.type === 'tool_result' && block?.content) {
+            const content = typeof block.content === 'string'
+              ? block.content
+              : JSON.stringify(block.content);
+            if (content && !content.includes('Found 0')) {
+              toolResultsSummary += content + "\n";
+            }
+          }
+        }
+      }
+
+      let responseText = `Based on the tool results, here's what I found:\n\n`;
+      if (toolResultsSummary.trim()) {
+        responseText += toolResultsSummary.trim();
+      } else {
+        responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
+      }
+
+      const forcedResponse = {
+        id: `msg_forced_${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: responseText }],
+        model: requestedModel || "unknown",
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 100 },
+      };
+
+      return {
+        status: 200,
+        body: forcedResponse,
+        terminationReason: "tool_loop_guard",
+      };
     }
-
-    // Force return a response instead of continuing the loop
-    const forcedResponse = {
-      id: `msg_forced_${Date.now()}`,
-      type: "message",
-      role: "assistant",
-      content: [
-        {
-          type: "text",
-          text: responseText,
-        },
-      ],
-      model: requestedModel || "unknown",
-      stop_reason: "end_turn",
-      stop_sequence: null,
-      usage: {
-        input_tokens: 0,
-        output_tokens: 100,
-      },
-    };
-
-    return {
-      status: 200,
-      body: forcedResponse,
-      terminationReason: "tool_loop_guard",
-    };
   }
 
   const cleanPayload = sanitizePayload(payload);

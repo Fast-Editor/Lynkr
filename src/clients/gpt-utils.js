@@ -149,7 +149,7 @@ function areSimilarToolCalls(call1, call2) {
         threshold: GPT_SETTINGS.similarityThreshold,
         args1: argsStr1.substring(0, 100),
         args2: argsStr2.substring(0, 100),
-      }, "GPT similar tool call detected");
+      }, "Similar tool call detected");
       return true;
     }
   }
