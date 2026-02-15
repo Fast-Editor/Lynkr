@@ -1375,14 +1375,30 @@ async function invokeZai(body, providerOptions = {}) {
     zaiBody = { ...body };
     zaiBody.model = mappedModel;
 
+    const hasToolHistory = Array.isArray(zaiBody.messages)
+      && zaiBody.messages.some((message) => {
+        if (!message || !Array.isArray(message.content)) return false;
+        return message.content.some((block) => (
+          block?.type === "tool_use"
+          || block?.type === "tool_result"
+          || block?.type === "tool_reference"
+        ));
+      });
+
     // Inject standard tools if client didn't send any (passthrough mode)
-    if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
+    // IMPORTANT: do not inject on tool-followup turns, because the model
+    // must continue against the exact previously-declared tool schema.
+    if ((!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) && !hasToolHistory) {
       zaiBody.tools = STANDARD_TOOLS;
       logger.info({
         injectedToolCount: STANDARD_TOOLS.length,
         injectedToolNames: STANDARD_TOOLS.map(t => t.name),
         reason: "Client did not send tools (passthrough mode)"
       }, `=== INJECTING STANDARD TOOLS (${providerName} Anthropic) ===`);
+    } else if ((!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) && hasToolHistory) {
+      logger.info({
+        reason: "Skipped tool injection on tool-followup turn",
+      }, `=== TOOL INJECTION SKIPPED (${providerName} Anthropic) ===`);
     }
 
     headers = {

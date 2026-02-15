@@ -167,6 +167,23 @@ function flattenBlocks(blocks) {
     .join("");
 }
 
+function hasToolProtocolHistory(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+  return messages.some((message) => {
+    if (!message) return false;
+    if (message.role === "tool" || Array.isArray(message.tool_calls)) return true;
+    if (!Array.isArray(message.content)) return false;
+    return message.content.some((block) => {
+      if (!block || typeof block !== "object") return false;
+      return (
+        block.type === "tool_use" ||
+        block.type === "tool_result" ||
+        block.type === "tool_reference"
+      );
+    });
+  });
+}
+
 function normaliseMessages(payload, options = {}) {
   const flattenContent = options.flattenContent !== false;
   const normalised = [];
@@ -207,6 +224,19 @@ function normaliseTools(tools) {
       parameters: tool.input_schema ?? {},
     },
   }));
+}
+
+function endpointUsesOpenAIChatCompletions(endpoint) {
+  return typeof endpoint === "string" && endpoint.includes("/chat/completions");
+}
+
+function providerUsesAnthropicToolProtocol(providerType) {
+  if (providerType === "azure-anthropic") return true;
+  if (providerType === "moonshot") return !endpointUsesOpenAIChatCompletions(config.moonshot?.endpoint);
+  if (providerType === "zai") return !endpointUsesOpenAIChatCompletions(config.zai?.endpoint);
+  if (providerType === "bedrock") return true;
+  if (providerType === "vertex") return true;
+  return false;
 }
 
 /**
@@ -529,7 +559,7 @@ function parseExecutionContent(content) {
 }
 
 function createFallbackAssistantMessage(providerType, { text, toolCall }) {
-  if (providerType === "azure-anthropic") {
+  if (providerUsesAnthropicToolProtocol(providerType)) {
     const blocks = [];
     if (typeof text === "string" && text.trim().length > 0) {
       blocks.push({ type: "text", text: text.trim() });
@@ -560,7 +590,7 @@ function createFallbackAssistantMessage(providerType, { text, toolCall }) {
 function createFallbackToolResultMessage(providerType, { toolCall, execution }) {
   const toolName = execution.name ?? toolCall.function?.name ?? "tool";
   const toolId = execution.id ?? toolCall.id ?? `tool_${Date.now()}`;
-  if (providerType === "azure-anthropic") {
+  if (providerUsesAnthropicToolProtocol(providerType)) {
     const parsed = parseExecutionContent(execution.content);
     let contentBlocks;
     if (typeof parsed === "string" || parsed === null) {
@@ -854,7 +884,7 @@ function sanitizePayload(payload) {
     "databricks-claude-sonnet-4-5";
   clean.model = requestedModel;
   const providerType = config.modelProvider?.type ?? "databricks";
-  const flattenContent = providerType !== "azure-anthropic";
+  const flattenContent = !providerUsesAnthropicToolProtocol(providerType);
   clean.messages = normaliseMessages(clean, { flattenContent }).filter((msg) => {
     const hasToolCalls =
       Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0;
@@ -872,7 +902,7 @@ function sanitizePayload(payload) {
     }
     return hasToolCalls;
   });
-  if (providerType === "azure-anthropic") {
+  if (providerUsesAnthropicToolProtocol(providerType)) {
     const cleanedMessages = [];
     for (const message of clean.messages) {
       if (isPlaceholderToolResultMessage(message)) {
@@ -1130,7 +1160,13 @@ function sanitizePayload(payload) {
   }
 
   // Smart tool selection (universal, applies to all providers)
-  if (config.smartToolSelection?.enabled && Array.isArray(clean.tools) && clean.tools.length > 0) {
+  const hasToolHistory = hasToolProtocolHistory(clean.messages);
+  if (
+    config.smartToolSelection?.enabled &&
+    Array.isArray(clean.tools) &&
+    clean.tools.length > 0 &&
+    !hasToolHistory
+  ) {
     const classification = classifyRequestType(clean);
     const selectedTools = selectToolsSmartly(clean.tools, classification, {
       provider: providerType,
@@ -1357,6 +1393,7 @@ async function runAgentLoop({
   let steps = 0;
   let toolCallsExecuted = 0;
   let fallbackPerformed = false;
+  const anthropicToolProtocol = providerUsesAnthropicToolProtocol(providerType);
   const toolCallNames = new Map();
   const toolCallHistory = new Map(); // Track tool calls to detect loops: signature -> count
   let loopWarningInjected = false; // Track if we've already warned about loops
@@ -1879,7 +1916,7 @@ IMPORTANT TOOL USAGE RULES:
 
     // Detect Anthropic format: has 'content' array and 'stop_reason' at top level (no 'choices')
     // This handles azure-anthropic provider AND azure-openai Responses API (which we convert to Anthropic format)
-    const isAnthropicFormat = providerType === "azure-anthropic" ||
+    const isAnthropicFormat = anthropicToolProtocol ||
       (Array.isArray(databricksResponse.json?.content) && databricksResponse.json?.stop_reason !== undefined && !databricksResponse.json?.choices);
 
     if (isAnthropicFormat) {
@@ -1938,7 +1975,7 @@ IMPORTANT TOOL USAGE RULES:
     if (toolCalls.length > 0) {
       // Convert OpenAI/OpenRouter format to Anthropic format for session storage
       let sessionContent;
-      if (providerType === "azure-anthropic") {
+      if (anthropicToolProtocol) {
         // Azure Anthropic already returns content in Anthropic
         sessionContent = databricksResponse.json?.content ?? [];
       } else {
@@ -1999,7 +2036,7 @@ IMPORTANT TOOL USAGE RULES:
       });
 
       let assistantToolMessage;
-      if (providerType === "azure-anthropic") {
+      if (anthropicToolProtocol) {
         // For Azure Anthropic, use the content array directly from the response
         // It already contains both text and tool_use blocks in the correct format
         assistantToolMessage = {
@@ -2016,7 +2053,7 @@ IMPORTANT TOOL USAGE RULES:
 
       // Only add fallback content for Databricks format (Azure already has content)
       if (
-        providerType !== "azure-anthropic" &&
+        !anthropicToolProtocol &&
         (!assistantToolMessage.content ||
           (typeof assistantToolMessage.content === "string" &&
             assistantToolMessage.content.trim().length === 0)) &&
@@ -2197,7 +2234,7 @@ IMPORTANT TOOL USAGE RULES:
             toolCallsExecuted += 1;
 
             let toolMessage;
-            if (providerType === "azure-anthropic") {
+            if (anthropicToolProtocol) {
               const parsedContent = parseExecutionContent(execution.content);
               const serialisedContent =
                 typeof parsedContent === "string" || parsedContent === null
@@ -2236,7 +2273,7 @@ IMPORTANT TOOL USAGE RULES:
 
             // Convert to Anthropic format for session storage
             let sessionToolResultContent;
-            if (providerType === "azure-anthropic") {
+            if (anthropicToolProtocol) {
               sessionToolResultContent = toolMessage.content;
             } else {
               sessionToolResultContent = [
@@ -2330,7 +2367,7 @@ IMPORTANT TOOL USAGE RULES:
           );
 
           let toolResultMessage;
-          if (providerType === "azure-anthropic") {
+          if (anthropicToolProtocol) {
             // Anthropic format: tool_result in user message content array
             toolResultMessage = {
               role: "user",
@@ -2357,7 +2394,7 @@ IMPORTANT TOOL USAGE RULES:
 
           // Convert to Anthropic format for session storage
           let sessionToolResult;
-          if (providerType === "azure-anthropic") {
+          if (anthropicToolProtocol) {
             sessionToolResult = toolResultMessage.content;
           } else {
             // Convert OpenRouter tool message to Anthropic format
@@ -2424,7 +2461,7 @@ IMPORTANT TOOL USAGE RULES:
         });
 
         let toolMessage;
-        if (providerType === "azure-anthropic") {
+        if (anthropicToolProtocol) {
           const parsedContent = parseExecutionContent(execution.content);
           const serialisedContent =
             typeof parsedContent === "string" || parsedContent === null
@@ -2484,7 +2521,7 @@ IMPORTANT TOOL USAGE RULES:
 
         // Convert to Anthropic format for session storage
         let sessionToolResultContent;
-        if (providerType === "azure-anthropic") {
+        if (anthropicToolProtocol) {
           // Azure Anthropic already has content in correct format
           sessionToolResultContent = toolMessage.content;
         } else {
@@ -3011,7 +3048,7 @@ IMPORTANT TOOL USAGE RULES:
 
           // Convert to Anthropic format for session storage
           let sessionFallbackContent;
-          if (providerType === "azure-anthropic") {
+          if (anthropicToolProtocol) {
             // Already in Anthropic format
             sessionFallbackContent = assistantToolMessage.content;
           } else {
@@ -3079,7 +3116,7 @@ IMPORTANT TOOL USAGE RULES:
 
           // Convert to Anthropic format for session storage
           let sessionFallbackToolResult;
-          if (providerType === "azure-anthropic") {
+          if (anthropicToolProtocol) {
             // Already in Anthropic format
             sessionFallbackToolResult = toolResultMessage.content;
           } else {
