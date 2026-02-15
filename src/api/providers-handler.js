@@ -179,6 +179,20 @@ function getConfiguredProviders() {
     });
   }
 
+  // Check Moonshot (Kimi)
+  if (config.moonshot?.apiKey) {
+    providers.push({
+      name: "moonshot",
+      type: "moonshot-ai",
+      baseUrl: config.moonshot.endpoint || "https://api.moonshot.ai/api/anthropic",
+      enabled: true,
+      models: [
+        { id: config.moonshot.model || "kimi-k2.5", name: "Configured Model" },
+        { id: "kimi-k2.5", name: "Kimi K2.5" },
+      ]
+    });
+  }
+
   // Check Vertex AI (Google Cloud)
   if (config.vertex?.projectId) {
     const region = config.vertex.region || "us-east5";

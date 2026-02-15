@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "moonshot", "vertex"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -131,6 +131,11 @@ const bedrockModelId = process.env.AWS_BEDROCK_MODEL_ID?.trim() || "anthropic.cl
 const zaiApiKey = process.env.ZAI_API_KEY?.trim() || null;
 const zaiEndpoint = process.env.ZAI_ENDPOINT?.trim() || "https://api.z.ai/api/anthropic/v1/messages";
 const zaiModel = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
+
+// Moonshot configuration - Anthropic-compatible API for Kimi models
+const moonshotApiKey = process.env.MOONSHOT_API_KEY?.trim() || null;
+const moonshotEndpoint = process.env.MOONSHOT_ENDPOINT?.trim() || "https://api.moonshot.ai/anthropic/v1/messages";
+const moonshotModel = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2.5";
 
 // Vertex AI (Google Gemini) configuration
 const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
@@ -305,6 +310,12 @@ if (modelProvider === "bedrock" && !bedrockApiKey) {
   );
 }
 
+if (modelProvider === "moonshot" && !moonshotApiKey) {
+  throw new Error(
+    "Set MOONSHOT_API_KEY before starting the proxy.",
+  );
+}
+
 // Validate hybrid routing configuration
 if (preferOllama) {
   if (!ollamaEndpoint) {
@@ -319,7 +330,7 @@ if (preferOllama) {
   // Prevent local providers from being used as fallback (they can fail just like Ollama)
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (fallbackEnabled && localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, openai, bedrock`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, openai, bedrock, zai, moonshot, vertex`);
   }
 
   // Ensure fallback provider is properly configured (only if fallback is enabled)
@@ -335,6 +346,9 @@ if (preferOllama) {
     }
     if (fallbackProvider === "bedrock" && !bedrockApiKey) {
       throw new Error("FALLBACK_PROVIDER is set to 'bedrock' but AWS_BEDROCK_API_KEY is not configured. Please set this environment variable or choose a different fallback provider.");
+    }
+    if (fallbackProvider === "moonshot" && !moonshotApiKey) {
+      throw new Error("FALLBACK_PROVIDER is set to 'moonshot' but MOONSHOT_API_KEY is not configured. Please set this environment variable or choose a different fallback provider.");
     }
   }
 }
@@ -588,6 +602,11 @@ var config = {
     apiKey: zaiApiKey,
     endpoint: zaiEndpoint,
     model: zaiModel,
+  },
+  moonshot: {
+    apiKey: moonshotApiKey,
+    endpoint: moonshotEndpoint,
+    model: moonshotModel,
   },
   vertex: {
     apiKey: vertexApiKey,
@@ -878,7 +897,11 @@ function reloadConfig() {
   config.openai.apiKey = process.env.OPENAI_API_KEY?.trim() || null;
   config.bedrock.apiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null;
   config.zai.apiKey = process.env.ZAI_API_KEY?.trim() || null;
+  config.zai.endpoint = process.env.ZAI_ENDPOINT?.trim() || "https://api.z.ai/api/anthropic/v1/messages";
   config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
+  config.moonshot.apiKey = process.env.MOONSHOT_API_KEY?.trim() || null;
+  config.moonshot.endpoint = process.env.MOONSHOT_ENDPOINT?.trim() || "https://api.moonshot.ai/anthropic/v1/messages";
+  config.moonshot.model = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2.5";
   config.vertex.apiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
   config.vertex.model = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
 

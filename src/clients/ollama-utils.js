@@ -11,6 +11,7 @@ const TOOL_CAPABLE_MODELS = new Set([
   "llama3.1",
   "llama3.2",
   "qwen2.5",
+  "qwen3",
   "mistral",
   "mistral-nemo",
   "firefunction-v2",

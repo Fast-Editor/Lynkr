@@ -47,6 +47,8 @@ function getDestinationUrl(providerType) {
       return config.bedrock?.endpoint ?? 'unknown';
     case 'zai':
       return config.zai?.endpoint ?? 'unknown';
+    case 'moonshot':
+      return config.moonshot?.endpoint ?? 'unknown';
     case 'vertex':
       return config.vertex?.endpoint ?? 'unknown';
     default:
@@ -1088,6 +1090,13 @@ function sanitizePayload(payload) {
       delete clean.tools;
     } else {
       // Ensure tools are in Anthropic format
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
+  } else if (providerType === "moonshot") {
+    // Moonshot uses Anthropic-compatible endpoint and tool format
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
       clean.tools = ensureAnthropicToolFormat(clean.tools);
     }
   } else if (providerType === "vertex") {
@@ -2849,12 +2858,12 @@ IMPORTANT TOOL USAGE RULES:
       }, "=== CONVERTED ANTHROPIC RESPONSE (llama.cpp) ===");
 
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
-    } else if (actualProvider === "zai") {
-      // Z.AI responses are already converted to Anthropic format in invokeZai
+    } else if (actualProvider === "zai" || actualProvider === "moonshot") {
+      // Z.AI/Moonshot responses are already converted to Anthropic format
       logger.info({
         hasJson: !!databricksResponse.json,
         jsonContent: JSON.stringify(databricksResponse.json?.content)?.substring(0, 200),
-      }, "=== ZAI ORCHESTRATOR DEBUG ===");
+      }, "=== ANTHROPIC-COMPAT ORCHESTRATOR DEBUG ===");
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
@@ -3205,6 +3214,10 @@ IMPORTANT TOOL USAGE RULES:
       response: {
         status: 200,
         body: anthropicPayload,
+        headers: {
+          "X-Lynkr-Provider": databricksResponse.actualProvider || providerType,
+          "X-Lynkr-Routing-Method": databricksResponse.routingDecision?.method || "static",
+        },
         terminationReason: "completion",
       },
       steps,

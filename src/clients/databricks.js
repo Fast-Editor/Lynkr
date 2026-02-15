@@ -1261,16 +1261,21 @@ async function invokeBedrock(body) {
  * Z.AI offers GLM models through an Anthropic-compatible API at ~1/7 the cost.
  * Minimal transformation needed - mostly passthrough with model mapping.
  */
-async function invokeZai(body) {
-  if (!config.zai?.apiKey) {
-    throw new Error("Z.AI API key is not configured. Set ZAI_API_KEY in your .env file.");
+async function invokeZai(body, providerOptions = {}) {
+  const providerConfig = providerOptions.config || config.zai || {};
+  const providerName = providerOptions.providerName || "Z.AI";
+  const defaultEndpoint = providerOptions.defaultEndpoint || "https://api.z.ai/api/anthropic/v1/messages";
+  const defaultModel = providerOptions.defaultModel || "glm-4.7";
+
+  if (!providerConfig.apiKey) {
+    throw new Error(`${providerName} API key is not configured.`);
   }
 
-  const endpoint = config.zai.endpoint || "https://api.z.ai/api/anthropic/v1/messages";
+  const endpoint = providerConfig.endpoint || defaultEndpoint;
   const isOpenAIFormat = endpoint.includes("/chat/completions");
 
   // Model mapping: Anthropic names → Z.AI names (lowercase)
-  const modelMap = {
+  const modelMap = providerOptions.modelMap || {
     "claude-sonnet-4-5-20250929": "glm-4.7",
     "claude-sonnet-4-5": "glm-4.7",
     "claude-sonnet-4.5": "glm-4.7",
@@ -1280,8 +1285,9 @@ async function invokeZai(body) {
     "claude-3-haiku": "glm-4.5-air",
   };
 
-  const requestedModel = body.model || config.zai.model;
-  let mappedModel = modelMap[requestedModel] || config.zai.model || "glm-4.7";
+  const requestedModel = body.model || providerConfig.model;
+  // If operator explicitly sets provider model, honor it over Claude-name mapping.
+  let mappedModel = providerConfig.model || modelMap[requestedModel] || defaultModel;
   mappedModel = mappedModel.toLowerCase();
 
   let zaiBody;
@@ -1362,7 +1368,7 @@ async function invokeZai(body) {
 
     headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${config.zai.apiKey}`,
+      "Authorization": `Bearer ${providerConfig.apiKey}`,
     };
   } else {
     // Anthropic format endpoint
@@ -1376,12 +1382,12 @@ async function invokeZai(body) {
         injectedToolCount: STANDARD_TOOLS.length,
         injectedToolNames: STANDARD_TOOLS.map(t => t.name),
         reason: "Client did not send tools (passthrough mode)"
-      }, "=== INJECTING STANDARD TOOLS (Z.AI Anthropic) ===");
+      }, `=== INJECTING STANDARD TOOLS (${providerName} Anthropic) ===`);
     }
 
     headers = {
       "Content-Type": "application/json",
-      "x-api-key": config.zai.apiKey,
+      "x-api-key": providerConfig.apiKey,
       "anthropic-version": "2023-06-01",
     };
   }
@@ -1401,20 +1407,20 @@ async function invokeZai(body) {
     toolNames: zaiBody.tools?.map(t => t.function?.name || t.name),
     toolChoice: zaiBody.tool_choice,
     fullRequest: JSON.stringify(zaiBody).substring(0, 500),
-  }, "=== Z.AI REQUEST ===");
+  }, `=== ${providerName} REQUEST ===`);
 
   logger.debug({
     zaiBody: JSON.stringify(zaiBody).substring(0, 1000),
-  }, "Z.AI request body (truncated)");
+  }, `${providerName} request body (truncated)`);
 
-  // Use semaphore to limit concurrent Z.AI requests (prevents rate limiting)
+  // Use semaphore to limit concurrent requests (prevents rate limiting)
   return zaiSemaphore.run(async () => {
     logger.debug({
       queueLength: zaiSemaphore.queue.length,
       currentConcurrent: zaiSemaphore.current,
-    }, "Z.AI semaphore status");
+    }, `${providerName} semaphore status`);
 
-    const response = await performJsonRequest(endpoint, { headers, body: zaiBody }, "Z.AI");
+    const response = await performJsonRequest(endpoint, { headers, body: zaiBody }, providerName);
 
     logger.info({
       responseOk: response?.ok,
@@ -1423,14 +1429,14 @@ async function invokeZai(body) {
       rawContent: response?.json?.choices?.[0]?.message?.content,
       hasReasoning: !!response?.json?.choices?.[0]?.message?.reasoning_content,
       isOpenAIFormat,
-    }, "=== Z.AI RAW RESPONSE ===");
+    }, `=== ${providerName} RAW RESPONSE ===`);
 
     // Convert OpenAI response back to Anthropic format if needed
     if (isOpenAIFormat && response?.ok && response?.json) {
       const anthropicJson = convertOpenAIToAnthropic(response.json);
       logger.info({
         convertedContent: JSON.stringify(anthropicJson.content).substring(0, 200),
-      }, "=== Z.AI CONVERTED RESPONSE ===");
+      }, `=== ${providerName} CONVERTED RESPONSE ===`);
       // Return in the same format as other providers (with ok, status, json)
       return {
         ok: response.ok,
@@ -1443,6 +1449,26 @@ async function invokeZai(body) {
     }
 
     return response;
+  });
+}
+
+async function invokeMoonshot(body) {
+  const moonshotModelMap = {
+    "claude-sonnet-4-5-20250929": "kimi-k2.5",
+    "claude-sonnet-4-5": "kimi-k2.5",
+    "claude-sonnet-4.5": "kimi-k2.5",
+    "claude-3-5-sonnet": "kimi-k2.5",
+    "claude-haiku-4-5-20251001": "kimi-k2.5",
+    "claude-haiku-4-5": "kimi-k2.5",
+    "claude-3-haiku": "kimi-k2.5",
+  };
+
+  return invokeZai(body, {
+    providerName: "Moonshot",
+    config: config.moonshot,
+    defaultEndpoint: "https://api.moonshot.ai/anthropic/v1/messages",
+    defaultModel: "kimi-k2.5",
+    modelMap: moonshotModelMap,
   });
 }
 
@@ -1883,6 +1909,8 @@ async function invokeModel(body, options = {}) {
         return await invokeBedrock(body);
       } else if (initialProvider === "zai") {
         return await invokeZai(body);
+      } else if (initialProvider === "moonshot") {
+        return await invokeMoonshot(body);
       } else if (initialProvider === "vertex") {
         return await invokeVertex(body);
       }
@@ -1972,6 +2000,8 @@ async function invokeModel(body, options = {}) {
           return await invokeLlamaCpp(body);
         } else if (fallbackProvider === "zai") {
           return await invokeZai(body);
+        } else if (fallbackProvider === "moonshot") {
+          return await invokeMoonshot(body);
         } else if (fallbackProvider === "vertex") {
           return await invokeVertex(body);
         }
