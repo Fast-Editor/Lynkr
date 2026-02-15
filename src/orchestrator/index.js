@@ -1922,6 +1922,56 @@ IMPORTANT TOOL USAGE RULES:
         },
         "Azure Anthropic response parsed",
       );
+    } else if (providerType === "ollama") {
+      // Ollama format: { message: { role, content, tool_calls }, done }
+      message = databricksResponse.json?.message ?? {};
+      toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+      logger.info({
+        hasMessage: !!databricksResponse.json?.message,
+        hasToolCalls: toolCalls.length > 0,
+        toolCallCount: toolCalls.length,
+        toolNames: toolCalls.map(tc => tc.function?.name),
+        done: databricksResponse.json?.done,
+        fullToolCalls: JSON.stringify(toolCalls),
+        fullResponseMessage: JSON.stringify(databricksResponse.json?.message)
+      }, "=== OLLAMA TOOL CALLS EXTRACTION ===");
+
+      // Deduplicate tool calls for Ollama format
+      if (toolCalls.length > 0) {
+        const uniqueToolCalls = [];
+        const seenSignatures = new Set();
+        let duplicatesRemoved = 0;
+
+        for (const call of toolCalls) {
+          const signature = getToolCallSignature(call);
+          if (!seenSignatures.has(signature)) {
+            seenSignatures.add(signature);
+            uniqueToolCalls.push(call);
+          } else {
+            duplicatesRemoved++;
+            logger.warn({
+              sessionId: session?.id ?? null,
+              toolName: call.function?.name || call.name,
+              toolId: call.id,
+              signature: signature.substring(0, 32),
+            }, "Duplicate tool call removed (same tool with identical parameters in single response)");
+          }
+        }
+
+        toolCalls = uniqueToolCalls;
+
+        logger.info(
+          {
+            sessionId: session?.id ?? null,
+            step: steps,
+            toolCallsFound: toolCalls.length,
+            duplicatesRemoved,
+            toolNames: toolCalls.map(tc => tc.function?.name || tc.name),
+          },
+          "LLM Response: Tool calls requested (after deduplication)",
+        );
+      }
     } else {
       // OpenAI/Databricks format: { choices: [{ message: { tool_calls: [...] } }] }
       const choice = databricksResponse.json?.choices?.[0];
@@ -1962,62 +2012,6 @@ IMPORTANT TOOL USAGE RULES:
           },
           "LLM Response: Tool calls requested (after deduplication)",
         );
-      } else if (providerType === "ollama") {
-        // Ollama format: { message: { role, content, tool_calls }, done }
-        message = databricksResponse.json?.message ?? {};
-        toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-
-        logger.info({
-          hasMessage: !!databricksResponse.json?.message,
-          hasToolCalls: toolCalls.length > 0,
-          toolCallCount: toolCalls.length,
-          toolNames: toolCalls.map(tc => tc.function?.name),
-          done: databricksResponse.json?.done,
-          fullToolCalls: JSON.stringify(toolCalls),
-          fullResponseMessage: JSON.stringify(databricksResponse.json?.message)
-        }, "=== OLLAMA TOOL CALLS EXTRACTION ===");
-      } else {
-        // OpenAI/Databricks format: { choices: [{ message: { tool_calls: [...] } }] }
-        const choice = databricksResponse.json?.choices?.[0];
-        message = choice?.message ?? {};
-        toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-
-        // Deduplicate tool calls for OpenAI format too
-        if (toolCalls.length > 0) {
-          const uniqueToolCalls = [];
-          const seenSignatures = new Set();
-          let duplicatesRemoved = 0;
-
-          for (const call of toolCalls) {
-            const signature = getToolCallSignature(call);
-
-            if (!seenSignatures.has(signature)) {
-              seenSignatures.add(signature);
-              uniqueToolCalls.push(call);
-            } else {
-              duplicatesRemoved++;
-              logger.warn({
-                sessionId: session?.id ?? null,
-                toolName: call.function?.name || call.name,
-                toolId: call.id,
-                signature: signature.substring(0, 32),
-              }, "Duplicate tool call removed (same tool with identical parameters in single response)");
-            }
-          }
-
-          toolCalls = uniqueToolCalls;
-
-          logger.info(
-            {
-              sessionId: session?.id ?? null,
-              step: steps,
-              toolCallsFound: toolCalls.length,
-              duplicatesRemoved,
-              toolNames: toolCalls.map(tc => tc.function?.name || tc.name),
-            },
-            "LLM Response: Tool calls requested (after deduplication)",
-          );
-        }
       }
     }
 
