@@ -236,6 +236,25 @@ MEMORY_RETRIEVAL_LIMIT=5
 
 ---
 
+## Understanding Provider Selection
+
+Lynkr has two modes for selecting which AI provider handles your requests:
+
+| Mode | Config | How it works | Best for |
+|------|--------|-------------|----------|
+| **Static** | `MODEL_PROVIDER=ollama` | All requests go to one provider | Simple setups, single provider |
+| **Tier-based** | All 4 `TIER_*` vars set | Requests route by complexity score | Cost optimization, multi-provider |
+
+**Static mode** — Set `MODEL_PROVIDER` to your provider. Every request goes there. Simple and predictable.
+
+**Tier-based mode** — Set all 4 `TIER_*` env vars (`TIER_SIMPLE`, `TIER_MEDIUM`, `TIER_COMPLEX`, `TIER_REASONING`). Each request is scored for complexity and routed to the appropriate tier's provider. When all 4 are set, they **override** `MODEL_PROVIDER` for routing decisions.
+
+> **Note:** If only some `TIER_*` vars are set (not all 4), tier routing is disabled and `MODEL_PROVIDER` is used instead. `MODEL_PROVIDER` is always required as a fallback default even when tiers are configured.
+
+See [Tier-Based Routing](#tier-based-routing-cost-optimization) below for full setup, or pick a single provider from the Quick Start examples to get running immediately.
+
+---
+
 ## Quick Start Examples
 
 Choose your provider and follow the setup steps:
@@ -525,19 +544,20 @@ lynkr start
 
 ---
 
-## Hybrid Routing (Cost Optimization)
+## Tier-Based Routing (Cost Optimization)
 
-**Use local Ollama for simple tasks, fallback to cloud for complex ones:**
+**Use local Ollama for simple tasks, cloud for complex ones:**
 
 ```bash
 # Start Ollama
 ollama serve
-ollama pull llama3.1:8b
+ollama pull llama3.2
 
-# Configure hybrid routing
-export MODEL_PROVIDER=ollama
-export OLLAMA_MODEL=llama3.1:8b
-export PREFER_OLLAMA=true
+# Configure tier-based routing (set all 4 to enable)
+export TIER_SIMPLE=ollama:llama3.2
+export TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+export TIER_COMPLEX=databricks:databricks-claude-sonnet-4-5
+export TIER_REASONING=databricks:databricks-claude-sonnet-4-5
 export FALLBACK_ENABLED=true
 export FALLBACK_PROVIDER=databricks
 export DATABRICKS_API_BASE=https://your-workspace.databricks.com
@@ -548,13 +568,15 @@ lynkr start
 ```
 
 **How it works:**
-- **0-2 tools**: Ollama (free, local, fast)
-- **3-15 tools**: OpenRouter (if configured) or fallback to Databricks
-- **16+ tools**: Databricks/Azure (most capable)
-- **Ollama failures**: Automatic transparent fallback to cloud
+- Each request is scored for complexity (0-100) and mapped to a tier
+- **SIMPLE (0-25)**: Ollama (free, local, fast)
+- **MEDIUM (26-50)**: OpenRouter (affordable cloud)
+- **COMPLEX (51-75)**: Databricks (most capable)
+- **REASONING (76-100)**: Databricks (best available)
+- **Provider failures**: Automatic transparent fallback to cloud
 
 **Cost savings:**
-- **65-100%** for requests that stay on Ollama
+- **65-100%** for requests routed to local models
 - **40-87%** faster for simple requests
 - **Privacy**: Simple queries never leave your machine
 

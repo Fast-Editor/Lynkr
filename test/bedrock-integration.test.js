@@ -11,6 +11,12 @@ describe("AWS Bedrock Integration", () => {
     delete require.cache[require.resolve("../src/config")];
     delete require.cache[require.resolve("../src/clients/routing")];
     delete require.cache[require.resolve("../src/clients/bedrock-utils")];
+
+    // Prevent .env TIER_* values from being picked up by dotenv
+    process.env.TIER_SIMPLE = "";
+    process.env.TIER_MEDIUM = "";
+    process.env.TIER_COMPLEX = "";
+    process.env.TIER_REASONING = "";
   });
 
   afterEach(() => {
@@ -374,62 +380,45 @@ describe("AWS Bedrock Integration", () => {
       process.env.MODEL_PROVIDER = "bedrock";
       process.env.AWS_ACCESS_KEY_ID = "AKIATEST123";
       process.env.AWS_SECRET_ACCESS_KEY = "testSecretKey123";
-      process.env.PREFER_OLLAMA = "false";
 
       const config = require("../src/config");
       const routing = require("../src/clients/routing");
 
       const payload = { messages: [{ role: "user", content: "test" }] };
-      const provider = routing.determineProvider(payload);
+      const provider = routing.determineProviderSync(payload);
 
-      // When not in hybrid mode, should use primary provider
+      // determineProviderSync returns static MODEL_PROVIDER
       assert.strictEqual(provider, "bedrock");
     });
 
-    it("should route to bedrock in hybrid mode for moderate tool counts", () => {
-      process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
-      process.env.OLLAMA_MODEL = "llama3.1";
-      process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
+    it("should return static routing from determineProviderSmart when tiers disabled", async () => {
+      process.env.MODEL_PROVIDER = "bedrock";
       process.env.AWS_ACCESS_KEY_ID = "AKIATEST123";
       process.env.AWS_SECRET_ACCESS_KEY = "testSecretKey123";
-      process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING = "2";
-      process.env.FALLBACK_ENABLED = "true";
-      process.env.FALLBACK_PROVIDER = "bedrock";
-
-      // Clear other providers to ensure bedrock is chosen
-      delete process.env.OPENROUTER_API_KEY;
-      delete process.env.OPENAI_API_KEY;
-      delete process.env.AZURE_OPENAI_API_KEY;
-      delete process.env.AZURE_OPENAI_ENDPOINT;
-      delete process.env.LLAMACPP_ENDPOINT;
-      delete process.env.LMSTUDIO_ENDPOINT;
-      delete process.env.DATABRICKS_API_KEY;
-      delete process.env.DATABRICKS_API_BASE;
 
       const config = require("../src/config");
       const routing = require("../src/clients/routing");
 
-      // 20 tools should exceed both Ollama and OpenRouter limits, routing to fallback provider (bedrock)
+      // Many tools -- but without TIER_* vars, determineProviderSmart returns static routing
       const payload = {
         messages: [{ role: "user", content: "test" }],
         tools: Array(20).fill({ name: "tool" }),
       };
-      const provider = routing.determineProvider(payload);
+      const result = await routing.determineProviderSmart(payload);
 
-      assert.strictEqual(provider, "bedrock");
+      assert.strictEqual(result.provider, "bedrock");
+      assert.strictEqual(result.method, "static");
+      assert.strictEqual(result.reason, "tier_routing_disabled");
     });
   });
 
   describe("Fallback Provider", () => {
     it("should allow bedrock as fallback provider", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "llama3.1";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.FALLBACK_PROVIDER = "bedrock";
-      process.env.AWS_ACCESS_KEY_ID = "AKIATEST123";
-      process.env.AWS_SECRET_ACCESS_KEY = "testSecretKey123";
+      process.env.AWS_BEDROCK_API_KEY = "test-bedrock-key";
       process.env.FALLBACK_ENABLED = "true";
 
       // Should not throw
@@ -439,24 +428,21 @@ describe("AWS Bedrock Integration", () => {
 
     it("should validate bedrock credentials when used as fallback", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "llama3.1";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.FALLBACK_PROVIDER = "bedrock";
       process.env.FALLBACK_ENABLED = "true";
       // Set to empty string to override .env file values
-      process.env.AWS_ACCESS_KEY_ID = "";
-      process.env.AWS_SECRET_ACCESS_KEY = "";
+      process.env.AWS_BEDROCK_API_KEY = "";
 
       assert.throws(
         () => require("../src/config"),
-        /FALLBACK_PROVIDER is set to 'bedrock' but AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not configured/
+        /FALLBACK_PROVIDER is set to 'bedrock' but AWS_BEDROCK_API_KEY is not configured/
       );
     });
 
     it("should not allow local providers as fallback", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "llama3.1";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.FALLBACK_PROVIDER = "llamacpp";

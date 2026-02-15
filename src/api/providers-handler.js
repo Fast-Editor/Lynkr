@@ -369,7 +369,7 @@ router.get("/config", (req, res) => {
       model_provider: config.modelProvider?.type || "databricks",
       fallback_provider: config.modelProvider?.fallbackProvider || null,
       fallback_enabled: config.modelProvider?.fallbackEnabled || false,
-      prefer_ollama: config.modelProvider?.preferOllama || false,
+      tier_routing_enabled: config.modelTiers?.enabled || false,
       tool_execution_mode: config.toolExecutionMode || "server",
       configured_providers: providers.map(p => p.name),
       memory_enabled: config.memory?.enabled || false,

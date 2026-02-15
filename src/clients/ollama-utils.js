@@ -64,25 +64,60 @@ async function checkOllamaToolSupport(modelName = config.ollama?.model) {
   return supportsTools;
 }
 
+// --- Endpoint detection: Anthropic (/v1/messages) vs legacy (/api/chat) ---
+
+// null = not probed yet, true = Anthropic available, false = use legacy
+let anthropicEndpointAvailable = null;
+
 /**
- * Convert Anthropic tool format to Ollama format
- *
- * Anthropic format:
- * {
- *   name: "get_weather",
- *   description: "Get weather",
- *   input_schema: { type: "object", properties: {...}, required: [...] }
- * }
- *
- * Ollama format:
- * {
- *   type: "function",
- *   function: {
- *     name: "get_weather",
- *     description: "Get weather",
- *     parameters: { type: "object", properties: {...}, required: [...] }
- *   }
- * }
+ * Probe whether Ollama exposes the Anthropic-compatible /v1/messages endpoint (v0.14.0+).
+ * Result is cached for the process lifetime.
+ */
+async function hasAnthropicEndpoint(baseUrl) {
+  if (anthropicEndpointAvailable !== null) return anthropicEndpointAvailable;
+
+  try {
+    // Send a minimal request — we only care about whether the route exists
+    const res = await fetch(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "probe",
+        max_tokens: 1,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+
+    // 404 → endpoint doesn't exist (old Ollama)
+    // Any other status (200, 400, 500) → endpoint exists
+    anthropicEndpointAvailable = res.status !== 404;
+    logger.info(
+      { available: anthropicEndpointAvailable, status: res.status },
+      anthropicEndpointAvailable
+        ? "Ollama Anthropic API detected (/v1/messages) — using native passthrough"
+        : "Ollama Anthropic API not available — falling back to legacy /api/chat (upgrade to Ollama v0.14.0+ for best results)"
+    );
+  } catch (err) {
+    // Network error — assume legacy
+    anthropicEndpointAvailable = false;
+    logger.warn({ error: err.message }, "Failed to probe Ollama Anthropic endpoint, using legacy /api/chat");
+  }
+
+  return anthropicEndpointAvailable;
+}
+
+// Exposed for tests
+function resetEndpointCache() {
+  anthropicEndpointAvailable = null;
+}
+
+// --- Legacy format conversion (for Ollama < v0.14.0 using /api/chat) ---
+
+/**
+ * Convert Anthropic tool format to Ollama/OpenAI function-calling format
  */
 function convertAnthropicToolsToOllama(anthropicTools) {
   if (!Array.isArray(anthropicTools) || anthropicTools.length === 0) {
@@ -102,128 +137,10 @@ function convertAnthropicToolsToOllama(anthropicTools) {
   }));
 }
 
-/**
- * Convert Ollama tool call response to Anthropic format
- *
- * Ollama format (actual):
- * {
- *   message: {
- *     role: "assistant",
- *     content: "",
- *     tool_calls: [{
- *       function: {
- *         name: "get_weather",
- *         arguments: { location: "SF" }  // Already parsed object
- *       }
- *     }]
- *   }
- * }
- *
- * Anthropic format:
- * {
- *   content: [{
- *     type: "tool_use",
- *     id: "toolu_123",
- *     name: "get_weather",
- *     input: { location: "SF" }
- *   }],
- *   stop_reason: "tool_use"
- * }
- */
-function convertOllamaToolCallsToAnthropic(ollamaResponse) {
-  const message = ollamaResponse?.message || {};
-  const toolCalls = message.tool_calls || [];
-  const textContent = message.content || "";
-
-  const contentBlocks = [];
-
-  // Add text content if present
-  if (textContent && textContent.trim()) {
-    contentBlocks.push({
-      type: "text",
-      text: textContent,
-    });
-  }
-
-  // Add tool calls
-  for (const toolCall of toolCalls) {
-    const func = toolCall.function || {};
-    let input = {};
-
-    // Handle arguments - can be string JSON or already parsed object
-    if (func.arguments) {
-      if (typeof func.arguments === "string") {
-        try {
-          input = JSON.parse(func.arguments);
-        } catch (err) {
-          logger.warn({
-            error: err.message,
-            arguments: func.arguments
-          }, "Failed to parse Ollama tool arguments string");
-          input = {};
-        }
-      } else if (typeof func.arguments === "object") {
-        // Already an object, use directly
-        input = func.arguments;
-      }
-    }
-
-    // Generate tool use ID (Ollama may or may not provide one)
-    const toolUseId = toolCall.id || `toolu_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    contentBlocks.push({
-      type: "tool_use",
-      id: toolUseId,
-      name: func.name || "unknown",
-      input,
-    });
-  }
-
-  // Determine stop reason
-  const stopReason = toolCalls.length > 0 ? "tool_use" : "end_turn";
-
-  return {
-    contentBlocks,
-    stopReason,
-  };
-}
-
-/**
- * Build complete Anthropic response from Ollama with tool calls
- */
-function buildAnthropicResponseFromOllama(ollamaResponse, requestedModel) {
-  const { contentBlocks, stopReason } = convertOllamaToolCallsToAnthropic(ollamaResponse);
-
-  // Ensure at least one content block
-  const finalContent = contentBlocks.length > 0
-    ? contentBlocks
-    : [{ type: "text", text: "" }];
-
-  // Extract token counts
-  const inputTokens = ollamaResponse.prompt_eval_count || 0;
-  const outputTokens = ollamaResponse.eval_count || 0;
-
-  return {
-    id: `msg_${Date.now()}`,
-    type: "message",
-    role: "assistant",
-    model: requestedModel,
-    content: finalContent,
-    stop_reason: stopReason,
-    stop_sequence: null,
-    usage: {
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-    },
-  };
-}
-
 module.exports = {
   checkOllamaToolSupport,
-  convertAnthropicToolsToOllama,
-  convertOllamaToolCallsToAnthropic,
-  buildAnthropicResponseFromOllama,
   modelNameSupportsTools,
+  hasAnthropicEndpoint,
+  resetEndpointCache,
+  convertAnthropicToolsToOllama,
 };

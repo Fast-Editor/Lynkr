@@ -25,7 +25,11 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 
 ## Configuration Methods
 
-### Environment Variables (Quick Start)
+There are two routing modes. Choose based on your needs:
+
+### Static Routing (Single Provider)
+
+Set `MODEL_PROVIDER` to send all requests to one provider:
 
 ```bash
 export MODEL_PROVIDER=databricks
@@ -33,6 +37,21 @@ export DATABRICKS_API_BASE=https://your-workspace.databricks.com
 export DATABRICKS_API_KEY=your-key
 lynkr start
 ```
+
+### Tier-Based Routing (Recommended for Cost Optimization)
+
+Set all 4 `TIER_*` vars to route requests by complexity. When configured, these **override** `MODEL_PROVIDER` for routing decisions:
+
+```bash
+export MODEL_PROVIDER=ollama                            # Kept as config default
+export TIER_SIMPLE=ollama:llama3.2                      # Simple tasks → local (free)
+export TIER_MEDIUM=openrouter:openai/gpt-4o-mini        # Medium → affordable cloud
+export TIER_COMPLEX=databricks:claude-sonnet             # Complex → capable cloud
+export TIER_REASONING=databricks:claude-sonnet            # Reasoning → best available
+lynkr start
+```
+
+> **Note:** All 4 `TIER_*` vars must be set. If any are missing, tier routing is disabled and `MODEL_PROVIDER` is used for all requests.
 
 ### .env File (Recommended for Production)
 
@@ -46,11 +65,17 @@ nano .env
 
 Example `.env`:
 ```env
-MODEL_PROVIDER=databricks
+MODEL_PROVIDER=ollama
 DATABRICKS_API_BASE=https://your-workspace.databricks.com
 DATABRICKS_API_KEY=dapi1234567890abcdef
 PORT=8081
 LOG_LEVEL=info
+
+# Tier routing (optional — set all 4 to enable)
+TIER_SIMPLE=ollama:llama3.2
+TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+TIER_COMPLEX=databricks:claude-sonnet
+TIER_REASONING=databricks:claude-sonnet
 ```
 
 ---
@@ -776,56 +801,53 @@ curl -X POST http://localhost:8000/v1/chat/completions -H "Content-Type: applica
 
 ---
 
-## Hybrid Routing & Fallback
+## Tier-Based Routing & Fallback
 
-### Intelligent 3-Tier Routing
+### Intelligent 4-Tier Routing
 
 Optimize costs by routing requests based on complexity:
 
 ```env
-# Enable hybrid routing
-PREFER_OLLAMA=true
+# Tier-based routing (set all 4 to enable)
+TIER_SIMPLE=ollama:llama3.2
+TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+TIER_COMPLEX=azure-openai:gpt-4o
+TIER_REASONING=azure-openai:gpt-4o
+
 FALLBACK_ENABLED=true
 
-# Configure providers for each tier
-MODEL_PROVIDER=ollama
-OLLAMA_MODEL=llama3.1:8b
-OLLAMA_MAX_TOOLS_FOR_ROUTING=3
-
-# Mid-tier (moderate complexity)
+# Provider credentials
+OLLAMA_ENDPOINT=http://localhost:11434
 OPENROUTER_API_KEY=your-key
-OPENROUTER_MODEL=openai/gpt-4o-mini
-OPENROUTER_MAX_TOOLS_FOR_ROUTING=15
-
-# Heavy workload (complex requests)
-FALLBACK_PROVIDER=databricks
-DATABRICKS_API_BASE=your-base
-DATABRICKS_API_KEY=your-key
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/...
+AZURE_OPENAI_API_KEY=your-key
 ```
 
 ### How It Works
 
 **Routing Logic:**
-1. **0-2 tools**: Try Ollama first (free, local, fast)
-2. **3-15 tools**: Route to OpenRouter (affordable cloud)
-3. **16+ tools**: Route directly to Databricks/Azure (most capable)
+1. Each request is scored for complexity (0-100)
+2. Score maps to a tier: SIMPLE (0-25), MEDIUM (26-50), COMPLEX (51-75), REASONING (76-100)
+3. The request is routed to the provider:model configured for that tier
 
 **Automatic Fallback:**
-- ❌ If Ollama fails → Fallback to OpenRouter or Databricks
-- ❌ If OpenRouter fails → Fallback to Databricks
-- ✅ Transparent to the user
+- If the selected provider fails, Lynkr falls back to `FALLBACK_PROVIDER`
+- Transparent to the user
 
 ### Cost Savings
 
-- **65-100%** for requests that stay on Ollama
+- **65-100%** for requests routed to local/cheap models
 - **40-87%** faster for simple requests
-- **Privacy**: Simple queries never leave your machine
+- **Privacy**: Simple queries can stay on your machine when using a local TIER_SIMPLE model
 
 ### Configuration Options
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PREFER_OLLAMA` | Enable Ollama preference for simple requests | `false` |
+| `TIER_SIMPLE` | Model for simple tier (`provider:model`) | *required for tier routing* |
+| `TIER_MEDIUM` | Model for medium tier (`provider:model`) | *required for tier routing* |
+| `TIER_COMPLEX` | Model for complex tier (`provider:model`) | *required for tier routing* |
+| `TIER_REASONING` | Model for reasoning tier (`provider:model`) | *required for tier routing* |
 | `FALLBACK_ENABLED` | Enable automatic fallback | `true` |
 | `FALLBACK_PROVIDER` | Provider to use when primary fails | `databricks` |
 | `OLLAMA_MAX_TOOLS_FOR_ROUTING` | Max tools to route to Ollama | `3` |

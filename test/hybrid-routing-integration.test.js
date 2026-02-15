@@ -21,6 +21,12 @@ describe("Hybrid Routing Integration Tests", () => {
     process.env.DATABRICKS_API_KEY = "test-key";
     process.env.DATABRICKS_API_BASE = "http://test.databricks.com";
     process.env.MODEL_PROVIDER = "databricks";
+
+    // Set TIER_* to empty to prevent .env file values from being picked up by dotenv
+    process.env.TIER_SIMPLE = "";
+    process.env.TIER_MEDIUM = "";
+    process.env.TIER_COMPLEX = "";
+    process.env.TIER_REASONING = "";
   });
 
   afterEach(() => {
@@ -30,7 +36,7 @@ describe("Hybrid Routing Integration Tests", () => {
 
   describe("Configuration Validation", () => {
     it("should use default OLLAMA_ENDPOINT when not specified", () => {
-      process.env.PREFER_OLLAMA = "true";
+      process.env.MODEL_PROVIDER = "ollama";
       delete process.env.OLLAMA_ENDPOINT;
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.DATABRICKS_API_KEY = "test-key";
@@ -43,7 +49,7 @@ describe("Hybrid Routing Integration Tests", () => {
     });
 
     it("should reject invalid FALLBACK_PROVIDER", () => {
-      process.env.PREFER_OLLAMA = "true";
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "true";
@@ -55,20 +61,24 @@ describe("Hybrid Routing Integration Tests", () => {
     });
 
     it("should reject circular fallback (ollama -> ollama)", () => {
-      process.env.PREFER_OLLAMA = "true";
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "true";
       process.env.FALLBACK_PROVIDER = "ollama";
+      // Enable tier routing so fallback validation runs
+      process.env.TIER_SIMPLE = "ollama:llama3.2";
+      process.env.TIER_MEDIUM = "ollama:llama3.2";
+      process.env.TIER_COMPLEX = "ollama:llama3.2";
+      process.env.TIER_REASONING = "ollama:llama3.2";
 
       assert.throws(() => {
         require("../src/config");
       }, /FALLBACK_PROVIDER cannot be 'ollama'/);
     });
 
-    it("should reject PREFER_OLLAMA with databricks fallback but no databricks credentials", () => {
-      process.env.MODEL_PROVIDER = "ollama";  // Set to ollama for hybrid routing scenario
-      process.env.PREFER_OLLAMA = "true";
+    it("should warn when databricks fallback has no credentials", () => {
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "true";
@@ -76,39 +86,44 @@ describe("Hybrid Routing Integration Tests", () => {
       // Set to empty strings instead of deleting (dotenv.config() in config module would reload from .env)
       process.env.DATABRICKS_API_KEY = "";
       process.env.DATABRICKS_API_BASE = "";
+      // Enable tier routing so fallback validation runs
+      process.env.TIER_SIMPLE = "ollama:llama3.2";
+      process.env.TIER_MEDIUM = "ollama:llama3.2";
+      process.env.TIER_COMPLEX = "ollama:llama3.2";
+      process.env.TIER_REASONING = "ollama:llama3.2";
 
-      // Should throw error about missing databricks credentials
-      // (Either from standard validation or hybrid routing validation)
-      assert.throws(() => {
-        require("../src/config");
-      }, /DATABRICKS_API_BASE and DATABRICKS_API_KEY/);
+      // Should warn but not throw (fallback misconfigured)
+      const config = require("../src/config");
+      assert.strictEqual(config.modelProvider.fallbackProvider, "databricks");
     });
 
-    it("should accept valid hybrid routing configuration", () => {
-      process.env.PREFER_OLLAMA = "true";
+    it("should accept valid tier routing configuration", () => {
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "true";
       process.env.FALLBACK_PROVIDER = "databricks";
-      process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING = "3"; // Override .env which sets it to 2
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
+      process.env.TIER_SIMPLE = "ollama:llama3.2";
+      process.env.TIER_MEDIUM = "ollama:llama3.2";
+      process.env.TIER_COMPLEX = "databricks:claude-sonnet";
+      process.env.TIER_REASONING = "databricks:claude-sonnet";
 
       const config = require("../src/config");
 
-      assert.strictEqual(config.modelProvider.preferOllama, true);
+      assert.strictEqual(config.modelProvider.type, "ollama");
       assert.strictEqual(config.modelProvider.fallbackEnabled, true);
-      assert.strictEqual(config.modelProvider.ollamaMaxToolsForRouting, 3);
       assert.strictEqual(config.modelProvider.fallbackProvider, "databricks");
+      assert.strictEqual(config.modelTiers.enabled, true);
     });
   });
 
   describe("Metrics Recording", () => {
     beforeEach(() => {
-      process.env.PREFER_OLLAMA = "true";
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
-      process.env.OLLAMA_FALLBACK_PROVIDER = "databricks";
 
       config = require("../src/config");
       const metricsModule = require("../src/observability/metrics");
@@ -207,7 +222,7 @@ describe("Hybrid Routing Integration Tests", () => {
     it("should categorize circuit breaker errors", () => {
       // This would need to be tested by importing the function if exported
       // For now, we test via the integrated behavior
-      process.env.PREFER_OLLAMA = "true";
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
 
@@ -231,7 +246,7 @@ describe("Hybrid Routing Integration Tests", () => {
     });
 
     it("should estimate cost savings correctly", () => {
-      process.env.PREFER_OLLAMA = "true";
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
 

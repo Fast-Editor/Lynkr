@@ -40,7 +40,11 @@ services:
       # - llama3.2 (latest)
       # - qwen2.5:14b (strong reasoning, 7b struggles with tools)
       # - mistral:7b-instruct (fast and capable)
-      PREFER_OLLAMA: ${PREFER_OLLAMA:-true}
+      # Tier-based routing (set all 4 to enable)
+      TIER_SIMPLE: ${TIER_SIMPLE:-}
+      TIER_MEDIUM: ${TIER_MEDIUM:-}
+      TIER_COMPLEX: ${TIER_COMPLEX:-}
+      TIER_REASONING: ${TIER_REASONING:-}
 #      OLLAMA_ENDPOINT: http://ollama:11434
       OLLAMA_ENDPOINT: http://host.docker.internal:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}

@@ -51,6 +51,16 @@ TIER_REASONING=databricks:databricks-claude-opus-4-6
 
 If a model name is given without a provider prefix, the default provider (`MODEL_PROVIDER`) is used.
 
+### Relationship with MODEL_PROVIDER
+
+`MODEL_PROVIDER` and `TIER_*` are two separate routing modes:
+
+- **Without TIER_\* vars** — `MODEL_PROVIDER` controls all routing (static mode)
+- **With all 4 TIER_\* vars set** — Tier routing is active and **overrides** `MODEL_PROVIDER` for request routing
+- **With 1-3 TIER_\* vars** — Tier routing is **disabled** (all 4 are required); `MODEL_PROVIDER` is used
+
+`MODEL_PROVIDER` should still be set even when using tiers — it's used for startup checks (e.g. waiting for Ollama to be ready) and as a default for internal operations that don't go through tier routing.
+
 ### Tier Config File
 
 Additional tier preferences (fallback models per provider) can be defined in `config/model-tiers.json`:
@@ -345,7 +355,6 @@ Every response includes routing metadata in `X-Lynkr-*` headers:
 | `TIER_MEDIUM` | *required* | Model for medium tier (`provider:model`) |
 | `TIER_COMPLEX` | *required* | Model for complex tier (`provider:model`) |
 | `TIER_REASONING` | *required* | Model for reasoning tier (`provider:model`) |
-| `PREFER_OLLAMA` | `false` | Enable smart routing (local + cloud) |
 | `SMART_TOOL_SELECTION_MODE` | `heuristic` | Scoring mode: `aggressive` (threshold=60), `heuristic` (threshold=40), `conservative` (threshold=25) |
 | `ROUTING_WEIGHTED_SCORING` | `false` | Enable 15-dimension weighted scoring |
 | `ROUTING_AGENTIC_DETECTION` | `true` | Enable agentic workflow detection |
@@ -367,37 +376,33 @@ Every response includes routing metadata in `X-Lynkr-*` headers:
 ## Routing Decision Flow
 
 ```
-1. Is smart routing enabled (PREFER_OLLAMA)?
-   └─ No → Use static provider (MODEL_PROVIDER)
+1. Are all 4 TIER_* env vars configured?
+   └─ No → Return static provider (MODEL_PROVIDER), skip all routing
 
 2. Does content match FORCE_LOCAL patterns?
    └─ Yes → Route to local provider
 
 3. Does content match FORCE_CLOUD patterns?
-   └─ Yes → Route to best cloud provider
+   └─ Yes → Route to best cloud provider (requires FALLBACK_ENABLED)
 
-4. Check tool count thresholds:
-   └─ Tools <= OLLAMA_MAX_TOOLS → Route to local (if model supports tools)
-   └─ Tools > OLLAMA_MAX_TOOLS → Route to cloud
+4. Analyze complexity:
+   └─ Calculate score 0-100 (standard or weighted mode)
 
-5. Analyze complexity (Phase 1 + 2):
-   └─ Calculate score (standard or weighted mode)
+5. Optional: Embeddings adjustment:
+   └─ Adjust score by -10 to +10 based on semantic similarity
 
-6. Optional: Embeddings adjustment (Phase 4):
-   └─ Adjust score by -10 to +10 based on similarity
-
-7. Agentic detection:
+6. Agentic detection:
    └─ If agentic → Boost score, enforce minimum tier
    └─ If AUTONOMOUS → Force cloud provider
 
-8. Map score to tier (SIMPLE/MEDIUM/COMPLEX/REASONING)
+7. Map score to tier (SIMPLE/MEDIUM/COMPLEX/REASONING)
 
-9. Select model from TIER_* env var
+8. Select provider:model from matching TIER_* env var
 
-10. Optional: Cost optimization
-    └─ Check for cheaper model that can handle the tier
+9. Optional: Cost optimization
+   └─ Check for cheaper model that can handle the tier
 
-11. Return { provider, model, tier, score, method }
+10. Return { provider, model, tier, score, method }
 ```
 
 ---

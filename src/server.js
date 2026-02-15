@@ -201,9 +201,9 @@ async function start() {
 
   const app = createApp();
 
-  // Wait for Ollama if it's the configured provider or preferred for routing
+  // Wait for Ollama if it's the configured provider or referenced in tier config
   const provider = config.modelProvider?.type?.toLowerCase();
-  if (provider === "ollama" || config.modelProvider?.preferOllama) {
+  if (provider === "ollama" || config.tiersReferenceOllama()) {
     await waitForOllama();
   }
 

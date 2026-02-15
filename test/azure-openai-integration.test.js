@@ -17,6 +17,12 @@ describe("Azure OpenAI Integration Tests", () => {
     process.env.MODEL_PROVIDER = "databricks";
     process.env.DATABRICKS_API_KEY = "test-key";
     process.env.DATABRICKS_API_BASE = "http://test.com";
+
+    // Prevent .env TIER_* values from being picked up by dotenv
+    process.env.TIER_SIMPLE = "";
+    process.env.TIER_MEDIUM = "";
+    process.env.TIER_COMPLEX = "";
+    process.env.TIER_REASONING = "";
   });
 
   afterEach(() => {
@@ -169,7 +175,7 @@ describe("Azure OpenAI Integration Tests", () => {
     });
 
     it("should select azure-openai as fallback provider", () => {
-      process.env.PREFER_OLLAMA = "true";
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "true";

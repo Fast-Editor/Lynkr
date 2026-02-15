@@ -9,7 +9,7 @@ All tests for the Lynkr project are consolidated in this `test/` directory.
 **Purpose**: Tests the hybrid routing logic in isolation
 **Run**: `DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js`
 **Coverage**: 10 tests
-- Routing with PREFER_OLLAMA disabled
+- Routing with tier-based routing disabled (no TIER_* vars set)
 - Simple requests → Ollama
 - Complex requests → Cloud
 - Tool capability checks

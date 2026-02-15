@@ -11,6 +11,12 @@ describe("OpenAI Integration", () => {
     delete require.cache[require.resolve("../src/config")];
     delete require.cache[require.resolve("../src/clients/routing")];
     delete require.cache[require.resolve("../src/clients/openrouter-utils")];
+
+    // Prevent .env TIER_* values from being picked up by dotenv
+    process.env.TIER_SIMPLE = "";
+    process.env.TIER_MEDIUM = "";
+    process.env.TIER_COMPLEX = "";
+    process.env.TIER_REASONING = "";
   });
 
   afterEach(() => {
@@ -95,47 +101,37 @@ describe("OpenAI Integration", () => {
     it("should route to openai when MODEL_PROVIDER is openai", () => {
       process.env.MODEL_PROVIDER = "openai";
       process.env.OPENAI_API_KEY = "sk-test-key";
-      process.env.PREFER_OLLAMA = "false";
 
       const config = require("../src/config");
       const routing = require("../src/clients/routing");
 
       const payload = { messages: [{ role: "user", content: "test" }] };
-      const provider = routing.determineProvider(payload);
+      const provider = routing.determineProviderSync(payload);
 
       assert.strictEqual(provider, "openai");
     });
 
-    it("should route to openai as fallback when heavy tool count", () => {
-      // Clear any existing OpenRouter key to ensure fallback to OpenAI
-      delete process.env.OPENROUTER_API_KEY;
-
-      process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
-      process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
-      process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING = "2";
-      process.env.OPENROUTER_MAX_TOOLS_FOR_ROUTING = "5";
+    it("should return static routing from determineProviderSmart when tiers disabled", async () => {
+      process.env.MODEL_PROVIDER = "openai";
       process.env.OPENAI_API_KEY = "sk-test-key";
-      process.env.FALLBACK_ENABLED = "true";
-      process.env.FALLBACK_PROVIDER = "openai";
 
       const config = require("../src/config");
       const routing = require("../src/clients/routing");
 
-      // 10 tools - above both Ollama and OpenRouter thresholds, should go to fallback
       const payload = {
         messages: [{ role: "user", content: "test" }],
         tools: Array.from({ length: 10 }, (_, i) => ({ name: `tool${i}`, description: "test" })),
       };
 
-      const provider = routing.determineProvider(payload);
-      // Should route to openai as the configured fallback provider
-      assert.strictEqual(provider, "openai");
+      const result = await routing.determineProviderSmart(payload);
+      // No TIER_* vars = static routing
+      assert.strictEqual(result.provider, "openai");
+      assert.strictEqual(result.method, "static");
+      assert.strictEqual(result.reason, "tier_routing_disabled");
     });
 
     it("should use openai as fallback provider when configured", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_PROVIDER = "openai";
       process.env.OPENAI_API_KEY = "sk-test-key";

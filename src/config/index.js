@@ -144,8 +144,7 @@ const suggestionModeModel = (process.env.SUGGESTION_MODE_MODEL ?? "default").tri
 const hotReloadEnabled = process.env.HOT_RELOAD_ENABLED !== "false"; // default true
 const hotReloadDebounceMs = Number.parseInt(process.env.HOT_RELOAD_DEBOUNCE_MS ?? "1000", 10);
 
-// Hybrid routing configuration
-const preferOllama = process.env.PREFER_OLLAMA === "true";
+// Routing configuration
 const fallbackEnabled = process.env.FALLBACK_ENABLED !== "false"; // default true
 const ollamaMaxToolsForRouting = Number.parseInt(
   process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING ?? "3",
@@ -305,37 +304,39 @@ if (modelProvider === "bedrock" && !bedrockApiKey) {
   );
 }
 
-// Validate hybrid routing configuration
-if (preferOllama) {
-  if (!ollamaEndpoint) {
-    throw new Error("PREFER_OLLAMA is set but OLLAMA_ENDPOINT is not configured");
-  }
-  if (fallbackEnabled && !SUPPORTED_MODEL_PROVIDERS.has(fallbackProvider)) {
-    throw new Error(
-      `FALLBACK_PROVIDER must be one of: ${Array.from(SUPPORTED_MODEL_PROVIDERS).join(", ")}`
-    );
-  }
+// Deprecation warning for PREFER_OLLAMA
+if (process.env.PREFER_OLLAMA) {
+  console.warn('[DEPRECATION] PREFER_OLLAMA is removed. Use TIER_* env vars for routing. See documentation/routing.md');
+}
 
-  // Prevent local providers from being used as fallback (they can fail just like Ollama)
+// Warn about misconfigured fallback provider (only when tier routing is active,
+// since that's the only path that triggers provider fallback)
+const tiersConfigured = !!(
+  process.env.TIER_SIMPLE?.trim() &&
+  process.env.TIER_MEDIUM?.trim() &&
+  process.env.TIER_COMPLEX?.trim() &&
+  process.env.TIER_REASONING?.trim()
+);
+if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
-  if (fallbackEnabled && localProviders.includes(fallbackProvider)) {
+  if (localProviders.includes(fallbackProvider)) {
     throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, openai, bedrock`);
   }
-
-  // Ensure fallback provider is properly configured (only if fallback is enabled)
-  if (fallbackEnabled) {
-    if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
-      throw new Error("FALLBACK_PROVIDER is set to 'databricks' but DATABRICKS_API_BASE and DATABRICKS_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
-    }
-    if (fallbackProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
-      throw new Error("FALLBACK_PROVIDER is set to 'azure-anthropic' but AZURE_ANTHROPIC_ENDPOINT and AZURE_ANTHROPIC_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
-    }
-    if (fallbackProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
-      throw new Error("FALLBACK_PROVIDER is set to 'azure-openai' but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
-    }
-    if (fallbackProvider === "bedrock" && !bedrockApiKey) {
-      throw new Error("FALLBACK_PROVIDER is set to 'bedrock' but AWS_BEDROCK_API_KEY is not configured. Please set this environment variable or choose a different fallback provider.");
-    }
+  let fallbackMisconfigured = false;
+  if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "bedrock" && !bedrockApiKey) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackMisconfigured) {
+    console.warn(`[WARN] FALLBACK_PROVIDER='${fallbackProvider}' is enabled but missing credentials. Fallback will not work until configured.`);
   }
 }
 
@@ -601,8 +602,6 @@ var config = {
     type: modelProvider,
     defaultModel,
     suggestionModeModel,
-    // Hybrid routing settings
-    preferOllama,
     fallbackEnabled,
     ollamaMaxToolsForRouting,
     openRouterMaxToolsForRouting,
@@ -911,7 +910,6 @@ function reloadConfig() {
   if (SUPPORTED_MODEL_PROVIDERS.has(newProvider)) {
     config.modelProvider.type = newProvider;
   }
-  config.modelProvider.preferOllama = process.env.PREFER_OLLAMA === "true";
   config.modelProvider.fallbackEnabled = process.env.FALLBACK_ENABLED !== "false";
   config.modelProvider.fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
   config.modelProvider.suggestionModeModel = (process.env.SUGGESTION_MODE_MODEL ?? "default").trim();
@@ -925,6 +923,17 @@ function reloadConfig() {
 
 // Make config mutable for hot reload
 config.reloadConfig = reloadConfig;
+
+/**
+ * Check if any TIER_* value references Ollama (starts with "ollama:")
+ * Used by server.js to decide whether to wait for Ollama at startup.
+ */
+config.tiersReferenceOllama = function tiersReferenceOllama() {
+  const tiers = config.modelTiers;
+  if (!tiers?.enabled) return false;
+  return [tiers.SIMPLE, tiers.MEDIUM, tiers.COMPLEX, tiers.REASONING]
+    .some(v => typeof v === 'string' && v.startsWith('ollama:'));
+};
 
 // Validate TIER_* configuration (warn if missing, don't crash)
 const missingTiers = [];

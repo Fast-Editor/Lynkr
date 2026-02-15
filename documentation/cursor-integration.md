@@ -534,11 +534,14 @@ AWS_BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
    - **Cloud** (OpenRouter/Databricks): Should be 500ms-2s
    - **Distant regions**: Can be 2-5s
 
-2. **Enable hybrid routing** for speed:
+2. **Enable tier-based routing** for speed:
    ```env
-   # Use Ollama for simple requests (fast)
-   # Cloud for complex requests
-   PREFER_OLLAMA=true
+   # Use Ollama for simple requests (fast), cloud for complex requests
+   # Set all 4 TIER_* env vars to enable tier-based routing
+   TIER_SIMPLE=ollama:llama3.2
+   TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+   TIER_COMPLEX=azure-openai:gpt-4o
+   TIER_REASONING=azure-openai:gpt-4o
    FALLBACK_ENABLED=true
    ```
 
@@ -675,12 +678,12 @@ OLLAMA_EMBEDDINGS_MODEL=nomic-embed-text
 ### Setup 3: Hybrid (Best of Both Worlds)
 
 ```bash
-# Chat: Ollama for simple requests, Databricks for complex
-PREFER_OLLAMA=true
+# Chat: Tier-based routing (set all 4 to enable)
+TIER_SIMPLE=ollama:llama3.2
+TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+TIER_COMPLEX=databricks:databricks-claude-sonnet-4-5
+TIER_REASONING=databricks:databricks-claude-sonnet-4-5
 FALLBACK_ENABLED=true
-OLLAMA_MODEL=llama3.1:8b
-
-# Fallback to Databricks for complex requests
 FALLBACK_PROVIDER=databricks
 DATABRICKS_API_BASE=https://your-workspace.databricks.com
 DATABRICKS_API_KEY=your-key
@@ -688,15 +691,15 @@ DATABRICKS_API_KEY=your-key
 # Embeddings: Ollama (local, private)
 OLLAMA_EMBEDDINGS_MODEL=nomic-embed-text
 
-# Cost: Mostly FREE (Ollama handles 70-80% of requests)
-#       Only complex tool-heavy requests go to Databricks
+# Cost: Mostly FREE (Ollama handles 70-80% of simple requests)
+#       Only complex/reasoning requests go to Databricks
 ```
 
 **Benefits:**
-- ✅ Mostly FREE (70-80% of requests on Ollama)
+- ✅ Mostly FREE (70-80% of requests on Ollama via TIER_SIMPLE)
 - ✅ Private embeddings (local search)
 - ✅ Cloud quality for complex tasks
-- ✅ Automatic intelligent routing
+- ✅ Automatic intelligent tier-based routing
 
 ---
 

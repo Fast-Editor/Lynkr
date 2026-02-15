@@ -556,9 +556,13 @@ Error: Cannot find module 'xxx'
    export OLLAMA_MODEL=llama3.1:8b
    ```
 
-3. **Enable hybrid routing:**
+3. **Enable tier-based routing:**
    ```bash
-   export PREFER_OLLAMA=true
+   # Set all 4 TIER_* env vars to enable tier-based routing
+   export TIER_SIMPLE=ollama:llama3.2
+   export TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+   export TIER_COMPLEX=azure-openai:gpt-4o
+   export TIER_REASONING=azure-openai:gpt-4o
    export FALLBACK_ENABLED=true
    ```
 
@@ -746,10 +750,13 @@ Restart Lynkr after configuration.
    export LOAD_SHEDDING_ACTIVE_REQUESTS_THRESHOLD=100
    ```
 
-2. **Use local provider for simple requests:**
+2. **Use tier-based routing to send simple requests to local models:**
    ```bash
-   export PREFER_OLLAMA=true
-   export OLLAMA_MODEL=llama3.1:8b
+   # Set all 4 TIER_* env vars to enable tier-based routing
+   export TIER_SIMPLE=ollama:llama3.2
+   export TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+   export TIER_COMPLEX=azure-openai:gpt-4o
+   export TIER_REASONING=azure-openai:gpt-4o
    ```
 
 3. **Enable circuit breaker:**

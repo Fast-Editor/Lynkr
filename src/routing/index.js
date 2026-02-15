@@ -10,7 +10,6 @@
 
 const config = require('../config');
 const logger = require('../logger');
-const { modelNameSupportsTools } = require('../clients/ollama-utils');
 const {
   analyzeComplexity,
   shouldForceLocal,
@@ -54,26 +53,7 @@ function getFallbackProvider() {
  * @param {number} options.toolCount - Number of tools in the request (for hybrid routing)
  * @param {boolean} options.useHybridRouting - Whether to use hybrid routing logic (default: false)
  */
-function getBestCloudProvider(options = {}) {
-  const { toolCount = 0, useHybridRouting = false } = options;
-
-  // If hybrid routing is explicitly enabled and we have tools, use tool-based routing
-  const preferOllama = config.modelProvider?.preferOllama ?? false;
-
-  if (preferOllama && useHybridRouting && toolCount > 0) {
-    const openRouterMaxTools = config.modelProvider?.openRouterMaxToolsForRouting ?? 15;
-
-    // For moderate tool counts, prefer OpenRouter over Azure OpenAI
-    if (toolCount <= openRouterMaxTools && config.openrouter?.apiKey) {
-      return 'openrouter';
-    }
-
-    // For higher tool counts, use Azure OpenAI if available
-    if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) {
-      return 'azure-openai';
-    }
-  }
-
+function getBestCloudProvider() {
   // Standard priority order for cloud providers
   if (config.databricks?.url && config.databricks?.apiKey) return 'databricks';
   if (config.azureAnthropic?.endpoint && config.azureAnthropic?.apiKey) return 'azure-anthropic';
@@ -110,15 +90,15 @@ function getBestLocalProvider() {
  * @returns {Object} Routing decision with provider and metadata
  */
 async function determineProviderSmart(payload, options = {}) {
-  const preferOllama = config.modelProvider?.preferOllama ?? false;
   const primaryProvider = config.modelProvider?.type ?? 'databricks';
 
-  // If smart routing is disabled, use static configuration
-  if (!preferOllama) {
+  // If tier routing is disabled, use static configuration
+  if (!config.modelTiers?.enabled) {
     return {
       provider: primaryProvider,
+      model: null,
       method: 'static',
-      reason: 'smart_routing_disabled',
+      reason: 'tier_routing_disabled',
     };
   }
 
@@ -127,6 +107,7 @@ async function determineProviderSmart(payload, options = {}) {
     const provider = getBestLocalProvider();
     const decision = {
       provider,
+      model: null,
       method: 'force',
       reason: 'force_local_pattern',
       score: 0,
@@ -136,10 +117,10 @@ async function determineProviderSmart(payload, options = {}) {
   }
 
   if (shouldForceCloud(payload) && isFallbackEnabled()) {
-    const toolCount = payload?.tools?.length ?? 0;
-    const provider = getBestCloudProvider({ toolCount });
+    const provider = getBestCloudProvider();
     const decision = {
       provider,
+      model: null,
       method: 'force',
       reason: 'force_cloud_pattern',
       score: 100,
@@ -148,59 +129,7 @@ async function determineProviderSmart(payload, options = {}) {
     return decision;
   }
 
-  // Check tool count thresholds for hybrid routing
-  const toolCount = payload?.tools?.length ?? 0;
-  const ollamaMaxTools = config.modelProvider?.ollamaMaxToolsForRouting ?? 3;
-
-  // If tool count is within Ollama's threshold, route to Ollama
-  if (toolCount > 0 && toolCount <= ollamaMaxTools) {
-    const ollamaModel = config.ollama?.model;
-    const supportsTools = modelNameSupportsTools(ollamaModel);
-
-    if (supportsTools) {
-      const provider = getBestLocalProvider();
-      const decision = {
-        provider,
-        method: 'tool_threshold',
-        reason: 'within_ollama_tool_threshold',
-        score: 0,
-        toolCount,
-        threshold: ollamaMaxTools,
-      };
-      routingMetrics.record(decision);
-      return decision;
-    }
-    // If Ollama doesn't support tools, fall through to cloud routing
-    if (isFallbackEnabled()) {
-      const provider = getBestCloudProvider({ toolCount });
-      const decision = {
-        provider,
-        method: 'tool_support',
-        reason: 'local_model_no_tool_support',
-        score: 0,
-        toolCount,
-      };
-      routingMetrics.record(decision);
-      return decision;
-    }
-  }
-
-  // If tool count exceeds Ollama threshold but fallback is enabled, route to cloud
-  if (toolCount > ollamaMaxTools && isFallbackEnabled()) {
-    const provider = getBestCloudProvider({ toolCount, useHybridRouting: true });
-    const decision = {
-      provider,
-      method: 'tool_threshold',
-      reason: 'exceeds_ollama_tool_threshold',
-      score: 50,
-      toolCount,
-      threshold: ollamaMaxTools,
-    };
-    routingMetrics.record(decision);
-    return decision;
-  }
-
-  // Full complexity analysis for non-tool requests
+  // Full complexity analysis
   const useWeightedScoring = config.routing?.weightedScoring ?? false;
   const analysis = analyzeComplexity(payload, { weighted: useWeightedScoring });
 
@@ -241,7 +170,7 @@ async function determineProviderSmart(payload, options = {}) {
 
         // Force cloud for autonomous workflows
         if (agenticResult.agentType === 'AUTONOMOUS' && isFallbackEnabled()) {
-          const provider = getBestCloudProvider({ toolCount });
+          const provider = getBestCloudProvider();
           const decision = {
             provider,
             method: 'agentic',
@@ -350,8 +279,8 @@ async function determineProviderSmart(payload, options = {}) {
       score: analysis.score,
       threshold: analysis.threshold,
       recommendation: analysis.recommendation,
-      taskType: analysis.breakdown.taskType.reason,
-      toolCount,
+      taskType: analysis.breakdown?.taskType?.reason,
+      toolCount: payload?.tools?.length ?? 0,
     },
     'Smart routing decision'
   );
@@ -360,64 +289,11 @@ async function determineProviderSmart(payload, options = {}) {
 }
 
 /**
- * Synchronous version of determineProvider for backward compatibility
- * Does not include Phase 4 embeddings analysis
+ * Synchronous provider lookup — returns static MODEL_PROVIDER.
+ * For callers that cannot await determineProviderSmart().
  */
-function determineProvider(payload) {
-  const preferOllama = config.modelProvider?.preferOllama ?? false;
-  const primaryProvider = config.modelProvider?.type ?? 'databricks';
-
-  // If smart routing is disabled, use static configuration
-  if (!preferOllama) {
-    return primaryProvider;
-  }
-
-  // Quick check for force patterns
-  if (shouldForceLocal(payload)) {
-    return getBestLocalProvider();
-  }
-
-  if (shouldForceCloud(payload) && isFallbackEnabled()) {
-    const toolCount = payload?.tools?.length ?? 0;
-    return getBestCloudProvider({ toolCount });
-  }
-
-  // Check tool count thresholds for hybrid routing
-  const toolCount = payload?.tools?.length ?? 0;
-  const ollamaMaxTools = config.modelProvider?.ollamaMaxToolsForRouting ?? 3;
-
-  // If tool count is within Ollama's threshold, route to Ollama
-  if (toolCount > 0 && toolCount <= ollamaMaxTools) {
-    const ollamaModel = config.ollama?.model;
-    const supportsTools = modelNameSupportsTools(ollamaModel);
-
-    if (supportsTools) {
-      return getBestLocalProvider();
-    }
-    // If Ollama doesn't support tools, fall through to cloud routing
-    if (isFallbackEnabled()) {
-      return getBestCloudProvider({ toolCount });
-    }
-  }
-
-  // If tool count exceeds Ollama threshold but fallback is enabled, route to cloud
-  if (toolCount > ollamaMaxTools && isFallbackEnabled()) {
-    return getBestCloudProvider({ toolCount, useHybridRouting: true });
-  }
-
-  // Full complexity analysis (without embeddings) for non-tool requests
-  const analysis = analyzeComplexity(payload);
-
-  // Apply routing decision based on complexity
-  if (analysis.recommendation === 'local') {
-    return getBestLocalProvider();
-  }
-
-  if (isFallbackEnabled()) {
-    return getBestCloudProvider({ toolCount });
-  }
-
-  return getBestLocalProvider();
+function determineProviderSync(_payload) {
+  return config.modelProvider?.type ?? 'databricks';
 }
 
 /**
@@ -472,7 +348,7 @@ function getRoutingStats() {
 
 module.exports = {
   // Main routing functions
-  determineProvider,
+  determineProviderSync,
   determineProviderSmart,
 
   // Helpers

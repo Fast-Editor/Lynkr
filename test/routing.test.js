@@ -11,13 +11,22 @@ describe("Routing Logic", () => {
     delete require.cache[require.resolve("../src/config/index.js")];
     delete require.cache[require.resolve("../src/clients/routing")];
     delete require.cache[require.resolve("../src/routing/index.js")];
-    delete require.cache[require.resolve("../src/clients/ollama-utils")];
+    delete require.cache[require.resolve("../src/routing/model-tiers")];
+    delete require.cache[require.resolve("../src/routing/complexity-analyzer")];
+    delete require.cache[require.resolve("../src/routing/cost-optimizer")];
+    delete require.cache[require.resolve("../src/routing/agentic-detector")];
 
     // Store original config
     originalConfig = { ...process.env };
-    
+
     // Explicitly set valid fallback to override any local .env pollution (e.g. lmstudio)
     process.env.FALLBACK_PROVIDER = "databricks";
+
+    // Ensure no TIER_* vars leak between tests
+    process.env.TIER_SIMPLE = "";
+    process.env.TIER_MEDIUM = "";
+    process.env.TIER_COMPLEX = "";
+    process.env.TIER_REASONING = "";
   });
 
   afterEach(() => {
@@ -25,23 +34,21 @@ describe("Routing Logic", () => {
     process.env = originalConfig;
   });
 
-  describe("determineProvider()", () => {
-    it("should return configured provider when PREFER_OLLAMA is false", () => {
+  describe("determineProviderSync()", () => {
+    it("should return configured provider when tier routing is disabled", () => {
       process.env.MODEL_PROVIDER = "databricks";
-      process.env.PREFER_OLLAMA = "false";
 
       config = require("../src/config");
       routing = require("../src/clients/routing");
 
       const payload = { messages: [{ role: "user", content: "test" }] };
-      const provider = routing.determineProvider(payload);
+      const provider = routing.determineProviderSync(payload);
 
       assert.strictEqual(provider, "databricks");
     });
 
-    it("should route to ollama when no tools and PREFER_OLLAMA is true", () => {
+    it("should return ollama when MODEL_PROVIDER is ollama", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
 
       config = require("../src/config");
@@ -52,15 +59,13 @@ describe("Routing Logic", () => {
         tools: [],
       };
 
-      const provider = routing.determineProvider(payload);
+      const provider = routing.determineProviderSync(payload);
       assert.strictEqual(provider, "ollama");
     });
 
-    it("should route to ollama when tool count < threshold", () => {
+    it("should return primary provider regardless of tool count", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
-      process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING = "3";
 
       config = require("../src/config");
       routing = require("../src/clients/routing");
@@ -73,25 +78,15 @@ describe("Routing Logic", () => {
         ],
       };
 
-      const provider = routing.determineProvider(payload);
+      // determineProviderSync always returns static MODEL_PROVIDER
+      const provider = routing.determineProviderSync(payload);
       assert.strictEqual(provider, "ollama");
     });
 
-    it("should route to cloud when tool count >= threshold", () => {
-      process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
-      process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
-      process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING = "3";
-      process.env.OPENROUTER_MAX_TOOLS_FOR_ROUTING = "3"; // Set same as ollama to skip openrouter tier
-      process.env.FALLBACK_PROVIDER = "databricks";
-      process.env.FALLBACK_ENABLED = "true"; // Ensure fallback is enabled
+    it("should return primary provider even with many tools", () => {
+      process.env.MODEL_PROVIDER = "databricks";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
-      // Set Azure OpenAI to empty to prevent dotenv from loading .env values
-      // dotenv won't override existing vars, even if empty
-      process.env.AZURE_OPENAI_ENDPOINT = "";
-      process.env.AZURE_OPENAI_API_KEY = "";
-      process.env.OPENROUTER_API_KEY = "";
 
       config = require("../src/config");
       routing = require("../src/clients/routing");
@@ -107,16 +102,13 @@ describe("Routing Logic", () => {
         ],
       };
 
-      const provider = routing.determineProvider(payload);
+      // determineProviderSync always returns static MODEL_PROVIDER
+      const provider = routing.determineProviderSync(payload);
       assert.strictEqual(provider, "databricks");
     });
 
-    it("should route to cloud when model doesn't support tools", () => {
-      process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
-      process.env.OLLAMA_MODEL = "llama3:latest"; // Non-tool-capable model
-      process.env.OLLAMA_FALLBACK_PROVIDER = "databricks";
-      process.env.FALLBACK_ENABLED = "true"; // Ensure fallback is enabled
+    it("should return configured MODEL_PROVIDER", () => {
+      process.env.MODEL_PROVIDER = "databricks";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
 
@@ -128,42 +120,54 @@ describe("Routing Logic", () => {
         tools: [{ name: "tool1", description: "test" }],
       };
 
-      const provider = routing.determineProvider(payload);
+      const provider = routing.determineProviderSync(payload);
       assert.strictEqual(provider, "databricks");
     });
+  });
 
-    it("should use custom max tools threshold", () => {
-      process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
-      process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
-      process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING = "5";
-      process.env.OLLAMA_FALLBACK_PROVIDER = "databricks";
+  describe("determineProviderSmart()", () => {
+    it("should return static routing when tier routing is disabled (no TIER_* vars)", async () => {
+      process.env.MODEL_PROVIDER = "databricks";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
 
       config = require("../src/config");
       routing = require("../src/clients/routing");
 
-      const payload = {
-        messages: [{ role: "user", content: "test" }],
-        tools: [
-          { name: "tool1", description: "test" },
-          { name: "tool2", description: "test" },
-          { name: "tool3", description: "test" },
-          { name: "tool4", description: "test" },
-        ],
-      };
+      const payload = { messages: [{ role: "user", content: "test" }] };
+      const result = await routing.determineProviderSmart(payload);
 
-      // 4 tools < 5, should route to ollama
-      const provider = routing.determineProvider(payload);
-      assert.strictEqual(provider, "ollama");
+      assert.strictEqual(result.provider, "databricks");
+      assert.strictEqual(result.method, "static");
+      assert.strictEqual(result.reason, "tier_routing_disabled");
+      assert.strictEqual(result.model, null);
+    });
+
+    it("should use tier routing when TIER_* vars are set", async () => {
+      process.env.MODEL_PROVIDER = "ollama";
+      process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
+      process.env.TIER_SIMPLE = "ollama:llama3.2";
+      process.env.TIER_MEDIUM = "ollama:llama3.2";
+      process.env.TIER_COMPLEX = "databricks:claude-sonnet";
+      process.env.TIER_REASONING = "databricks:claude-sonnet";
+      process.env.DATABRICKS_API_KEY = "test-key";
+      process.env.DATABRICKS_API_BASE = "http://test.com";
+
+      config = require("../src/config");
+      routing = require("../src/clients/routing");
+
+      const payload = { messages: [{ role: "user", content: "test" }] };
+      const result = await routing.determineProviderSmart(payload);
+
+      // When tier routing is enabled, method should not be 'static'
+      assert.notStrictEqual(result.method, "static");
+      assert.ok(result.provider, "provider should be set");
     });
   });
 
   describe("isFallbackEnabled()", () => {
     it("should return true by default", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       // Override .env file which sets FALLBACK_ENABLED=false
       // Test default behavior when not set to "false"
@@ -177,7 +181,6 @@ describe("Routing Logic", () => {
 
     it("should return false when explicitly disabled", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "false";
 
@@ -191,7 +194,6 @@ describe("Routing Logic", () => {
   describe("getFallbackProvider()", () => {
     it("should return databricks by default", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
@@ -204,7 +206,6 @@ describe("Routing Logic", () => {
 
     it("should return configured fallback provider", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_PROVIDER = "azure-anthropic";
       process.env.AZURE_ANTHROPIC_ENDPOINT = "http://test.com";

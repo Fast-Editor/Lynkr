@@ -90,10 +90,10 @@ ENV LOG_FILE_ENABLED="false" \
 ENV DATABRICKS_API_BASE="https://example.cloud.databricks.com" \
     DATABRICKS_API_KEY="replace-with-databricks-pat"
 
-# Ollama Configuration (for hybrid routing)
+# Ollama Configuration (for tier-based routing)
 # Recommended models: llama3.1:8b, llama3.2, qwen2.5:14b, mistral:7b-instruct
-ENV PREFER_OLLAMA="false" \
-    OLLAMA_ENDPOINT="http://localhost:11434" \
+# Configure via TIER_* env vars: TIER_SIMPLE=ollama:llama3.2
+ENV OLLAMA_ENDPOINT="http://localhost:11434" \
     OLLAMA_MODEL="llama3.1:8b" \
     OLLAMA_TIMEOUT_MS="120000" \
     OLLAMA_MAX_TOOLS_FOR_ROUTING="3" \

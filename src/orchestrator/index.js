@@ -21,6 +21,7 @@ const { asyncClone, asyncTransform, getPoolStats } = require("../workers/helpers
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
 const lazyLoader = require("../tools/lazy-loader");
 const { areSimilarToolCalls } = require("../clients/gpt-utils");
+const { getModelRegistrySync } = require("../routing/model-registry");
 
 /**
  * Get destination URL for audit logging based on provider type
@@ -944,19 +945,17 @@ function stripThinkingBlocks(text) {
   return cleanedLines.join("\n").trim();
 }
 
+/**
+ * Convert legacy Ollama /api/chat response to Anthropic Messages format.
+ * Used when Ollama < v0.14.0 (no native Anthropic endpoint).
+ */
 function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
-  // Ollama response format:
-  // { model, created_at, message: { role, content, tool_calls }, done, total_duration, ... }
-  // { eval_count, prompt_eval_count, ... }
-
   const message = ollamaResponse?.message ?? {};
   const rawContent = message.content || "";
   const toolCalls = message.tool_calls || [];
 
-  // Build content blocks
   const contentItems = [];
 
-  // Add text content if present, after stripping thinking blocks
   if (typeof rawContent === "string" && rawContent.trim()) {
     const cleanedContent = stripThinkingBlocks(rawContent);
     if (cleanedContent) {
@@ -964,18 +963,31 @@ function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
     }
   }
 
-  // Add tool calls if present
+  // Convert tool calls from OpenAI function-calling format to Anthropic tool_use
   if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-    const { buildAnthropicResponseFromOllama } = require("../clients/ollama-utils");
-    // Use the utility function for tool call conversion
-    return buildAnthropicResponseFromOllama(ollamaResponse, requestedModel);
+    for (const toolCall of toolCalls) {
+      const func = toolCall.function || {};
+      let input = {};
+      if (func.arguments) {
+        if (typeof func.arguments === "string") {
+          try { input = JSON.parse(func.arguments); } catch { input = {}; }
+        } else if (typeof func.arguments === "object") {
+          input = func.arguments;
+        }
+      }
+      contentItems.push({
+        type: "tool_use",
+        id: toolCall.id || `toolu_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        name: func.name || "unknown",
+        input,
+      });
+    }
   }
 
   if (contentItems.length === 0) {
     contentItems.push({ type: "text", text: "" });
   }
 
-  // Ollama uses different token count fields
   const inputTokens = ollamaResponse.prompt_eval_count ?? 0;
   const outputTokens = ollamaResponse.eval_count ?? 0;
 
@@ -985,7 +997,8 @@ function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
     role: "assistant",
     model: requestedModel,
     content: contentItems,
-    stop_reason: ollamaResponse.done ? "end_turn" : "max_tokens",
+    stop_reason: toolCalls.length > 0 ? "tool_use" :
+                 ollamaResponse.done ? "end_turn" : "max_tokens",
     stop_sequence: null,
     usage: {
       input_tokens: inputTokens,
@@ -1256,34 +1269,9 @@ function sanitizePayload(payload) {
         reason: isConversational,
       }, "Ollama conversational mode - tools removed");
     } else if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
-      // Ollama performance degrades with too many tools
-      // Limit to essential tools only
-      const OLLAMA_ESSENTIAL_TOOLS = new Set([
-        "Bash",
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "WebSearch",
-        "WebFetch"
-      ]);
-
-      const limitedTools = clean.tools.filter(tool =>
-        OLLAMA_ESSENTIAL_TOOLS.has(tool.name)
-      );
-
-      logger.debug({
-        model: config.ollama?.model,
-        originalToolCount: clean.tools.length,
-        limitedToolCount: limitedTools.length,
-        keptTools: limitedTools.map(t => t.name)
-      }, "Ollama tools limited for performance");
-
-      clean.tools = limitedTools.length > 0 ? limitedTools : undefined;
-      if (!clean.tools) {
-        delete clean.tools;
-      }
+      // Keep all tools — Ollama receives them in Anthropic format (native API)
+      // or they get converted to OpenAI format in invokeOllama (legacy API)
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
     } else {
       // Remove tools for models without tool support
       delete clean.tools;
@@ -1791,9 +1779,26 @@ IMPORTANT TOOL USAGE RULES:
       logger.debug({ sessionId: session?.id ?? null }, 'Tool termination instructions injected for non-Claude model');
     }
 
+    // Compute model-aware token budget thresholds
+    const registry = getModelRegistrySync();
+    const modelInfo = registry.getCost(requestedModel);
+    const modelContextWindow = modelInfo?.context || config.tokenBudget?.max || 180000;
+    const modelMax = Math.floor(modelContextWindow * 0.85);
+    const effectiveMax = Math.min(modelMax, config.tokenBudget?.max || 180000);
+    const effectiveWarning = Math.floor(effectiveMax * 0.65);
+
+    logger.debug({
+      sessionId: session?.id ?? null,
+      requestedModel,
+      modelContextWindow,
+      effectiveWarning,
+      effectiveMax,
+      source: modelInfo?.source || 'default',
+    }, 'Model-aware token budget computed');
+
     if (steps === 1 && config.tokenBudget?.enforcement !== false) {
       try {
-        const budgetCheck = tokenBudget.checkBudget(cleanPayload);
+        const budgetCheck = tokenBudget.checkBudget(cleanPayload, effectiveWarning, effectiveMax);
 
         if (budgetCheck.atWarning) {
           logger.warn({
@@ -1807,8 +1812,8 @@ IMPORTANT TOOL USAGE RULES:
           if (budgetCheck.overMax) {
             // Apply adaptive compression to fit within budget
             const enforcement = tokenBudget.enforceBudget(cleanPayload, {
-              warningThreshold: config.tokenBudget?.warning,
-              maxThreshold: config.tokenBudget?.max,
+              warningThreshold: effectiveWarning,
+              maxThreshold: effectiveMax,
               enforcement: true
             });
 
@@ -1853,6 +1858,9 @@ IMPORTANT TOOL USAGE RULES:
         {
           mode: config.headroom?.mode,
           queryContext: cleanPayload.messages[cleanPayload.messages.length - 1]?.content,
+          model: requestedModel,
+          modelLimit: modelContextWindow,
+          tokenBudget: effectiveMax,
         }
       );
 
@@ -2869,11 +2877,19 @@ IMPORTANT TOOL USAGE RULES:
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
       }
     } else if (actualProvider === "ollama") {
-      anthropicPayload = ollamaToAnthropicResponse(
-        databricksResponse.json,
-        requestedModel,
-      );
-      anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      const ollamaJson = databricksResponse.json;
+      // Detect response format: Anthropic API (v0.14.0+) has type:"message",
+      // legacy /api/chat has message.role + message.content
+      if (ollamaJson?.type === "message" && Array.isArray(ollamaJson?.content)) {
+        // Anthropic-native response — passthrough
+        anthropicPayload = ollamaJson;
+      } else {
+        // Legacy Ollama response — convert to Anthropic format
+        anthropicPayload = ollamaToAnthropicResponse(ollamaJson, requestedModel);
+      }
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
     } else if (actualProvider === "openrouter") {
       const { convertOpenRouterResponseToAnthropic } = require("../clients/openrouter-utils");
 

@@ -251,7 +251,6 @@ async function createEnvFile() {
     if (ollamaOnly) {
       let envContent = fs.readFileSync(envPath, "utf-8");
       envContent = envContent.replace(/^# MODEL_PROVIDER=databricks/m, "MODEL_PROVIDER=ollama");
-      envContent = envContent.replace(/^PREFER_OLLAMA=true/m, "# PREFER_OLLAMA=true  # Not needed when MODEL_PROVIDER=ollama");
       envContent = envContent.replace(/^FALLBACK_ENABLED=true/m, "FALLBACK_ENABLED=false");
       fs.writeFileSync(envPath, envContent);
     }
