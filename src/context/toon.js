@@ -56,6 +56,39 @@ function toToonString(encodeFn, value) {
   return "";
 }
 
+function compressStringContent(content, cfg, encodeFn, stats) {
+  if (typeof content !== "string") return content;
+
+  const originalBytes = Buffer.byteLength(content, "utf8");
+  if (originalBytes < cfg.minBytes) {
+    stats.skippedBySize += 1;
+    return content;
+  }
+
+  stats.candidateCount += 1;
+  if (!looksLikeJsonObjectOrArray(content)) {
+    stats.skippedByShape += 1;
+    return content;
+  }
+
+  const parsed = safeJsonParse(content);
+  if (!parsed || typeof parsed !== "object") {
+    stats.skippedByParse += 1;
+    return content;
+  }
+
+  const toonText = toToonString(encodeFn, parsed);
+  if (typeof toonText !== "string" || toonText.trim().length === 0) {
+    return content;
+  }
+
+  const compressedBytes = Buffer.byteLength(toonText, "utf8");
+  stats.convertedCount += 1;
+  stats.originalBytes += originalBytes;
+  stats.compressedBytes += compressedBytes;
+  return toonText;
+}
+
 function applyToonCompression(payload, settings = {}, options = {}) {
   const cfg = normaliseSettings(settings);
   const stats = {
@@ -94,37 +127,26 @@ function applyToonCompression(payload, settings = {}, options = {}) {
   for (const message of payload.messages) {
     if (!message || typeof message !== "object") continue;
     if (message.role === "tool") continue; // Never mutate machine-executed protocol payloads
-    if (typeof message.content !== "string") continue;
-
-    const originalText = message.content;
-    const originalBytes = Buffer.byteLength(originalText, "utf8");
-    if (originalBytes < cfg.minBytes) {
-      stats.skippedBySize += 1;
-      continue;
-    }
-
-    stats.candidateCount += 1;
-    if (!looksLikeJsonObjectOrArray(originalText)) {
-      stats.skippedByShape += 1;
-      continue;
-    }
-
-    const parsed = safeJsonParse(originalText);
-    if (!parsed || typeof parsed !== "object") {
-      stats.skippedByParse += 1;
-      continue;
-    }
-
     try {
-      const toonText = toToonString(encodeFn, parsed);
-      if (typeof toonText !== "string" || toonText.trim().length === 0) {
+      if (typeof message.content === "string") {
+        message.content = compressStringContent(message.content, cfg, encodeFn, stats);
         continue;
       }
-      const compressedBytes = Buffer.byteLength(toonText, "utf8");
-      message.content = toonText;
-      stats.convertedCount += 1;
-      stats.originalBytes += originalBytes;
-      stats.compressedBytes += compressedBytes;
+
+      if (!Array.isArray(message.content)) continue;
+      for (const block of message.content) {
+        if (!block || typeof block !== "object") continue;
+
+        // Keep protocol blocks untouched. Only compress user-language text fields.
+        if (block.type === "text" && typeof block.text === "string") {
+          block.text = compressStringContent(block.text, cfg, encodeFn, stats);
+          continue;
+        }
+
+        if (block.type === "input_text" && typeof block.input_text === "string") {
+          block.input_text = compressStringContent(block.input_text, cfg, encodeFn, stats);
+        }
+      }
     } catch (err) {
       stats.failureCount += 1;
       if (!cfg.failOpen) throw err;

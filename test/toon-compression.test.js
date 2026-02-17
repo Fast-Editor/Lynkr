@@ -94,4 +94,38 @@ describe("TOON compression", () => {
     assert.strictEqual(after.model, "kimi-k2.5");
     assert.strictEqual(stats.convertedCount, 1);
   });
+
+  it("compresses Anthropic text blocks while preserving tool protocol blocks", () => {
+    const largeJson = createLargeJsonString();
+    const payload = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: largeJson },
+            { type: "input_text", input_text: largeJson },
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_123",
+              content: largeJson,
+              is_error: false,
+            },
+          ],
+        },
+      ],
+    };
+
+    const originalToolResultContent = payload.messages[0].content[2].content;
+
+    const { payload: after, stats } = applyToonCompression(
+      payload,
+      { enabled: true, minBytes: 1, failOpen: false, logStats: false },
+      { encode: () => "rows[1]{id,label,value}:\n  1,item-1,value-1" },
+    );
+
+    assert.strictEqual(after.messages[0].content[0].text, "rows[1]{id,label,value}:\n  1,item-1,value-1");
+    assert.strictEqual(after.messages[0].content[1].input_text, "rows[1]{id,label,value}:\n  1,item-1,value-1");
+    assert.strictEqual(after.messages[0].content[2].content, originalToolResultContent);
+    assert.strictEqual(stats.convertedCount, 2);
+  });
 });
