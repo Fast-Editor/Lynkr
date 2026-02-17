@@ -10,6 +10,7 @@ const tokens = require("../utils/tokens");
 const systemPrompt = require("../prompts/system");
 const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
+const { applyToonCompression } = require("../context/toon");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
 const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = require("../headroom");
 const { createAuditLogger } = require("../logger/audit-logger");
@@ -1219,6 +1220,10 @@ function sanitizePayload(payload) {
 
     clean.messages = merged;
   }
+
+  // Optional TOON conversion for large JSON message payloads (prompt context only).
+  // This intentionally does not touch tools/tool_choice/protocol control fields.
+  applyToonCompression(clean, config.toon, { logger });
 
   // [CONTEXT_FLOW] Log payload after sanitization
   logger.debug({
