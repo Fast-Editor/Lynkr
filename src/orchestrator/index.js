@@ -1173,6 +1173,10 @@ function sanitizePayload(payload) {
     }
   }
 
+  // Optional TOON conversion for large JSON message payloads (prompt context only).
+  // Run this BEFORE message coalescing to preserve parseable JSON boundaries.
+  applyToonCompression(clean, config.toon, { logger });
+
   // FIX: Handle consecutive messages with the same role (causes llama.cpp 400 error)
   // Strategy: Merge all consecutive messages, add instruction to focus on last request
   if (Array.isArray(clean.messages) && clean.messages.length > 0) {
@@ -1220,10 +1224,6 @@ function sanitizePayload(payload) {
 
     clean.messages = merged;
   }
-
-  // Optional TOON conversion for large JSON message payloads (prompt context only).
-  // This intentionally does not touch tools/tool_choice/protocol control fields.
-  applyToonCompression(clean, config.toon, { logger });
 
   // [CONTEXT_FLOW] Log payload after sanitization
   logger.debug({
