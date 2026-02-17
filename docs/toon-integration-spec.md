@@ -2,7 +2,7 @@
 
 Date: 2026-02-17  
 Branch: `codex/toon-integration-spike`  
-Status: Design-only, no runtime changes yet.
+Status: Implemented behind flags (`TOON_ENABLED=false` by default).
 
 ## 1) Goal
 
@@ -91,3 +91,40 @@ Code rollback:
    - Mitigation: threshold + eligibility checks; skip low-value payloads.
 3. Risk: harder debugging.
    - Mitigation: log conversion stats and keep original payload for diagnostics.
+
+## 10) Stock Provider Validation (Ollama Cloud)
+
+Date: 2026-02-17
+
+Runtime under test:
+
+1. `MODEL_PROVIDER=ollama`
+2. `OLLAMA_ENDPOINT=http://127.0.0.1:11434`
+3. `OLLAMA_MODEL=glm-5:cloud`
+4. `TOON_MIN_BYTES=256`
+5. `TOON_FAIL_OPEN=true`
+6. `TOON_LOG_STATS=true`
+
+Probe used:
+
+1. Send a two-message request where the second message is a large JSON blob.
+2. Ask model to classify the next message as `JSON` vs `OTHER` based on first character.
+3. Run once with `TOON_ENABLED=false`, once with `TOON_ENABLED=true`.
+
+Observed results:
+
+1. `TOON_ENABLED=false`
+   - Reply: `JSON`
+   - Provider header: `x-lynkr-provider: ollama`
+   - TOON log entries: `0`
+2. `TOON_ENABLED=true`
+   - Reply: `OTHER`
+   - Provider header: `x-lynkr-provider: ollama`
+   - TOON log entries: `1`
+   - Logged conversion stats: `originalBytes=6416`, `compressedBytes=5854` (saved `562` bytes, `8.76%`)
+
+Conclusion:
+
+1. TOON gating works on stock Ollama cloud path (not moonshot-specific).
+2. Compression is applied only when flag-enabled.
+3. Provider routing remains unchanged (`ollama`) during TOON transformation.
