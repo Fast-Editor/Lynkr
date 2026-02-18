@@ -378,7 +378,7 @@ async function invokeOllama(body) {
     stream: false,
     options: {
       temperature: body.temperature ?? 0.7,
-      num_predict: body.max_tokens ?? 4096,
+      num_predict: body.max_tokens ?? 16384,
       top_p: body.top_p ?? 1.0,
     },
   };
