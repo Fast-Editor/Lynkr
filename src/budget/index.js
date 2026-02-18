@@ -26,13 +26,14 @@ class BudgetManager {
 
       this.db = new Database(dbPath);
       this.initDatabase();
+      logger.info({ dbPath }, 'Budget manager initialized');
     } catch (err) {
       logger.warn({ err: err.message }, "BudgetManager: better-sqlite3 not available");
       this.enabled = false;
       return;
     }
 
-    logger.info({ dbPath }, 'Budget manager initialized');
+   
   }
 
   initDatabase() {
