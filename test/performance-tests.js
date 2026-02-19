@@ -66,7 +66,7 @@ async function testDatabaseIndexes() {
   if (!fs.existsSync(dbPath)) {
     log('⚠️  Database not found. Creating test database...', 'yellow');
     // Initialize database
-    require('./src/db/index.js');
+    require('../src/db/index.js');
   }
 
   const db = new Database(dbPath);

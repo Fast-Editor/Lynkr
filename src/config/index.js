@@ -217,6 +217,12 @@ const tokenBudgetWarning = Number.parseInt(process.env.TOKEN_BUDGET_WARNING ?? "
 const tokenBudgetMax = Number.parseInt(process.env.TOKEN_BUDGET_MAX ?? "180000", 10);
 const tokenBudgetEnforcement = process.env.TOKEN_BUDGET_ENFORCEMENT !== "false"; // default true
 
+// TOON payload compression (opt-in)
+const toonEnabled = process.env.TOON_ENABLED === "true"; // default false
+const toonMinBytes = Number.parseInt(process.env.TOON_MIN_BYTES ?? "4096", 10);
+const toonFailOpen = process.env.TOON_FAIL_OPEN !== "false"; // default true
+const toonLogStats = process.env.TOON_LOG_STATS !== "false"; // default true
+
 // Smart tool selection configuration (always enabled)
 const smartToolSelectionMode = (process.env.SMART_TOOL_SELECTION_MODE ?? "heuristic").toLowerCase();
 const smartToolSelectionTokenBudget = Number.parseInt(
@@ -781,6 +787,12 @@ var config = {
     max: tokenBudgetMax,
     enforcement: tokenBudgetEnforcement,
   },
+  toon: {
+    enabled: toonEnabled,
+    minBytes: Number.isNaN(toonMinBytes) ? 4096 : toonMinBytes,
+    failOpen: toonFailOpen,
+    logStats: toonLogStats,
+  },
   smartToolSelection: {
     enabled: true,  // HARDCODED - always enabled
     mode: smartToolSelectionMode,
@@ -908,6 +920,12 @@ function reloadConfig() {
   config.modelProvider.fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
   config.modelProvider.suggestionModeModel = (process.env.SUGGESTION_MODE_MODEL ?? "default").trim();
   config.modelProvider.topicDetectionModel = (process.env.TOPIC_DETECTION_MODEL ?? "default").trim();
+
+  config.toon.enabled = process.env.TOON_ENABLED === "true";
+  const newToonMinBytes = Number.parseInt(process.env.TOON_MIN_BYTES ?? "4096", 10);
+  config.toon.minBytes = Number.isNaN(newToonMinBytes) ? 4096 : newToonMinBytes;
+  config.toon.failOpen = process.env.TOON_FAIL_OPEN !== "false";
+  config.toon.logStats = process.env.TOON_LOG_STATS !== "false";
 
   // Log level
   config.logger.level = process.env.LOG_LEVEL ?? "info";
