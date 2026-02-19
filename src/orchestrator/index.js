@@ -1090,6 +1090,9 @@ function sanitizePayload(payload) {
     config.modelProvider?.defaultModel ??
     "databricks-claude-sonnet-4-5";
   clean.model = requestedModel;
+  if (!clean.max_tokens) {                                                                                                                                                                                                                           
+    clean.max_tokens = 16384;                     
+  }  
   const providerType = config.modelProvider?.type ?? "databricks";
   const flattenContent = providerType !== "azure-anthropic";
   clean.messages = normaliseMessages(clean, { flattenContent }).filter((msg) => {
@@ -1252,9 +1255,9 @@ function sanitizePayload(payload) {
         return "greeting";
       }
 
-      // Very short messages (< 20 chars) without code/technical keywords
-      if (trimmed.length < 20 && !/code|file|function|error|bug|fix|write|read|create/.test(trimmed)) {
-        return "short_message";
+      // Conversational phrases that don't need tools (thanks, farewells, acknowledgements)
+      if (/^(thanks|thank you|thx|ty|bye|goodbye|see you|ok|okay|cool|nice|great|awesome|sure|got it|sounds good|no worries|np|cheers)[\s\.\!\?]*$/.test(trimmed)) {
+        return "conversational";
       }
 
       return false;
@@ -2190,9 +2193,10 @@ IMPORTANT TOOL USAGE RULES:
       });
 
       let assistantToolMessage;
-      if (providerType === "azure-anthropic") {
-        // For Azure Anthropic, use the content array directly from the response
-        // It already contains both text and tool_use blocks in the correct format
+      if (providerType === "azure-anthropic" || isAnthropicFormat) {
+        // For Anthropic-format responses (azure-anthropic, Ollama native API,
+        // azure-openai Responses API), use the content array directly —
+        // it already contains both text and tool_use blocks in the correct format
         assistantToolMessage = {
           role: "assistant",
           content: databricksResponse.json?.content ?? [],
@@ -2205,9 +2209,9 @@ IMPORTANT TOOL USAGE RULES:
         };
       }
 
-      // Only add fallback content for Databricks format (Azure already has content)
+      // Only add fallback content for OpenAI-format responses (Anthropic format already has content)
       if (
-        providerType !== "azure-anthropic" &&
+        providerType !== "azure-anthropic" && !isAnthropicFormat &&
         (!assistantToolMessage.content ||
           (typeof assistantToolMessage.content === "string" &&
             assistantToolMessage.content.trim().length === 0)) &&
@@ -2638,7 +2642,10 @@ IMPORTANT TOOL USAGE RULES:
         });
 
         let toolMessage;
-        if (providerType === "azure-anthropic") {
+        if (providerType === "azure-anthropic" || isAnthropicFormat) {
+          // Anthropic-format tool result for providers whose responses use
+          // Anthropic tool_use blocks (azure-anthropic, Ollama native API,
+          // azure-openai Responses API)
           const parsedContent = parseExecutionContent(execution.content);
           const serialisedContent =
             typeof parsedContent === "string" || parsedContent === null
