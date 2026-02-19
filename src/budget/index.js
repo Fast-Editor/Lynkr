@@ -11,13 +11,14 @@ const logger = require('../logger');
 class BudgetManager {
   constructor(options = {}) {
     this.enabled = options.enabled !== false;
+    let dbPath = null;
     if (!this.enabled || !Database) {
       this.enabled = false;
       return;
     }
 
     try {
-      const dbPath = path.join(process.cwd(), 'data', 'budgets.db');
+      dbPath = path.join(process.cwd(), 'data', 'budgets.db');
       const dbDir = path.dirname(dbPath);
 
       if (!fs.existsSync(dbDir)) {

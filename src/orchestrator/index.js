@@ -11,6 +11,7 @@ const tokens = require("../utils/tokens");
 const systemPrompt = require("../prompts/system");
 const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
+const { applyToonCompression } = require("../context/toon");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
 const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = require("../headroom");
 const { createAuditLogger } = require("../logger/audit-logger");
@@ -1376,6 +1377,10 @@ function sanitizePayload(payload) {
       logger.debug({ err }, "Failed logging Azure Anthropic payload");
     }
   }
+
+  // Optional TOON conversion for large JSON message payloads (prompt context only).
+  // Run this BEFORE message coalescing to preserve parseable JSON boundaries.
+  applyToonCompression(clean, config.toon, { logger });
 
   // FIX: Handle consecutive messages with the same role (causes llama.cpp 400 error)
   // Strategy: Merge all consecutive messages, add instruction to focus on last request

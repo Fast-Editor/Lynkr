@@ -162,14 +162,22 @@ class SubagentExecutor {
       payload.tools = filteredTools;
     }
 
-    // Determine provider based on model - subagents should use the specified model
+    // Determine provider based on model family.
+    // Subagents should use the currently configured MODEL_PROVIDER and avoid
+    // hard-fallbacks to Azure when Azure is not selected/configured.
     let forceProvider = null;
-    if (payload.model?.includes('claude') || payload.model?.includes('sonnet') || payload.model?.includes('haiku') || payload.model?.includes('opus')) {
-      // Route Claude models to the configured Claude provider (azure-openai, databricks, etc.)
+    const modelLower = String(payload.model || "").toLowerCase();
+    const isClaudeFamilyModel =
+      modelLower.includes("claude") ||
+      modelLower.includes("sonnet") ||
+      modelLower.includes("haiku") ||
+      modelLower.includes("opus");
+    const isGptFamilyModel = modelLower.includes("gpt");
+
+    if (isClaudeFamilyModel || isGptFamilyModel) {
       const config = require('../config');
-      forceProvider = config.modelProvider?.provider || 'azure-openai';
-    } else if (payload.model?.includes('gpt')) {
-      forceProvider = 'azure-openai';
+      // `type` is the canonical key; `provider` kept as legacy fallback.
+      forceProvider = config.modelProvider?.type || config.modelProvider?.provider || null;
     }
 
     logger.debug({
