@@ -16,6 +16,7 @@ Before installing Lynkr, ensure you have:
   - **OpenRouter API key** (get from [openrouter.ai/keys](https://openrouter.ai/keys))
   - **Azure OpenAI** or **Azure Anthropic** subscription
   - **OpenAI API key** (get from [platform.openai.com/api-keys](https://platform.openai.com/api-keys))
+  - **Moonshot AI API key** (get from [platform.moonshot.ai](https://platform.moonshot.ai))
   - **Ollama** installed locally (for free local models)
 - Optional: **Docker** for containerized deployment or MCP sandboxing
 - Optional: **Claude Code CLI** (latest release) for CLI usage
@@ -233,6 +234,25 @@ TOOL_EXECUTION_MODE=server
 MEMORY_ENABLED=true
 MEMORY_RETRIEVAL_LIMIT=5
 ```
+
+---
+
+## Understanding Provider Selection
+
+Lynkr has two modes for selecting which AI provider handles your requests:
+
+| Mode | Config | How it works | Best for |
+|------|--------|-------------|----------|
+| **Static** | `MODEL_PROVIDER=ollama` | All requests go to one provider | Simple setups, single provider |
+| **Tier-based** | All 4 `TIER_*` vars set | Requests route by complexity score | Cost optimization, multi-provider |
+
+**Static mode** — Set `MODEL_PROVIDER` to your provider. Every request goes there. Simple and predictable.
+
+**Tier-based mode** — Set all 4 `TIER_*` env vars (`TIER_SIMPLE`, `TIER_MEDIUM`, `TIER_COMPLEX`, `TIER_REASONING`). Each request is scored for complexity and routed to the appropriate tier's provider. When all 4 are set, they **override** `MODEL_PROVIDER` for routing decisions.
+
+> **Note:** If only some `TIER_*` vars are set (not all 4), tier routing is disabled and `MODEL_PROVIDER` is used instead. `MODEL_PROVIDER` is always required as a fallback default even when tiers are configured.
+
+See [Tier-Based Routing](#tier-based-routing-cost-optimization) below for full setup, or pick a single provider from the Quick Start examples to get running immediately.
 
 ---
 
@@ -501,7 +521,36 @@ lynkr start
 
 ---
 
-### 9. LM Studio (Local with GUI)
+### 9. Moonshot AI / Kimi (Affordable Cloud)
+
+**Best for:** Affordable cloud models, thinking/reasoning models
+
+```bash
+# Install
+npm install -g lynkr
+
+# Configure
+export MODEL_PROVIDER=moonshot
+export MOONSHOT_API_KEY=sk-your-moonshot-api-key
+export MOONSHOT_MODEL=kimi-k2-turbo-preview
+
+# Start
+lynkr start
+```
+
+**Get Moonshot API key:**
+1. Visit [platform.moonshot.ai](https://platform.moonshot.ai)
+2. Sign up or log in
+3. Create a new API key
+4. Add credits to your account
+
+**Available models:**
+- `kimi-k2-turbo-preview` - Fast, efficient, tool calling support
+- `kimi-k2-thinking` - Chain-of-thought reasoning model
+
+---
+
+### 10. LM Studio (Local with GUI)
 
 **Best for:** Local models with graphical interface
 
@@ -525,19 +574,20 @@ lynkr start
 
 ---
 
-## Hybrid Routing (Cost Optimization)
+## Tier-Based Routing (Cost Optimization)
 
-**Use local Ollama for simple tasks, fallback to cloud for complex ones:**
+**Use local Ollama for simple tasks, cloud for complex ones:**
 
 ```bash
 # Start Ollama
 ollama serve
-ollama pull llama3.1:8b
+ollama pull llama3.2
 
-# Configure hybrid routing
-export MODEL_PROVIDER=ollama
-export OLLAMA_MODEL=llama3.1:8b
-export PREFER_OLLAMA=true
+# Configure tier-based routing (set all 4 to enable)
+export TIER_SIMPLE=ollama:llama3.2
+export TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+export TIER_COMPLEX=databricks:databricks-claude-sonnet-4-5
+export TIER_REASONING=databricks:databricks-claude-sonnet-4-5
 export FALLBACK_ENABLED=true
 export FALLBACK_PROVIDER=databricks
 export DATABRICKS_API_BASE=https://your-workspace.databricks.com
@@ -548,13 +598,15 @@ lynkr start
 ```
 
 **How it works:**
-- **0-2 tools**: Ollama (free, local, fast)
-- **3-15 tools**: OpenRouter (if configured) or fallback to Databricks
-- **16+ tools**: Databricks/Azure (most capable)
-- **Ollama failures**: Automatic transparent fallback to cloud
+- Each request is scored for complexity (0-100) and mapped to a tier
+- **SIMPLE (0-25)**: Ollama (free, local, fast)
+- **MEDIUM (26-50)**: OpenRouter (affordable cloud)
+- **COMPLEX (51-75)**: Databricks (most capable)
+- **REASONING (76-100)**: Databricks (best available)
+- **Provider failures**: Automatic transparent fallback to cloud
 
 **Cost savings:**
-- **65-100%** for requests that stay on Ollama
+- **65-100%** for requests routed to local models
 - **40-87%** faster for simple requests
 - **Privacy**: Simple queries never leave your machine
 
@@ -614,7 +666,7 @@ See [Provider Configuration Guide](providers.md) for complete environment variab
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MODEL_PROVIDER` | Provider to use (`databricks`, `bedrock`, `openrouter`, `ollama`, `llamacpp`, `azure-openai`, `azure-anthropic`, `openai`, `lmstudio`) | `databricks` |
+| `MODEL_PROVIDER` | Provider to use (`databricks`, `bedrock`, `openrouter`, `ollama`, `llamacpp`, `azure-openai`, `azure-anthropic`, `openai`, `lmstudio`, `moonshot`, `zai`, `vertex`) | `databricks` |
 | `PORT` | HTTP port for proxy server | `8081` |
 | `WORKSPACE_ROOT` | Workspace directory path | `process.cwd()` |
 | `LOG_LEVEL` | Logging level (`error`, `warn`, `info`, `debug`) | `info` |

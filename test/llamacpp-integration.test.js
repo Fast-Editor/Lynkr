@@ -11,6 +11,12 @@ describe("llama.cpp Integration", () => {
     delete require.cache[require.resolve("../src/config")];
     delete require.cache[require.resolve("../src/clients/routing")];
     delete require.cache[require.resolve("../src/clients/openrouter-utils")];
+
+    // Prevent .env TIER_* values from being picked up by dotenv
+    process.env.TIER_SIMPLE = "";
+    process.env.TIER_MEDIUM = "";
+    process.env.TIER_COMPLEX = "";
+    process.env.TIER_REASONING = "";
   });
 
   afterEach(() => {
@@ -104,33 +110,46 @@ describe("llama.cpp Integration", () => {
   });
 
   describe("Routing", () => {
-    it("should route to llamacpp when MODEL_PROVIDER is llamacpp", () => {
+    it("should route to llamacpp when MODEL_PROVIDER is llamacpp", async () => {
       process.env.MODEL_PROVIDER = "llamacpp";
       process.env.LLAMACPP_ENDPOINT = "http://localhost:8080";
-      process.env.PREFER_OLLAMA = "false";
 
       const config = require("../src/config");
       const routing = require("../src/clients/routing");
 
       const payload = { messages: [{ role: "user", content: "test" }] };
-      const provider = routing.determineProvider(payload);
+      const result = await routing.determineProviderSmart(payload);
 
-      assert.strictEqual(provider, "llamacpp");
+      assert.strictEqual(result.provider, "llamacpp");
+      assert.strictEqual(result.method, "static");
     });
 
-    it("should route to llamacpp for moderate tool count when other providers not configured", () => {
-      // This test is skipped because llamacpp is checked AFTER openrouter/openai/azure in routing
-      // and those providers may be present in the test environment
-      // llama.cpp will be used when it's the PRIMARY provider or when it's the only option
+    it("should return static routing from determineProviderSmart when tiers disabled", async () => {
+      process.env.MODEL_PROVIDER = "llamacpp";
+      process.env.LLAMACPP_ENDPOINT = "http://localhost:8080";
+
+      const config = require("../src/config");
+      const routing = require("../src/clients/routing");
+
+      const payload = { messages: [{ role: "user", content: "test" }] };
+      const result = await routing.determineProviderSmart(payload);
+
+      assert.strictEqual(result.provider, "llamacpp");
+      assert.strictEqual(result.method, "static");
+      assert.strictEqual(result.reason, "tier_routing_disabled");
     });
 
     it("should throw error when llamacpp is set as FALLBACK_PROVIDER", () => {
       process.env.MODEL_PROVIDER = "ollama";
-      process.env.PREFER_OLLAMA = "true";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_PROVIDER = "llamacpp";
       process.env.LLAMACPP_ENDPOINT = "http://localhost:8080";
       process.env.FALLBACK_ENABLED = "true";
+      // Enable tier routing so fallback validation runs
+      process.env.TIER_SIMPLE = "ollama:llama3.2";
+      process.env.TIER_MEDIUM = "ollama:llama3.2";
+      process.env.TIER_COMPLEX = "ollama:llama3.2";
+      process.env.TIER_REASONING = "ollama:llama3.2";
 
       assert.throws(
         () => require("../src/config"),

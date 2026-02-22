@@ -1,6 +1,7 @@
 const config = require("../config");
 const { invokeModel } = require("../clients/databricks");
 const { appendTurnToSession } = require("../sessions/record");
+const { upsertSession } = require("../sessions/store");
 const { executeToolCall } = require("../tools");
 const policy = require("../policy");
 const logger = require("../logger");
@@ -20,6 +21,8 @@ const crypto = require("crypto");
 const { asyncClone, asyncTransform, getPoolStats } = require("../workers/helpers");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
 const lazyLoader = require("../tools/lazy-loader");
+const { areSimilarToolCalls } = require("../clients/gpt-utils");
+const { getModelRegistrySync } = require("../routing/model-registry");
 
 /**
  * Get destination URL for audit logging based on provider type
@@ -50,6 +53,8 @@ function getDestinationUrl(providerType) {
       return config.zai?.endpoint ?? 'unknown';
     case 'vertex':
       return config.vertex?.endpoint ?? 'unknown';
+    case 'moonshot':
+      return config.moonshot?.endpoint ?? 'unknown';
     default:
       return 'unknown';
   }
@@ -456,6 +461,192 @@ function injectToolLoopStopInstruction(messages, threshold = 5) {
   return messages;
 }
 
+// === CROSS-REQUEST TOOL CALL DEDUP TRACKING ===
+// These helpers track tool call signatures across multiple HTTP requests within
+// the same session (client/passthrough mode). The inner-loop detection in
+// runAgentLoop() only sees one request at a time, so repeated calls across
+// requests escape it.
+
+const DEDUP_MAX_SIGNATURES = 50;
+const DEDUP_WARN_THRESHOLD = 2;
+const DEDUP_TERMINATE_THRESHOLD = 3;
+
+/**
+ * Initialise session.metadata.toolCallDedup if missing.
+ * @param {Object} session
+ */
+function ensureDedupStructure(session) {
+  if (!session || !session.metadata) return;
+  if (!session.metadata.toolCallDedup) {
+    session.metadata.toolCallDedup = {
+      signatures: {},
+      similarGroups: {},
+      lastResetAt: Date.now(),
+      warningInjected: false,
+    };
+  }
+}
+
+/**
+ * Record a tool call into the cross-request dedup tracker.
+ * Handles similarity merging and enforces the 50-entry cap.
+ * @param {Object} session
+ * @param {Object} toolCall - tool_use block (Anthropic format: { name, input, id })
+ */
+function recordCrossRequestToolCall(session, toolCall) {
+  if (!session?.metadata) return;
+  ensureDedupStructure(session);
+
+  const dedup = session.metadata.toolCallDedup;
+  const signature = getToolCallSignature(toolCall);
+  const toolName = toolCall.function?.name ?? toolCall.name ?? 'unknown';
+  const args = toolCall.function?.arguments ?? toolCall.input;
+  const argsPreview = (typeof args === 'string' ? args : JSON.stringify(args ?? {})).substring(0, 200);
+  const now = Date.now();
+
+  // Check if this signature maps to a canonical via similarity groups
+  const canonicalSig = dedup.similarGroups[signature] || signature;
+
+  if (dedup.signatures[canonicalSig]) {
+    dedup.signatures[canonicalSig].count += 1;
+    dedup.signatures[canonicalSig].lastSeen = now;
+  } else {
+    // Check for similar existing entries before creating a new one
+    let mergedInto = null;
+    for (const [existingSig, existingData] of Object.entries(dedup.signatures)) {
+      // Build a fake call object from stored data to compare with areSimilarToolCalls
+      const existingCall = {
+        name: existingData.toolName,
+        input: existingData.argsPreview,
+      };
+      if (areSimilarToolCalls(toolCall, existingCall)) {
+        // Merge: map this signature to the existing canonical
+        dedup.similarGroups[signature] = existingSig;
+        dedup.signatures[existingSig].count += 1;
+        dedup.signatures[existingSig].lastSeen = now;
+        mergedInto = existingSig;
+        logger.debug({
+          newSignature: signature,
+          canonicalSignature: existingSig,
+          toolName,
+          count: dedup.signatures[existingSig].count,
+        }, "Cross-request tool dedup: merged similar call");
+        break;
+      }
+    }
+
+    if (!mergedInto) {
+      // New unique signature
+      dedup.signatures[signature] = {
+        count: 1,
+        toolName,
+        firstSeen: now,
+        lastSeen: now,
+        argsPreview,
+      };
+    }
+  }
+
+  // Enforce cap: evict oldest entries if over limit
+  const sigKeys = Object.keys(dedup.signatures);
+  if (sigKeys.length > DEDUP_MAX_SIGNATURES) {
+    const sorted = sigKeys.sort(
+      (a, b) => dedup.signatures[a].lastSeen - dedup.signatures[b].lastSeen
+    );
+    const toRemove = sorted.slice(0, sigKeys.length - DEDUP_MAX_SIGNATURES);
+    for (const key of toRemove) {
+      delete dedup.signatures[key];
+      // Also clean up any similarGroups pointing to this key
+      for (const [groupSig, canonical] of Object.entries(dedup.similarGroups)) {
+        if (canonical === key) delete dedup.similarGroups[groupSig];
+      }
+    }
+  }
+}
+
+/**
+ * Return the highest dedup count, the associated tool name, and signature.
+ * @param {Object} session
+ * @returns {{ maxCount: number, toolName: string|null, signature: string|null }}
+ */
+function getMaxDedupCount(session) {
+  if (!session?.metadata?.toolCallDedup?.signatures) {
+    return { maxCount: 0, toolName: null, signature: null };
+  }
+  const sigs = session.metadata.toolCallDedup.signatures;
+  let maxCount = 0;
+  let toolName = null;
+  let signature = null;
+  for (const [sig, data] of Object.entries(sigs)) {
+    if (data.count > maxCount) {
+      maxCount = data.count;
+      toolName = data.toolName;
+      signature = sig;
+    }
+  }
+  return { maxCount, toolName, signature };
+}
+
+/**
+ * Extract tool_use blocks from messages that appear after the last user text message.
+ * These are the tool calls from the current assistant turn that the client is sending back.
+ * @param {Array} messages
+ * @returns {Array} - Array of tool_use-like objects
+ */
+function extractToolUseFromCurrentTurn(messages) {
+  if (!Array.isArray(messages)) return [];
+
+  // Find last user text message
+  let lastUserTextIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== 'user') continue;
+    if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
+      lastUserTextIndex = i;
+      break;
+    }
+    if (Array.isArray(msg.content)) {
+      const hasText = msg.content.some(block =>
+        (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+        (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+      );
+      if (hasText) {
+        lastUserTextIndex = i;
+        break;
+      }
+    }
+  }
+
+  const toolUseBlocks = [];
+  const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
+  for (let i = startIndex; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg?.role !== 'assistant') continue;
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (block?.type === 'tool_use') {
+        toolUseBlocks.push(block);
+      }
+    }
+  }
+  return toolUseBlocks;
+}
+
+/**
+ * Reset dedup tracking. Called when a new user question is detected.
+ * @param {Object} session
+ */
+function resetDedupTracking(session) {
+  if (!session?.metadata) return;
+  session.metadata.toolCallDedup = {
+    signatures: {},
+    similarGroups: {},
+    lastResetAt: Date.now(),
+    warningInjected: false,
+  };
+  logger.debug({ sessionId: session?.id ?? null }, "Cross-request tool dedup: reset tracking for new user question");
+}
+
 function sanitiseAzureTools(tools) {
   if (!Array.isArray(tools) || tools.length === 0) return undefined;
   const allowed = new Set([
@@ -517,12 +708,50 @@ function parseExecutionContent(content) {
     const trimmed = content.trim();
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
-        return JSON.parse(trimmed);
+        const parsed = JSON.parse(trimmed);
+        // Handle Anthropic content blocks array - extract text
+        if (Array.isArray(parsed)) {
+          const textParts = parsed
+            .filter(block => block && typeof block === 'object')
+            .map(block => {
+              if (block.type === 'text' && typeof block.text === 'string') {
+                return block.text;
+              }
+              // Handle other block types gracefully
+              if (block.text) return block.text;
+              if (block.content) return typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+              return null;
+            })
+            .filter(text => text !== null);
+
+          if (textParts.length > 0) {
+            return textParts.join('\n');
+          }
+        }
+        return parsed;
       } catch {
         return content;
       }
     }
     return content;
+  }
+  // Handle content that's already an array (content blocks)
+  if (Array.isArray(content)) {
+    const textParts = content
+      .filter(block => block && typeof block === 'object')
+      .map(block => {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          return block.text;
+        }
+        if (block.text) return block.text;
+        if (block.content) return typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+        return null;
+      })
+      .filter(text => text !== null);
+
+    if (textParts.length > 0) {
+      return textParts.join('\n');
+    }
   }
   return content;
 }
@@ -719,19 +948,17 @@ function stripThinkingBlocks(text) {
   return cleanedLines.join("\n").trim();
 }
 
+/**
+ * Convert legacy Ollama /api/chat response to Anthropic Messages format.
+ * Used when Ollama < v0.14.0 (no native Anthropic endpoint).
+ */
 function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
-  // Ollama response format:
-  // { model, created_at, message: { role, content, tool_calls }, done, total_duration, ... }
-  // { eval_count, prompt_eval_count, ... }
-
   const message = ollamaResponse?.message ?? {};
   const rawContent = message.content || "";
   const toolCalls = message.tool_calls || [];
 
-  // Build content blocks
   const contentItems = [];
 
-  // Add text content if present, after stripping thinking blocks
   if (typeof rawContent === "string" && rawContent.trim()) {
     const cleanedContent = stripThinkingBlocks(rawContent);
     if (cleanedContent) {
@@ -739,18 +966,31 @@ function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
     }
   }
 
-  // Add tool calls if present
+  // Convert tool calls from OpenAI function-calling format to Anthropic tool_use
   if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-    const { buildAnthropicResponseFromOllama } = require("../clients/ollama-utils");
-    // Use the utility function for tool call conversion
-    return buildAnthropicResponseFromOllama(ollamaResponse, requestedModel);
+    for (const toolCall of toolCalls) {
+      const func = toolCall.function || {};
+      let input = {};
+      if (func.arguments) {
+        if (typeof func.arguments === "string") {
+          try { input = JSON.parse(func.arguments); } catch { input = {}; }
+        } else if (typeof func.arguments === "object") {
+          input = func.arguments;
+        }
+      }
+      contentItems.push({
+        type: "tool_use",
+        id: toolCall.id || `toolu_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        name: func.name || "unknown",
+        input,
+      });
+    }
   }
 
   if (contentItems.length === 0) {
     contentItems.push({ type: "text", text: "" });
   }
 
-  // Ollama uses different token count fields
   const inputTokens = ollamaResponse.prompt_eval_count ?? 0;
   const outputTokens = ollamaResponse.eval_count ?? 0;
 
@@ -760,7 +1000,8 @@ function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
     role: "assistant",
     model: requestedModel,
     content: contentItems,
-    stop_reason: ollamaResponse.done ? "end_turn" : "max_tokens",
+    stop_reason: toolCalls.length > 0 ? "tool_use" :
+                 ollamaResponse.done ? "end_turn" : "max_tokens",
     stop_sequence: null,
     usage: {
       input_tokens: inputTokens,
@@ -852,6 +1093,9 @@ function sanitizePayload(payload) {
     config.modelProvider?.defaultModel ??
     "databricks-claude-sonnet-4-5";
   clean.model = requestedModel;
+  if (!clean.max_tokens) {                                                                                                                                                                                                                           
+    clean.max_tokens = 16384;                     
+  }  
   const providerType = config.modelProvider?.type ?? "databricks";
   const flattenContent = providerType !== "azure-anthropic";
   clean.messages = normaliseMessages(clean, { flattenContent }).filter((msg) => {
@@ -996,12 +1240,10 @@ function sanitizePayload(payload) {
     // Check if this is a simple conversational message (no tools needed)
     const isConversational = (() => {
       if (!Array.isArray(clean.messages) || clean.messages.length === 0) {
-        logger.debug({ reason: "No messages array" }, "Ollama conversational check");
         return false;
       }
       const lastMessage = clean.messages[clean.messages.length - 1];
       if (lastMessage?.role !== "user") {
-        logger.debug({ role: lastMessage?.role }, "Ollama conversational check - not user");
         return false;
       }
 
@@ -1009,28 +1251,18 @@ function sanitizePayload(payload) {
         ? lastMessage.content
         : "";
 
-      logger.debug({
-        contentType: typeof lastMessage.content,
-        isString: typeof lastMessage.content === "string",
-        contentLength: typeof lastMessage.content === "string" ? lastMessage.content.length : "N/A",
-        actualContent: typeof lastMessage.content === "string" ? lastMessage.content.substring(0, 100) : JSON.stringify(lastMessage.content).substring(0, 100)
-      }, "Ollama conversational check - analyzing content");
-
       const trimmed = content.trim().toLowerCase();
 
       // Simple greetings
       if (/^(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings)[\s\.\!\?]*$/.test(trimmed)) {
-        logger.debug({ matched: "greeting", trimmed }, "Ollama conversational check - matched");
-        return true;
+        return "greeting";
       }
 
-      // Very short messages (< 20 chars) without code/technical keywords
-      if (trimmed.length < 20 && !/code|file|function|error|bug|fix|write|read|create/.test(trimmed)) {
-        logger.debug({ matched: "short", trimmed, length: trimmed.length }, "Ollama conversational check - matched");
-        return true;
+      // Conversational phrases that don't need tools (thanks, farewells, acknowledgements)
+      if (/^(thanks|thank you|thx|ty|bye|goodbye|see you|ok|okay|cool|nice|great|awesome|sure|got it|sounds good|no worries|np|cheers)[\s\.\!\?]*$/.test(trimmed)) {
+        return "conversational";
       }
 
-      logger.debug({ trimmed: trimmed.substring(0, 50), length: trimmed.length }, "Ollama conversational check - not matched");
       return false;
     })();
 
@@ -1040,37 +1272,12 @@ function sanitizePayload(payload) {
       delete clean.tool_choice;
       logger.debug({
         model: config.ollama?.model,
-        message: "Removed tools for conversational message"
-      }, "Ollama conversational mode");
+        reason: isConversational,
+      }, "Ollama conversational mode - tools removed");
     } else if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
-      // Ollama performance degrades with too many tools
-      // Limit to essential tools only
-      const OLLAMA_ESSENTIAL_TOOLS = new Set([
-        "Bash",
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "WebSearch",
-        "WebFetch"
-      ]);
-
-      const limitedTools = clean.tools.filter(tool =>
-        OLLAMA_ESSENTIAL_TOOLS.has(tool.name)
-      );
-
-      logger.debug({
-        model: config.ollama?.model,
-        originalToolCount: clean.tools.length,
-        limitedToolCount: limitedTools.length,
-        keptTools: limitedTools.map(t => t.name)
-      }, "Ollama tools limited for performance");
-
-      clean.tools = limitedTools.length > 0 ? limitedTools : undefined;
-      if (!clean.tools) {
-        delete clean.tools;
-      }
+      // Keep all tools — Ollama receives them in Anthropic format (native API)
+      // or they get converted to OpenAI format in invokeOllama (legacy API)
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
     } else {
       // Remove tools for models without tool support
       delete clean.tools;
@@ -1093,6 +1300,14 @@ function sanitizePayload(payload) {
     }
   } else if (providerType === "vertex") {
     // Vertex AI supports tools - keep them in Anthropic format
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
+  } else if (providerType === "moonshot") {
+    // Moonshot supports tools - keep them in Anthropic format
+    // They will be converted to OpenAI format in invokeMoonshot
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
       delete clean.tools;
     } else {
@@ -1215,7 +1430,7 @@ function sanitizePayload(payload) {
     }
 
     if (merged.length !== clean.messages.length) {
-      logger.info({
+      logger.debug({
         originalCount: clean.messages.length,
         mergedCount: merged.length,
         reduced: clean.messages.length - merged.length
@@ -1225,19 +1440,11 @@ function sanitizePayload(payload) {
     clean.messages = merged;
   }
 
-  // [CONTEXT_FLOW] Log payload after sanitization
   logger.debug({
     providerType: config.modelProvider?.type ?? "databricks",
-    phase: "after_sanitize",
-    systemField: typeof clean.system === 'string'
-      ? { type: 'string', length: clean.system.length }
-      : clean.system
-        ? { type: typeof clean.system, value: clean.system }
-        : undefined,
     messageCount: clean.messages?.length ?? 0,
-    firstMessageHasSystem: clean.messages?.[0]?.content?.includes?.('You are Claude Code') ?? false,
     toolCount: clean.tools?.length ?? 0
-  }, '[CONTEXT_FLOW] After sanitizePayload');
+  }, 'After sanitizePayload');
 
   // === Suggestion mode: tag request and override model if configured ===
   const { isSuggestionMode: isSuggestion } = detectSuggestionMode(clean.messages);
@@ -1344,8 +1551,7 @@ async function runAgentLoop({
   providerType,
   headers,
 }) {
-  console.log('[DEBUG] runAgentLoop ENTERED - providerType:', providerType, 'messages:', cleanPayload.messages?.length);
-  logger.info({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop ENTERED');
+  logger.debug({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop entered');
   const settings = resolveLoopOptions(options);
   // Initialize audit logger (no-op if disabled)
   const auditLogger = createAuditLogger(config.audit);
@@ -1392,7 +1598,6 @@ async function runAgentLoop({
     }
 
     steps += 1;
-    console.log('[LOOP DEBUG] Entered while loop - step:', steps);
     logger.debug(
       {
         sessionId: session?.id ?? null,
@@ -1401,6 +1606,19 @@ async function runAgentLoop({
       },
       "Agent loop step",
     );
+
+    // Trim messages when they grow too large to prevent OOM.
+    // Keep the first message (system/user) and the last MAX_LOOP_MESSAGES.
+    const MAX_LOOP_MESSAGES = 40;
+    if (cleanPayload.messages && cleanPayload.messages.length > MAX_LOOP_MESSAGES) {
+      const excess = cleanPayload.messages.length - MAX_LOOP_MESSAGES;
+      // Keep first 2 messages (system context + initial user) and trim from the middle
+      cleanPayload.messages.splice(2, excess);
+      logger.debug(
+        { trimmed: excess, remaining: cleanPayload.messages.length },
+        "Trimmed intermediate messages to prevent memory growth",
+      );
+    }
 
     // Debug: Log payload before sending to Azure
     if (providerType === "azure-anthropic") {
@@ -1486,14 +1704,11 @@ async function runAgentLoop({
       }
     }
 
-    // [CONTEXT_FLOW] Log after memory injection
     logger.debug({
       sessionId: session?.id ?? null,
-      phase: "after_memory",
-      systemPromptLength: cleanPayload.system?.length ?? 0,
       messageCount: cleanPayload.messages?.length ?? 0,
       toolCount: cleanPayload.tools?.length ?? 0
-    }, '[CONTEXT_FLOW] After memory injection');
+    }, 'After memory injection');
 
     if (steps === 1 && (config.systemPrompt?.mode === 'dynamic' || config.systemPrompt?.toolDescriptions === 'minimal')) {
       try {
@@ -1582,9 +1797,26 @@ IMPORTANT TOOL USAGE RULES:
       logger.debug({ sessionId: session?.id ?? null }, 'Tool termination instructions injected for non-Claude model');
     }
 
+    // Compute model-aware token budget thresholds
+    const registry = getModelRegistrySync();
+    const modelInfo = registry.getCost(requestedModel);
+    const modelContextWindow = modelInfo?.context || config.tokenBudget?.max || 180000;
+    const modelMax = Math.floor(modelContextWindow * 0.85);
+    const effectiveMax = Math.min(modelMax, config.tokenBudget?.max || 180000);
+    const effectiveWarning = Math.floor(effectiveMax * 0.65);
+
+    logger.debug({
+      sessionId: session?.id ?? null,
+      requestedModel,
+      modelContextWindow,
+      effectiveWarning,
+      effectiveMax,
+      source: modelInfo?.source || 'default',
+    }, 'Model-aware token budget computed');
+
     if (steps === 1 && config.tokenBudget?.enforcement !== false) {
       try {
-        const budgetCheck = tokenBudget.checkBudget(cleanPayload);
+        const budgetCheck = tokenBudget.checkBudget(cleanPayload, effectiveWarning, effectiveMax);
 
         if (budgetCheck.atWarning) {
           logger.warn({
@@ -1598,8 +1830,8 @@ IMPORTANT TOOL USAGE RULES:
           if (budgetCheck.overMax) {
             // Apply adaptive compression to fit within budget
             const enforcement = tokenBudget.enforceBudget(cleanPayload, {
-              warningThreshold: config.tokenBudget?.warning,
-              maxThreshold: config.tokenBudget?.max,
+              warningThreshold: effectiveWarning,
+              maxThreshold: effectiveMax,
               enforcement: true
             });
 
@@ -1623,7 +1855,6 @@ IMPORTANT TOOL USAGE RULES:
     }
 
     // Track estimated token usage before model call
-  console.log('[TOKEN DEBUG] About to track token usage - step:', steps);
   const estimatedTokens = config.tokenTracking?.enabled !== false
     ? tokens.countPayloadTokens(cleanPayload)
     : null;
@@ -1637,15 +1868,6 @@ IMPORTANT TOOL USAGE RULES:
   }
 
   // Apply Headroom compression if enabled
-  const headroomEstTokens = Math.ceil(JSON.stringify(cleanPayload.messages || []).length / 4);
-  logger.info({
-    headroomEnabled: isHeadroomEnabled(),
-    messageCount: cleanPayload.messages?.length ?? 0,
-    estimatedTokens: headroomEstTokens,
-    threshold: config.headroom?.minTokens || 500,
-    willCompress: isHeadroomEnabled() && headroomEstTokens >= (config.headroom?.minTokens || 500),
-  }, 'Headroom compression check');
-
   if (isHeadroomEnabled() && cleanPayload.messages && cleanPayload.messages.length > 0) {
     try {
       const compressionResult = await headroomCompress(
@@ -1654,36 +1876,27 @@ IMPORTANT TOOL USAGE RULES:
         {
           mode: config.headroom?.mode,
           queryContext: cleanPayload.messages[cleanPayload.messages.length - 1]?.content,
+          model: requestedModel,
+          modelLimit: modelContextWindow,
+          tokenBudget: effectiveMax,
         }
       );
-
-      logger.info({
-        compressed: compressionResult.compressed,
-        tokensBefore: compressionResult.stats?.tokens_before,
-        tokensAfter: compressionResult.stats?.tokens_after,
-        savings: compressionResult.stats?.savings_percent ? `${compressionResult.stats.savings_percent}%` : 'N/A',
-        reason: compressionResult.stats?.reason || compressionResult.stats?.transforms_applied?.join(', ') || 'none',
-      }, 'Headroom compression result');
 
       if (compressionResult.compressed) {
         cleanPayload.messages = compressionResult.messages;
         if (compressionResult.tools) {
           cleanPayload.tools = compressionResult.tools;
         }
-        logger.info({
-          sessionId: session?.id ?? null,
-          tokensBefore: compressionResult.stats?.tokens_before,
-          tokensAfter: compressionResult.stats?.tokens_after,
-          saved: compressionResult.stats?.tokens_saved,
-          savingsPercent: compressionResult.stats?.savings_percent,
-          transforms: compressionResult.stats?.transforms_applied,
-        }, 'Headroom compression applied to request');
-      } else {
-        logger.debug({
-          sessionId: session?.id ?? null,
-          reason: compressionResult.stats?.reason,
-        }, 'Headroom compression skipped');
       }
+
+      logger.debug({
+        sessionId: session?.id ?? null,
+        outcome: compressionResult.compressed ? 'applied' : 'skipped',
+        tokensBefore: compressionResult.stats?.tokens_before,
+        tokensAfter: compressionResult.stats?.tokens_after,
+        savingsPercent: compressionResult.stats?.savings_percent,
+        reason: compressionResult.stats?.reason || compressionResult.stats?.transforms_applied?.join(', ') || 'none',
+      }, 'Headroom compression');
     } catch (headroomErr) {
       logger.warn({ err: headroomErr, sessionId: session?.id ?? null }, 'Headroom compression failed, using original messages');
     }
@@ -1995,9 +2208,10 @@ IMPORTANT TOOL USAGE RULES:
       });
 
       let assistantToolMessage;
-      if (providerType === "azure-anthropic") {
-        // For Azure Anthropic, use the content array directly from the response
-        // It already contains both text and tool_use blocks in the correct format
+      if (providerType === "azure-anthropic" || isAnthropicFormat) {
+        // For Anthropic-format responses (azure-anthropic, Ollama native API,
+        // azure-openai Responses API), use the content array directly —
+        // it already contains both text and tool_use blocks in the correct format
         assistantToolMessage = {
           role: "assistant",
           content: databricksResponse.json?.content ?? [],
@@ -2010,9 +2224,9 @@ IMPORTANT TOOL USAGE RULES:
         };
       }
 
-      // Only add fallback content for Databricks format (Azure already has content)
+      // Only add fallback content for OpenAI-format responses (Anthropic format already has content)
       if (
-        providerType !== "azure-anthropic" &&
+        providerType !== "azure-anthropic" && !isAnthropicFormat &&
         (!assistantToolMessage.content ||
           (typeof assistantToolMessage.content === "string" &&
             assistantToolMessage.content.trim().length === 0)) &&
@@ -2048,7 +2262,7 @@ IMPORTANT TOOL USAGE RULES:
       // If in passthrough/client mode and there are client-side tools, return them to client
       // Server-side tools (Task, Web) will be executed below
       if ((executionMode === "passthrough" || executionMode === "client") && clientSideToolCalls.length > 0) {
-        logger.info(
+        logger.debug(
           {
             sessionId: session?.id ?? null,
             totalToolCount: toolCalls.length,
@@ -2073,7 +2287,7 @@ IMPORTANT TOOL USAGE RULES:
           type: "message",
           role: "assistant",
           content: clientContent,
-          model: databricksResponse.json?.model || clean.model,
+          model: databricksResponse.json?.model || cleanPayload.model,
           stop_reason: "tool_use",
           usage: databricksResponse.json?.usage || {
             input_tokens: 0,
@@ -2094,6 +2308,27 @@ IMPORTANT TOOL USAGE RULES:
         // then continue the conversation loop. For now, let's fall through to execute server-side tools.
         if (serverSideToolCalls.length === 0) {
           // No server-side tools - pure passthrough
+          // Record outbound client-side tool calls into cross-request dedup tracker
+          if (session && clientSideToolCalls.length > 0) {
+            ensureDedupStructure(session);
+            for (const call of clientSideToolCalls) {
+              recordCrossRequestToolCall(session, call);
+            }
+            // Persist dedup state (non-ephemeral sessions only)
+            if (session.id && !session._ephemeral) {
+              try { upsertSession(session.id, { metadata: session.metadata }); } catch (e) {
+                logger.debug({ err: e.message }, "Failed to persist outbound dedup state");
+              }
+            }
+            const { maxCount, toolName: dedupTool } = getMaxDedupCount(session);
+            logger.debug({
+              sessionId: session?.id ?? null,
+              clientToolCount: clientSideToolCalls.length,
+              maxDedupCount: maxCount,
+              maxDedupTool: dedupTool,
+            }, "Cross-request tool dedup: recorded outbound tool calls");
+          }
+
           return {
             response: {
               status: 200,
@@ -2110,7 +2345,7 @@ IMPORTANT TOOL USAGE RULES:
         // Override toolCalls to only include Server-side tools for server execution
         toolCalls = serverSideToolCalls;
 
-        logger.info(
+        logger.debug(
           {
             sessionId: session?.id ?? null,
             serverToolCount: serverSideToolCalls.length,
@@ -2119,7 +2354,7 @@ IMPORTANT TOOL USAGE RULES:
         );
       } else if (executionMode === "passthrough" || executionMode === "client") {
         // Only Server-side tools, no Client-side tools - execute all server-side
-        logger.info(
+        logger.debug(
           {
             sessionId: session?.id ?? null,
             serverToolCount: serverSideToolCalls.length,
@@ -2184,6 +2419,7 @@ IMPORTANT TOOL USAGE RULES:
               session,
               cwd,
               requestMessages: cleanPayload.messages,
+              provider: providerType,  // Pass provider for GPT-specific formatting
             }))
           );
 
@@ -2417,10 +2653,14 @@ IMPORTANT TOOL USAGE RULES:
           session,
           cwd,
           requestMessages: cleanPayload.messages,
+          provider: providerType,  // Pass provider for GPT-specific formatting
         });
 
         let toolMessage;
-        if (providerType === "azure-anthropic") {
+        if (providerType === "azure-anthropic" || isAnthropicFormat) {
+          // Anthropic-format tool result for providers whose responses use
+          // Anthropic tool_use blocks (azure-anthropic, Ollama native API,
+          // azure-openai Responses API)
           const parsedContent = parseExecutionContent(execution.content);
           const serialisedContent =
             typeof parsedContent === "string" || parsedContent === null
@@ -2531,34 +2771,54 @@ IMPORTANT TOOL USAGE RULES:
 
       // === TOOL CALL LOOP DETECTION ===
       // Track tool calls to detect infinite loops where the model calls the same tool
-      // repeatedly with identical parameters
+      // repeatedly with identical or similar parameters
+      // All providers use threshold 2 and similarity-based detection
+      const loopThreshold = 2;
+
       for (const call of toolCalls) {
         const signature = getToolCallSignature(call);
-        const count = (toolCallHistory.get(signature) || 0) + 1;
-        toolCallHistory.set(signature, count);
+        const existingEntry = toolCallHistory.get(signature);
+        let count = (existingEntry?.count || 0) + 1;
+        toolCallHistory.set(signature, { count, call });
 
         const toolName = call.function?.name ?? call.name ?? 'unknown';
 
-        if (count === 3 && !loopWarningInjected) {
+        // Check for similar (not just identical) tool calls across all providers
+        // This catches cases where the model slightly varies parameters but is essentially looping
+        for (const [existingSig, existingData] of toolCallHistory.entries()) {
+          if (existingSig !== signature && areSimilarToolCalls(call, existingData.call)) {
+            // Found a similar call - increase count to trigger loop detection earlier
+            count = Math.max(count, existingData.count + 1);
+            logger.debug({
+              tool: toolName,
+              currentSignature: signature,
+              similarSignature: existingSig,
+              combinedCount: count,
+            }, "Similar tool call detected - combining counts");
+          }
+        }
+
+        if (count === loopThreshold && !loopWarningInjected) {
           logger.warn(
             {
               sessionId: session?.id ?? null,
               correlationId: options?.correlationId,
               tool: toolName,
               loopCount: count,
+              loopThreshold,
               signature: signature,
               action: 'warning_injected',
               totalSteps: steps,
               remainingSteps: settings.maxSteps - steps,
             },
-            "Tool call loop detected - same tool called 3 times with identical parameters",
+            `Tool call loop detected - same tool called ${loopThreshold} times with identical/similar parameters`,
           );
 
           // Inject warning message to model
           loopWarningInjected = true;
           const warningMessage = {
             role: "user",
-            content: "⚠️ System Warning: You have called the same tool with identical parameters 3 times in this request. This may indicate an infinite loop. Please provide a final answer to the user instead of calling the same tool again, or explain why you need to continue retrying with the same parameters.",
+            content: `⚠️ CRITICAL SYSTEM WARNING: You have called the "${toolName}" tool ${count} times with identical or similar parameters. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response to the user based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Summarize your findings and respond.`,
           };
 
           cleanPayload.messages.push(warningMessage);
@@ -2573,11 +2833,12 @@ IMPORTANT TOOL USAGE RULES:
                 reason: "tool_call_loop_warning",
                 toolName,
                 loopCount: count,
+                loopThreshold,
               },
             });
           }
-        } else if (count > 3) {
-          // Force termination after 3 identical calls
+        } else if (count > loopThreshold) {
+          // Force termination after threshold exceeded
           // Log FULL context for debugging why the loop occurred
           logger.error(
             {
@@ -2585,6 +2846,7 @@ IMPORTANT TOOL USAGE RULES:
               correlationId: options?.correlationId,
               tool: toolName,
               loopCount: count,
+              loopThreshold,
               signature: signature,
               action: 'request_terminated',
               totalSteps: steps,
@@ -2605,7 +2867,7 @@ IMPORTANT TOOL USAGE RULES:
               body: {
                 error: {
                   type: "tool_call_loop_detected",
-                  message: `Tool call loop detected: The model called the same tool ("${toolName}") with identical parameters ${count} times. This indicates an infinite loop and execution has been terminated. Please try rephrasing your request or provide different parameters.`,
+                  message: `Tool call loop detected: The model called the same tool ("${toolName}") with identical parameters ${count} times (threshold: ${loopThreshold}). This indicates an infinite loop and execution has been terminated. Please try rephrasing your request or provide different parameters.`,
                 },
               },
               terminationReason: "tool_call_loop",
@@ -2637,11 +2899,19 @@ IMPORTANT TOOL USAGE RULES:
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
       }
     } else if (actualProvider === "ollama") {
-      anthropicPayload = ollamaToAnthropicResponse(
-        databricksResponse.json,
-        requestedModel,
-      );
-      anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      const ollamaJson = databricksResponse.json;
+      // Detect response format: Anthropic API (v0.14.0+) has type:"message",
+      // legacy /api/chat has message.role + message.content
+      if (ollamaJson?.type === "message" && Array.isArray(ollamaJson?.content)) {
+        // Anthropic-native response — passthrough
+        anthropicPayload = ollamaJson;
+      } else {
+        // Legacy Ollama response — convert to Anthropic format
+        anthropicPayload = ollamaToAnthropicResponse(ollamaJson, requestedModel);
+      }
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
     } else if (actualProvider === "openrouter") {
       const { convertOpenRouterResponseToAnthropic } = require("../clients/openrouter-utils");
 
@@ -2870,6 +3140,16 @@ IMPORTANT TOOL USAGE RULES:
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
       }
+    } else if (actualProvider === "moonshot") {
+      // Moonshot responses are already converted to Anthropic format in invokeMoonshot
+      logger.info({
+        hasJson: !!databricksResponse.json,
+        jsonContent: JSON.stringify(databricksResponse.json?.content)?.substring(0, 300),
+      }, "=== MOONSHOT ORCHESTRATOR DEBUG ===");
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
     } else {
       anthropicPayload = toAnthropicResponse(
         databricksResponse.json,
@@ -3064,6 +3344,7 @@ IMPORTANT TOOL USAGE RULES:
             session,
             cwd,
             requestMessages: cleanPayload.messages,
+            provider: providerType,  // Pass provider for GPT-specific formatting
           });
 
           const toolResultMessage = createFallbackToolResultMessage(providerType, {
@@ -3337,100 +3618,289 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   // === TOOL LOOP GUARD (EARLY CHECK) ===
   // Check BEFORE sanitization since sanitizePayload removes conversation history
-  const toolLoopThreshold = config.policy?.toolLoopThreshold ?? 3;
+  // All providers use threshold 2 to catch loops early
+  const providerType = config.modelProvider?.type ?? "databricks";
+  const toolLoopThreshold = 2;
   const { toolResultCount, toolUseCount } = countToolCallsInHistory(payload?.messages);
 
-  console.log('[ToolLoopGuard EARLY] Checking ORIGINAL messages:', {
-    messageCount: payload?.messages?.length,
-    toolResultCount,
-    toolUseCount,
-    threshold: toolLoopThreshold,
-  });
+  const executionMode = config.toolExecutionMode || "server";
+  const isClientMode = executionMode === "client" || executionMode === "passthrough";
 
-  if (toolResultCount >= toolLoopThreshold) {
-    logger.error({
-      toolResultCount,
-      toolUseCount,
-      threshold: toolLoopThreshold,
-      sessionId: session?.id ?? null,
-    }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
+  if (isClientMode && session) {
+    // === CROSS-REQUEST DEDUP (CLIENT/PASSTHROUGH MODE) ===
+    // The inner-loop guard resets each HTTP request so repeated calls across
+    // requests escape detection. Track signatures in session metadata instead.
+    ensureDedupStructure(session);
 
-    // Extract tool results ONLY from CURRENT TURN (after last user text message)
-    // This prevents showing old results from previous questions
-    let toolResultsSummary = "";
-    const messages = payload?.messages || [];
-
-    // Find the last user text message index (same logic as countToolCallsInHistory)
-    let lastUserTextIndex = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg?.role !== 'user') continue;
-      if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
-        lastUserTextIndex = i;
-        break;
+    // Detect new user question → reset dedup tracking
+    const dedup = session.metadata.toolCallDedup;
+    const incomingToolUse = extractToolUseFromCurrentTurn(payload?.messages);
+    // A user text message with no preceding tool_use means a brand-new question
+    const hasNewUserText = (() => {
+      const msgs = payload?.messages || [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i];
+        if (msg?.role === 'user') {
+          if (typeof msg.content === 'string' && msg.content.trim().length > 0) return true;
+          if (Array.isArray(msg.content)) {
+            return msg.content.some(block =>
+              (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+              (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+            );
+          }
+        }
+        break; // Only check the very last message
       }
-      if (Array.isArray(msg.content)) {
-        const hasText = msg.content.some(block =>
-          (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
-          (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
-        );
-        if (hasText) {
+      return false;
+    })();
+
+    if (hasNewUserText && incomingToolUse.length === 0) {
+      // Pure user text with no tool results → new question
+      resetDedupTracking(session);
+    } else {
+      // Record each tool_use from the incoming messages into the dedup tracker
+      for (const toolUseBlock of incomingToolUse) {
+        recordCrossRequestToolCall(session, toolUseBlock);
+      }
+
+      const { maxCount, toolName: dedupToolName, signature: dedupSig } = getMaxDedupCount(session);
+
+      if (maxCount >= DEDUP_TERMINATE_THRESHOLD) {
+        // Force-terminate: same pattern as existing tool_loop_guard
+        logger.error({
+          toolName: dedupToolName,
+          count: maxCount,
+          threshold: DEDUP_TERMINATE_THRESHOLD,
+          signature: dedupSig,
+          sessionId: session?.id ?? null,
+        }, "[CrossRequestDedup] FORCE TERMINATING - repeated tool call across requests");
+
+        // Extract tool results summary from current turn
+        let toolResultsSummary = "";
+        const messages = payload?.messages || [];
+        const { lastUserTextIndex: luIdx } = countToolCallsInHistory(messages);
+        const startIdx = luIdx >= 0 ? luIdx : 0;
+        for (let i = startIdx; i < messages.length; i++) {
+          const msg = messages[i];
+          if (!msg || !Array.isArray(msg.content)) continue;
+          for (const block of msg.content) {
+            if (block?.type === 'tool_result' && block?.content) {
+              const content = typeof block.content === 'string'
+                ? block.content
+                : JSON.stringify(block.content);
+              if (content && !content.includes('Found 0')) {
+                toolResultsSummary += content + "\n";
+              }
+            }
+          }
+        }
+
+        let responseText = `Based on the tool results, here's what I found:\n\n`;
+        if (toolResultsSummary.trim()) {
+          responseText += toolResultsSummary.trim();
+        } else {
+          responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
+        }
+
+        const forcedResponse = {
+          id: `msg_forced_${Date.now()}`,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: responseText }],
+          model: requestedModel || "unknown",
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 100 },
+        };
+
+        // Reset dedup after termination so next question starts fresh
+        resetDedupTracking(session);
+        // Persist to DB (non-ephemeral sessions only)
+        if (session.id && !session._ephemeral) {
+          try { upsertSession(session.id, { metadata: session.metadata }); } catch (e) {
+            logger.debug({ err: e.message }, "Failed to persist dedup reset");
+          }
+        }
+
+        return {
+          status: 200,
+          body: forcedResponse,
+          terminationReason: "tool_loop_guard",
+        };
+      }
+
+      if (maxCount >= DEDUP_WARN_THRESHOLD && !dedup.warningInjected) {
+        logger.warn({
+          toolName: dedupToolName,
+          count: maxCount,
+          threshold: DEDUP_WARN_THRESHOLD,
+          signature: dedupSig,
+          sessionId: session?.id ?? null,
+        }, "[CrossRequestDedup] Warning - repeated tool call detected across requests");
+
+        dedup.warningInjected = true;
+
+        // Inject a strict warning into the payload so the model sees it
+        if (Array.isArray(payload?.messages)) {
+          payload.messages.push({
+            role: "user",
+            content: `⚠️ CRITICAL SYSTEM WARNING: You have called the "${dedupToolName}" tool ${maxCount} times with identical or similar parameters across multiple requests. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Summarize your findings and respond.`,
+          });
+        }
+      }
+
+      // Persist dedup state (non-ephemeral sessions only)
+      if (session.id && !session._ephemeral) {
+        try { upsertSession(session.id, { metadata: session.metadata }); } catch (e) {
+          logger.debug({ err: e.message }, "Failed to persist dedup state");
+        }
+      }
+    }
+
+    // Client mode still uses the relaxed per-request threshold for the count-based guard
+    const effectiveThreshold = 10;
+    if (toolResultCount >= effectiveThreshold) {
+      logger.error({
+        toolResultCount,
+        toolUseCount,
+        threshold: effectiveThreshold,
+        sessionId: session?.id ?? null,
+      }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
+
+      let toolResultsSummary = "";
+      const messages = payload?.messages || [];
+      let lastUserTextIndex = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg?.role !== 'user') continue;
+        if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
           lastUserTextIndex = i;
           break;
         }
-      }
-    }
-
-    // Only extract tool results AFTER the last user text message
-    const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
-    for (let i = startIndex; i < messages.length; i++) {
-      const msg = messages[i];
-      if (!msg || !Array.isArray(msg.content)) continue;
-      for (const block of msg.content) {
-        if (block?.type === 'tool_result' && block?.content) {
-          const content = typeof block.content === 'string'
-            ? block.content
-            : JSON.stringify(block.content);
-          if (content && !content.includes('Found 0')) {
-            toolResultsSummary += content + "\n";
+        if (Array.isArray(msg.content)) {
+          const hasText = msg.content.some(block =>
+            (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+            (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+          );
+          if (hasText) {
+            lastUserTextIndex = i;
+            break;
           }
         }
       }
+      const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
+      for (let i = startIndex; i < messages.length; i++) {
+        const msg = messages[i];
+        if (!msg || !Array.isArray(msg.content)) continue;
+        for (const block of msg.content) {
+          if (block?.type === 'tool_result' && block?.content) {
+            const content = typeof block.content === 'string'
+              ? block.content
+              : JSON.stringify(block.content);
+            if (content && !content.includes('Found 0')) {
+              toolResultsSummary += content + "\n";
+            }
+          }
+        }
+      }
+
+      let responseText = `Based on the tool results, here's what I found:\n\n`;
+      if (toolResultsSummary.trim()) {
+        responseText += toolResultsSummary.trim();
+      } else {
+        responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
+      }
+
+      const forcedResponse = {
+        id: `msg_forced_${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: responseText }],
+        model: requestedModel || "unknown",
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 100 },
+      };
+
+      return {
+        status: 200,
+        body: forcedResponse,
+        terminationReason: "tool_loop_guard",
+      };
     }
+  } else {
+    // Server mode: use existing threshold 2 with countToolCallsInHistory
+    const effectiveThreshold = toolLoopThreshold;
 
-    // Build response text based on actual results from CURRENT turn only
-    let responseText = `Based on the tool results, here's what I found:\n\n`;
-    if (toolResultsSummary.trim()) {
-      responseText += toolResultsSummary.trim();
-    } else {
-      responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
+    if (toolResultCount >= effectiveThreshold) {
+      logger.error({
+        toolResultCount,
+        toolUseCount,
+        threshold: effectiveThreshold,
+        sessionId: session?.id ?? null,
+      }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
+
+      let toolResultsSummary = "";
+      const messages = payload?.messages || [];
+      let lastUserTextIndex = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg?.role !== 'user') continue;
+        if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
+          lastUserTextIndex = i;
+          break;
+        }
+        if (Array.isArray(msg.content)) {
+          const hasText = msg.content.some(block =>
+            (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
+            (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
+          );
+          if (hasText) {
+            lastUserTextIndex = i;
+            break;
+          }
+        }
+      }
+      const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
+      for (let i = startIndex; i < messages.length; i++) {
+        const msg = messages[i];
+        if (!msg || !Array.isArray(msg.content)) continue;
+        for (const block of msg.content) {
+          if (block?.type === 'tool_result' && block?.content) {
+            const content = typeof block.content === 'string'
+              ? block.content
+              : JSON.stringify(block.content);
+            if (content && !content.includes('Found 0')) {
+              toolResultsSummary += content + "\n";
+            }
+          }
+        }
+      }
+
+      let responseText = `Based on the tool results, here's what I found:\n\n`;
+      if (toolResultsSummary.trim()) {
+        responseText += toolResultsSummary.trim();
+      } else {
+        responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
+      }
+
+      const forcedResponse = {
+        id: `msg_forced_${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: responseText }],
+        model: requestedModel || "unknown",
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 100 },
+      };
+
+      return {
+        status: 200,
+        body: forcedResponse,
+        terminationReason: "tool_loop_guard",
+      };
     }
-
-    // Force return a response instead of continuing the loop
-    const forcedResponse = {
-      id: `msg_forced_${Date.now()}`,
-      type: "message",
-      role: "assistant",
-      content: [
-        {
-          type: "text",
-          text: responseText,
-        },
-      ],
-      model: requestedModel || "unknown",
-      stop_reason: "end_turn",
-      stop_sequence: null,
-      usage: {
-        input_tokens: 0,
-        output_tokens: 100,
-      },
-    };
-
-    return {
-      status: 200,
-      body: forcedResponse,
-      terminationReason: "tool_loop_guard",
-    };
   }
 
   const cleanPayload = sanitizePayload(payload);

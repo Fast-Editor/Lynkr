@@ -4,11 +4,15 @@ const logger = require("../logger");
 const selectSessionStmt = db.prepare(
   "SELECT id, created_at, updated_at, metadata FROM sessions WHERE id = ?",
 );
+// Limit history to last 50 entries to prevent unbounded memory growth.
+// Older entries remain in DB for auditing but aren't loaded into memory.
+const MAX_HISTORY_ROWS = 50;
 const selectHistoryStmt = db.prepare(
   `SELECT role, type, status, content, metadata, timestamp
    FROM session_history
    WHERE session_id = ?
-   ORDER BY timestamp ASC, id ASC`,
+   ORDER BY timestamp DESC, id DESC
+   LIMIT ${MAX_HISTORY_ROWS}`,
 );
 const insertSessionStmt = db.prepare(
   "INSERT INTO sessions (id, created_at, updated_at, metadata) VALUES (@id, @created_at, @updated_at, @metadata)",
@@ -75,7 +79,8 @@ function getSession(sessionId) {
   if (!sessionId) return null;
   const sessionRow = selectSessionStmt.get(sessionId);
   if (!sessionRow) return null;
-  const historyRows = selectHistoryStmt.all(sessionId);
+  // Query returns rows in DESC order (for LIMIT to grab newest), reverse to ASC
+  const historyRows = selectHistoryStmt.all(sessionId).reverse();
   return toSession(sessionRow, historyRows);
 }
 

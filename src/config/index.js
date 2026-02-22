@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -132,6 +132,11 @@ const zaiApiKey = process.env.ZAI_API_KEY?.trim() || null;
 const zaiEndpoint = process.env.ZAI_ENDPOINT?.trim() || "https://api.z.ai/api/anthropic/v1/messages";
 const zaiModel = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
 
+// Moonshot AI (Kimi) configuration - OpenAI-compatible API
+const moonshotApiKey = process.env.MOONSHOT_API_KEY?.trim() || null;
+const moonshotEndpoint = process.env.MOONSHOT_ENDPOINT?.trim() || "https://api.moonshot.ai/v1/chat/completions";
+const moonshotModel = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2-turbo-preview";
+
 // Vertex AI (Google Gemini) configuration
 const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
 const vertexModel = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
@@ -144,8 +149,7 @@ const suggestionModeModel = (process.env.SUGGESTION_MODE_MODEL ?? "default").tri
 const hotReloadEnabled = process.env.HOT_RELOAD_ENABLED !== "false"; // default true
 const hotReloadDebounceMs = Number.parseInt(process.env.HOT_RELOAD_DEBOUNCE_MS ?? "1000", 10);
 
-// Hybrid routing configuration
-const preferOllama = process.env.PREFER_OLLAMA === "true";
+// Routing configuration
 const fallbackEnabled = process.env.FALLBACK_ENABLED !== "false"; // default true
 const ollamaMaxToolsForRouting = Number.parseInt(
   process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING ?? "3",
@@ -311,37 +315,39 @@ if (modelProvider === "bedrock" && !bedrockApiKey) {
   );
 }
 
-// Validate hybrid routing configuration
-if (preferOllama) {
-  if (!ollamaEndpoint) {
-    throw new Error("PREFER_OLLAMA is set but OLLAMA_ENDPOINT is not configured");
-  }
-  if (fallbackEnabled && !SUPPORTED_MODEL_PROVIDERS.has(fallbackProvider)) {
-    throw new Error(
-      `FALLBACK_PROVIDER must be one of: ${Array.from(SUPPORTED_MODEL_PROVIDERS).join(", ")}`
-    );
-  }
+// Deprecation warning for PREFER_OLLAMA
+if (process.env.PREFER_OLLAMA) {
+  console.warn('[DEPRECATION] PREFER_OLLAMA is removed. Use TIER_* env vars for routing. See documentation/routing.md');
+}
 
-  // Prevent local providers from being used as fallback (they can fail just like Ollama)
+// Warn about misconfigured fallback provider (only when tier routing is active,
+// since that's the only path that triggers provider fallback)
+const tiersConfigured = !!(
+  process.env.TIER_SIMPLE?.trim() &&
+  process.env.TIER_MEDIUM?.trim() &&
+  process.env.TIER_COMPLEX?.trim() &&
+  process.env.TIER_REASONING?.trim()
+);
+if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
-  if (fallbackEnabled && localProviders.includes(fallbackProvider)) {
+  if (localProviders.includes(fallbackProvider)) {
     throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, openai, bedrock`);
   }
-
-  // Ensure fallback provider is properly configured (only if fallback is enabled)
-  if (fallbackEnabled) {
-    if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
-      throw new Error("FALLBACK_PROVIDER is set to 'databricks' but DATABRICKS_API_BASE and DATABRICKS_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
-    }
-    if (fallbackProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
-      throw new Error("FALLBACK_PROVIDER is set to 'azure-anthropic' but AZURE_ANTHROPIC_ENDPOINT and AZURE_ANTHROPIC_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
-    }
-    if (fallbackProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
-      throw new Error("FALLBACK_PROVIDER is set to 'azure-openai' but AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are not configured. Please set these environment variables or choose a different fallback provider.");
-    }
-    if (fallbackProvider === "bedrock" && !bedrockApiKey) {
-      throw new Error("FALLBACK_PROVIDER is set to 'bedrock' but AWS_BEDROCK_API_KEY is not configured. Please set this environment variable or choose a different fallback provider.");
-    }
+  let fallbackMisconfigured = false;
+  if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "azure-anthropic" && (!azureAnthropicEndpoint || !azureAnthropicApiKey)) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "azure-openai" && (!azureOpenAIEndpoint || !azureOpenAIApiKey)) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "bedrock" && !bedrockApiKey) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackMisconfigured) {
+    console.warn(`[WARN] FALLBACK_PROVIDER='${fallbackProvider}' is enabled but missing credentials. Fallback will not work until configured.`);
   }
 }
 
@@ -599,6 +605,11 @@ var config = {
     apiKey: vertexApiKey,
     model: vertexModel,
   },
+  moonshot: {
+    apiKey: moonshotApiKey,
+    endpoint: moonshotEndpoint,
+    model: moonshotModel,
+  },
   hotReload: {
     enabled: hotReloadEnabled,
     debounceMs: Number.isNaN(hotReloadDebounceMs) ? 1000 : hotReloadDebounceMs,
@@ -607,8 +618,6 @@ var config = {
     type: modelProvider,
     defaultModel,
     suggestionModeModel,
-    // Hybrid routing settings
-    preferOllama,
     fallbackEnabled,
     ollamaMaxToolsForRouting,
     openRouterMaxToolsForRouting,
@@ -626,6 +635,13 @@ var config = {
   },
   logger: {
     level: process.env.LOG_LEVEL ?? "info",
+    file: {
+      enabled: process.env.LOG_FILE_ENABLED === "true",
+      path: process.env.LOG_FILE_PATH ?? path.join(process.cwd(), "logs", "lynkr.log"),
+      level: process.env.LOG_FILE_LEVEL ?? "debug",      // File captures everything
+      frequency: process.env.LOG_FILE_FREQUENCY ?? "daily", // daily | hourly | <milliseconds>
+      maxFiles: parseInt(process.env.LOG_FILE_MAX_FILES ?? "14", 10),
+    },
   },
   sessionStore: {
     dbPath: sessionDbPath,
@@ -710,8 +726,8 @@ var config = {
   semanticCache: {
     enabled: process.env.SEMANTIC_CACHE_ENABLED !== 'false',  // Disable via env if needed
     similarityThreshold: parseFloat(process.env.SEMANTIC_CACHE_THRESHOLD || '0.95'),  // Higher threshold
-    maxEntries: 500,
-    ttlMs: 3600000,  // 1 hour
+    maxEntries: Number.parseInt(process.env.SEMANTIC_CACHE_MAX_ENTRIES ?? "50", 10),  // Reduced from 500 to prevent memory bloat
+    ttlMs: Number.parseInt(process.env.SEMANTIC_CACHE_TTL_MS ?? "300000", 10),  // 5 minutes (was 1 hour)
   },
   agents: {
     enabled: agentsEnabled,
@@ -869,6 +885,23 @@ var config = {
     taskTimeoutMs: Number.isNaN(workerTaskTimeoutMs) ? 5000 : workerTaskTimeoutMs,
     offloadThresholdBytes: Number.isNaN(workerOffloadThresholdBytes) ? 10000 : workerOffloadThresholdBytes,
   },
+
+  // Intelligent Routing
+  routing: {
+    weightedScoring: true,
+    costOptimization: true,
+    agenticDetection: true,
+  },
+
+  // Model Tier Configuration (REQUIRED)
+  // Format: TIER_<LEVEL>=provider:model (e.g., TIER_SIMPLE=ollama:llama3.2)
+  modelTiers: {
+    enabled: true,
+    SIMPLE: process.env.TIER_SIMPLE?.trim() || null,
+    MEDIUM: process.env.TIER_MEDIUM?.trim() || null,
+    COMPLEX: process.env.TIER_COMPLEX?.trim() || null,
+    REASONING: process.env.TIER_REASONING?.trim() || null,
+  },
 };
 
 /**
@@ -893,13 +926,14 @@ function reloadConfig() {
   config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
   config.vertex.apiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
   config.vertex.model = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
+  config.moonshot.apiKey = process.env.MOONSHOT_API_KEY?.trim() || null;
+  config.moonshot.model = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2-turbo-preview";
 
   // Model provider settings
   const newProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
   if (SUPPORTED_MODEL_PROVIDERS.has(newProvider)) {
     config.modelProvider.type = newProvider;
   }
-  config.modelProvider.preferOllama = process.env.PREFER_OLLAMA === "true";
   config.modelProvider.fallbackEnabled = process.env.FALLBACK_ENABLED !== "false";
   config.modelProvider.fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
   config.modelProvider.suggestionModeModel = (process.env.SUGGESTION_MODE_MODEL ?? "default").trim();
@@ -919,5 +953,31 @@ function reloadConfig() {
 
 // Make config mutable for hot reload
 config.reloadConfig = reloadConfig;
+
+/**
+ * Check if any TIER_* value references Ollama (starts with "ollama:")
+ * Used by server.js to decide whether to wait for Ollama at startup.
+ */
+config.tiersReferenceOllama = function tiersReferenceOllama() {
+  const tiers = config.modelTiers;
+  if (!tiers?.enabled) return false;
+  return [tiers.SIMPLE, tiers.MEDIUM, tiers.COMPLEX, tiers.REASONING]
+    .some(v => typeof v === 'string' && v.startsWith('ollama:'));
+};
+
+// Validate TIER_* configuration (warn if missing, don't crash)
+const missingTiers = [];
+if (!config.modelTiers.SIMPLE) missingTiers.push('TIER_SIMPLE');
+if (!config.modelTiers.MEDIUM) missingTiers.push('TIER_MEDIUM');
+if (!config.modelTiers.COMPLEX) missingTiers.push('TIER_COMPLEX');
+if (!config.modelTiers.REASONING) missingTiers.push('TIER_REASONING');
+
+if (missingTiers.length > 0) {
+  config.modelTiers.enabled = false;
+  console.warn(
+    `[WARN] Missing tier configuration: ${missingTiers.join(', ')} — tiered routing disabled.\n` +
+    `  Set TIER_<LEVEL>=provider:model to enable (e.g., TIER_SIMPLE=ollama:llama3.2)`
+  );
+}
 
 module.exports = config;

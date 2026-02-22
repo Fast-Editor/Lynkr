@@ -400,6 +400,75 @@ Error: Cannot find module 'xxx'
 
 ---
 
+### Moonshot AI (Kimi)
+
+**Issue:** Rate limited (429)
+
+**Symptoms:**
+- `429 Too Many Requests`
+- `Rate limit exceeded`
+- Responses failing intermittently
+
+**Solutions:**
+
+1. **Reduce concurrency:**
+   Moonshot has a max concurrency of ~3 requests. Lynkr retries automatically with backoff, but sustained high concurrency will trigger 429s.
+
+2. **Use turbo model:**
+   ```bash
+   # Turbo has higher rate limits than thinking model
+   export MOONSHOT_MODEL=kimi-k2-turbo-preview
+   ```
+
+3. **Enable fallback:**
+   ```bash
+   export FALLBACK_ENABLED=true
+   export FALLBACK_PROVIDER=openrouter
+   ```
+
+**Issue:** Authentication failed
+
+**Symptoms:**
+- `401 Unauthorized`
+- `Invalid API key`
+
+**Solutions:**
+
+1. **Check API key format:**
+   ```bash
+   echo $MOONSHOT_API_KEY
+   # Should start with: sk-
+   ```
+
+2. **Regenerate API key:**
+   - Visit [platform.moonshot.ai](https://platform.moonshot.ai)
+   - Generate a new key
+   - Update environment variable
+
+3. **Check endpoint:**
+   ```bash
+   echo $MOONSHOT_ENDPOINT
+   # Should be: https://api.moonshot.ai/v1/chat/completions
+   ```
+
+**Issue:** Reasoning content displayed in output
+
+**Symptoms:**
+- Response includes chain-of-thought text before the actual answer
+- Long preambles like "The user is asking me to..."
+
+**Solutions:**
+
+This happens when using `kimi-k2-thinking` model. Lynkr should automatically strip reasoning content and only show the final answer. If you see reasoning in the output:
+
+1. **Update Lynkr** to the latest version
+2. **Switch to turbo model** if reasoning output is not needed:
+   ```bash
+   export MOONSHOT_MODEL=kimi-k2-turbo-preview
+   ```
+
+---
+
 ### llama.cpp
 
 **Issue:** Server not responding
@@ -556,9 +625,13 @@ Error: Cannot find module 'xxx'
    export OLLAMA_MODEL=llama3.1:8b
    ```
 
-3. **Enable hybrid routing:**
+3. **Enable tier-based routing:**
    ```bash
-   export PREFER_OLLAMA=true
+   # Set all 4 TIER_* env vars to enable tier-based routing
+   export TIER_SIMPLE=ollama:llama3.2
+   export TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+   export TIER_COMPLEX=azure-openai:gpt-4o
+   export TIER_REASONING=azure-openai:gpt-4o
    export FALLBACK_ENABLED=true
    ```
 
@@ -746,10 +819,13 @@ Restart Lynkr after configuration.
    export LOAD_SHEDDING_ACTIVE_REQUESTS_THRESHOLD=100
    ```
 
-2. **Use local provider for simple requests:**
+2. **Use tier-based routing to send simple requests to local models:**
    ```bash
-   export PREFER_OLLAMA=true
-   export OLLAMA_MODEL=llama3.1:8b
+   # Set all 4 TIER_* env vars to enable tier-based routing
+   export TIER_SIMPLE=ollama:llama3.2
+   export TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+   export TIER_COMPLEX=azure-openai:gpt-4o
+   export TIER_REASONING=azure-openai:gpt-4o
    ```
 
 3. **Enable circuit breaker:**

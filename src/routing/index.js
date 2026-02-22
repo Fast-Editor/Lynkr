@@ -10,7 +10,6 @@
 
 const config = require('../config');
 const logger = require('../logger');
-const { modelNameSupportsTools } = require('../clients/ollama-utils');
 const {
   analyzeComplexity,
   shouldForceLocal,
@@ -18,6 +17,11 @@ const {
   routingMetrics,
   analyzeWithEmbeddings,
 } = require('./complexity-analyzer');
+
+// Intelligent routing modules
+const { getAgenticDetector, AGENT_TYPES } = require('./agentic-detector');
+const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
+const { getCostOptimizer } = require('./cost-optimizer');
 
 // Local providers
 const LOCAL_PROVIDERS = ['ollama', 'llamacpp', 'lmstudio'];
@@ -49,26 +53,7 @@ function getFallbackProvider() {
  * @param {number} options.toolCount - Number of tools in the request (for hybrid routing)
  * @param {boolean} options.useHybridRouting - Whether to use hybrid routing logic (default: false)
  */
-function getBestCloudProvider(options = {}) {
-  const { toolCount = 0, useHybridRouting = false } = options;
-
-  // If hybrid routing is explicitly enabled and we have tools, use tool-based routing
-  const preferOllama = config.modelProvider?.preferOllama ?? false;
-
-  if (preferOllama && useHybridRouting && toolCount > 0) {
-    const openRouterMaxTools = config.modelProvider?.openRouterMaxToolsForRouting ?? 15;
-
-    // For moderate tool counts, prefer OpenRouter over Azure OpenAI
-    if (toolCount <= openRouterMaxTools && config.openrouter?.apiKey) {
-      return 'openrouter';
-    }
-
-    // For higher tool counts, use Azure OpenAI if available
-    if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) {
-      return 'azure-openai';
-    }
-  }
-
+function getBestCloudProvider() {
   // Standard priority order for cloud providers
   if (config.databricks?.url && config.databricks?.apiKey) return 'databricks';
   if (config.azureAnthropic?.endpoint && config.azureAnthropic?.apiKey) return 'azure-anthropic';
@@ -105,23 +90,43 @@ function getBestLocalProvider() {
  * @returns {Object} Routing decision with provider and metadata
  */
 async function determineProviderSmart(payload, options = {}) {
-  const preferOllama = config.modelProvider?.preferOllama ?? false;
   const primaryProvider = config.modelProvider?.type ?? 'databricks';
 
-  // If smart routing is disabled, use static configuration
-  if (!preferOllama) {
+  // If tier routing is disabled, use static configuration
+  if (!config.modelTiers?.enabled) {
     return {
       provider: primaryProvider,
+      model: null,
       method: 'static',
-      reason: 'smart_routing_disabled',
+      reason: 'tier_routing_disabled',
     };
   }
 
   // Quick check for force patterns
   if (shouldForceLocal(payload)) {
+    // When tier routing is enabled, respect TIER_SIMPLE instead of blindly choosing local
+    if (config.modelTiers?.enabled) {
+      try {
+        const selector = getModelTierSelector();
+        const modelSelection = selector.selectModel('SIMPLE', null);
+        const decision = {
+          provider: modelSelection.provider,
+          model: modelSelection.model,
+          tier: 'SIMPLE',
+          method: 'force',
+          reason: 'force_local_pattern',
+          score: 0,
+        };
+        routingMetrics.record(decision);
+        return decision;
+      } catch (err) {
+        logger.debug({ err: err.message }, 'Tier selection failed for force_local, falling back to local provider');
+      }
+    }
     const provider = getBestLocalProvider();
     const decision = {
       provider,
+      model: null,
       method: 'force',
       reason: 'force_local_pattern',
       score: 0,
@@ -131,10 +136,10 @@ async function determineProviderSmart(payload, options = {}) {
   }
 
   if (shouldForceCloud(payload) && isFallbackEnabled()) {
-    const toolCount = payload?.tools?.length ?? 0;
-    const provider = getBestCloudProvider({ toolCount });
+    const provider = getBestCloudProvider();
     const decision = {
       provider,
+      model: null,
       method: 'force',
       reason: 'force_cloud_pattern',
       score: 100,
@@ -143,60 +148,9 @@ async function determineProviderSmart(payload, options = {}) {
     return decision;
   }
 
-  // Check tool count thresholds for hybrid routing
-  const toolCount = payload?.tools?.length ?? 0;
-  const ollamaMaxTools = config.modelProvider?.ollamaMaxToolsForRouting ?? 3;
-
-  // If tool count is within Ollama's threshold, route to Ollama
-  if (toolCount > 0 && toolCount <= ollamaMaxTools) {
-    const ollamaModel = config.ollama?.model;
-    const supportsTools = modelNameSupportsTools(ollamaModel);
-
-    if (supportsTools) {
-      const provider = getBestLocalProvider();
-      const decision = {
-        provider,
-        method: 'tool_threshold',
-        reason: 'within_ollama_tool_threshold',
-        score: 0,
-        toolCount,
-        threshold: ollamaMaxTools,
-      };
-      routingMetrics.record(decision);
-      return decision;
-    }
-    // If Ollama doesn't support tools, fall through to cloud routing
-    if (isFallbackEnabled()) {
-      const provider = getBestCloudProvider({ toolCount });
-      const decision = {
-        provider,
-        method: 'tool_support',
-        reason: 'local_model_no_tool_support',
-        score: 0,
-        toolCount,
-      };
-      routingMetrics.record(decision);
-      return decision;
-    }
-  }
-
-  // If tool count exceeds Ollama threshold but fallback is enabled, route to cloud
-  if (toolCount > ollamaMaxTools && isFallbackEnabled()) {
-    const provider = getBestCloudProvider({ toolCount, useHybridRouting: true });
-    const decision = {
-      provider,
-      method: 'tool_threshold',
-      reason: 'exceeds_ollama_tool_threshold',
-      score: 50,
-      toolCount,
-      threshold: ollamaMaxTools,
-    };
-    routingMetrics.record(decision);
-    return decision;
-  }
-
-  // Full complexity analysis for non-tool requests
-  const analysis = analyzeComplexity(payload);
+  // Full complexity analysis
+  const useWeightedScoring = config.routing?.weightedScoring ?? false;
+  const analysis = analyzeComplexity(payload, { weighted: useWeightedScoring });
 
   // Phase 4: Optional embeddings adjustment
   let embeddingsResult = null;
@@ -214,25 +168,116 @@ async function determineProviderSmart(payload, options = {}) {
     }
   }
 
-  // Apply routing decision based on complexity
-  let provider;
-  let method = 'complexity';
+  // Agentic workflow detection
+  let agenticResult = null;
+  if (config.routing?.agenticDetection !== false) {
+    try {
+      const detector = getAgenticDetector();
+      agenticResult = detector.detect(payload);
 
-  if (analysis.recommendation === 'local') {
-    provider = getBestLocalProvider();
-  } else {
-    // Cloud recommendation
-    if (isFallbackEnabled()) {
-      provider = getBestCloudProvider({ toolCount });
-    } else {
-      // Fallback disabled, use local anyway
-      provider = getBestLocalProvider();
-      method = 'fallback_disabled';
+      // Boost complexity score for agentic workflows
+      if (agenticResult.isAgentic) {
+        analysis.score = Math.min(100, analysis.score + agenticResult.scoreBoost);
+        analysis.agenticBoost = agenticResult.scoreBoost;
+        analysis.agentType = agenticResult.agentType;
+
+        logger.debug({
+          agentType: agenticResult.agentType,
+          boost: agenticResult.scoreBoost,
+          newScore: analysis.score,
+        }, '[Routing] Agentic workflow detected, boosting score');
+
+        // Force cloud for autonomous workflows
+        if (agenticResult.agentType === 'AUTONOMOUS' && isFallbackEnabled()) {
+          const provider = getBestCloudProvider();
+          const decision = {
+            provider,
+            method: 'agentic',
+            reason: 'autonomous_workflow',
+            score: analysis.score,
+            agenticResult,
+          };
+          routingMetrics.record(decision);
+          return decision;
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, 'Agentic detection failed');
+    }
+  }
+
+  // Tier-based model selection
+  let selectedModel = null;
+  let tier = null;
+  if (config.modelTiers?.enabled) {
+    try {
+      const selector = getModelTierSelector();
+      tier = selector.getTier(analysis.score);
+
+      // Check if agentic detection requires a higher tier
+      if (agenticResult?.minTier) {
+        const agenticTierPriority = TIER_DEFINITIONS[agenticResult.minTier]?.priority || 0;
+        const currentTierPriority = TIER_DEFINITIONS[tier]?.priority || 0;
+        if (agenticTierPriority > currentTierPriority) {
+          tier = agenticResult.minTier;
+          logger.debug({ from: selector.getTier(analysis.score), to: tier }, '[Routing] Upgrading tier for agentic workflow');
+        }
+      }
+
+      // Select model for the tier (will be applied after provider selection)
+      analysis.tier = tier;
+    } catch (err) {
+      logger.debug({ err: err.message }, 'Tier selection failed');
+    }
+  }
+
+  // Apply routing decision based on tier config (TIER_* env vars are mandatory)
+  let provider;
+  let method = 'tier_config';
+
+  const selector = getModelTierSelector();
+  const modelSelection = selector.selectModel(tier, null);
+
+  provider = modelSelection.provider;
+  selectedModel = modelSelection.model;
+  logger.debug({ tier, provider, model: selectedModel }, '[Routing] Using tier config');
+
+  // Cost optimization: check if cheaper model can handle this tier
+  let costOptimized = false;
+  if (config.routing?.costOptimization && tier) {
+    try {
+      const optimizer = getCostOptimizer();
+      const availableProviders = [provider];
+
+      // Also consider local provider if not already selected
+      const localProvider = getBestLocalProvider();
+      if (localProvider !== provider) {
+        availableProviders.push(localProvider);
+      }
+
+      const cheapest = optimizer.findCheapestForTier(tier, availableProviders);
+      if (cheapest && cheapest.provider !== provider) {
+        logger.debug({
+          from: provider,
+          to: cheapest.provider,
+          tier,
+          savings: `${cheapest.model} is cheaper`,
+        }, '[Routing] Cost optimization: switching provider');
+
+        provider = cheapest.provider;
+        selectedModel = cheapest.model;
+        costOptimized = true;
+        method = 'cost_optimized';
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, 'Cost optimization failed');
     }
   }
 
   const decision = {
     provider,
+    model: selectedModel,
+    tier,
     method,
     reason: analysis.recommendation,
     score: analysis.score,
@@ -240,6 +285,8 @@ async function determineProviderSmart(payload, options = {}) {
     mode: analysis.mode,
     analysis,
     embeddingsResult,
+    agenticResult,
+    costOptimized,
   };
 
   // Phase 3: Record metrics
@@ -251,74 +298,13 @@ async function determineProviderSmart(payload, options = {}) {
       score: analysis.score,
       threshold: analysis.threshold,
       recommendation: analysis.recommendation,
-      taskType: analysis.breakdown.taskType.reason,
-      toolCount,
+      taskType: analysis.breakdown?.taskType?.reason,
+      toolCount: payload?.tools?.length ?? 0,
     },
     'Smart routing decision'
   );
 
   return decision;
-}
-
-/**
- * Synchronous version of determineProvider for backward compatibility
- * Does not include Phase 4 embeddings analysis
- */
-function determineProvider(payload) {
-  const preferOllama = config.modelProvider?.preferOllama ?? false;
-  const primaryProvider = config.modelProvider?.type ?? 'databricks';
-
-  // If smart routing is disabled, use static configuration
-  if (!preferOllama) {
-    return primaryProvider;
-  }
-
-  // Quick check for force patterns
-  if (shouldForceLocal(payload)) {
-    return getBestLocalProvider();
-  }
-
-  if (shouldForceCloud(payload) && isFallbackEnabled()) {
-    const toolCount = payload?.tools?.length ?? 0;
-    return getBestCloudProvider({ toolCount });
-  }
-
-  // Check tool count thresholds for hybrid routing
-  const toolCount = payload?.tools?.length ?? 0;
-  const ollamaMaxTools = config.modelProvider?.ollamaMaxToolsForRouting ?? 3;
-
-  // If tool count is within Ollama's threshold, route to Ollama
-  if (toolCount > 0 && toolCount <= ollamaMaxTools) {
-    const ollamaModel = config.ollama?.model;
-    const supportsTools = modelNameSupportsTools(ollamaModel);
-
-    if (supportsTools) {
-      return getBestLocalProvider();
-    }
-    // If Ollama doesn't support tools, fall through to cloud routing
-    if (isFallbackEnabled()) {
-      return getBestCloudProvider({ toolCount });
-    }
-  }
-
-  // If tool count exceeds Ollama threshold but fallback is enabled, route to cloud
-  if (toolCount > ollamaMaxTools && isFallbackEnabled()) {
-    return getBestCloudProvider({ toolCount, useHybridRouting: true });
-  }
-
-  // Full complexity analysis (without embeddings) for non-tool requests
-  const analysis = analyzeComplexity(payload);
-
-  // Apply routing decision based on complexity
-  if (analysis.recommendation === 'local') {
-    return getBestLocalProvider();
-  }
-
-  if (isFallbackEnabled()) {
-    return getBestCloudProvider({ toolCount });
-  }
-
-  return getBestLocalProvider();
 }
 
 /**
@@ -343,6 +329,23 @@ function getRoutingHeaders(decision) {
     headers['X-Lynkr-Routing-Reason'] = decision.reason;
   }
 
+  // Tier and model headers
+  if (decision.tier) {
+    headers['X-Lynkr-Tier'] = decision.tier;
+  }
+
+  if (decision.model) {
+    headers['X-Lynkr-Model'] = decision.model;
+  }
+
+  if (decision.agenticResult?.isAgentic) {
+    headers['X-Lynkr-Agentic'] = decision.agenticResult.agentType;
+  }
+
+  if (decision.costOptimized) {
+    headers['X-Lynkr-Cost-Optimized'] = 'true';
+  }
+
   return headers;
 }
 
@@ -355,8 +358,7 @@ function getRoutingStats() {
 }
 
 module.exports = {
-  // Main routing functions
-  determineProvider,
+  // Main routing function
   determineProviderSmart,
 
   // Helpers
@@ -372,4 +374,11 @@ module.exports = {
 
   // Re-export analyzer for direct access
   analyzeComplexity: require('./complexity-analyzer').analyzeComplexity,
+
+  // Intelligent routing modules
+  getAgenticDetector,
+  getModelTierSelector,
+  getCostOptimizer,
+  AGENT_TYPES,
+  TIER_DEFINITIONS,
 };

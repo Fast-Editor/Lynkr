@@ -252,14 +252,16 @@ LOG_LEVEL=info
 # No configuration needed
 ```
 
-### 2. Use Hybrid Routing
+### 2. Use Tier-Based Routing
 
 ```bash
-# Route simple requests to free Ollama
-PREFER_OLLAMA=true
+# Route simple requests to free Ollama, complex to cloud
+# Set all 4 TIER_* env vars to enable tier-based routing
+TIER_SIMPLE=ollama:llama3.2
+TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+TIER_COMPLEX=azure-openai:gpt-4o
+TIER_REASONING=azure-openai:gpt-4o
 FALLBACK_ENABLED=true
-
-# Complex requests automatically go to cloud
 FALLBACK_PROVIDER=databricks
 ```
 

@@ -11,7 +11,7 @@ Lynkr acts as a drop-in replacement for Anthropic's backend, enabling Claude Cod
 ### Why Use Lynkr with Claude Code CLI?
 
 - 💰 **60-80% cost savings** through token optimization
-- 🔓 **Provider choice** - Use any of 9+ supported providers
+- 🔓 **Provider choice** - Use any of 12+ supported providers
 - 🏠 **Self-hosted** - Full control over your AI infrastructure
 - 🔒 **Local option** - Run 100% offline with Ollama or llama.cpp
 - ✅ **Zero code changes** - Drop-in replacement for Anthropic backend
@@ -74,7 +74,7 @@ export DATABRICKS_API_BASE=https://your-workspace.databricks.com
 export DATABRICKS_API_KEY=dapi1234567890abcdef
 ```
 
-See [Provider Configuration Guide](providers.md) for all 9+ providers.
+See [Provider Configuration Guide](providers.md) for all 12+ providers.
 
 ---
 
@@ -341,15 +341,16 @@ export MODEL_PROVIDER=databricks
 
 ---
 
-## Hybrid Routing (Cost Optimization)
+## Tier-Based Routing (Cost Optimization)
 
-Use local Ollama for simple tasks, fallback to cloud for complex ones:
+Use local Ollama for simple tasks, cloud for complex ones:
 
 ```bash
-# Configure hybrid routing
-export MODEL_PROVIDER=ollama
-export OLLAMA_MODEL=llama3.1:8b
-export PREFER_OLLAMA=true
+# Configure tier-based routing (set all 4 to enable)
+export TIER_SIMPLE=ollama:llama3.2
+export TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+export TIER_COMPLEX=databricks:databricks-claude-sonnet-4-5
+export TIER_REASONING=databricks:databricks-claude-sonnet-4-5
 export FALLBACK_ENABLED=true
 export FALLBACK_PROVIDER=databricks
 export DATABRICKS_API_BASE=https://your-workspace.databricks.com
@@ -360,13 +361,15 @@ lynkr start
 ```
 
 **How it works:**
-- **0-2 tools**: Ollama (free, local, fast)
-- **3-15 tools**: OpenRouter (if configured) or fallback
-- **16+ tools**: Databricks/Azure (most capable)
-- **Ollama failures**: Automatic transparent fallback to cloud
+- Each request is scored for complexity (0-100) and mapped to a tier
+- **SIMPLE (0-25)**: Ollama (free, local, fast)
+- **MEDIUM (26-50)**: OpenRouter (affordable cloud)
+- **COMPLEX (51-75)**: Databricks (most capable)
+- **REASONING (76-100)**: Databricks (best available)
+- **Provider failures**: Automatic transparent fallback to cloud
 
 **Cost savings:**
-- **65-100%** for requests that stay on Ollama
+- **65-100%** for requests routed to local models
 - **40-87%** faster for simple requests
 
 ---
@@ -534,9 +537,13 @@ claude "What files are in the current directory?"
    - Local (Ollama): Should be 100-500ms
    - Cloud: Should be 500ms-2s
 
-2. **Enable hybrid routing:**
+2. **Enable tier-based routing:**
    ```bash
-   export PREFER_OLLAMA=true
+   # Set all 4 TIER_* env vars to enable tier-based routing
+   export TIER_SIMPLE=ollama:llama3.2
+   export TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+   export TIER_COMPLEX=azure-openai:gpt-4o
+   export TIER_REASONING=azure-openai:gpt-4o
    export FALLBACK_ENABLED=true
    ```
 
@@ -655,7 +662,7 @@ Claude Code CLI (displays result)
 
 ## Next Steps
 
-- **[Provider Configuration](providers.md)** - Configure all 9+ providers
+- **[Provider Configuration](providers.md)** - Configure all 12+ providers
 - **[Installation Guide](installation.md)** - Detailed installation
 - **[Features Guide](features.md)** - Learn about advanced features
 - **[Token Optimization](token-optimization.md)** - Maximize cost savings

@@ -21,9 +21,9 @@ const orchestrator = require("../orchestrator");
 const { getSession } = require("../sessions");
 const {
   convertOpenAIToAnthropic,
-  convertAnthropicToOpenAI,
-  convertAnthropicStreamChunkToOpenAI
+  convertAnthropicToOpenAI
 } = require("../clients/openai-format");
+const { IDE_SAFE_TOOLS } = require("../clients/standard-tools");
 
 const router = express.Router();
 
@@ -60,13 +60,14 @@ function detectClient(headers) {
  */
 const CLIENT_TOOL_MAPPINGS = {
   // ============== CODEX CLI ==============
-  // Tools: shell_command, read_file, write_file, apply_patch, glob_file_search, rg, list_dir
+  // Confirmed tools: shell, apply_patch, read_file, write_file, list_dir, glob_file_search,
+  //   rg, web_search, update_plan, view_image, memory
+  // NOT supported: spawn_agent/spawn_thread (Task has no Codex equivalent)
   codex: {
     "Bash": {
-      name: "shell_command",
+      name: "shell",
       mapArgs: (a) => ({
-        command: a.command || "",
-        workdir: a.cwd || a.working_directory
+        command: ["bash", "-c", a.command || ""]
       })
     },
     "Read": {
@@ -112,6 +113,18 @@ const CLIENT_TOOL_MAPPINGS = {
       name: "list_dir",
       mapArgs: (a) => ({
         path: a.path || a.directory
+      })
+    },
+    "TodoWrite": {
+      name: "update_plan",
+      mapArgs: (a) => ({
+        todos: a.todos || []
+      })
+    },
+    "WebSearch": {
+      name: "web_search",
+      mapArgs: (a) => ({
+        query: a.query || ""
       })
     }
   },
@@ -321,14 +334,7 @@ function mapToolForClient(toolName, argsJson, clientType) {
   };
 }
 
-/**
- * Check if client is a known AI coding tool that needs tool mapping
- * @param {Object} headers - Request headers
- * @returns {boolean}
- */
-function isKnownClient(headers) {
-  return detectClient(headers) !== "unknown";
-}
+
 
 /**
  * POST /v1/chat/completions
@@ -374,7 +380,7 @@ router.post("/chat/completions", async (req, res) => {
         : JSON.stringify(m.content).substring(0, 200)
     }));
 
-    logger.info({
+    logger.debug({
       endpoint: "/v1/chat/completions",
       model: req.body.model,
       messageCount: req.body.messages?.length,
@@ -392,6 +398,30 @@ router.post("/chat/completions", async (req, res) => {
 
     // Convert OpenAI request to Anthropic format
     const anthropicRequest = convertOpenAIToAnthropic(req.body);
+
+    // Inject tools if client didn't send any.
+    // Two-layer filtering:
+    //   1. IDE_SAFE_TOOLS = STANDARD_TOOLS minus AskUserQuestion (can't work through proxy)
+    //   2. For known clients (codex, cline, etc.), further filter to only tools
+    //      that have a mapping in CLIENT_TOOL_MAPPINGS — this ensures clients like
+    //      Codex don't see tools they can't handle (Task, WebFetch, NotebookEdit)
+    //      while Claude Code (unknown client) gets the full IDE_SAFE_TOOLS set.
+    const clientType = detectClient(req.headers);
+    if (!anthropicRequest.tools || anthropicRequest.tools.length === 0) {
+      const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
+      const clientTools = clientMappings
+        ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
+        : IDE_SAFE_TOOLS;
+      anthropicRequest.tools = clientTools;
+      logger.debug({
+        clientType,
+        injectedToolCount: clientTools.length,
+        injectedToolNames: clientTools.map(t => t.name),
+        reason: clientMappings
+          ? `Known client '${clientType}' — filtered to mapped tools only`
+          : "Unknown client — injecting full IDE_SAFE_TOOLS"
+      }, "=== INJECTING TOOLS ===");
+    }
 
     // Get or create session
     const session = getSession(sessionId);
@@ -420,7 +450,7 @@ router.post("/chat/completions", async (req, res) => {
         });
 
         // Check if we have a valid response body
-        logger.info({
+        logger.debug({
           hasResult: !!result,
           resultKeys: result ? Object.keys(result) : null,
           hasBody: result && !!result.body,
@@ -442,7 +472,7 @@ router.post("/chat/completions", async (req, res) => {
         const openaiResponse = convertAnthropicToOpenAI(result.body, req.body.model);
 
         // Debug: Log what we're about to stream
-        logger.info({
+        logger.debug({
           openaiResponseId: openaiResponse.id,
           messageContent: openaiResponse.choices[0]?.message?.content?.substring(0, 100),
           contentLength: openaiResponse.choices[0]?.message?.content?.length || 0,
@@ -454,7 +484,25 @@ router.post("/chat/completions", async (req, res) => {
 
         // Simulate streaming by sending the complete response as chunks
         const content = openaiResponse.choices[0].message.content || "";
-        const toolCalls = openaiResponse.choices[0].message.tool_calls;
+        let toolCalls = openaiResponse.choices[0].message.tool_calls;
+
+        // Map tool names for known IDE clients
+        if (clientType !== "unknown" && toolCalls && toolCalls.length > 0) {
+          toolCalls = toolCalls.map(tc => {
+            const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);
+            return {
+              ...tc,
+              function: {
+                name: mapped.name,
+                arguments: mapped.arguments
+              }
+            };
+          });
+          logger.debug({
+            mappedTools: toolCalls.map(t => t.function?.name),
+            clientType
+          }, "Tool names mapped for streaming chat/completions");
+        }
 
         // Send start chunk with role
         const startChunk = {
@@ -493,7 +541,7 @@ router.post("/chat/completions", async (req, res) => {
             }]
           };
           const contentWriteOk = res.write(`data: ${JSON.stringify(contentChunk)}\n\n`);
-          logger.info({ contentPreview: content.substring(0, 50), writeOk: contentWriteOk }, "Sent content chunk");
+          logger.debug({ contentPreview: content.substring(0, 50), writeOk: contentWriteOk }, "Sent content chunk");
         }
 
         // Send tool calls if present
@@ -545,7 +593,7 @@ router.post("/chat/completions", async (req, res) => {
         res.write("data: [DONE]\n\n");
 
         // Ensure data is flushed before ending
-        logger.info({ contentLength: content.length, contentPreview: content.substring(0, 50) }, "=== SSE STREAM COMPLETE ===");
+        logger.debug({ contentLength: content.length, contentPreview: content.substring(0, 50) }, "=== SSE STREAM COMPLETE ===");
         res.end();
 
         logger.info({
@@ -558,10 +606,7 @@ router.post("/chat/completions", async (req, res) => {
       } catch (streamError) {
         logger.error({
           error: streamError.message,
-          stack: streamError.stack,
-          resultWasNull: !result,
-          resultBodyWasNull: result && !result.body,
-          resultKeys: result ? Object.keys(result) : null
+          stack: streamError.stack
         }, "=== STREAMING ERROR ===");
 
         // Send error in OpenAI streaming format
@@ -605,6 +650,24 @@ router.post("/chat/completions", async (req, res) => {
 
       // Convert Anthropic response to OpenAI format
       const openaiResponse = convertAnthropicToOpenAI(result.body, req.body.model);
+
+      // Map tool names for known IDE clients
+      if (clientType !== "unknown" && openaiResponse.choices?.[0]?.message?.tool_calls?.length > 0) {
+        openaiResponse.choices[0].message.tool_calls = openaiResponse.choices[0].message.tool_calls.map(tc => {
+          const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);
+          return {
+            ...tc,
+            function: {
+              name: mapped.name,
+              arguments: mapped.arguments
+            }
+          };
+        });
+        logger.debug({
+          mappedTools: openaiResponse.choices[0].message.tool_calls.map(t => t.function?.name),
+          clientType
+        }, "Tool names mapped for non-streaming chat/completions");
+      }
 
       logger.info({
         duration: Date.now() - startTime,
@@ -763,6 +826,18 @@ function getConfiguredProviders() {
         "GLM-4.7",
         "GLM-4.5-Air",
         "GLM-4-Plus"
+      ]
+    });
+  }
+
+  // Check Moonshot AI (Kimi)
+  if (config.moonshot?.apiKey) {
+    providers.push({
+      name: "moonshot",
+      type: "moonshot-ai",
+      models: [
+        config.moonshot.model || "kimi-k2-turbo-preview",
+        "kimi-k2-turbo-preview"
       ]
     });
   }
@@ -1013,7 +1088,7 @@ function determineEmbeddingProvider(requestedModel = null) {
 async function generateOllamaEmbeddings(inputs, embeddingConfig) {
   const { model, endpoint } = embeddingConfig;
 
-  logger.info({
+  logger.debug({
     model,
     endpoint,
     inputCount: inputs.length
@@ -1079,7 +1154,7 @@ async function generateOllamaEmbeddings(inputs, embeddingConfig) {
 async function generateLlamaCppEmbeddings(inputs, embeddingConfig) {
   const { model, endpoint } = embeddingConfig;
 
-  logger.info({
+  logger.debug({
     model,
     endpoint,
     inputCount: inputs.length
@@ -1147,7 +1222,7 @@ async function generateLlamaCppEmbeddings(inputs, embeddingConfig) {
 async function generateOpenRouterEmbeddings(inputs, embeddingConfig) {
   const { model, apiKey, endpoint } = embeddingConfig;
 
-  logger.info({
+  logger.debug({
     model,
     inputCount: inputs.length
   }, "Generating embeddings with OpenRouter");
@@ -1181,7 +1256,7 @@ async function generateOpenRouterEmbeddings(inputs, embeddingConfig) {
 async function generateOpenAIEmbeddings(inputs, embeddingConfig) {
   const { model, apiKey, endpoint } = embeddingConfig;
 
-  logger.info({
+  logger.debug({
     model,
     inputCount: inputs.length
   }, "Generating embeddings with OpenAI");
@@ -1233,7 +1308,7 @@ router.post("/embeddings", async (req, res) => {
     // Convert input to array if string
     const inputs = Array.isArray(input) ? input : [input];
 
-    logger.info({
+    logger.debug({
       endpoint: "/v1/embeddings",
       model: model || "auto-detect",
       inputCount: inputs.length,
@@ -1335,7 +1410,7 @@ router.post("/responses", async (req, res) => {
     const { convertResponsesToChat, convertChatToResponses } = require("../clients/responses-format");
 
     // Comprehensive debug logging
-    logger.info({
+    logger.debug({
       endpoint: "/v1/responses",
       inputType: typeof req.body.input,
       inputIsArray: Array.isArray(req.body.input),
@@ -1354,7 +1429,7 @@ router.post("/responses", async (req, res) => {
     // Convert Responses API to Chat Completions format
     const chatRequest = convertResponsesToChat(req.body);
 
-    logger.info({
+    logger.debug({
       chatRequestMessageCount: chatRequest.messages?.length,
       chatRequestMessages: chatRequest.messages?.map(m => ({
         role: m.role,
@@ -1366,13 +1441,31 @@ router.post("/responses", async (req, res) => {
     // Convert to Anthropic format
     const anthropicRequest = convertOpenAIToAnthropic(chatRequest);
 
-    logger.info({
+    logger.debug({
       anthropicMessageCount: anthropicRequest.messages?.length,
       anthropicMessages: anthropicRequest.messages?.map(m => ({
         role: m.role,
         hasContent: !!m.content
       }))
     }, "After Chat→Anthropic conversion");
+
+    // Inject tools if client didn't send any (same two-layer filtering as chat/completions).
+    const clientType = detectClient(req.headers);
+    if (!anthropicRequest.tools || anthropicRequest.tools.length === 0) {
+      const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
+      const clientTools = clientMappings
+        ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
+        : IDE_SAFE_TOOLS;
+      anthropicRequest.tools = clientTools;
+      logger.debug({
+        clientType,
+        injectedToolCount: clientTools.length,
+        injectedToolNames: clientTools.map(t => t.name),
+        reason: clientMappings
+          ? `Known client '${clientType}' — filtered to mapped tools only`
+          : "Unknown client — injecting full IDE_SAFE_TOOLS"
+      }, "=== INJECTING TOOLS (responses) ===");
+    }
 
     // Get session
     const session = getSession(sessionId);
@@ -1400,7 +1493,7 @@ router.post("/responses", async (req, res) => {
         });
 
         // Debug: Log what orchestrator returned
-        logger.info({
+        logger.debug({
           hasResult: !!result,
           hasBody: !!result?.body,
           bodyKeys: result?.body ? Object.keys(result.body) : null,
@@ -1412,7 +1505,7 @@ router.post("/responses", async (req, res) => {
         // Convert back: Anthropic → OpenAI → Responses
         const chatResponse = convertAnthropicToOpenAI(result.body, req.body.model);
 
-        logger.info({
+        logger.debug({
           chatContent: chatResponse.choices?.[0]?.message?.content?.substring(0, 200),
           chatContentLength: chatResponse.choices?.[0]?.message?.content?.length || 0,
           hasToolCalls: !!chatResponse.choices?.[0]?.message?.tool_calls,
@@ -1433,7 +1526,7 @@ router.post("/responses", async (req, res) => {
         // Check if client is a known AI coding tool and map tool names accordingly
         const clientType = detectClient(req.headers);
         if (clientType !== "unknown" && toolCalls.length > 0) {
-          logger.info({
+          logger.debug({
             originalTools: toolCalls.map(t => t.function?.name),
             clientType,
             userAgent: req.headers["user-agent"]
@@ -1451,12 +1544,12 @@ router.post("/responses", async (req, res) => {
             };
           });
 
-          logger.info({
+          logger.debug({
             mappedTools: toolCalls.map(t => t.function?.name)
           }, `Tool names mapped for ${clientType}`);
         }
 
-        logger.info({
+        logger.debug({
           content: content.substring(0, 100),
           contentLength: content.length,
           toolCallCount: toolCalls.length,

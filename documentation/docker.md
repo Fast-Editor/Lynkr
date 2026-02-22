@@ -73,10 +73,14 @@ services:
     ports:
       - "8081:8081"
     environment:
-      # Hybrid routing: Ollama first, fallback to cloud
+      # Tier-based routing: local for simple, cloud for complex
       - MODEL_PROVIDER=ollama
       - OLLAMA_API_BASE=http://ollama:11434
-      - PREFER_OLLAMA=true
+      # Set all 4 TIER_* vars to enable tier-based routing
+      - TIER_SIMPLE=ollama:llama3.2
+      - TIER_MEDIUM=ollama:llama3.2
+      - TIER_COMPLEX=databricks:databricks-claude-sonnet-4-5
+      - TIER_REASONING=databricks:databricks-claude-sonnet-4-5
       - FALLBACK_ENABLED=true
       - FALLBACK_PROVIDER=databricks
       - DATABRICKS_API_BASE=${DATABRICKS_API_BASE}
@@ -452,8 +456,11 @@ environment:
   - DATABRICKS_API_BASE=https://your-workspace.databricks.com
   - DATABRICKS_API_KEY=${DATABRICKS_API_KEY}
 
-  # Hybrid routing
-  - PREFER_OLLAMA=true
+  # Tier-based routing (set all 4 to enable)
+  - TIER_SIMPLE=ollama:llama3.2
+  - TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+  - TIER_COMPLEX=databricks:databricks-claude-sonnet-4-5
+  - TIER_REASONING=databricks:databricks-claude-sonnet-4-5
   - FALLBACK_ENABLED=true
   - FALLBACK_PROVIDER=databricks
 

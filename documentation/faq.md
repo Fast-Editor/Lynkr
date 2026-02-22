@@ -8,11 +8,11 @@ Common questions about Lynkr, installation, configuration, and usage.
 
 ### What is Lynkr?
 
-Lynkr is a self-hosted proxy server that enables Claude Code CLI and Cursor IDE to work with multiple LLM providers (Databricks, AWS Bedrock, OpenRouter, Ollama, etc.) instead of being locked to Anthropic's API.
+Lynkr is a self-hosted proxy server that enables Claude Code CLI and Cursor IDE to work with multiple LLM providers (Databricks, AWS Bedrock, OpenRouter, Ollama, Moonshot AI, etc.) instead of being locked to Anthropic's API.
 
 **Key benefits:**
 - 💰 **60-80% cost savings** through token optimization
-- 🔓 **Provider flexibility** - Choose from 9+ providers
+- 🔓 **Provider flexibility** - Choose from 12+ providers
 - 🔒 **Privacy** - Run 100% locally with Ollama or llama.cpp
 - ✅ **Zero code changes** - Drop-in replacement for Anthropic backend
 
@@ -67,7 +67,7 @@ Lynkr itself is **100% FREE** and open source (Apache 2.0 license).
 
 | Feature | Native Claude Code | Lynkr |
 |---------|-------------------|-------|
-| **Providers** | Anthropic only | 9+ providers |
+| **Providers** | Anthropic only | 12+ providers |
 | **Cost** | Full Anthropic pricing | 60-80% cheaper |
 | **Local models** | ❌ Cloud-only | ✅ Ollama, llama.cpp |
 | **Privacy** | ☁️ Cloud | 🔒 Can run 100% locally |
@@ -126,6 +126,11 @@ See [Installation Guide](installation.md) for all methods.
 - **Setup:** 5 minutes
 - **Cost:** ~$10-20/month
 
+**For Affordable Cloud + Reasoning:**
+- ✅ **Moonshot AI** - Kimi K2, thinking models
+- **Setup:** 2 minutes
+- **Cost:** ~$5-10/month
+
 **For Enterprise:**
 - ✅ **Databricks** - Claude 4.5, enterprise SLA
 - **Setup:** 10 minutes
@@ -137,23 +142,71 @@ See [Provider Configuration Guide](providers.md) for detailed comparison.
 
 ### Can I use multiple providers?
 
-**Yes!** Lynkr supports hybrid routing:
+**Yes!** Lynkr supports tier-based routing:
 
 ```bash
-# Use Ollama for simple requests, Databricks for complex ones
-export PREFER_OLLAMA=true
-export OLLAMA_MODEL=llama3.1:8b
+# Set all 4 TIER_* env vars to enable tier-based routing
+export TIER_SIMPLE=ollama:llama3.2
+export TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+export TIER_COMPLEX=azure-openai:gpt-4o
+export TIER_REASONING=azure-openai:gpt-4o
 export FALLBACK_ENABLED=true
 export FALLBACK_PROVIDER=databricks
 ```
 
 **How it works:**
-- **0-2 tools**: Ollama (free, local, fast)
-- **3-15 tools**: OpenRouter (if configured) or fallback
-- **16+ tools**: Databricks/Azure (most capable)
-- **Ollama failures**: Automatic transparent fallback
+- Each request is scored for complexity (0-100) and mapped to a tier
+- **SIMPLE (0-25)**: Ollama (free, local, fast) or Moonshot (affordable cloud)
+- **MEDIUM (26-50)**: OpenRouter or mid-range cloud model
+- **COMPLEX (51-75)**: Capable cloud models
+- **REASONING (76-100)**: Best available models
+- **Provider failures**: Automatic transparent fallback
 
-**Cost savings:** 65-100% for requests that stay on Ollama.
+**Cost savings:** 65-100% for requests routed to local/cheap models.
+
+---
+
+### What is MODEL_PROVIDER and do I still need it?
+
+`MODEL_PROVIDER` sets a single static provider for all requests. When you set `MODEL_PROVIDER=ollama`, every request goes to Ollama regardless of complexity.
+
+**With TIER_\* vars configured:** `MODEL_PROVIDER` is not used for routing — the tier system picks the provider per-request. However, `MODEL_PROVIDER` is still read for startup checks (e.g. waiting for Ollama) and as a fallback default in edge cases. Keep it set to your most-used provider.
+
+**Without TIER_\* vars:** `MODEL_PROVIDER` is the only thing that controls where requests go.
+
+---
+
+### How do MODEL_PROVIDER and TIER_\* work together?
+
+They are two separate routing modes:
+
+| Scenario | What happens |
+|----------|-------------|
+| `MODEL_PROVIDER` only | Static routing — all requests go to that provider |
+| All 4 `TIER_*` set | Tier routing — TIER_\* **overrides** MODEL_PROVIDER for routing |
+| Only 1-3 `TIER_*` set | Tier routing disabled — falls back to `MODEL_PROVIDER` |
+| Both set | TIER_\* takes priority for routing; MODEL_PROVIDER is kept as a config default |
+
+**Example:** If you have `MODEL_PROVIDER=ollama` and `TIER_COMPLEX=databricks:claude-sonnet`, complex requests go to Databricks even though MODEL_PROVIDER says ollama.
+
+---
+
+### What happens if I only set some TIER_\* vars?
+
+All 4 must be set (`TIER_SIMPLE`, `TIER_MEDIUM`, `TIER_COMPLEX`, `TIER_REASONING`) for tier routing to activate. If any are missing, tier routing is disabled entirely and `MODEL_PROVIDER` is used for all requests.
+
+This is intentional — partial tier config could lead to unexpected gaps where some complexity levels have no provider assigned.
+
+---
+
+### What is FALLBACK_PROVIDER?
+
+The fallback provider is a safety net for when the tier-selected provider fails (timeout, connection refused, rate limit). If `FALLBACK_ENABLED=true` and the primary provider for a request fails, Lynkr retries the request against `FALLBACK_PROVIDER` transparently.
+
+- Only triggers when tier routing is active
+- Cannot be a local provider (ollama, llamacpp, lmstudio) — use cloud providers
+- Defaults to `databricks`
+- If you don't have cloud credentials, set `FALLBACK_ENABLED=false`
 
 ---
 
@@ -227,6 +280,7 @@ See [Embeddings Guide](embeddings.md) for details.
 | **OpenRouter** | 500ms-2s | $-$$ | Excellent | Flexibility, 100+ models |
 | **Databricks/Azure** | 500ms-2s | $$$ | Excellent | Enterprise, Claude 4.5 |
 | **AWS Bedrock** | 500ms-2s | $-$$$ | Excellent* | AWS, 100+ models |
+| **Moonshot AI** | 500ms-2s | $ | Good | Affordable, thinking models |
 | **OpenAI** | 500ms-2s | $$ | Excellent | GPT-4o, o1, o3 |
 
 _* Tool calling only supported by Claude models on Bedrock_

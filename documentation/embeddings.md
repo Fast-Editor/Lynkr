@@ -532,10 +532,12 @@ OPENROUTER_EMBEDDINGS_MODEL=openai/text-embedding-3-small
 **Best for:** Privacy + Quality + Cost Optimization
 
 ```env
-# Chat: Ollama + Cloud fallback
-PREFER_OLLAMA=true
+# Chat: Tier-based routing (set all 4 to enable)
+TIER_SIMPLE=ollama:llama3.2
+TIER_MEDIUM=openrouter:openai/gpt-4o-mini
+TIER_COMPLEX=databricks:databricks-claude-sonnet-4-5
+TIER_REASONING=databricks:databricks-claude-sonnet-4-5
 FALLBACK_ENABLED=true
-OLLAMA_MODEL=llama3.1:8b
 FALLBACK_PROVIDER=databricks
 DATABRICKS_API_BASE=https://your-workspace.databricks.com
 DATABRICKS_API_KEY=your-key
@@ -547,10 +549,10 @@ OLLAMA_EMBEDDINGS_MODEL=nomic-embed-text
 ```
 
 **Benefits:**
-- ✅ 70-80% of chat requests FREE (Ollama)
+- ✅ 70-80% of chat requests FREE (Ollama via TIER_SIMPLE)
 - ✅ 100% private embeddings (local)
 - ✅ Cloud quality for complex tasks
-- ✅ Intelligent automatic routing
+- ✅ Intelligent automatic tier-based routing
 
 ---
 

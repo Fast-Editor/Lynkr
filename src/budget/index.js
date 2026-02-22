@@ -26,6 +26,7 @@ class BudgetManager {
       }
 
       this.db = new Database(dbPath);
+      this.dbPath = dbPath;
       this.initDatabase();
       logger.info({ dbPath }, 'Budget manager initialized');
     } catch (err) {
@@ -33,8 +34,6 @@ class BudgetManager {
       this.enabled = false;
       return;
     }
-
-   
   }
 
   initDatabase() {

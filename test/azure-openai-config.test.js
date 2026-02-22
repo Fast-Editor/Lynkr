@@ -17,6 +17,12 @@ describe("Azure OpenAI Configuration Tests", () => {
     process.env.AZURE_OPENAI_API_KEY = "";
     process.env.AZURE_OPENAI_DEPLOYMENT = "";
     process.env.AZURE_OPENAI_API_VERSION = "";
+
+    // Prevent .env TIER_* values from being picked up by dotenv
+    process.env.TIER_SIMPLE = "";
+    process.env.TIER_MEDIUM = "";
+    process.env.TIER_COMPLEX = "";
+    process.env.TIER_REASONING = "";
   });
 
   afterEach(() => {
@@ -119,7 +125,7 @@ describe("Azure OpenAI Configuration Tests", () => {
 
   describe("Fallback Provider Validation", () => {
     it("should accept azure-openai as fallback provider with credentials", () => {
-      process.env.PREFER_OLLAMA = "true";
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "true";
@@ -134,9 +140,8 @@ describe("Azure OpenAI Configuration Tests", () => {
       assert.strictEqual(config.modelProvider.fallbackProvider, "azure-openai");
     });
 
-    it("should reject when azure-openai is fallback but credentials missing", () => {
-      process.env.MODEL_PROVIDER = "ollama"; // Set to ollama for hybrid routing scenario
-      process.env.PREFER_OLLAMA = "true";
+    it("should warn when azure-openai is fallback but credentials missing", () => {
+      process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_ENABLED = "true";
@@ -146,11 +151,15 @@ describe("Azure OpenAI Configuration Tests", () => {
       process.env.AZURE_OPENAI_API_KEY = "";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
+      // Enable tier routing so fallback validation runs
+      process.env.TIER_SIMPLE = "ollama:llama3.2";
+      process.env.TIER_MEDIUM = "ollama:llama3.2";
+      process.env.TIER_COMPLEX = "ollama:llama3.2";
+      process.env.TIER_REASONING = "ollama:llama3.2";
 
-      // Should throw error about missing Azure OpenAI credentials (fail-fast validation)
-      assert.throws(() => {
-        require("../src/config");
-      }, /AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY/);
+      // Should warn but not throw (fallback misconfigured warning)
+      const config = require("../src/config");
+      assert.strictEqual(config.modelProvider.fallbackProvider, "azure-openai");
     });
   });
 

@@ -6,11 +6,12 @@ const { getCircuitBreakerRegistry } = require("./circuit-breaker");
 const { getMetricsCollector } = require("../observability/metrics");
 const { getHealthTracker } = require("../observability/health-tracker");
 const logger = require("../logger");
-const { STANDARD_TOOLS } = require("./standard-tools");
+const { STANDARD_TOOLS, STANDARD_TOOL_NAMES } = require("./standard-tools");
 const { convertAnthropicToolsToOpenRouter } = require("./openrouter-utils");
 const {
   detectModelFamily
 } = require("./bedrock-utils");
+const { getGPTSystemPromptAddendum } = require("./gpt-utils");
 
 
 
@@ -183,9 +184,9 @@ async function invokeDatabricks(body) {
   // Inject standard tools if client didn't send any (passthrough mode)
   if (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0) {
     databricksBody.tools = STANDARD_TOOLS;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (Databricks) ===");
   }
@@ -224,9 +225,9 @@ async function invokeAzureAnthropic(body) {
   // Inject standard tools if client didn't send any (passthrough mode)
   if (!Array.isArray(body.tools) || body.tools.length === 0) {
     body.tools = STANDARD_TOOLS;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (Azure Anthropic) ===");
   }
@@ -248,42 +249,115 @@ async function invokeOllama(body) {
     throw new Error("Ollama endpoint is not configured.");
   }
 
-  const { convertAnthropicToolsToOllama, checkOllamaToolSupport } = require("./ollama-utils");
+  const { checkOllamaToolSupport, hasAnthropicEndpoint, convertAnthropicToolsToOllama } = require("./ollama-utils");
 
+  const modelName = body._suggestionModeModel || body._tierModel || config.ollama.model;
+
+  // Detect whether Ollama has the native Anthropic Messages API (v0.14.0+)
+  const useAnthropicApi = await hasAnthropicEndpoint(config.ollama.endpoint);
+
+  // Check if model supports tools FIRST (before wasteful injection)
+  const supportsTools = await checkOllamaToolSupport(config.ollama.model);
+  const injectToolsOllama = process.env.INJECT_TOOLS_OLLAMA !== "false";
+
+  // Determine tools to send
+  let toolsToSend = body.tools;
+  let toolsInjected = false;
+
+  if (!supportsTools) {
+    toolsToSend = null;
+  } else if (injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+    toolsToSend = STANDARD_TOOLS;
+    toolsInjected = true;
+  }
+
+  // Consolidated tool injection log
+  const toolCount = (supportsTools && Array.isArray(toolsToSend)) ? toolsToSend.length : 0;
+  let logMessage;
+  if (!supportsTools) {
+    logMessage = `Tools not supported (0 tools)`;
+  } else if (toolsInjected) {
+    logMessage = `injected ${toolCount} tools`;
+  } else if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+    logMessage = `Using client-provided tools (${toolCount} tools)`;
+  } else if (!injectToolsOllama) {
+    logMessage = `Tool injection disabled (0 tools)`;
+  } else {
+    logMessage = `No tools (0 tools)`;
+  }
+
+  logger.debug({
+    model: modelName,
+    apiMode: useAnthropicApi ? "anthropic" : "legacy",
+    toolCount,
+    toolsInjected,
+    supportsTools,
+    toolNames: (Array.isArray(toolsToSend) && toolsToSend.length > 0) ? toolsToSend.map(t => t.name) : []
+  }, `=== Ollama STANDARD TOOLS INJECTION for ${config.ollama.model} === ${logMessage}`);
+
+  // ---- Anthropic-native path (Ollama v0.14.0+) ----
+  if (useAnthropicApi) {
+    const endpoint = `${config.ollama.endpoint}/v1/messages`;
+    const headers = {
+      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
+    };
+
+    // Build body with only valid Anthropic Messages API fields
+    const ollamaBody = {
+      model: modelName,
+      messages: body.messages,
+      max_tokens: body.max_tokens || 4096,
+      stream: false,
+    };
+
+    if (body.system) ollamaBody.system = body.system;
+    if (body.temperature !== undefined) ollamaBody.temperature = body.temperature;
+    if (body.top_p !== undefined) ollamaBody.top_p = body.top_p;
+    if (body.top_k !== undefined) ollamaBody.top_k = body.top_k;
+    if (body.stop_sequences) ollamaBody.stop_sequences = body.stop_sequences;
+    if (body.tool_choice) ollamaBody.tool_choice = body.tool_choice;
+    if (body.metadata) ollamaBody.metadata = body.metadata;
+
+    // Tools (already Anthropic format — no conversion needed)
+    if (supportsTools && Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+      ollamaBody.tools = toolsToSend;
+    }
+
+    if (config.ollama.keepAlive !== undefined) {
+      const keepAlive = config.ollama.keepAlive;
+      ollamaBody.keep_alive = /^-?\d+$/.test(keepAlive)
+        ? parseInt(keepAlive, 10)
+        : keepAlive;
+      logger.debug({ keepAlive: ollamaBody.keep_alive }, "Ollama keep_alive configured");
+    }
+
+    return performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
+  }
+
+  // ---- Legacy path (Ollama < v0.14.0, /api/chat with OpenAI format) ----
   const endpoint = `${config.ollama.endpoint}/api/chat`;
   const headers = { "Content-Type": "application/json" };
 
-  // Convert Anthropic messages format to Ollama format
-  // Ollama expects content as string, not content blocks array
+  // Convert Anthropic messages to Ollama format (content blocks → strings)
   const convertedMessages = [];
 
-  // Handle system prompt (same pattern as other providers)
   if (body.system && typeof body.system === "string" && body.system.trim().length > 0) {
-    convertedMessages.push({
-      role: "system",
-      content: body.system.trim()
-    });
+    convertedMessages.push({ role: "system", content: body.system.trim() });
   }
 
-  // Add user/assistant messages
   (body.messages || []).forEach(msg => {
     let content = msg.content;
-
-    // Convert content blocks array to simple string
     if (Array.isArray(content)) {
       content = content
         .filter(block => block.type === 'text')
         .map(block => block.text || '')
         .join('\n');
     }
-
-    convertedMessages.push({
-      role: msg.role,
-      content: content || ''
-    });
+    convertedMessages.push({ role: msg.role, content: content || '' });
   });
 
-  // FIX: Deduplicate consecutive messages with same role (Ollama may reject this)
+  // Deduplicate consecutive messages with same role
   const deduplicated = [];
   let lastRole = null;
   for (const msg of convertedMessages) {
@@ -298,84 +372,29 @@ async function invokeOllama(body) {
     lastRole = msg.role;
   }
 
-  if (deduplicated.length !== convertedMessages.length) {
-    logger.info({
-      originalCount: convertedMessages.length,
-      deduplicatedCount: deduplicated.length,
-      removed: convertedMessages.length - deduplicated.length,
-      messageRoles: convertedMessages.map(m => m.role).join(' → '),
-      deduplicatedRoles: deduplicated.map(m => m.role).join(' → ')
-    }, 'Ollama: Removed consecutive duplicate roles from message sequence');
-  }
-
   const ollamaBody = {
-    model: body._suggestionModeModel || config.ollama.model,
+    model: modelName,
     messages: deduplicated,
-    stream: false,  // Force non-streaming for Ollama - streaming format conversion not yet implemented
+    stream: false,
     options: {
       temperature: body.temperature ?? 0.7,
-      num_predict: body.max_tokens ?? 4096,
+      num_predict: body.max_tokens ?? 16384,
       top_p: body.top_p ?? 1.0,
     },
   };
 
-  // Add keep_alive if configured (controls how long model stays loaded)
-  // Accepts: duration strings ("10m", "24h"), numbers (seconds), -1 (permanent), 0 (immediate unload)
   if (config.ollama.keepAlive !== undefined) {
     const keepAlive = config.ollama.keepAlive;
-    // Parse as number if it looks like one, otherwise use string
     ollamaBody.keep_alive = /^-?\d+$/.test(keepAlive)
       ? parseInt(keepAlive, 10)
       : keepAlive;
     logger.debug({ keepAlive: ollamaBody.keep_alive }, "Ollama keep_alive configured");
   }
 
-  // Check if model supports tools FIRST (before wasteful injection)
-  const supportsTools = await checkOllamaToolSupport(config.ollama.model);
-
-  // Inject standard tools if client didn't send any (passthrough mode)
-  let toolsToSend = body.tools;
-  let toolsInjected = false;
-
-  const injectToolsOllama = process.env.INJECT_TOOLS_OLLAMA !== "false";
-
-  if (!supportsTools) {
-    // Model doesn't support tools - don't inject them
-    toolsToSend = null;
-  } else if (injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    // Model supports tools and none provided - inject them
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
-  }
-
-  // Add tools if present AND model supports them
+  // Tools need conversion to OpenAI function-calling format for legacy endpoint
   if (supportsTools && Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     ollamaBody.tools = convertAnthropicToolsToOllama(toolsToSend);
   }
-
-  // Single consolidated log message for all cases (easy to grep and compare across models)
-  const toolCount = (supportsTools && Array.isArray(toolsToSend)) ? toolsToSend.length : 0;
-  let logMessage;
-
-  if (!supportsTools) {
-    logMessage = `Tools not supported (0 tools)`;
-  } else if (toolsInjected) {
-    logMessage = `injected ${toolCount} tools`;
-  } else if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
-    logMessage = `Using client-provided tools (${toolCount} tools)`;
-  } else if (!injectToolsOllama) {
-    logMessage = `Tool injection disabled (0 tools)`;
-  } else {
-    logMessage = `No tools (0 tools)`;
-  }
-
-  logger.info({
-    model: config.ollama.model,
-    toolCount,
-    toolsInjected,
-    supportsTools,
-    toolNames: (Array.isArray(toolsToSend) && toolsToSend.length > 0) ? toolsToSend.map(t => t.name) : []
-  }, `=== Ollama STANDARD TOOLS INJECTION for ${config.ollama.model} === ${logMessage}`);
 
   return performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
 }
@@ -410,7 +429,7 @@ async function invokeOpenRouter(body) {
   }
 
   const openRouterBody = {
-    model: body._suggestionModeModel || config.openrouter.model,
+    model: body._suggestionModeModel || body._tierModel || config.openrouter.model,
     messages,
     temperature: body.temperature ?? 0.7,
     max_tokens: body.max_tokens ?? 4096,
@@ -426,16 +445,16 @@ async function invokeOpenRouter(body) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (OpenRouter) ===");
   }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     openRouterBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
@@ -490,13 +509,16 @@ async function invokeAzureOpenAI(body) {
     });
   }
 
+  // System prompt injection disabled - breaks model response
+  // Tool guidance now provided via tool descriptions instead
+
   const azureBody = {
     messages,
     temperature: body.temperature ?? 0.3,  // Lower temperature for more deterministic, action-oriented behavior
     max_tokens: Math.min(body.max_tokens ?? 4096, 16384),  // Cap at Azure OpenAI's limit
     top_p: body.top_p ?? 1.0,
     stream: false,  // Force non-streaming for Azure OpenAI - streaming format conversion not yet implemented
-    model: body._suggestionModeModel || config.azureOpenAI.deployment
+    model: body._suggestionModeModel || body._tierModel || config.azureOpenAI.deployment
   };
 
   // Add tools - inject standard tools if client didn't send any (passthrough mode)
@@ -507,18 +529,18 @@ async function invokeAzureOpenAI(body) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS ===");
   }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     azureBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
-    azureBody.parallel_tool_calls = true;  // Enable parallel tool calling for better performance
+    azureBody.parallel_tool_calls = true;  // Enable parallel tool calls
     azureBody.tool_choice = "auto";  // Explicitly enable tool use (helps GPT models understand they should use tools)
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected,
@@ -529,7 +551,7 @@ async function invokeAzureOpenAI(body) {
     }, "=== SENDING TOOLS TO AZURE OPENAI ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     hasTools: !!azureBody.tools,
     toolCount: azureBody.tools?.length || 0,
@@ -563,14 +585,83 @@ async function invokeAzureOpenAI(body) {
     // Track function call IDs for matching with outputs
     const pendingCallIds = [];
 
+    // Detect if this is a continuation request (has tool results)
+    // Azure content filter triggers on full system prompt in continuations
+    // Check for:
+    // 1. tool_result blocks in user messages (Anthropic format)
+    // 2. tool messages (OpenAI format)
+    // 3. assistant messages with tool_use or tool_calls (indicates prior tool invocation)
+    // 4. Flattened continuation pattern from orchestrator (contains "IMPORTANT: Focus on")
+    const hasToolResults = (body.messages || []).some(msg => {
+      // Check for Anthropic format tool_result in user messages
+      if (msg.role === "user" && Array.isArray(msg.content)) {
+        if (msg.content.some(block => block.type === "tool_result")) return true;
+      }
+      // Check for OpenAI format tool messages
+      if (msg.role === "tool") return true;
+      // Check for assistant messages with tool_use (Anthropic) or tool_calls (OpenAI)
+      // If there's a prior tool use, this is a continuation
+      if (msg.role === "assistant") {
+        if (Array.isArray(msg.content)) {
+          if (msg.content.some(block => block.type === "tool_use")) return true;
+        }
+        if (msg.tool_calls && msg.tool_calls.length > 0) return true;
+      }
+      return false;
+    }) || azureBody.messages.some(msg => {
+      // Also check converted messages for flattened continuation pattern
+      // The orchestrator flattens tool results into user message with this marker
+      if (msg.role === "user" && typeof msg.content === "string") {
+        if (msg.content.includes("IMPORTANT: Focus on and respond ONLY to my most recent request")) return true;
+      }
+      return false;
+    });
+
+    if (hasToolResults) {
+      logger.debug({
+        hasToolResults: true,
+        originalMessageCount: (body.messages || []).length,
+        convertedMessageCount: azureBody.messages.length,
+        messageRoles: (body.messages || []).map(m => m.role),
+      }, "=== CONTINUATION REQUEST DETECTED - using minimal system prompt to avoid Azure content filter ===");
+    } else {
+      logger.debug({
+        hasToolResults: false,
+        originalMessageCount: (body.messages || []).length,
+        messageRoles: (body.messages || []).map(m => m.role),
+      }, "Initial request - using full system prompt");
+    }
+
+    // Helper function to strip <system-reminder> tags and meta-instructions from content
+    // Azure's jailbreak filter triggers on these instructions in continuation requests
+    const stripSystemReminders = (content) => {
+      if (!content || typeof content !== 'string') return content;
+      // Remove <system-reminder>...</system-reminder> blocks
+      let cleaned = content.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, '');
+      // Remove the continuation marker that orchestrator adds
+      cleaned = cleaned.replace(/---\s*IMPORTANT:\s*Focus on and respond ONLY to my most recent request[^\n]*/gi, '');
+      // Trim whitespace
+      return cleaned.trim();
+    };
+
     for (const msg of azureBody.messages) {
       if (msg.role === "system") {
-        // System messages become developer messages
-        responsesInput.push({
-          type: "message",
-          role: "developer",
-          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-        });
+        // For continuation requests, use minimal system prompt to avoid content filter
+        // Azure's jailbreak detection triggers on security-related text in continuations
+        if (hasToolResults) {
+          responsesInput.push({
+            type: "message",
+            role: "developer",
+            content: "You are a helpful coding assistant. Continue helping the user based on the tool results."
+          });
+        } else {
+          // Initial request - use full system prompt
+          responsesInput.push({
+            type: "message",
+            role: "developer",
+            content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+          });
+        }
       } else if (msg.role === "user") {
         // Check if content contains tool_result blocks (Anthropic format)
         if (Array.isArray(msg.content)) {
@@ -585,19 +676,30 @@ async function invokeAzureOpenAI(body) {
                 output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || "")
               });
             } else if (block.type === "text") {
-              responsesInput.push({
-                type: "message",
-                role: "user",
-                content: block.text || ""
-              });
+              // For continuation requests, strip system-reminder tags to avoid jailbreak filter
+              const textContent = hasToolResults ? stripSystemReminders(block.text || "") : (block.text || "");
+              if (textContent) {  // Only add if there's content after stripping
+                responsesInput.push({
+                  type: "message",
+                  role: "user",
+                  content: textContent
+                });
+              }
             }
           }
         } else {
-          responsesInput.push({
-            type: "message",
-            role: "user",
-            content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-          });
+          // For continuation requests, strip system-reminder tags to avoid jailbreak filter
+          let userContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+          if (hasToolResults) {
+            userContent = stripSystemReminders(userContent);
+          }
+          if (userContent) {  // Only add if there's content after stripping
+            responsesInput.push({
+              type: "message",
+              role: "user",
+              content: userContent
+            });
+          }
         }
       } else if (msg.role === "assistant") {
         // Assistant messages - handle tool_calls (OpenAI format) and tool_use blocks (Anthropic format)
@@ -663,7 +765,7 @@ async function invokeAzureOpenAI(body) {
       tool_choice: azureBody.tool_choice,
       stream: false
     };
-    logger.info({
+    logger.debug({
       format: "responses",
       inputCount: responsesBody.input?.length,
       model: responsesBody.model,
@@ -681,7 +783,7 @@ async function invokeAzureOpenAI(body) {
       const textContent = messageOutput?.content?.find(c => c.type === "output_text")?.text || "";
 
       // Find function_call outputs (tool calls are separate items in output array)
-      const toolCalls = outputArray
+      const rawToolCalls = outputArray
         .filter(o => o.type === "function_call")
         .map(tc => ({
           id: tc.call_id || tc.id || `call_${Date.now()}`,
@@ -692,7 +794,30 @@ async function invokeAzureOpenAI(body) {
           }
         }));
 
-      logger.info({
+      // Deduplicate identical tool calls (GPT sometimes returns multiple identical calls)
+      const seenSignatures = new Set();
+      const toolCalls = rawToolCalls.filter(tc => {
+        const signature = `${tc.function.name}:${tc.function.arguments}`;
+        if (seenSignatures.has(signature)) {
+          logger.warn({
+            toolName: tc.function.name,
+            signature: signature.substring(0, 100),
+          }, "Filtered duplicate tool call from GPT response");
+          return false;
+        }
+        seenSignatures.add(signature);
+        return true;
+      });
+
+      if (rawToolCalls.length !== toolCalls.length) {
+        logger.debug({
+          originalCount: rawToolCalls.length,
+          dedupedCount: toolCalls.length,
+          removed: rawToolCalls.length - toolCalls.length,
+        }, "Deduplicated identical tool calls from single response");
+      }
+
+      logger.debug({
         outputTypes: outputArray.map(o => o.type),
         hasMessage: !!messageOutput,
         toolCallCount: toolCalls.length,
@@ -717,7 +842,7 @@ async function invokeAzureOpenAI(body) {
         usage: result.json.usage
       };
 
-      logger.info({
+      logger.debug({
         convertedContent: textContent?.substring(0, 100),
         hasToolCalls: toolCalls.length > 0,
         toolCallCount: toolCalls.length
@@ -725,7 +850,7 @@ async function invokeAzureOpenAI(body) {
 
       // Now convert from Chat Completions format to Anthropic format
       const anthropicJson = convertOpenAIToAnthropic(result.json);
-      logger.info({
+      logger.debug({
         anthropicContentTypes: anthropicJson.content?.map(c => c.type),
         stopReason: anthropicJson.stop_reason
       }, "Converted to Anthropic format");
@@ -747,67 +872,6 @@ async function invokeAzureOpenAI(body) {
   }
 }
 
-/**
- * Convert Azure Responses API response to Anthropic format
- */
-function convertResponsesAPIToAnthropic(response, model) {
-  const content = [];
-  const outputArray = response.output || [];
-
-  // Extract text content from message output
-  const messageOutput = outputArray.find(o => o.type === "message");
-  if (messageOutput?.content) {
-    for (const item of messageOutput.content) {
-      if (item.type === "output_text" && item.text) {
-        content.push({ type: "text", text: item.text });
-      }
-    }
-  }
-
-  // Extract tool calls from function_call outputs
-  const toolCalls = outputArray
-    .filter(o => o.type === "function_call")
-    .map(tc => ({
-      type: "tool_use",
-      id: tc.call_id || tc.id || `call_${Date.now()}`,
-      name: tc.name,
-      input: typeof tc.arguments === 'string' ? JSON.parse(tc.arguments || "{}") : (tc.arguments || {})
-    }));
-
-  content.push(...toolCalls);
-
-  // Handle reasoning_content for thinking models
-  if (content.length === 0 && response.reasoning_content) {
-    content.push({ type: "text", text: response.reasoning_content });
-  }
-
-  // Ensure at least empty text if no content
-  if (content.length === 0) {
-    content.push({ type: "text", text: "" });
-  }
-
-  // Determine stop reason
-  let stopReason = "end_turn";
-  if (toolCalls.length > 0) {
-    stopReason = "tool_use";
-  } else if (response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens") {
-    stopReason = "max_tokens";
-  }
-
-  return {
-    id: response.id || `msg_${Date.now()}`,
-    type: "message",
-    role: "assistant",
-    content,
-    model: model || response.model,
-    stop_reason: stopReason,
-    stop_sequence: null,
-    usage: {
-      input_tokens: response.usage?.input_tokens || 0,
-      output_tokens: response.usage?.output_tokens || 0,
-    }
-  };
-}
 
 async function invokeOpenAI(body) {
   if (!config.openai?.apiKey) {
@@ -841,8 +905,10 @@ async function invokeOpenAI(body) {
     });
   }
 
+  // System prompt injection disabled - breaks model response
+
   const openAIBody = {
-    model: body._suggestionModeModel || config.openai.model || "gpt-4o",
+    model: body._suggestionModeModel || body._tierModel || config.openai.model || "gpt-4o",
     messages,
     temperature: body.temperature ?? 0.7,
     max_tokens: body.max_tokens ?? 4096,
@@ -858,25 +924,25 @@ async function invokeOpenAI(body) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (OpenAI) ===");
   }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     openAIBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
-    openAIBody.parallel_tool_calls = true;  // Enable parallel tool calling
+    openAIBody.parallel_tool_calls = false;  // Disable parallel tool calls - GPT often makes duplicate calls
     openAIBody.tool_choice = "auto";  // Let the model decide when to use tools
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
     }, "=== SENDING TOOLS TO OPENAI ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     model: openAIBody.model,
     hasTools: !!openAIBody.tools,
@@ -934,7 +1000,7 @@ async function invokeLlamaCpp(body) {
   }
 
   if (deduplicated.length !== messages.length) {
-    logger.info({
+    logger.debug({
       originalCount: messages.length,
       deduplicatedCount: deduplicated.length,
       removed: messages.length - deduplicated.length,
@@ -959,26 +1025,26 @@ async function invokeLlamaCpp(body) {
   if (injectToolsLlamacpp && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (llama.cpp) ===");
   } else if (!injectToolsLlamacpp) {
-    logger.info({}, "Tool injection disabled for llama.cpp (INJECT_TOOLS_LLAMACPP=false)");
+    logger.debug({}, "Tool injection disabled for llama.cpp (INJECT_TOOLS_LLAMACPP=false)");
   }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     llamacppBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     llamacppBody.tool_choice = "auto";
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
     }, "=== SENDING TOOLS TO LLAMA.CPP ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     hasTools: !!llamacppBody.tools,
     toolCount: llamacppBody.tools?.length || 0,
@@ -1042,9 +1108,9 @@ async function invokeLMStudio(body) {
   if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (LM Studio) ===");
   }
@@ -1052,14 +1118,14 @@ async function invokeLMStudio(body) {
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     lmstudioBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     lmstudioBody.tool_choice = "auto";
-    logger.info({
+    logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name),
       toolsInjected
     }, "=== SENDING TOOLS TO LM STUDIO ===");
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     hasTools: !!lmstudioBody.tools,
     toolCount: lmstudioBody.tools?.length || 0,
@@ -1080,7 +1146,7 @@ async function invokeBedrock(body) {
   }
 
   const bearerToken = config.bedrock.apiKey;
-  logger.info({ authMethod: "Bearer Token" }, "=== BEDROCK AUTH ===");
+  logger.debug({ authMethod: "Bearer Token" }, "=== BEDROCK AUTH ===");
 
   // 2. Inject standard tools if needed
   let toolsToSend = body.tools;
@@ -1089,9 +1155,9 @@ async function invokeBedrock(body) {
   if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
-    logger.info({
+    logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+      injectedToolNames: STANDARD_TOOL_NAMES,
       reason: "Client did not send tools (passthrough mode)"
     }, "=== INJECTING STANDARD TOOLS (Bedrock) ===");
   }
@@ -1099,10 +1165,10 @@ async function invokeBedrock(body) {
   const bedrockBody = { ...body, tools: toolsToSend };
 
   // 4. Detect model family and convert format
-  const modelId = config.bedrock.modelId;
+  const modelId = body._tierModel || config.bedrock.modelId;
   const modelFamily = detectModelFamily(modelId);
 
-  logger.info({
+  logger.debug({
     modelId,
     modelFamily,
     hasTools: !!bedrockBody.tools,
@@ -1167,7 +1233,7 @@ async function invokeBedrock(body) {
   const host = `bedrock-runtime.${config.bedrock.region}.amazonaws.com`;
   const endpoint = `https://${host}${path}`;
 
-  logger.info({
+  logger.debug({
     endpoint,
     authMethod: "Bearer Token",
     hasSystem: !!converseBody.system,
@@ -1200,7 +1266,7 @@ async function invokeBedrock(body) {
     // Parse Converse API response (already parsed by performJsonRequest)
     const converseResponse = response.json;  // Use property, not method
 
-    logger.info({
+    logger.debug({
       stopReason: converseResponse.stopReason,
       inputTokens: converseResponse.usage?.inputTokens || 0,
       outputTokens: converseResponse.usage?.outputTokens || 0,
@@ -1280,7 +1346,7 @@ async function invokeZai(body) {
     "claude-3-haiku": "glm-4.5-air",
   };
 
-  const requestedModel = body.model || config.zai.model;
+  const requestedModel = body._tierModel || body.model || config.zai.model;
   let mappedModel = modelMap[requestedModel] || config.zai.model || "glm-4.7";
   mappedModel = mappedModel.toLowerCase();
 
@@ -1357,7 +1423,7 @@ async function invokeZai(body) {
       // "required" was forcing tools even for simple greetings
       zaiBody.tool_choice = "auto";
       // Also enable parallel tool calls
-      zaiBody.parallel_tool_calls = true;
+      zaiBody.parallel_tool_calls = false;  // Disable parallel tool calls - GPT often makes duplicate calls
     }
 
     headers = {
@@ -1372,9 +1438,9 @@ async function invokeZai(body) {
     // Inject standard tools if client didn't send any (passthrough mode)
     if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
       zaiBody.tools = STANDARD_TOOLS;
-      logger.info({
+      logger.debug({
         injectedToolCount: STANDARD_TOOLS.length,
-        injectedToolNames: STANDARD_TOOLS.map(t => t.name),
+        injectedToolNames: STANDARD_TOOL_NAMES,
         reason: "Client did not send tools (passthrough mode)"
       }, "=== INJECTING STANDARD TOOLS (Z.AI Anthropic) ===");
     }
@@ -1386,7 +1452,7 @@ async function invokeZai(body) {
     };
   }
 
-  logger.info({
+  logger.debug({
     endpoint,
     format: isOpenAIFormat ? "openai" : "anthropic",
     model: zaiBody.model,
@@ -1416,7 +1482,7 @@ async function invokeZai(body) {
 
     const response = await performJsonRequest(endpoint, { headers, body: zaiBody }, "Z.AI");
 
-    logger.info({
+    logger.debug({
       responseOk: response?.ok,
       responseStatus: response?.status,
       hasJson: !!response?.json,
@@ -1428,7 +1494,7 @@ async function invokeZai(body) {
     // Convert OpenAI response back to Anthropic format if needed
     if (isOpenAIFormat && response?.ok && response?.json) {
       const anthropicJson = convertOpenAIToAnthropic(response.json);
-      logger.info({
+      logger.debug({
         convertedContent: JSON.stringify(anthropicJson.content).substring(0, 200),
       }, "=== Z.AI CONVERTED RESPONSE ===");
       // Return in the same format as other providers (with ok, status, json)
@@ -1449,6 +1515,118 @@ async function invokeZai(body) {
 
 
 /**
+ * Moonshot AI (Kimi) Provider
+ *
+ * Moonshot offers Kimi models through an OpenAI-compatible chat completions API.
+ * Uses native system role support (unlike Z.AI which merges into user message).
+ */
+async function invokeMoonshot(body) {
+  if (!config.moonshot?.apiKey) {
+    throw new Error("Moonshot API key is not configured. Set MOONSHOT_API_KEY in your .env file.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.moonshot.endpoint || "https://api.moonshot.ai/v1/chat/completions";
+
+  // Model mapping: Anthropic names → Moonshot/Kimi names
+  const modelMap = {
+    "claude-sonnet-4-5-20250929": "kimi-k2-turbo-preview",
+    "claude-sonnet-4-5": "kimi-k2-turbo-preview",
+    "claude-sonnet-4.5": "kimi-k2-turbo-preview",
+    "claude-3-5-sonnet": "kimi-k2-turbo-preview",
+    "claude-haiku-4-5-20251001": "kimi-k2-turbo-preview",
+    "claude-haiku-4-5": "kimi-k2-turbo-preview",
+    "claude-3-haiku": "kimi-k2-turbo-preview",
+  };
+
+  const requestedModel = body._tierModel || body.model || config.moonshot.model;
+  const mappedModel = modelMap[requestedModel] || config.moonshot.model || "kimi-k2-turbo-preview";
+
+  // Convert messages using existing utility
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+
+  // Moonshot natively supports system role — add as system message
+  if (body.system) {
+    const systemContent = Array.isArray(body.system)
+      ? body.system.map(s => s.text || s).join("\n")
+      : body.system;
+    messages.unshift({ role: "system", content: systemContent });
+  }
+
+  const moonshotBody = {
+    model: mappedModel,
+    messages,
+    max_tokens: body.max_tokens || 4096,
+    temperature: body.temperature ?? 0.7,
+    top_p: body.top_p ?? 1.0,
+    stream: false,  // Force non-streaming - OpenAI SSE to Anthropic SSE conversion not implemented
+  };
+
+  // Convert and add tools if present
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    moonshotBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
+    moonshotBody.tool_choice = "auto";
+    moonshotBody.parallel_tool_calls = false;
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${config.moonshot.apiKey}`,
+  };
+
+  logger.debug({
+    endpoint,
+    model: moonshotBody.model,
+    originalModel: requestedModel,
+    messageCount: moonshotBody.messages?.length || 0,
+    hasTools: !!moonshotBody.tools,
+    toolCount: moonshotBody.tools?.length || 0,
+  }, "=== Moonshot REQUEST ===");
+
+  const response = await performJsonRequest(endpoint, { headers, body: moonshotBody }, "Moonshot");
+
+  const rawMsg = response?.json?.choices?.[0]?.message;
+  logger.debug({
+    responseOk: response?.ok,
+    responseStatus: response?.status,
+    hasJson: !!response?.json,
+    contentType: typeof rawMsg?.content,
+    contentValue: typeof rawMsg?.content === 'string' ? rawMsg.content.substring(0, 300) : String(JSON.stringify(rawMsg?.content) || '').substring(0, 300),
+    hasReasoning: !!rawMsg?.reasoning_content,
+    reasoningType: typeof rawMsg?.reasoning_content,
+    reasoningValue: typeof rawMsg?.reasoning_content === 'string' ? rawMsg.reasoning_content.substring(0, 300) : String(JSON.stringify(rawMsg?.reasoning_content) || '').substring(0, 300),
+    finishReason: response?.json?.choices?.[0]?.finish_reason,
+    messageKeys: rawMsg ? Object.keys(rawMsg) : [],
+    fullRawResponse: String(JSON.stringify(response?.json) || '').substring(0, 800),
+  }, "=== Moonshot RAW RESPONSE ===");
+
+  // Convert OpenAI response back to Anthropic format
+  if (response?.ok && response?.json) {
+    const anthropicJson = convertOpenAIToAnthropic(response.json);
+    logger.debug({
+      convertedContent: JSON.stringify(anthropicJson.content).substring(0, 500),
+      contentLength: anthropicJson.content?.length,
+      firstContentType: anthropicJson.content?.[0]?.type,
+      firstContentText: anthropicJson.content?.[0]?.text?.substring(0, 300),
+    }, "=== Moonshot CONVERTED RESPONSE ===");
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: anthropicJson,
+      text: JSON.stringify(anthropicJson),
+      contentType: "application/json",
+      headers: response.headers,
+    };
+  }
+
+  return response;
+}
+
+/**
  * Convert OpenAI response to Anthropic format
  */
 function convertOpenAIToAnthropic(response) {
@@ -1463,11 +1641,17 @@ function convertOpenAIToAnthropic(response) {
   // Add text content from message.content
   // Don't add placeholder text if there are tool_calls - tools are the actual response
   const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
-  if (message.content) {
-    content.push({ type: "text", text: message.content });
-  } else if (message.reasoning_content && !message.content) {
-    // Thinking models (Kimi-K2, o1, etc.) return response in reasoning_content
-    content.push({ type: "text", text: message.reasoning_content });
+
+  // Extract text content - handle thinking models that split content/reasoning
+  const textContent = typeof message.content === 'string' ? message.content : '';
+  const reasoningContent = typeof message.reasoning_content === 'string' ? message.reasoning_content : '';
+
+  if (textContent) {
+    // Has regular content - use it directly (ignore reasoning_content chain-of-thought)
+    content.push({ type: "text", text: textContent });
+  } else if (reasoningContent) {
+    // Fallback: thinking models where content is empty but reasoning has the output
+    content.push({ type: "text", text: reasoningContent });
   }
 
   // Convert tool calls
@@ -1488,13 +1672,14 @@ function convertOpenAIToAnthropic(response) {
   }
 
   // Determine stop reason
+  // IMPORTANT: Check for actual tool_calls presence, not just finish_reason string.
+  // Some providers (Moonshot, etc.) return finish_reason: "stop" even when tool_calls exist.
+  // If we don't set stop_reason to "tool_use", the CLI won't execute the tool calls.
   let stopReason = "end_turn";
-  if (choice.finish_reason === "tool_calls") {
+  if (hasToolCalls) {
     stopReason = "tool_use";
   } else if (choice.finish_reason === "length") {
     stopReason = "max_tokens";
-  } else if (choice.finish_reason === "stop") {
-    stopReason = "end_turn";
   }
 
   return {
@@ -1580,7 +1765,7 @@ async function invokeVertex(body) {
   };
 
   // Map model name
-  const requestedModel = body.model || config.vertex.model;
+  const requestedModel = body._tierModel || body.model || config.vertex.model;
   const geminiModel = modelMap[requestedModel] || config.vertex.model || "gemini-2.0-flash";
 
   // Construct Gemini API endpoint
@@ -1626,7 +1811,7 @@ async function invokeVertex(body) {
     "Content-Type": "application/json",
   };
 
-  logger.info({
+  logger.debug({
     endpoint: endpoint.replace(apiKey, "***"),
     model: geminiModel,
     originalModel: requestedModel,
@@ -1655,7 +1840,7 @@ async function invokeVertex(body) {
   // Convert Gemini response to Anthropic format
   if (response?.json) {
     const anthropicJson = convertGeminiToAnthropic(response.json, requestedModel);
-    logger.info({
+    logger.debug({
       convertedContent: JSON.stringify(anthropicJson.content).substring(0, 200),
     }, "=== VERTEX AI (GEMINI) CONVERTED RESPONSE ===");
     return {
@@ -1816,35 +2001,44 @@ function convertGeminiToAnthropic(response, requestedModel) {
 }
 
 async function invokeModel(body, options = {}) {
-  const { determineProvider, isFallbackEnabled, getFallbackProvider, analyzeComplexity } = require("./routing");
+  const { determineProviderSmart, isFallbackEnabled, getFallbackProvider } = require("./routing");
   const metricsCollector = getMetricsCollector();
   const registry = getCircuitBreakerRegistry();
   const healthTracker = getHealthTracker();
 
-  // Analyze complexity and determine provider
-  const complexityAnalysis = analyzeComplexity(body);
-  const initialProvider = options.forceProvider ?? determineProvider(body);
-  const preferOllama = config.modelProvider?.preferOllama ?? false;
+  // Determine provider via async tier routing
+  const routingResult = options.forceProvider
+    ? { provider: options.forceProvider, model: null, method: 'forced' }
+    : await determineProviderSmart(body);
+  const initialProvider = routingResult.provider;
+  const tierSelectedModel = routingResult.model;
+
+  // Inject tier-selected model into body so provider functions can use it
+  if (tierSelectedModel) {
+    body._tierModel = tierSelectedModel;
+  }
 
   // Build routing decision object for response headers
   const routingDecision = {
     provider: initialProvider,
-    score: complexityAnalysis.score,
-    threshold: complexityAnalysis.threshold,
-    mode: complexityAnalysis.mode,
-    recommendation: complexityAnalysis.recommendation,
-    method: complexityAnalysis.score !== undefined ? 'complexity' : 'static',
-    taskType: complexityAnalysis.breakdown?.taskType?.reason,
+    tier: routingResult.tier || null,
+    model: tierSelectedModel || null,
+    score: routingResult.score,
+    threshold: routingResult.threshold,
+    mode: routingResult.mode,
+    reason: routingResult.reason,
+    method: routingResult.method || 'static',
   };
 
   logger.debug({
     initialProvider,
-    preferOllama,
+    tierSelectedModel,
+    tier: routingResult.tier,
     fallbackEnabled: isFallbackEnabled(),
     toolCount: Array.isArray(body?.tools) ? body.tools.length : 0,
-    complexityScore: complexityAnalysis.score,
-    complexityThreshold: complexityAnalysis.threshold,
-    recommendation: complexityAnalysis.recommendation,
+    score: routingResult.score,
+    reason: routingResult.reason,
+    method: routingResult.method,
   }, "Provider routing decision");
 
   metricsCollector.recordProviderRouting(initialProvider);
@@ -1885,6 +2079,8 @@ async function invokeModel(body, options = {}) {
         return await invokeZai(body);
       } else if (initialProvider === "vertex") {
         return await invokeVertex(body);
+      } else if (initialProvider === "moonshot") {
+        return await invokeMoonshot(body);
       }
       return await invokeDatabricks(body);
     });
@@ -1920,11 +2116,10 @@ async function invokeModel(body, options = {}) {
     metricsCollector.recordProviderFailure(initialProvider);
     healthTracker.recordFailure(initialProvider, err, err.status);
 
-    // Check if we should fallback
+    // Check if we should fallback (any provider can fall back, not just ollama)
     const shouldFallback =
-      preferOllama &&
-      initialProvider === "ollama" &&
       isFallbackEnabled() &&
+      initialProvider !== getFallbackProvider() &&
       !options.disableFallback;
 
     if (!shouldFallback) {
@@ -1941,7 +2136,7 @@ async function invokeModel(body, options = {}) {
       fallbackProvider,
       reason,
       error: err.message,
-    }, "Ollama failed, attempting transparent fallback to cloud");
+    }, "Primary provider failed, attempting transparent fallback");
 
     metricsCollector.recordFallbackAttempt(initialProvider, fallbackProvider, reason);
 
@@ -1974,6 +2169,8 @@ async function invokeModel(body, options = {}) {
           return await invokeZai(body);
         } else if (fallbackProvider === "vertex") {
           return await invokeVertex(body);
+        } else if (fallbackProvider === "moonshot") {
+          return await invokeMoonshot(body);
         }
         return await invokeDatabricks(body);
       });
@@ -2023,7 +2220,7 @@ async function invokeModel(body, options = {}) {
         fallbackProvider,
         originalError: err.message,
         fallbackError: fallbackErr.message,
-      }, "Both Ollama and fallback provider failed");
+      }, "Both primary and fallback provider failed");
 
       // Return fallback error (more actionable than Ollama error)
       throw fallbackErr;

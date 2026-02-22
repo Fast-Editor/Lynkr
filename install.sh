@@ -134,9 +134,14 @@ MODEL_PROVIDER=ollama
 PORT=8080
 
 # Ollama Configuration (default for local development)
-PREFER_OLLAMA=true
 OLLAMA_MODEL=qwen2.5-coder:7b
 OLLAMA_ENDPOINT=http://localhost:11434
+
+# Tier-based routing (uncomment and configure to enable)
+# TIER_SIMPLE=ollama:qwen2.5-coder:7b
+# TIER_MEDIUM=ollama:qwen2.5-coder:7b
+# TIER_COMPLEX=ollama:qwen2.5-coder:7b
+# TIER_REASONING=ollama:qwen2.5-coder:7b
 
 # Long-Term Memory System (Titans-Inspired) - Enabled by default
 MEMORY_ENABLED=true

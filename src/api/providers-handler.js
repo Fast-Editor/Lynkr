@@ -179,6 +179,20 @@ function getConfiguredProviders() {
     });
   }
 
+  // Check Moonshot AI (Kimi)
+  if (config.moonshot?.apiKey) {
+    providers.push({
+      name: "moonshot",
+      type: "moonshot-ai",
+      baseUrl: config.moonshot.endpoint || "https://api.moonshot.ai/v1",
+      enabled: true,
+      models: [
+        { id: config.moonshot.model || "kimi-k2-turbo-preview", name: "Configured Model" },
+        { id: "kimi-k2-turbo-preview", name: "Kimi K2 Turbo Preview" },
+      ]
+    });
+  }
+
   // Check Vertex AI (Google Cloud)
   if (config.vertex?.projectId) {
     const region = config.vertex.region || "us-east5";
@@ -369,7 +383,7 @@ router.get("/config", (req, res) => {
       model_provider: config.modelProvider?.type || "databricks",
       fallback_provider: config.modelProvider?.fallbackProvider || null,
       fallback_enabled: config.modelProvider?.fallbackEnabled || false,
-      prefer_ollama: config.modelProvider?.preferOllama || false,
+      tier_routing_enabled: config.modelTiers?.enabled || false,
       tool_execution_mode: config.toolExecutionMode || "server",
       configured_providers: providers.map(p => p.name),
       memory_enabled: config.memory?.enabled || false,
