@@ -2,6 +2,7 @@ const express = require("express");
 const { processMessage } = require("../orchestrator");
 const { getSession } = require("../sessions");
 const metrics = require("../metrics");
+const logger = require("../logger");
 const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");

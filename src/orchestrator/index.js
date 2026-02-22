@@ -2287,7 +2287,7 @@ IMPORTANT TOOL USAGE RULES:
           type: "message",
           role: "assistant",
           content: clientContent,
-          model: databricksResponse.json?.model || clean.model,
+          model: databricksResponse.json?.model || cleanPayload.model,
           stop_reason: "tool_use",
           usage: databricksResponse.json?.usage || {
             input_tokens: 0,
