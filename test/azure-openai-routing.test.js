@@ -42,21 +42,24 @@ describe("Azure OpenAI Routing Tests", () => {
   });
 
   describe("Primary Provider Routing", () => {
-    it("should route to azure-openai when set as MODEL_PROVIDER", () => {
+    it("should route to azure-openai when set as MODEL_PROVIDER", async () => {
       process.env.MODEL_PROVIDER = "azure-openai";
       process.env.AZURE_OPENAI_ENDPOINT = "https://test.openai.azure.com";
       process.env.AZURE_OPENAI_API_KEY = "test-key";
 
       routing = require("../src/clients/routing");
 
-      const provider = routing.determineProviderSync({ tools: [] });
+      const result = await routing.determineProviderSmart({
+        messages: [{ role: "user", content: "test" }],
+        tools: []
+      });
 
-      assert.strictEqual(provider, "azure-openai");
+      assert.strictEqual(result.provider, "azure-openai");
     });
   });
 
   describe("Static Routing with Azure OpenAI", () => {
-    it("should return primary provider regardless of tool count (tier routing disabled)", () => {
+    it("should return primary provider regardless of tool count (tier routing disabled)", async () => {
       process.env.MODEL_PROVIDER = "azure-openai";
       process.env.AZURE_OPENAI_ENDPOINT = "https://test.openai.azure.com";
       process.env.AZURE_OPENAI_API_KEY = "test-key";
@@ -68,15 +71,16 @@ describe("Azure OpenAI Routing Tests", () => {
 
       routing = require("../src/clients/routing");
 
-      // 5 tools: determineProviderSync always returns primary provider
-      const provider = routing.determineProviderSync({
+      const result = await routing.determineProviderSmart({
+        messages: [{ role: "user", content: "test" }],
         tools: [{}, {}, {}, {}, {}]
       });
 
-      assert.strictEqual(provider, "azure-openai");
+      assert.strictEqual(result.provider, "azure-openai");
+      assert.strictEqual(result.method, "static");
     });
 
-    it("should return primary provider for simple requests", () => {
+    it("should return primary provider for simple requests", async () => {
       process.env.MODEL_PROVIDER = "azure-openai";
       process.env.AZURE_OPENAI_ENDPOINT = "https://test.openai.azure.com";
       process.env.AZURE_OPENAI_API_KEY = "test-key";
@@ -88,12 +92,13 @@ describe("Azure OpenAI Routing Tests", () => {
 
       routing = require("../src/clients/routing");
 
-      // 2 tools: determineProviderSync always returns primary provider
-      const provider = routing.determineProviderSync({
+      const result = await routing.determineProviderSmart({
+        messages: [{ role: "user", content: "test" }],
         tools: [{}, {}]
       });
 
-      assert.strictEqual(provider, "azure-openai");
+      assert.strictEqual(result.provider, "azure-openai");
+      assert.strictEqual(result.method, "static");
     });
 
     it("should return static routing from determineProviderSmart when tiers disabled", async () => {

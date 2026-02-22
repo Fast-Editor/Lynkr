@@ -110,7 +110,7 @@ describe("llama.cpp Integration", () => {
   });
 
   describe("Routing", () => {
-    it("should route to llamacpp when MODEL_PROVIDER is llamacpp", () => {
+    it("should route to llamacpp when MODEL_PROVIDER is llamacpp", async () => {
       process.env.MODEL_PROVIDER = "llamacpp";
       process.env.LLAMACPP_ENDPOINT = "http://localhost:8080";
 
@@ -118,9 +118,10 @@ describe("llama.cpp Integration", () => {
       const routing = require("../src/clients/routing");
 
       const payload = { messages: [{ role: "user", content: "test" }] };
-      const provider = routing.determineProviderSync(payload);
+      const result = await routing.determineProviderSmart(payload);
 
-      assert.strictEqual(provider, "llamacpp");
+      assert.strictEqual(result.provider, "llamacpp");
+      assert.strictEqual(result.method, "static");
     });
 
     it("should return static routing from determineProviderSmart when tiers disabled", async () => {

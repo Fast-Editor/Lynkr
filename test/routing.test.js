@@ -34,20 +34,23 @@ describe("Routing Logic", () => {
     process.env = originalConfig;
   });
 
-  describe("determineProviderSync()", () => {
-    it("should return configured provider when tier routing is disabled", () => {
+  describe("static routing (tier routing disabled)", () => {
+    it("should return configured provider when tier routing is disabled", async () => {
       process.env.MODEL_PROVIDER = "databricks";
+      process.env.DATABRICKS_API_KEY = "test-key";
+      process.env.DATABRICKS_API_BASE = "http://test.com";
 
       config = require("../src/config");
       routing = require("../src/clients/routing");
 
       const payload = { messages: [{ role: "user", content: "test" }] };
-      const provider = routing.determineProviderSync(payload);
+      const result = await routing.determineProviderSmart(payload);
 
-      assert.strictEqual(provider, "databricks");
+      assert.strictEqual(result.provider, "databricks");
+      assert.strictEqual(result.method, "static");
     });
 
-    it("should return ollama when MODEL_PROVIDER is ollama", () => {
+    it("should return ollama when MODEL_PROVIDER is ollama", async () => {
       process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
 
@@ -59,11 +62,12 @@ describe("Routing Logic", () => {
         tools: [],
       };
 
-      const provider = routing.determineProviderSync(payload);
-      assert.strictEqual(provider, "ollama");
+      const result = await routing.determineProviderSmart(payload);
+      assert.strictEqual(result.provider, "ollama");
+      assert.strictEqual(result.method, "static");
     });
 
-    it("should return primary provider regardless of tool count", () => {
+    it("should return primary provider regardless of tool count", async () => {
       process.env.MODEL_PROVIDER = "ollama";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
 
@@ -78,12 +82,12 @@ describe("Routing Logic", () => {
         ],
       };
 
-      // determineProviderSync always returns static MODEL_PROVIDER
-      const provider = routing.determineProviderSync(payload);
-      assert.strictEqual(provider, "ollama");
+      const result = await routing.determineProviderSmart(payload);
+      assert.strictEqual(result.provider, "ollama");
+      assert.strictEqual(result.method, "static");
     });
 
-    it("should return primary provider even with many tools", () => {
+    it("should return primary provider even with many tools", async () => {
       process.env.MODEL_PROVIDER = "databricks";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
@@ -102,12 +106,12 @@ describe("Routing Logic", () => {
         ],
       };
 
-      // determineProviderSync always returns static MODEL_PROVIDER
-      const provider = routing.determineProviderSync(payload);
-      assert.strictEqual(provider, "databricks");
+      const result = await routing.determineProviderSmart(payload);
+      assert.strictEqual(result.provider, "databricks");
+      assert.strictEqual(result.method, "static");
     });
 
-    it("should return configured MODEL_PROVIDER", () => {
+    it("should return configured MODEL_PROVIDER", async () => {
       process.env.MODEL_PROVIDER = "databricks";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
@@ -120,8 +124,9 @@ describe("Routing Logic", () => {
         tools: [{ name: "tool1", description: "test" }],
       };
 
-      const provider = routing.determineProviderSync(payload);
-      assert.strictEqual(provider, "databricks");
+      const result = await routing.determineProviderSmart(payload);
+      assert.strictEqual(result.provider, "databricks");
+      assert.strictEqual(result.method, "static");
     });
   });
 

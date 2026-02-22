@@ -98,7 +98,7 @@ describe("OpenAI Integration", () => {
   });
 
   describe("Routing", () => {
-    it("should route to openai when MODEL_PROVIDER is openai", () => {
+    it("should route to openai when MODEL_PROVIDER is openai", async () => {
       process.env.MODEL_PROVIDER = "openai";
       process.env.OPENAI_API_KEY = "sk-test-key";
 
@@ -106,9 +106,10 @@ describe("OpenAI Integration", () => {
       const routing = require("../src/clients/routing");
 
       const payload = { messages: [{ role: "user", content: "test" }] };
-      const provider = routing.determineProviderSync(payload);
+      const result = await routing.determineProviderSmart(payload);
 
-      assert.strictEqual(provider, "openai");
+      assert.strictEqual(result.provider, "openai");
+      assert.strictEqual(result.method, "static");
     });
 
     it("should return static routing from determineProviderSmart when tiers disabled", async () => {
