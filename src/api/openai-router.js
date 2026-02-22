@@ -606,10 +606,7 @@ router.post("/chat/completions", async (req, res) => {
       } catch (streamError) {
         logger.error({
           error: streamError.message,
-          stack: streamError.stack,
-          resultWasNull: !result,
-          resultBodyWasNull: result && !result.body,
-          resultKeys: result ? Object.keys(result) : null
+          stack: streamError.stack
         }, "=== STREAMING ERROR ===");
 
         // Send error in OpenAI streaming format
