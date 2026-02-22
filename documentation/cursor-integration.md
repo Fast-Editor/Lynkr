@@ -707,7 +707,7 @@ OLLAMA_EMBEDDINGS_MODEL=nomic-embed-text
 
 | Aspect | Cursor Native | Lynkr + Cursor |
 |--------|---------------|----------------|
-| **Providers** | OpenAI only | 9+ providers (Bedrock, Databricks, OpenRouter, Ollama, llama.cpp, etc.) |
+| **Providers** | OpenAI only | 12+ providers (Bedrock, Databricks, OpenRouter, Ollama, llama.cpp, Moonshot, etc.) |
 | **Costs** | OpenAI pricing | 60-80% cheaper (or 100% FREE with Ollama) |
 | **Privacy** | Cloud-only | Can run 100% locally (Ollama + local embeddings) |
 | **Embeddings** | Built-in (cloud) | 4 options: Ollama (local), llama.cpp (local), OpenRouter (cloud), OpenAI (cloud) |

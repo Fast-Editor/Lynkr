@@ -1,6 +1,6 @@
 # Provider Configuration Guide
 
-Complete configuration reference for all 9+ supported LLM providers. Each provider section includes setup instructions, model options, pricing, and example configurations.
+Complete configuration reference for all 12+ supported LLM providers. Each provider section includes setup instructions, model options, pricing, and example configurations.
 
 ---
 
@@ -18,6 +18,7 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 | **Azure OpenAI** | Cloud | GPT-4o, GPT-5, o1, o3 | $$$ | Cloud | Medium |
 | **Azure Anthropic** | Cloud | Claude models | $$$ | Cloud | Medium |
 | **OpenAI** | Cloud | GPT-4o, o1, o3 | $$$ | Cloud | Easy |
+| **Moonshot AI (Kimi)** | Cloud | Kimi K2 (thinking + turbo) | $ | Cloud | Easy |
 | **LM Studio** | Local | Local models with GUI | **FREE** | 🔒 100% Local | Easy |
 | **MLX OpenAI Server** | Local | Apple Silicon optimized | **FREE** | 🔒 100% Local | Easy |
 
@@ -29,7 +30,7 @@ There are two routing modes. Choose based on your needs:
 
 ### Static Routing (Single Provider)
 
-Set `MODEL_PROVIDER` to send all requests to one provider:
+Set `MODEL_PROVIDER` to send all requests to one provider. All requests go to this provider regardless of complexity:
 
 ```bash
 export MODEL_PROVIDER=databricks
@@ -40,18 +41,20 @@ lynkr start
 
 ### Tier-Based Routing (Recommended for Cost Optimization)
 
-Set all 4 `TIER_*` vars to route requests by complexity. When configured, these **override** `MODEL_PROVIDER` for routing decisions:
+Set **all 4** `TIER_*` vars to route requests by complexity. Each request is scored 0-100 and routed to the `provider:model` matching its complexity tier. When all four are configured, they **override** `MODEL_PROVIDER` for routing decisions:
 
 ```bash
-export MODEL_PROVIDER=ollama                            # Kept as config default
-export TIER_SIMPLE=ollama:llama3.2                      # Simple tasks → local (free)
-export TIER_MEDIUM=openrouter:openai/gpt-4o-mini        # Medium → affordable cloud
-export TIER_COMPLEX=databricks:claude-sonnet             # Complex → capable cloud
-export TIER_REASONING=databricks:claude-sonnet            # Reasoning → best available
+export MODEL_PROVIDER=ollama                            # Still needed for startup checks
+export TIER_SIMPLE=ollama:llama3.2                      # Score 0-25 → local (free)
+export TIER_MEDIUM=openrouter:openai/gpt-4o-mini        # Score 26-50 → affordable cloud
+export TIER_COMPLEX=databricks:claude-sonnet             # Score 51-75 → capable cloud
+export TIER_REASONING=databricks:claude-sonnet            # Score 76-100 → best available
 lynkr start
 ```
 
-> **Note:** All 4 `TIER_*` vars must be set. If any are missing, tier routing is disabled and `MODEL_PROVIDER` is used for all requests.
+> **Important:** All 4 `TIER_*` vars must be set to enable tier routing. If any are missing, tier routing is disabled and `MODEL_PROVIDER` is used for all requests. `MODEL_PROVIDER` should always be set — even with tier routing active, it is used for startup checks, provider discovery, and as the default provider when a `TIER_*` value has no `provider:` prefix.
+>
+> **`PREFER_OLLAMA` is deprecated** and has no effect. Use `TIER_SIMPLE=ollama:<model>` to route simple requests to Ollama. See [Routing Precedence](routing.md#routing-precedence) for full details.
 
 ### .env File (Recommended for Production)
 
@@ -710,7 +713,82 @@ LMSTUDIO_API_KEY=your-optional-api-key
 
 ---
 
-### 10. MLX OpenAI Server (Apple Silicon)
+### 10. Moonshot AI / Kimi (OpenAI-Compatible)
+
+**Best for:** Affordable cloud models, thinking/reasoning models, OpenAI-compatible API
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=moonshot
+MOONSHOT_API_KEY=sk-your-moonshot-api-key
+MOONSHOT_ENDPOINT=https://api.moonshot.ai/v1/chat/completions
+MOONSHOT_MODEL=kimi-k2-turbo-preview
+```
+
+#### Getting Moonshot API Key
+
+1. Visit [platform.moonshot.ai](https://platform.moonshot.ai)
+2. Sign up or log in
+3. Navigate to API Keys section
+4. Create a new API key
+5. Add credits to your account
+
+#### Available Models
+
+```env
+MOONSHOT_MODEL=kimi-k2-turbo-preview    # Fast, efficient (recommended)
+MOONSHOT_MODEL=kimi-k2-thinking         # Chain-of-thought reasoning model
+```
+
+**Model Details:**
+
+| Model | Type | Best For |
+|-------|------|----------|
+| `kimi-k2-turbo-preview` | Standard | Fast responses, tool calling, general tasks |
+| `kimi-k2-thinking` | Thinking/Reasoning | Complex analysis, multi-step reasoning |
+
+#### How It Works
+
+Moonshot uses an **OpenAI-compatible** chat completions API. Lynkr handles all format conversion automatically:
+
+1. Claude Code CLI sends Anthropic-format request to Lynkr
+2. Lynkr converts Anthropic messages → OpenAI chat completions format
+3. Request is sent to Moonshot's `/v1/chat/completions` endpoint
+4. Moonshot response is converted back to Anthropic format
+5. Claude Code CLI receives a standard Anthropic response
+
+#### Thinking Model Support
+
+When using `kimi-k2-thinking`, the model returns both `reasoning_content` (chain-of-thought) and `content` (final answer). Lynkr automatically extracts only the final answer for clean CLI output. The reasoning content is used as a fallback only when the final answer is empty.
+
+#### Important Notes
+
+- **Streaming:** Streaming is disabled for Moonshot (responses arrive as complete JSON). This ensures clean terminal rendering since OpenAI SSE → Anthropic SSE conversion is not yet implemented.
+- **Rate Limits:** Moonshot has a max concurrency of ~3 requests. Lynkr retries with backoff on 429 errors.
+- **Tool Calling:** Full tool calling support via OpenAI function calling format (automatically converted from Anthropic format).
+- **System Messages:** Moonshot natively supports the `system` role, so system prompts are passed directly.
+
+#### Benefits
+
+- ✅ **Affordable** — Competitive pricing for capable models
+- ✅ **Thinking models** — Chain-of-thought reasoning with `kimi-k2-thinking`
+- ✅ **Full tool calling** — Native function calling support
+- ✅ **OpenAI-compatible** — Standard chat completions API
+- ✅ **System role support** — Native system message handling
+
+#### Test Connection
+
+```bash
+curl -X POST https://api.moonshot.ai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $MOONSHOT_API_KEY" \
+  -d '{"model":"kimi-k2-turbo-preview","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+---
+
+### 11. MLX OpenAI Server (Apple Silicon)
 
 **Best for:** Maximum performance on Apple Silicon Macs (M1/M2/M3/M4)
 
@@ -863,7 +941,7 @@ AZURE_OPENAI_API_KEY=your-key
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MODEL_PROVIDER` | Primary provider (`databricks`, `bedrock`, `openrouter`, `ollama`, `llamacpp`, `azure-openai`, `azure-anthropic`, `openai`, `lmstudio`) | `databricks` |
+| `MODEL_PROVIDER` | Primary provider (`databricks`, `bedrock`, `openrouter`, `ollama`, `llamacpp`, `azure-openai`, `azure-anthropic`, `openai`, `lmstudio`, `zai`, `moonshot`, `vertex`) | `databricks` |
 | `PORT` | HTTP port for proxy server | `8081` |
 | `WORKSPACE_ROOT` | Workspace directory path | `process.cwd()` |
 | `LOG_LEVEL` | Logging level (`error`, `warn`, `info`, `debug`) | `info` |
@@ -880,17 +958,19 @@ See individual provider sections above for complete variable lists.
 
 ### Feature Comparison
 
-| Feature | Databricks | Bedrock | OpenAI | Azure OpenAI | Azure Anthropic | OpenRouter | Ollama | llama.cpp | LM Studio |
-|---------|-----------|---------|--------|--------------|-----------------|------------|--------|-----------|-----------|
-| **Setup Complexity** | Medium | Easy | Easy | Medium | Medium | Easy | Easy | Medium | Easy |
-| **Cost** | $$$ | $-$$$ | $$ | $$ | $$$ | $-$$ | **Free** | **Free** | **Free** |
-| **Latency** | Low | Low | Low | Low | Low | Medium | **Very Low** | **Very Low** | **Very Low** |
-| **Model Variety** | 2 | **100+** | 10+ | 10+ | 2 | **100+** | 50+ | Unlimited | 50+ |
-| **Tool Calling** | Excellent | Excellent* | Excellent | Excellent | Excellent | Good | Fair | Good | Fair |
-| **Context Length** | 200K | Up to 300K | 128K | 128K | 200K | Varies | 32K-128K | Model-dependent | 32K-128K |
-| **Streaming** | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| **Privacy** | Enterprise | Enterprise | Third-party | Enterprise | Enterprise | Third-party | **Local** | **Local** | **Local** |
-| **Offline** | No | No | No | No | No | No | **Yes** | **Yes** | **Yes** |
+| Feature | Databricks | Bedrock | OpenAI | Azure OpenAI | Azure Anthropic | OpenRouter | Moonshot | Ollama | llama.cpp | LM Studio |
+|---------|-----------|---------|--------|--------------|-----------------|------------|----------|--------|-----------|-----------|
+| **Setup Complexity** | Medium | Easy | Easy | Medium | Medium | Easy | Easy | Easy | Medium | Easy |
+| **Cost** | $$$ | $-$$$ | $$ | $$ | $$$ | $-$$ | $ | **Free** | **Free** | **Free** |
+| **Latency** | Low | Low | Low | Low | Low | Medium | Low | **Very Low** | **Very Low** | **Very Low** |
+| **Model Variety** | 2 | **100+** | 10+ | 10+ | 2 | **100+** | 2+ | 50+ | Unlimited | 50+ |
+| **Tool Calling** | Excellent | Excellent* | Excellent | Excellent | Excellent | Good | Good | Fair | Good | Fair |
+| **Context Length** | 200K | Up to 300K | 128K | 128K | 200K | Varies | 128K | 32K-128K | Model-dependent | 32K-128K |
+| **Streaming** | Yes | Yes | Yes | Yes | Yes | Yes | Non-streaming** | Yes | Yes | Yes |
+| **Privacy** | Enterprise | Enterprise | Third-party | Enterprise | Enterprise | Third-party | Third-party | **Local** | **Local** | **Local** |
+| **Offline** | No | No | No | No | No | No | No | **Yes** | **Yes** | **Yes** |
+
+_** Moonshot uses non-streaming mode (responses arrive as complete JSON) for clean terminal rendering_
 
 _* Tool calling only supported by Claude models on Bedrock_
 
@@ -904,6 +984,7 @@ _* Tool calling only supported by Claude models on Bedrock_
 | **OpenRouter** | GPT-4o mini | $0.15 | $0.60 |
 | **OpenAI** | GPT-4o | $2.50 | $10.00 |
 | **Azure OpenAI** | GPT-4o | $2.50 | $10.00 |
+| **Moonshot** | Kimi K2 Turbo | See moonshot.ai | See moonshot.ai |
 | **Ollama** | Any model | **FREE** | **FREE** |
 | **llama.cpp** | Any model | **FREE** | **FREE** |
 | **LM Studio** | Any model | **FREE** | **FREE** |

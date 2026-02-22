@@ -53,6 +53,8 @@ function getDestinationUrl(providerType) {
       return config.zai?.endpoint ?? 'unknown';
     case 'vertex':
       return config.vertex?.endpoint ?? 'unknown';
+    case 'moonshot':
+      return config.moonshot?.endpoint ?? 'unknown';
     default:
       return 'unknown';
   }
@@ -1298,6 +1300,14 @@ function sanitizePayload(payload) {
     }
   } else if (providerType === "vertex") {
     // Vertex AI supports tools - keep them in Anthropic format
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
+  } else if (providerType === "moonshot") {
+    // Moonshot supports tools - keep them in Anthropic format
+    // They will be converted to OpenAI format in invokeMoonshot
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
       delete clean.tools;
     } else {
@@ -3126,6 +3136,16 @@ IMPORTANT TOOL USAGE RULES:
       }
     } else if (actualProvider === "vertex") {
       // Vertex AI responses are already in Anthropic format
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
+    } else if (actualProvider === "moonshot") {
+      // Moonshot responses are already converted to Anthropic format in invokeMoonshot
+      logger.info({
+        hasJson: !!databricksResponse.json,
+        jsonContent: JSON.stringify(databricksResponse.json?.content)?.substring(0, 300),
+      }, "=== MOONSHOT ORCHESTRATOR DEBUG ===");
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);

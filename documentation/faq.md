@@ -8,11 +8,11 @@ Common questions about Lynkr, installation, configuration, and usage.
 
 ### What is Lynkr?
 
-Lynkr is a self-hosted proxy server that enables Claude Code CLI and Cursor IDE to work with multiple LLM providers (Databricks, AWS Bedrock, OpenRouter, Ollama, etc.) instead of being locked to Anthropic's API.
+Lynkr is a self-hosted proxy server that enables Claude Code CLI and Cursor IDE to work with multiple LLM providers (Databricks, AWS Bedrock, OpenRouter, Ollama, Moonshot AI, etc.) instead of being locked to Anthropic's API.
 
 **Key benefits:**
 - 💰 **60-80% cost savings** through token optimization
-- 🔓 **Provider flexibility** - Choose from 9+ providers
+- 🔓 **Provider flexibility** - Choose from 12+ providers
 - 🔒 **Privacy** - Run 100% locally with Ollama or llama.cpp
 - ✅ **Zero code changes** - Drop-in replacement for Anthropic backend
 
@@ -67,7 +67,7 @@ Lynkr itself is **100% FREE** and open source (Apache 2.0 license).
 
 | Feature | Native Claude Code | Lynkr |
 |---------|-------------------|-------|
-| **Providers** | Anthropic only | 9+ providers |
+| **Providers** | Anthropic only | 12+ providers |
 | **Cost** | Full Anthropic pricing | 60-80% cheaper |
 | **Local models** | ❌ Cloud-only | ✅ Ollama, llama.cpp |
 | **Privacy** | ☁️ Cloud | 🔒 Can run 100% locally |
@@ -126,6 +126,11 @@ See [Installation Guide](installation.md) for all methods.
 - **Setup:** 5 minutes
 - **Cost:** ~$10-20/month
 
+**For Affordable Cloud + Reasoning:**
+- ✅ **Moonshot AI** - Kimi K2, thinking models
+- **Setup:** 2 minutes
+- **Cost:** ~$5-10/month
+
 **For Enterprise:**
 - ✅ **Databricks** - Claude 4.5, enterprise SLA
 - **Setup:** 10 minutes
@@ -151,7 +156,7 @@ export FALLBACK_PROVIDER=databricks
 
 **How it works:**
 - Each request is scored for complexity (0-100) and mapped to a tier
-- **SIMPLE (0-25)**: Ollama (free, local, fast)
+- **SIMPLE (0-25)**: Ollama (free, local, fast) or Moonshot (affordable cloud)
 - **MEDIUM (26-50)**: OpenRouter or mid-range cloud model
 - **COMPLEX (51-75)**: Capable cloud models
 - **REASONING (76-100)**: Best available models
@@ -275,6 +280,7 @@ See [Embeddings Guide](embeddings.md) for details.
 | **OpenRouter** | 500ms-2s | $-$$ | Excellent | Flexibility, 100+ models |
 | **Databricks/Azure** | 500ms-2s | $$$ | Excellent | Enterprise, Claude 4.5 |
 | **AWS Bedrock** | 500ms-2s | $-$$$ | Excellent* | AWS, 100+ models |
+| **Moonshot AI** | 500ms-2s | $ | Good | Affordable, thinking models |
 | **OpenAI** | 500ms-2s | $$ | Excellent | GPT-4o, o1, o3 |
 
 _* Tool calling only supported by Claude models on Bedrock_

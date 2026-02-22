@@ -15,7 +15,8 @@
         "databricks": ["databricks-claude-haiku-4-5", "databricks-gpt-5-nano"],
         "google": ["gemini-2.0-flash", "gemini-1.5-flash"],
         "openrouter": ["google/gemini-flash-1.5", "deepseek/deepseek-chat"],
-        "zai": ["GLM-4-Flash"]
+        "zai": ["GLM-4-Flash"],
+        "moonshot": ["kimi-k2-turbo-preview"]
       }
     },
     "MEDIUM": {
@@ -33,7 +34,8 @@
         "databricks": ["databricks-claude-sonnet-4-5", "databricks-gpt-5-1"],
         "google": ["gemini-1.5-pro", "gemini-2.0-pro"],
         "openrouter": ["anthropic/claude-3.5-sonnet", "openai/gpt-4o"],
-        "zai": ["GLM-4.7"]
+        "zai": ["GLM-4.7"],
+        "moonshot": ["kimi-k2-turbo-preview"]
       }
     },
     "COMPLEX": {
@@ -49,7 +51,8 @@
         "databricks": ["databricks-claude-sonnet-4-5", "databricks-gpt-5-1-codex-max"],
         "google": ["gemini-2.5-pro", "gemini-1.5-pro"],
         "openrouter": ["anthropic/claude-3.5-sonnet", "meta-llama/llama-3.1-405b"],
-        "zai": ["GLM-4.7"]
+        "zai": ["GLM-4.7"],
+        "moonshot": ["kimi-k2-turbo-preview"]
       }
     },
     "REASONING": {
@@ -64,7 +67,8 @@
         "databricks": ["databricks-claude-opus-4-6", "databricks-claude-opus-4-5", "databricks-gpt-5-2"],
         "google": ["gemini-2.5-pro"],
         "openrouter": ["anthropic/claude-3-opus", "deepseek/deepseek-reasoner", "openai/o1"],
-        "deepseek": ["deepseek-reasoner", "deepseek-r1"]
+        "deepseek": ["deepseek-reasoner", "deepseek-r1"],
+        "moonshot": ["kimi-k2-thinking", "kimi-k2-turbo-preview"]
       }
     }
   },
@@ -79,6 +83,7 @@
     "amazon": "bedrock",
     "claude": "anthropic",
     "gemini": "google",
-    "vertex": "google"
+    "vertex": "google",
+    "kimi": "moonshot"
   }
 }

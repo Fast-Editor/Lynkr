@@ -9,7 +9,7 @@ Welcome to the comprehensive documentation for Lynkr, the self-hosted Claude Cod
 New to Lynkr? Start here:
 
 - **[Installation Guide](installation.md)** - Complete installation instructions for all methods (npm, git clone, homebrew, Docker)
-- **[Provider Configuration](providers.md)** - Detailed setup for all 9+ supported providers (Databricks, Bedrock, OpenRouter, Ollama, llama.cpp, Azure OpenAI, Azure Anthropic, OpenAI, LM Studio)
+- **[Provider Configuration](providers.md)** - Detailed setup for all 12+ supported providers (Databricks, Bedrock, OpenRouter, Ollama, llama.cpp, Azure OpenAI, Azure Anthropic, OpenAI, LM Studio, Moonshot AI, Z.AI, Vertex AI)
 - **[Quick Start Examples](installation.md#quick-start-examples)** - Copy-paste configurations to get running fast
 
 ---

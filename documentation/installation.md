@@ -16,6 +16,7 @@ Before installing Lynkr, ensure you have:
   - **OpenRouter API key** (get from [openrouter.ai/keys](https://openrouter.ai/keys))
   - **Azure OpenAI** or **Azure Anthropic** subscription
   - **OpenAI API key** (get from [platform.openai.com/api-keys](https://platform.openai.com/api-keys))
+  - **Moonshot AI API key** (get from [platform.moonshot.ai](https://platform.moonshot.ai))
   - **Ollama** installed locally (for free local models)
 - Optional: **Docker** for containerized deployment or MCP sandboxing
 - Optional: **Claude Code CLI** (latest release) for CLI usage
@@ -520,7 +521,36 @@ lynkr start
 
 ---
 
-### 9. LM Studio (Local with GUI)
+### 9. Moonshot AI / Kimi (Affordable Cloud)
+
+**Best for:** Affordable cloud models, thinking/reasoning models
+
+```bash
+# Install
+npm install -g lynkr
+
+# Configure
+export MODEL_PROVIDER=moonshot
+export MOONSHOT_API_KEY=sk-your-moonshot-api-key
+export MOONSHOT_MODEL=kimi-k2-turbo-preview
+
+# Start
+lynkr start
+```
+
+**Get Moonshot API key:**
+1. Visit [platform.moonshot.ai](https://platform.moonshot.ai)
+2. Sign up or log in
+3. Create a new API key
+4. Add credits to your account
+
+**Available models:**
+- `kimi-k2-turbo-preview` - Fast, efficient, tool calling support
+- `kimi-k2-thinking` - Chain-of-thought reasoning model
+
+---
+
+### 10. LM Studio (Local with GUI)
 
 **Best for:** Local models with graphical interface
 
@@ -636,7 +666,7 @@ See [Provider Configuration Guide](providers.md) for complete environment variab
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MODEL_PROVIDER` | Provider to use (`databricks`, `bedrock`, `openrouter`, `ollama`, `llamacpp`, `azure-openai`, `azure-anthropic`, `openai`, `lmstudio`) | `databricks` |
+| `MODEL_PROVIDER` | Provider to use (`databricks`, `bedrock`, `openrouter`, `ollama`, `llamacpp`, `azure-openai`, `azure-anthropic`, `openai`, `lmstudio`, `moonshot`, `zai`, `vertex`) | `databricks` |
 | `PORT` | HTTP port for proxy server | `8081` |
 | `WORKSPACE_ROOT` | Workspace directory path | `process.cwd()` |
 | `LOG_LEVEL` | Logging level (`error`, `warn`, `info`, `debug`) | `info` |

@@ -1515,6 +1515,118 @@ async function invokeZai(body) {
 
 
 /**
+ * Moonshot AI (Kimi) Provider
+ *
+ * Moonshot offers Kimi models through an OpenAI-compatible chat completions API.
+ * Uses native system role support (unlike Z.AI which merges into user message).
+ */
+async function invokeMoonshot(body) {
+  if (!config.moonshot?.apiKey) {
+    throw new Error("Moonshot API key is not configured. Set MOONSHOT_API_KEY in your .env file.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.moonshot.endpoint || "https://api.moonshot.ai/v1/chat/completions";
+
+  // Model mapping: Anthropic names → Moonshot/Kimi names
+  const modelMap = {
+    "claude-sonnet-4-5-20250929": "kimi-k2-turbo-preview",
+    "claude-sonnet-4-5": "kimi-k2-turbo-preview",
+    "claude-sonnet-4.5": "kimi-k2-turbo-preview",
+    "claude-3-5-sonnet": "kimi-k2-turbo-preview",
+    "claude-haiku-4-5-20251001": "kimi-k2-turbo-preview",
+    "claude-haiku-4-5": "kimi-k2-turbo-preview",
+    "claude-3-haiku": "kimi-k2-turbo-preview",
+  };
+
+  const requestedModel = body._tierModel || body.model || config.moonshot.model;
+  const mappedModel = modelMap[requestedModel] || config.moonshot.model || "kimi-k2-turbo-preview";
+
+  // Convert messages using existing utility
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+
+  // Moonshot natively supports system role — add as system message
+  if (body.system) {
+    const systemContent = Array.isArray(body.system)
+      ? body.system.map(s => s.text || s).join("\n")
+      : body.system;
+    messages.unshift({ role: "system", content: systemContent });
+  }
+
+  const moonshotBody = {
+    model: mappedModel,
+    messages,
+    max_tokens: body.max_tokens || 4096,
+    temperature: body.temperature ?? 0.7,
+    top_p: body.top_p ?? 1.0,
+    stream: false,  // Force non-streaming - OpenAI SSE to Anthropic SSE conversion not implemented
+  };
+
+  // Convert and add tools if present
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    moonshotBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
+    moonshotBody.tool_choice = "auto";
+    moonshotBody.parallel_tool_calls = false;
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${config.moonshot.apiKey}`,
+  };
+
+  logger.debug({
+    endpoint,
+    model: moonshotBody.model,
+    originalModel: requestedModel,
+    messageCount: moonshotBody.messages?.length || 0,
+    hasTools: !!moonshotBody.tools,
+    toolCount: moonshotBody.tools?.length || 0,
+  }, "=== Moonshot REQUEST ===");
+
+  const response = await performJsonRequest(endpoint, { headers, body: moonshotBody }, "Moonshot");
+
+  const rawMsg = response?.json?.choices?.[0]?.message;
+  logger.debug({
+    responseOk: response?.ok,
+    responseStatus: response?.status,
+    hasJson: !!response?.json,
+    contentType: typeof rawMsg?.content,
+    contentValue: typeof rawMsg?.content === 'string' ? rawMsg.content.substring(0, 300) : String(JSON.stringify(rawMsg?.content) || '').substring(0, 300),
+    hasReasoning: !!rawMsg?.reasoning_content,
+    reasoningType: typeof rawMsg?.reasoning_content,
+    reasoningValue: typeof rawMsg?.reasoning_content === 'string' ? rawMsg.reasoning_content.substring(0, 300) : String(JSON.stringify(rawMsg?.reasoning_content) || '').substring(0, 300),
+    finishReason: response?.json?.choices?.[0]?.finish_reason,
+    messageKeys: rawMsg ? Object.keys(rawMsg) : [],
+    fullRawResponse: String(JSON.stringify(response?.json) || '').substring(0, 800),
+  }, "=== Moonshot RAW RESPONSE ===");
+
+  // Convert OpenAI response back to Anthropic format
+  if (response?.ok && response?.json) {
+    const anthropicJson = convertOpenAIToAnthropic(response.json);
+    logger.debug({
+      convertedContent: JSON.stringify(anthropicJson.content).substring(0, 500),
+      contentLength: anthropicJson.content?.length,
+      firstContentType: anthropicJson.content?.[0]?.type,
+      firstContentText: anthropicJson.content?.[0]?.text?.substring(0, 300),
+    }, "=== Moonshot CONVERTED RESPONSE ===");
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: anthropicJson,
+      text: JSON.stringify(anthropicJson),
+      contentType: "application/json",
+      headers: response.headers,
+    };
+  }
+
+  return response;
+}
+
+/**
  * Convert OpenAI response to Anthropic format
  */
 function convertOpenAIToAnthropic(response) {
@@ -1529,11 +1641,17 @@ function convertOpenAIToAnthropic(response) {
   // Add text content from message.content
   // Don't add placeholder text if there are tool_calls - tools are the actual response
   const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
-  if (message.content) {
-    content.push({ type: "text", text: message.content });
-  } else if (message.reasoning_content && !message.content) {
-    // Thinking models (Kimi-K2, o1, etc.) return response in reasoning_content
-    content.push({ type: "text", text: message.reasoning_content });
+
+  // Extract text content - handle thinking models that split content/reasoning
+  const textContent = typeof message.content === 'string' ? message.content : '';
+  const reasoningContent = typeof message.reasoning_content === 'string' ? message.reasoning_content : '';
+
+  if (textContent) {
+    // Has regular content - use it directly (ignore reasoning_content chain-of-thought)
+    content.push({ type: "text", text: textContent });
+  } else if (reasoningContent) {
+    // Fallback: thinking models where content is empty but reasoning has the output
+    content.push({ type: "text", text: reasoningContent });
   }
 
   // Convert tool calls
@@ -1554,13 +1672,14 @@ function convertOpenAIToAnthropic(response) {
   }
 
   // Determine stop reason
+  // IMPORTANT: Check for actual tool_calls presence, not just finish_reason string.
+  // Some providers (Moonshot, etc.) return finish_reason: "stop" even when tool_calls exist.
+  // If we don't set stop_reason to "tool_use", the CLI won't execute the tool calls.
   let stopReason = "end_turn";
-  if (choice.finish_reason === "tool_calls") {
+  if (hasToolCalls) {
     stopReason = "tool_use";
   } else if (choice.finish_reason === "length") {
     stopReason = "max_tokens";
-  } else if (choice.finish_reason === "stop") {
-    stopReason = "end_turn";
   }
 
   return {
@@ -1960,6 +2079,8 @@ async function invokeModel(body, options = {}) {
         return await invokeZai(body);
       } else if (initialProvider === "vertex") {
         return await invokeVertex(body);
+      } else if (initialProvider === "moonshot") {
+        return await invokeMoonshot(body);
       }
       return await invokeDatabricks(body);
     });
@@ -2048,6 +2169,8 @@ async function invokeModel(body, options = {}) {
           return await invokeZai(body);
         } else if (fallbackProvider === "vertex") {
           return await invokeVertex(body);
+        } else if (fallbackProvider === "moonshot") {
+          return await invokeMoonshot(body);
         }
         return await invokeDatabricks(body);
       });

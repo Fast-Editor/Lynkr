@@ -26,6 +26,7 @@ Complete guide to Lynkr's architecture, request flow, and core capabilities.
          ├──→ Databricks (Claude 4.5)
          ├──→ AWS Bedrock (100+ models)
          ├──→ OpenRouter (100+ models)
+         ├──→ Moonshot AI (Kimi K2)
          ├──→ Ollama (local, free)
          ├──→ llama.cpp (local, free)
          ├──→ Azure OpenAI (GPT-4o, o1)
@@ -173,6 +174,8 @@ data: {}
 - `invokeOllama()` - Ollama local
 - `invokeLlamaCpp()` - llama.cpp
 - `invokeBedrock()` - AWS Bedrock
+- `invokeMoonshot()` - Moonshot AI (Kimi)
+- `invokeZai()` - Z.AI (Zhipu AI)
 
 **Format converters:**
 - `openrouter-utils.js` - OpenAI format conversion
@@ -273,8 +276,8 @@ data: {}
 
 ### 1. Multi-Provider Support
 
-**9+ Providers:**
-- Cloud: Databricks, Bedrock, OpenRouter, Azure, OpenAI
+**12+ Providers:**
+- Cloud: Databricks, Bedrock, OpenRouter, Azure, OpenAI, Moonshot AI, Z.AI, Vertex AI
 - Local: Ollama, llama.cpp, LM Studio
 
 **Hybrid Routing:**

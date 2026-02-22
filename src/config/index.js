@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -131,6 +131,11 @@ const bedrockModelId = process.env.AWS_BEDROCK_MODEL_ID?.trim() || "anthropic.cl
 const zaiApiKey = process.env.ZAI_API_KEY?.trim() || null;
 const zaiEndpoint = process.env.ZAI_ENDPOINT?.trim() || "https://api.z.ai/api/anthropic/v1/messages";
 const zaiModel = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
+
+// Moonshot AI (Kimi) configuration - OpenAI-compatible API
+const moonshotApiKey = process.env.MOONSHOT_API_KEY?.trim() || null;
+const moonshotEndpoint = process.env.MOONSHOT_ENDPOINT?.trim() || "https://api.moonshot.ai/v1/chat/completions";
+const moonshotModel = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2-turbo-preview";
 
 // Vertex AI (Google Gemini) configuration
 const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
@@ -600,6 +605,11 @@ var config = {
     apiKey: vertexApiKey,
     model: vertexModel,
   },
+  moonshot: {
+    apiKey: moonshotApiKey,
+    endpoint: moonshotEndpoint,
+    model: moonshotModel,
+  },
   hotReload: {
     enabled: hotReloadEnabled,
     debounceMs: Number.isNaN(hotReloadDebounceMs) ? 1000 : hotReloadDebounceMs,
@@ -916,6 +926,8 @@ function reloadConfig() {
   config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
   config.vertex.apiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
   config.vertex.model = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
+  config.moonshot.apiKey = process.env.MOONSHOT_API_KEY?.trim() || null;
+  config.moonshot.model = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2-turbo-preview";
 
   // Model provider settings
   const newProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();

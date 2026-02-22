@@ -14,7 +14,6 @@ const smartRouting = require('../routing');
 
 // Re-export all functions from smart routing
 module.exports = {
-  determineProviderSync: smartRouting.determineProviderSync,
   determineProviderSmart: smartRouting.determineProviderSmart,
   isFallbackEnabled: smartRouting.isFallbackEnabled,
   getFallbackProvider: smartRouting.getFallbackProvider,

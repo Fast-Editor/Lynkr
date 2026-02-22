@@ -211,6 +211,8 @@ class ModelTierSelector {
         return config.bedrock?.modelId || null;
       case 'zai':
         return config.zai?.model || null;
+      case 'moonshot':
+        return config.moonshot?.model || null;
       case 'vertex':
         return config.vertex?.model || null;
       case 'databricks':

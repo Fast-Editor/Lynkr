@@ -238,7 +238,7 @@ Lynkr supports [ClawdBot](https://github.com/openclaw/openclaw) via its OpenAI-c
 
 ### Getting Started
 - 📦 **[Installation Guide](documentation/installation.md)** - Detailed installation for all methods
-- ⚙️ **[Provider Configuration](documentation/providers.md)** - Complete setup for all 9+ providers
+- ⚙️ **[Provider Configuration](documentation/providers.md)** - Complete setup for all 12+ providers
 - 🎯 **[Quick Start Examples](documentation/installation.md#quick-start-examples)** - Copy-paste configs
 
 ### IDE & CLI Integration
@@ -277,7 +277,7 @@ Lynkr supports [ClawdBot](https://github.com/openclaw/openclaw) via its OpenAI-c
 
 ## Key Features Highlights
 
-- ✅ **Multi-Provider Support** - 9+ providers including local (Ollama, llama.cpp) and cloud (Bedrock, Databricks, OpenRouter)
+- ✅ **Multi-Provider Support** - 12+ providers including local (Ollama, llama.cpp) and cloud (Bedrock, Databricks, OpenRouter, Moonshot AI)
 - ✅ **60-80% Cost Reduction** - Token optimization with smart tool selection, prompt caching, memory deduplication
 - ✅ **100% Local Option** - Run completely offline with Ollama/llama.cpp (zero cloud dependencies)
 - ✅ **OpenAI Compatible** - Works with Cursor IDE, Continue.dev, and any OpenAI-compatible client

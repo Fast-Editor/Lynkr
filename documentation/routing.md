@@ -51,15 +51,63 @@ TIER_REASONING=databricks:databricks-claude-opus-4-6
 
 If a model name is given without a provider prefix, the default provider (`MODEL_PROVIDER`) is used.
 
-### Relationship with MODEL_PROVIDER
+### Routing Precedence
 
-`MODEL_PROVIDER` and `TIER_*` are two separate routing modes:
+There are three routing-related settings. Here is exactly how they interact:
 
-- **Without TIER_\* vars** — `MODEL_PROVIDER` controls all routing (static mode)
-- **With all 4 TIER_\* vars set** — Tier routing is active and **overrides** `MODEL_PROVIDER` for request routing
-- **With 1-3 TIER_\* vars** — Tier routing is **disabled** (all 4 are required); `MODEL_PROVIDER` is used
+#### 1. `TIER_*` Environment Variables (Highest Priority)
 
-`MODEL_PROVIDER` should still be set even when using tiers — it's used for startup checks (e.g. waiting for Ollama to be ready) and as a default for internal operations that don't go through tier routing.
+When **all four** `TIER_*` vars are set (`TIER_SIMPLE`, `TIER_MEDIUM`, `TIER_COMPLEX`, `TIER_REASONING`), tiered routing is **active**. Every incoming request is scored for complexity (0-100), mapped to a tier, and routed to the `provider:model` specified in the matching `TIER_*` var.
+
+In this mode, `MODEL_PROVIDER` is **not consulted** for routing decisions. The provider comes directly from the `TIER_*` value (e.g., `ollama:llama3.2` routes to Ollama, `openai:gpt-4o` routes to OpenAI).
+
+If any of the four `TIER_*` vars are missing, tiered routing is **completely disabled** and the system falls back to `MODEL_PROVIDER`.
+
+#### 2. `MODEL_PROVIDER` (Default / Fallback)
+
+`MODEL_PROVIDER` controls routing in two scenarios:
+
+- **When tiered routing is disabled** (any `TIER_*` var missing) — all requests go to the provider set in `MODEL_PROVIDER`, regardless of complexity. This is static routing.
+- **When a `TIER_*` value has no provider prefix** (e.g., `TIER_SIMPLE=llama3.2` instead of `TIER_SIMPLE=ollama:llama3.2`) — `MODEL_PROVIDER` is used as the default provider for that tier.
+
+Even when tiered routing is active and overrides it for request routing, `MODEL_PROVIDER` is still used for:
+- **Startup checks** — e.g., if `MODEL_PROVIDER=ollama`, the server waits for Ollama to be reachable before accepting requests
+- **Provider discovery API** (`/v1/providers`) — marks which provider is "primary" in the response
+- **Embeddings routing** — the OpenAI-compatible router checks `MODEL_PROVIDER` for embedding provider selection
+
+**Always set `MODEL_PROVIDER`** even when using tier routing.
+
+#### 3. `PREFER_OLLAMA` (Removed)
+
+`PREFER_OLLAMA` is **deprecated and has no effect**. If set, a warning is logged at startup:
+
+```
+[DEPRECATION] PREFER_OLLAMA is removed. Use TIER_* env vars for routing.
+```
+
+To route simple requests to Ollama, use `TIER_SIMPLE=ollama:<model>` instead.
+
+#### Summary Table
+
+| Configuration | Routing Behavior |
+|---|---|
+| All 4 `TIER_*` set | Tier routing active. Each request scored and routed to its tier's `provider:model`. `MODEL_PROVIDER` ignored for routing. |
+| 1-3 `TIER_*` set | Tier routing **disabled**. All requests go to `MODEL_PROVIDER` (static). |
+| No `TIER_*` set | Static routing. All requests go to `MODEL_PROVIDER`. |
+| `TIER_*` value without provider prefix | `MODEL_PROVIDER` used as the default provider for that tier. |
+| `PREFER_OLLAMA` set | No effect. Deprecation warning logged. |
+
+#### Example: Mixed Local + Cloud Setup
+
+```bash
+MODEL_PROVIDER=ollama                        # Startup checks + default provider
+TIER_SIMPLE=ollama:llama3.2                  # Score 0-25 → Ollama (free, local)
+TIER_MEDIUM=openai:gpt-4o                    # Score 26-50 → OpenAI
+TIER_COMPLEX=databricks:claude-sonnet-4-5    # Score 51-75 → Databricks
+TIER_REASONING=databricks:claude-opus-4-6    # Score 76-100 → Databricks
+```
+
+In this setup, a "Hello" message (score ~5) routes to Ollama. A "Refactor the auth module" message (score ~65) routes to Databricks. `MODEL_PROVIDER=ollama` ensures the server waits for Ollama at startup but does not affect where complex requests go.
 
 ### Tier Config File
 
@@ -411,7 +459,7 @@ Every response includes routing metadata in `X-Lynkr-*` headers:
 
 | File | Description |
 |------|-------------|
-| `src/routing/index.js` | Main routing orchestrator, `determineProviderSmart()` |
+| `src/routing/index.js` | Main routing orchestrator (`determineProviderSmart()`) |
 | `src/routing/complexity-analyzer.js` | 4-phase complexity analysis, 15-dimension weighted scoring |
 | `src/routing/agentic-detector.js` | Agentic workflow detection and classification |
 | `src/routing/model-tiers.js` | Tier definitions, model selection from `TIER_*` env vars |

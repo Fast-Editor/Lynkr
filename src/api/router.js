@@ -5,7 +5,7 @@ const metrics = require("../metrics");
 const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");
-const { getRoutingHeaders, getRoutingStats, analyzeComplexity } = require("../routing");
+const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector } = require("../routing");
 const { validateCwd } = require("../workspace");
 
 const router = express.Router();
@@ -216,8 +216,19 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
     // Analyze complexity for routing headers (Phase 3)
     const complexity = analyzeComplexity(req.body);
+    let preRouteProvider = 'cloud';
+    if (complexity.recommendation === 'local') {
+      // Use tier config to determine actual provider instead of hardcoding 'ollama'
+      try {
+        const selector = getModelTierSelector();
+        const tierResult = selector.selectModel('SIMPLE', null);
+        preRouteProvider = tierResult.provider;
+      } catch (_) {
+        preRouteProvider = 'ollama';
+      }
+    }
     const routingHeaders = getRoutingHeaders({
-      provider: complexity.recommendation === 'local' ? 'ollama' : 'cloud',
+      provider: preRouteProvider,
       score: complexity.score,
       threshold: complexity.threshold,
       method: 'complexity',

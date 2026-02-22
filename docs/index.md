@@ -312,6 +312,13 @@
       </div>
 
       <div class="provider-card">
+        <span class="provider-icon">🌙</span>
+        <div class="provider-name">Moonshot AI</div>
+        <div class="provider-type">Cloud</div>
+        <span class="provider-badge paid">KIMI K2</span>
+      </div>
+
+      <div class="provider-card">
         <span class="provider-icon" style="font-weight: 900; font-size: 28px; background: linear-gradient(135deg, #1a1a2e, #16213e); color: #fff; width: 42px; height: 42px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center;">Z</span>
         <div class="provider-name">z.ai</div>
         <div class="provider-type">Cloud</div>

@@ -833,6 +833,18 @@ function getConfiguredProviders() {
     });
   }
 
+  // Check Moonshot AI (Kimi)
+  if (config.moonshot?.apiKey) {
+    providers.push({
+      name: "moonshot",
+      type: "moonshot-ai",
+      models: [
+        config.moonshot.model || "kimi-k2-turbo-preview",
+        "kimi-k2-turbo-preview"
+      ]
+    });
+  }
+
   // Check Vertex AI (Google Cloud)
   if (config.vertex?.projectId) {
     providers.push({

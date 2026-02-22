@@ -104,6 +104,25 @@ async function determineProviderSmart(payload, options = {}) {
 
   // Quick check for force patterns
   if (shouldForceLocal(payload)) {
+    // When tier routing is enabled, respect TIER_SIMPLE instead of blindly choosing local
+    if (config.modelTiers?.enabled) {
+      try {
+        const selector = getModelTierSelector();
+        const modelSelection = selector.selectModel('SIMPLE', null);
+        const decision = {
+          provider: modelSelection.provider,
+          model: modelSelection.model,
+          tier: 'SIMPLE',
+          method: 'force',
+          reason: 'force_local_pattern',
+          score: 0,
+        };
+        routingMetrics.record(decision);
+        return decision;
+      } catch (err) {
+        logger.debug({ err: err.message }, 'Tier selection failed for force_local, falling back to local provider');
+      }
+    }
     const provider = getBestLocalProvider();
     const decision = {
       provider,
@@ -289,14 +308,6 @@ async function determineProviderSmart(payload, options = {}) {
 }
 
 /**
- * Synchronous provider lookup — returns static MODEL_PROVIDER.
- * For callers that cannot await determineProviderSmart().
- */
-function determineProviderSync(_payload) {
-  return config.modelProvider?.type ?? 'databricks';
-}
-
-/**
  * Get routing headers to include in response
  * Phase 3: Expose routing decision to clients
  */
@@ -347,8 +358,7 @@ function getRoutingStats() {
 }
 
 module.exports = {
-  // Main routing functions
-  determineProviderSync,
+  // Main routing function
   determineProviderSmart,
 
   // Helpers

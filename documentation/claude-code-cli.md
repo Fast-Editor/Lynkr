@@ -11,7 +11,7 @@ Lynkr acts as a drop-in replacement for Anthropic's backend, enabling Claude Cod
 ### Why Use Lynkr with Claude Code CLI?
 
 - 💰 **60-80% cost savings** through token optimization
-- 🔓 **Provider choice** - Use any of 9+ supported providers
+- 🔓 **Provider choice** - Use any of 12+ supported providers
 - 🏠 **Self-hosted** - Full control over your AI infrastructure
 - 🔒 **Local option** - Run 100% offline with Ollama or llama.cpp
 - ✅ **Zero code changes** - Drop-in replacement for Anthropic backend
@@ -74,7 +74,7 @@ export DATABRICKS_API_BASE=https://your-workspace.databricks.com
 export DATABRICKS_API_KEY=dapi1234567890abcdef
 ```
 
-See [Provider Configuration Guide](providers.md) for all 9+ providers.
+See [Provider Configuration Guide](providers.md) for all 12+ providers.
 
 ---
 
@@ -662,7 +662,7 @@ Claude Code CLI (displays result)
 
 ## Next Steps
 
-- **[Provider Configuration](providers.md)** - Configure all 9+ providers
+- **[Provider Configuration](providers.md)** - Configure all 12+ providers
 - **[Installation Guide](installation.md)** - Detailed installation
 - **[Features Guide](features.md)** - Learn about advanced features
 - **[Token Optimization](token-optimization.md)** - Maximize cost savings
