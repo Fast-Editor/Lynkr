@@ -727,11 +727,11 @@ function getConfiguredProviders() {
   }
 
   // Check Ollama
-  if (config.ollama?.endpoint) {
+  if (config.ollama?.endpoint || config.ollama?.cloudEndpoint) {
     providers.push({
       name: "ollama",
       type: "ollama",
-      models: [config.ollama.model || "qwen2.5-coder:7b"]
+      models: [config.ollama.model || "unknown"]
     });
   }
 
@@ -1026,11 +1026,10 @@ async function generateOllamaEmbeddings(inputs, embeddingConfig) {
     const input = inputs[i];
 
     try {
+      const { getOllamaHeaders } = require("../clients/ollama-utils");
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: getOllamaHeaders(),
         body: JSON.stringify({
           model: model,
           prompt: input

@@ -14,15 +14,18 @@ const SYSTEM_REMINDER_PATTERN = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
 // Pre-compiled regex patterns for performance (avoid recompiling on every request)
 const GREETING_PATTERN = /^(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings|sup|yo)[\s\.\!\?]*$/i;
-const QUESTION_PATTERN = /^(what is|what's|how does|when|where|why|explain|define|tell me about|can you explain)/i;
+const QUESTION_PATTERN = /^(what is|what's|how does|when|where|why|define|tell me about|can you explain)/i;
 const TECHNICAL_KEYWORDS = /code|function|class|file|module|import|export|async|await|promise|callback|api|database|server|client|component|method|variable|array|object|string|number/i;
 const EXPLANATION_PATTERN = /explain|describe|summarize|what does|how does|tell me about|give me an overview|clarify|elaborate/i;
 const WEB_PATTERN = /search|lookup|find info|google|documentation|docs|website|url|link|online|internet|browse/i;
-const READ_PATTERN = /read|show|display|view|cat|check|inspect|look at|see|examine|review|print|output/i;
-const WRITE_PATTERN = /write|create|add|update|modify|change|fix|delete|remove|insert|append|replace|save|put|make|generate|produce/i;
+const READ_PATTERN = /\bread\b|show|display|view|\bcat\b|\bcheck\b|inspect|look at|see|examine|review|print|output|\blist\b/i;
+const WRITE_PATTERN = /write|create|add|update|modify|change|fix|delete|remove|insert|append|replace|save|put|make|generate|produce|copy/i;
 const EDIT_PATTERN = /edit|refactor|rename|move|reorganize|restructure|rewrite/i;
-const EXECUTION_PATTERN = /run|execute|test|compile|build|deploy|start|install|launch|boot|fire up|npm|git|python|node|docker|bash|sh|cmd/i;
+const EXECUTION_PATTERN = /\brun\b|execute|\btest\b|compile|build|deploy|\bstart\b|install|launch|boot|fire up|npm|npx|yarn|pnpm|pip|git|python|node|docker|bash|\bsh\b|\bcmd\b|\bls\b|\bpwd\b|\bcd\b|grep|curl|wget|\bmake\b|\bbd\b/i;
 const COMPLEX_PATTERN = /implement|build|create|develop|design|architect|plan|strategy|approach|help with|work on|improve|optimize|enhance|refactor|migrate/i;
+
+// Catches short shell/tool commands that should not be classified as conversational
+const COMMAND_PATTERN = /^\s*(ls|cd|pwd|cat|git|npm|npx|yarn|pnpm|pip|bd|run|edit|read|write|grep|find|curl|wget|make|docker|bash|sh|node|python|test|check|install|create|delete|remove|rename|move|copy|open|save|build|compile|deploy|start|stop|kill)\b/i;
 
 /**
  * Tool selection map: request type → relevant tools
@@ -41,25 +44,27 @@ const TOOL_SELECTION_MAP = {
   ],
 
   file_modification: [
-    'Read', 'Write', 'Edit',          // Full I/O
-    'Grep', 'Glob', 'Bash'            // Support tools
+    'Read', 'Write', 'Edit', 'edit_patch',  // Full I/O
+    'Grep', 'Glob', 'Bash',                 // Support tools
+    'NotebookEdit'
   ],
 
   code_execution: [
-    'Read', 'Write', 'Edit',          // File operations
-    'Bash', 'Grep', 'Glob'            // Execution + search
+    'Read', 'Write', 'Edit', 'edit_patch',  // File operations
+    'Bash', 'Grep', 'Glob'                  // Execution + search
   ],
 
   coding: [
-    'Read', 'Write', 'Edit',          // Core file ops
-    'Bash', 'Grep', 'Glob'            // Support tools
+    'Read', 'Write', 'Edit', 'edit_patch',  // Core file ops
+    'Bash', 'Grep', 'Glob'                  // Support tools
   ],
 
   complex_task: [
-    'Read', 'Write', 'Edit',          // Tier 1
-    'Bash', 'Grep', 'Glob',           // Tier 1
-    'WebSearch', 'WebFetch',          // Tier 2
-    'Task', 'TodoWrite', 'AskUserQuestion'  // Tier 3+4
+    'Read', 'Write', 'Edit', 'edit_patch',            // Tier 1
+    'Bash', 'Grep', 'Glob',                           // Tier 1
+    'WebSearch', 'WebFetch',                          // Tier 2
+    'NotebookEdit',                                    // Tier 2
+    'Task', 'TodoWrite', 'AskUserQuestion'            // Tier 3+4
   ]
 };
 
@@ -114,14 +119,16 @@ function isGreeting(content) {
  */
 function isShortNonTechnical(content) {
   const trimmed = content.trim();
-  return trimmed.length < 20 && !TECHNICAL_KEYWORDS.test(trimmed);
+  return trimmed.length < 20
+    && !TECHNICAL_KEYWORDS.test(trimmed)
+    && !COMMAND_PATTERN.test(trimmed);
 }
 
 /**
  * Check if content is a simple question
  */
 function isSimpleQuestion(content) {
-  return QUESTION_PATTERN.test(content.trim());
+  return QUESTION_PATTERN.test(content.trim()) && !COMMAND_PATTERN.test(content.trim());
 }
 
 /**
@@ -200,21 +207,12 @@ function classifyRequestType(payload) {
   const contentLower = content.toLowerCase();
   const messageCount = payload.messages?.length ?? 0;
 
-  // 1. Conversational (no tools)
+  // 1. Conversational — exact greeting match (no tools)
   if (isGreeting(contentLower)) {
     return { type: 'conversational', confidence: 1.0, keywords: ['greeting'] };
   }
 
-  if (isShortNonTechnical(contentLower)) {
-    return { type: 'conversational', confidence: 0.8, keywords: ['short', 'non-technical'] };
-  }
-
-  // 2. Simple Q&A (no tools)
-  if (isSimpleQuestion(contentLower) && !hasTechnicalKeywords(contentLower)) {
-    return { type: 'simple_qa', confidence: 0.9, keywords: ['question', 'non-technical'] };
-  }
-
-  // 3. Research/Explanation (minimal tools)
+  // 2. Research/Explanation (minimal tools) — before simple_qa so "explain X" → research
   if (hasExplanationKeywords(contentLower)) {
     return { type: 'research', confidence: 0.85, keywords: ['explanation'] };
   }
@@ -223,24 +221,35 @@ function classifyRequestType(payload) {
     return { type: 'research', confidence: 0.9, keywords: ['web', 'search'] };
   }
 
-  // 4. File reading (read-only tools)
+  // 3. Simple Q&A (no tools) — after explanation so "explain X" isn't caught here
+  if (isSimpleQuestion(contentLower) && !hasTechnicalKeywords(contentLower)) {
+    return { type: 'simple_qa', confidence: 0.9, keywords: ['question', 'non-technical'] };
+  }
+
+  // 4. Execution/Testing (execution tools) — before read/write
+  //    because commands like "check git status" contain both read and exec keywords
+  if (hasExecutionKeywords(contentLower)) {
+    return { type: 'code_execution', confidence: 0.8, keywords: ['execution'] };
+  }
+
+  // 5. File reading (read-only tools)
   if (hasReadKeywords(contentLower) && !hasWriteKeywords(contentLower)) {
     return { type: 'file_reading', confidence: 0.8, keywords: ['read'] };
   }
 
-  // 5. File modification (full I/O tools)
+  // 6. File modification (full I/O tools)
   if (hasWriteKeywords(contentLower) || hasEditKeywords(contentLower)) {
     return { type: 'file_modification', confidence: 0.85, keywords: ['write', 'edit'] };
-  }
-
-  // 6. Execution/Testing (execution tools)
-  if (hasExecutionKeywords(contentLower)) {
-    return { type: 'code_execution', confidence: 0.8, keywords: ['execution'] };
   }
 
   // 7. Complex task (all tools)
   if (hasComplexKeywords(contentLower)) {
     return { type: 'complex_task', confidence: 0.75, keywords: ['complex'] };
+  }
+
+  // 8. Short non-technical fallback — only after all keyword checks have had a chance
+  if (isShortNonTechnical(contentLower)) {
+    return { type: 'conversational', confidence: 0.8, keywords: ['short', 'non-technical'] };
   }
 
   // Long conversations likely need more tools

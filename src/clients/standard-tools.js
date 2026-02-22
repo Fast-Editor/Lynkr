@@ -24,7 +24,7 @@ const STANDARD_TOOLS = [
   },
   {
     name: "Read",
-    description: "Reads a file from the local filesystem. You can access any file directly by using this tool. For files outside the workspace, the user must approve access first.",
+    description: "Reads a file from the local filesystem. You can access any file directly by using this tool.\n\nEXTERNAL FILE APPROVAL FLOW: When reading a file outside the workspace, the tool will return an [APPROVAL REQUIRED] message instead of the file content. When this happens you MUST: (1) Tell the user the file is outside the workspace and ask for permission. (2) If the user approves, call this tool again with the SAME file_path and set user_approved=true. (3) Only then will the file content be returned.",
     input_schema: {
       type: "object",
       properties: {
@@ -72,6 +72,24 @@ const STANDARD_TOOLS = [
         }
       },
       required: ["file_path", "old_string", "new_string"]
+    }
+  },
+  {
+    name: "edit_patch",
+    description: "Apply unified diff patches to workspace files. Use this for complex multi-line edits or when you have a patch in unified diff format. For simple string replacements, use the Edit tool instead.",
+    input_schema: {
+      type: "object",
+      properties: {
+        file_path: {
+          type: "string",
+          description: "Relative path within workspace (e.g., 'src/main.js'). DO NOT use absolute paths."
+        },
+        patch: {
+          type: "string",
+          description: "Unified diff patch to apply. Must be in standard diff format with @@ line numbers."
+        }
+      },
+      required: ["file_path", "patch"]
     }
   },
   {

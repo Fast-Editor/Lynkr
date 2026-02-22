@@ -125,14 +125,14 @@ function getConfiguredProviders() {
   }
 
   // Check Ollama
-  if (config.ollama?.endpoint) {
+  if (config.ollama?.endpoint || config.ollama?.cloudEndpoint) {
     providers.push({
       name: "ollama",
       type: "ollama",
-      baseUrl: config.ollama.endpoint,
+      baseUrl: config.ollama.endpoint || config.ollama.cloudEndpoint,
       enabled: true,
       models: [
-        { id: config.ollama.model || "qwen2.5-coder:7b", name: "Configured Model" }
+        { id: config.ollama.model || "unknown", name: "Configured Model" }
       ]
     });
   }

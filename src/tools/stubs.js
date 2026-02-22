@@ -41,12 +41,41 @@ function createStubHandler(name, description) {
   });
 }
 
+function askUserQuestionHandler({ args }) {
+  let questions = args?.questions ?? [];
+
+  if (typeof questions === "string") {
+    try { questions = JSON.parse(questions); } catch { questions = []; }
+  }
+
+  if (!Array.isArray(questions)) questions = [questions];
+  const lines = questions.map((q, i) => {
+    const header = q.header ? `[${q.header}] ` : "";
+    const opts = (q.options ?? [])
+      .map((o, j) => `  ${j + 1}. ${o.label} — ${o.description}`)
+      .join("\n");
+    return `${header}${q.question}\n${opts}`;
+  });
+
+  return {
+    ok: true,
+    status: 200,
+    content: lines.join("\n\n"),
+  };
+}
+
 function registerStubTools() {
   STUB_TOOLS.forEach((tool) => {
     if (!hasTool(tool.name)) {
       registerTool(tool.name, createStubHandler(tool.name, tool.description), tool);
     }
   });
+
+  if (!hasTool("AskUserQuestion")) {
+    registerTool("AskUserQuestion", askUserQuestionHandler, {
+      description: "Returns the model's question to the user as assistant output.",
+    });
+  }
 }
 
 module.exports = {

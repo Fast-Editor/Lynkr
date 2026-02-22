@@ -127,6 +127,7 @@ describe("llama.cpp Integration", () => {
     it("should throw error when llamacpp is set as FALLBACK_PROVIDER", () => {
       process.env.MODEL_PROVIDER = "ollama";
       process.env.PREFER_OLLAMA = "true";
+      process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_PROVIDER = "llamacpp";
       process.env.LLAMACPP_ENDPOINT = "http://localhost:8080";

@@ -195,13 +195,16 @@ async function checkDatabricks() {
  */
 async function checkOllama() {
   try {
-    if (!config.ollama?.endpoint) {
+    if (!config.ollama?.endpoint && !config.ollama?.cloudEndpoint) {
       return { healthy: true, note: "No Ollama endpoint configured" };
     }
 
-    const endpoint = `${config.ollama.endpoint}/api/tags`;
+    const { getOllamaHeaders, getOllamaEndpointForModel } = require("../clients/ollama-utils");
+    const baseEndpoint = config.ollama.endpoint || getOllamaEndpointForModel(config.ollama.model);
+    const endpoint = `${baseEndpoint}/api/tags`;
     const response = await fetch(endpoint, {
       method: "GET",
+      headers: getOllamaHeaders(),
       signal: AbortSignal.timeout(5000),
     });
 

@@ -287,6 +287,7 @@ Lynkr supports [ClawdBot](https://github.com/openclaw/openclaw) via its OpenAI-c
 - ✅ **Streaming Support** - Real-time token streaming for all providers
 - ✅ **Memory System** - Titans-inspired long-term memory with surprise-based filtering
 - ✅ **Tool Calling** - Full tool support with server and passthrough execution modes
+- ✅ **Progress Reporting** - Real-time agent execution tracking with WebSocket broadcasting (port 8765)
 - ✅ **Production Ready** - Battle-tested with 400+ tests, observability, and error resilience
 - ✅ **Node 20-25 Support** - Works with latest Node.js versions including v25
 - ✅ **Semantic Caching** - Cache responses for similar prompts (requires embeddings)
@@ -315,6 +316,76 @@ OLLAMA_EMBEDDINGS_ENDPOINT=http://localhost:11434/api/embeddings
 | `SEMANTIC_CACHE_THRESHOLD` | `0.95` | Similarity threshold (0.0-1.0) |
 
 > **Note:** Without a proper embeddings provider, the cache uses hash-based fallback which may cause false matches. Use Ollama with `nomic-embed-text` for best results.
+
+---
+
+## Progress Reporting
+
+Lynkr emits **real-time progress events** throughout agent execution, enabling comprehensive monitoring of tool execution, model invocations, and reasoning steps. These events are:
+- Emitted as Node.js events internally
+- Automatically broadcasted via WebSocket (port 8765) for external clients
+- Logged for observability
+
+**WebSocket Server (for External Clients):**
+- **Port**: `8765`
+- **Endpoint**: `ws://localhost:8765`
+- **Required Dependency**: `ws` (auto-installed with `npm install`)
+
+**Events Emitted:**
+- `agent_loop_started` / `agentLoopCompleted` - Agent execution lifecycle
+- `agent_loop_step_started` - Individual step in agent reasoning
+- `model_invocation_started` / `modelInvocationCompleted` - LLM calls with provider info
+- `tool_execution_started` / `toolExecutionCompleted` - Tool execution with request/response previews
+
+**Built-in Progress Listener (Python):**
+
+Lynkr includes a ready-to-use Python client that connects to the WebSocket server and displays formatted progress updates:
+
+```bash
+# Install Python dependencies (one-time)
+pip install websockets
+
+# Run the listener in one terminal
+python tools/progress-listener.py
+
+# In another terminal, run Lynkr and Claude Code
+npm start
+claude "Your prompt"
+```
+
+**Features:**
+- 🎨 Color-coded output with timestamps
+- 🔄 Real-time agent hierarchy tracking (shows parent/child agent relationships)
+- ⏱️ Duration and token tracking for model invocations
+- 🛠️ Tool execution details with request/response previews
+- 🌐 Remote monitoring: `python tools/progress-listener.py --host 192.168.1.100`
+- 🔧 Environment variables: `LYNKR_PROGRESS_HOST` and `LYNKR_PROGRESS_PORT`
+
+**Custom Python Client Example:**
+```python
+import json
+import asyncio
+import websockets
+
+async def monitor_progress():
+    uri = "ws://localhost:8765"
+    async with websockets.connect(uri) as websocket:
+        while True:
+            event = await websocket.recv()
+            data = json.loads(event)
+            print(f"Event: {data['type']}")
+            print(f"Data: {json.dumps(data, indent=2)}")
+
+asyncio.run(monitor_progress())
+```
+
+**Use Cases:**
+- Monitor tool execution in real-time during Claude Code CLI runs
+- Track agent reasoning steps and model invocations
+- Build custom dashboards showing agent progress
+- Debug multi-step agentic workflows
+- Troubleshoot subagent spawning and routing
+- Monitor remote Lynkr instances
 
 ---
 

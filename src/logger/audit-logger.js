@@ -40,7 +40,18 @@ function createAuditLogger(config) {
       level: "info", // Always log at info level for compliance
       name: "llm-audit",
       base: null, // Don't include pid/hostname to keep logs clean
-      timestamp: pino.stdTimeFunctions.isoTime,
+      // Use local timezone for timestamps instead of UTC
+      timestamp: () => {
+        const now = new Date();
+        const isoString = now.toISOString();
+        const offset = -now.getTimezoneOffset();
+        const offsetHours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+        const offsetMins = String(Math.abs(offset) % 60).padStart(2, '0');
+        const offsetSign = offset >= 0 ? '+' : '-';
+        // Replace Z with local offset (e.g., +05:30 or -08:00)
+        const localIso = isoString.replace('Z', `${offsetSign}${offsetHours}:${offsetMins}`);
+        return `,"time":"${localIso}"`;
+      },
       formatters: {
         level: (label) => {
           return { level: label };

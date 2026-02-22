@@ -29,17 +29,18 @@ describe("Hybrid Routing Integration Tests", () => {
   });
 
   describe("Configuration Validation", () => {
-    it("should use default OLLAMA_ENDPOINT when not specified", () => {
+    it("should require OLLAMA_ENDPOINT or OLLAMA_CLOUD_ENDPOINT when PREFER_OLLAMA is set", () => {
       process.env.PREFER_OLLAMA = "true";
       delete process.env.OLLAMA_ENDPOINT;
+      delete process.env.OLLAMA_CLOUD_ENDPOINT;
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
 
-      const config = require("../src/config");
-
-      // Should use default localhost:11434
-      assert.strictEqual(config.ollama.endpoint, "http://localhost:11434");
+      // Should throw because no endpoint is configured
+      assert.throws(() => {
+        require("../src/config");
+      }, /OLLAMA_ENDPOINT.*OLLAMA_CLOUD_ENDPOINT/);
     });
 
     it("should reject invalid FALLBACK_PROVIDER", () => {
