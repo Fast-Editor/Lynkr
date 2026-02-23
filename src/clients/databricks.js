@@ -11,6 +11,7 @@ const { convertAnthropicToolsToOpenRouter } = require("./openrouter-utils");
 const {
   detectModelFamily
 } = require("./bedrock-utils");
+const { getContextWindow } = require("../providers/context-window");
 
 
 
@@ -181,7 +182,7 @@ async function invokeDatabricks(body) {
   const databricksBody = { ...body };
 
   // Inject standard tools if client didn't send any (passthrough mode)
-  if (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0)) {
     databricksBody.tools = STANDARD_TOOLS;
     logger.info({
       injectedToolCount: STANDARD_TOOLS.length,
@@ -222,7 +223,7 @@ async function invokeAzureAnthropic(body) {
   }
 
   // Inject standard tools if client didn't send any (passthrough mode)
-  if (!Array.isArray(body.tools) || body.tools.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(body.tools) || body.tools.length === 0)) {
     body.tools = STANDARD_TOOLS;
     logger.info({
       injectedToolCount: STANDARD_TOOLS.length,
@@ -244,14 +245,20 @@ async function invokeAzureAnthropic(body) {
 }
 
 async function invokeOllama(body) {
-  if (!config.ollama?.endpoint) {
-    throw new Error("Ollama endpoint is not configured.");
+  if (!config.ollama?.endpoint && !config.ollama?.cloudEndpoint) {
+    throw new Error("Ollama endpoint is not configured. Set OLLAMA_ENDPOINT or OLLAMA_CLOUD_ENDPOINT.");
   }
 
-  const { convertAnthropicToolsToOllama, checkOllamaToolSupport } = require("./ollama-utils");
+  const { convertAnthropicToolsToOllama, checkOllamaToolSupport, getOllamaHeaders, getOllamaEndpointForModel } = require("./ollama-utils");
 
-  const endpoint = `${config.ollama.endpoint}/api/chat`;
-  const headers = { "Content-Type": "application/json" };
+  // Resolve the target model FIRST so we can derive the correct endpoint + headers
+  const resolvedModel = body._suggestionModeModel
+    || (body._requestMode === 'tool_execution' && body.model ? body.model : null)
+    || config.ollama.model;
+
+  const baseEndpoint = getOllamaEndpointForModel(resolvedModel);
+  const endpoint = `${baseEndpoint}/api/chat`;
+  const headers = getOllamaHeaders(resolvedModel);
 
   // Convert Anthropic messages format to Ollama format
   // Ollama expects content as string, not content blocks array
@@ -308,14 +315,20 @@ async function invokeOllama(body) {
     }, 'Ollama: Removed consecutive duplicate roles from message sequence');
   }
 
+  // Get context window size so Ollama doesn't silently truncate at its default (2048-4096).
+  // Without this, system prompt + tool schemas can exceed the default and get silently dropped.
+  const ctxWindow = await getContextWindow();
+  const numCtx = ctxWindow > 0 ? ctxWindow : 65536;
+
   const ollamaBody = {
-    model: body._suggestionModeModel || config.ollama.model,
+    model: resolvedModel,
     messages: deduplicated,
     stream: false,  // Force non-streaming for Ollama - streaming format conversion not yet implemented
     options: {
       temperature: body.temperature ?? 0.7,
       num_predict: body.max_tokens ?? 4096,
       top_p: body.top_p ?? 1.0,
+      num_ctx: numCtx,
     },
   };
 
@@ -331,7 +344,7 @@ async function invokeOllama(body) {
   }
 
   // Check if model supports tools FIRST (before wasteful injection)
-  const supportsTools = await checkOllamaToolSupport(config.ollama.model);
+  const supportsTools = await checkOllamaToolSupport(ollamaBody.model);
 
   // Inject standard tools if client didn't send any (passthrough mode)
   let toolsToSend = body.tools;
@@ -342,7 +355,7 @@ async function invokeOllama(body) {
   if (!supportsTools) {
     // Model doesn't support tools - don't inject them
     toolsToSend = null;
-  } else if (injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+  } else if (injectToolsOllama && !body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     // Model supports tools and none provided - inject them
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
@@ -370,14 +383,72 @@ async function invokeOllama(body) {
   }
 
   logger.info({
-    model: config.ollama.model,
+    model: resolvedModel,
+    endpoint: baseEndpoint,
     toolCount,
     toolsInjected,
     supportsTools,
+    num_ctx: numCtx,
     toolNames: (Array.isArray(toolsToSend) && toolsToSend.length > 0) ? toolsToSend.map(t => t.name) : []
-  }, `=== Ollama STANDARD TOOLS INJECTION for ${config.ollama.model} === ${logMessage}`);
+  }, `=== Ollama STANDARD TOOLS INJECTION for ${resolvedModel} === ${logMessage}`);
 
-  return performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
+  // Try the request - if it fails with model errors, try to load the model
+  try {
+    const result = await performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
+
+    // Check for Ollama-specific errors in the response
+    if (!result.ok && result.json?.error) {
+      const errorMsg = result.json.error.toLowerCase();
+
+      // Check if it's a model-not-loaded error
+      if (errorMsg.includes('model') && (errorMsg.includes('not found') || errorMsg.includes('not loaded') || errorMsg.includes('unavailable'))) {
+        logger.warn({
+          model: resolvedModel,
+          error: result.json.error
+        }, "Ollama model error detected, attempting on-demand load");
+
+        // Try to ensure model is ready
+        const { ensureModelReady } = require('./ollama-startup');
+        const loadResult = await ensureModelReady(
+          baseEndpoint,
+          resolvedModel,
+          config.ollama.keepAlive,
+          false // on-demand, not startup
+        );
+
+        if (!loadResult.ready) {
+          // Model load failed - enhance error message
+          const enhancedError = {
+            ...result,
+            json: {
+              error: loadResult.error || result.json.error,
+              type: 'model_unavailable',
+              originalError: result.json.error
+            }
+          };
+          return enhancedError;
+        }
+
+        // Model loaded successfully - retry the original request
+        logger.info({ model: resolvedModel }, "Model loaded, retrying request");
+        return performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
+      }
+    }
+
+    return result;
+  } catch (err) {
+    // Network/connection errors
+    if (err.code === 'ECONNREFUSED' || err.message.includes('ECONNREFUSED')) {
+      logger.error({
+        endpoint: baseEndpoint,
+        error: err.message
+      }, "Ollama connection refused");
+
+      throw new Error(`Ollama service unreachable at ${baseEndpoint}. Is it running?`);
+    }
+
+    throw err;
+  }
 }
 
 async function invokeOpenRouter(body) {
@@ -422,7 +493,7 @@ async function invokeOpenRouter(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
@@ -503,7 +574,7 @@ async function invokeAzureOpenAI(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
@@ -854,7 +925,7 @@ async function invokeOpenAI(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     // Client didn't send tools (likely passthrough mode) - inject standard Claude Code tools
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
@@ -956,7 +1027,7 @@ async function invokeLlamaCpp(body) {
   let toolsInjected = false;
 
   const injectToolsLlamacpp = process.env.INJECT_TOOLS_LLAMACPP !== "false";
-  if (injectToolsLlamacpp && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+  if (injectToolsLlamacpp && !body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.info({
@@ -1039,7 +1110,7 @@ async function invokeLMStudio(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.info({
@@ -1086,7 +1157,7 @@ async function invokeBedrock(body) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!body._noToolInjection && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.info({
@@ -1370,7 +1441,7 @@ async function invokeZai(body) {
     zaiBody.model = mappedModel;
 
     // Inject standard tools if client didn't send any (passthrough mode)
-    if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
+    if (!body._noToolInjection && (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0)) {
       zaiBody.tools = STANDARD_TOOLS;
       logger.info({
         injectedToolCount: STANDARD_TOOLS.length,
@@ -1821,6 +1892,9 @@ async function invokeModel(body, options = {}) {
   const registry = getCircuitBreakerRegistry();
   const healthTracker = getHealthTracker();
 
+  // Extract call purpose from options (conversation or tool_execution)
+  const callPurpose = options.callPurpose || 'conversation';
+
   // Analyze complexity and determine provider
   const complexityAnalysis = analyzeComplexity(body);
   const initialProvider = options.forceProvider ?? determineProvider(body);
@@ -1829,6 +1903,7 @@ async function invokeModel(body, options = {}) {
   // Build routing decision object for response headers
   const routingDecision = {
     provider: initialProvider,
+    callPurpose: callPurpose,
     score: complexityAnalysis.score,
     threshold: complexityAnalysis.threshold,
     mode: complexityAnalysis.mode,
@@ -1912,6 +1987,7 @@ async function invokeModel(body, options = {}) {
     return {
       ...result,
       actualProvider: initialProvider,
+      callPurpose: callPurpose,
       routingDecision,
     };
 
@@ -2004,6 +2080,7 @@ async function invokeModel(body, options = {}) {
       return {
         ...fallbackResult,
         actualProvider: fallbackProvider,
+        callPurpose: callPurpose,
         routingDecision: {
           ...routingDecision,
           provider: fallbackProvider,

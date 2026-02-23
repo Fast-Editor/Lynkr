@@ -1,7 +1,9 @@
 const path = require("path");
 const dotenv = require("dotenv");
 
-dotenv.config();
+// .env must be authoritative over shell env vars (e.g. stale exports in .bashrc).
+// Skip override in test mode so tests can set process.env before requiring config.
+dotenv.config({ override: process.env.NODE_ENV !== "test" });
 
 function trimTrailingSlash(value) {
   if (typeof value !== "string") return value;
@@ -83,12 +85,15 @@ const azureAnthropicEndpoint = process.env.AZURE_ANTHROPIC_ENDPOINT ?? null;
 const azureAnthropicApiKey = process.env.AZURE_ANTHROPIC_API_KEY ?? null;
 const azureAnthropicVersion = process.env.AZURE_ANTHROPIC_VERSION ?? "2023-06-01";
 
-const ollamaEndpoint = process.env.OLLAMA_ENDPOINT ?? "http://localhost:11434";
-const ollamaModel = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+const ollamaEndpoint = process.env.OLLAMA_ENDPOINT?.trim() || null;
+const ollamaModel = process.env.OLLAMA_MODEL?.trim() || null;
 const ollamaTimeout = Number.parseInt(process.env.OLLAMA_TIMEOUT_MS ?? "120000", 10);
 const ollamaKeepAlive = process.env.OLLAMA_KEEP_ALIVE ?? undefined;
+const ollamaApiKey = process.env.OLLAMA_API_KEY?.trim() || null;
+const ollamaCloudEndpoint = process.env.OLLAMA_CLOUD_ENDPOINT?.trim() || null;
 // Accepts: duration strings ("10m", "24h"), numbers (seconds), -1 (permanent), 0 (immediate unload)
-const ollamaEmbeddingsEndpoint = process.env.OLLAMA_EMBEDDINGS_ENDPOINT ?? `${ollamaEndpoint}/api/embeddings`;
+const ollamaEmbeddingsEndpoint = process.env.OLLAMA_EMBEDDINGS_ENDPOINT
+  ?? (ollamaEndpoint ? `${ollamaEndpoint}/api/embeddings` : null);
 const ollamaEmbeddingsModel = process.env.OLLAMA_EMBEDDINGS_MODEL ?? "nomic-embed-text";
 
 // OpenRouter configuration
@@ -140,9 +145,22 @@ const vertexModel = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
 // Values: "default" (use MODEL_DEFAULT), "none" (skip LLM call), or a model name
 const suggestionModeModel = (process.env.SUGGESTION_MODE_MODEL ?? "default").trim();
 
+// Topic detection model override
+// Values: "default" (use main model) or a model name to redirect topic detection to a lighter model
+const topicDetectionModel = (process.env.TOPIC_DETECTION_MODEL ?? "default").trim();
+
 // Hot reload configuration
 const hotReloadEnabled = process.env.HOT_RELOAD_ENABLED !== "false"; // default true
 const hotReloadDebounceMs = Number.parseInt(process.env.HOT_RELOAD_DEBOUNCE_MS ?? "1000", 10);
+
+// Aggressive tool patching: try all text-to-tool extraction strategies for any model
+const aggressiveToolPatching = process.env.AGGRESSIVE_TOOL_PATCHING === "true";
+
+// Per-model tool parser configuration
+// TOOL_PARSER_MODE: "parser" (default, use per-model parsers), "legacy" (old strategy registry), "compare" (run both, log diff)
+const toolParserMode = (process.env.TOOL_PARSER_MODE ?? "parser").toLowerCase();
+// TOOL_PARSER_COMPARE_MODE: when true, logs comparison between parser and legacy paths
+const toolParserCompareMode = process.env.TOOL_PARSER_COMPARE_MODE === "true";
 
 // Hybrid routing configuration
 const preferOllama = process.env.PREFER_OLLAMA === "true";
@@ -175,6 +193,39 @@ if (!["server", "client", "passthrough"].includes(toolExecutionMode)) {
   throw new Error(
     "TOOL_EXECUTION_MODE must be one of: server, client, passthrough (default: server)"
   );
+}
+console.log(`[CONFIG] Tool execution mode: ${toolExecutionMode}`);
+
+// Tool execution provider configuration
+// Enables routing tool-calling decisions to a dedicated model/provider
+const toolExecutionProvider = (process.env.TOOL_EXECUTION_PROVIDER ?? "").toLowerCase().trim();
+const toolExecutionModel = (process.env.TOOL_EXECUTION_MODEL ?? "").trim();
+const toolExecutionCompareMode = process.env.TOOL_EXECUTION_COMPARE_MODE === "true";
+
+// Validate tool execution provider if specified
+if (toolExecutionProvider && !SUPPORTED_MODEL_PROVIDERS.has(toolExecutionProvider)) {
+  const supportedList = Array.from(SUPPORTED_MODEL_PROVIDERS).sort().join(", ");
+  throw new Error(
+    `Unsupported TOOL_EXECUTION_PROVIDER: "${toolExecutionProvider}". ` +
+    `Valid options are: ${supportedList}`
+  );
+}
+
+// Log configuration
+if (toolExecutionProvider) {
+  console.log(`[CONFIG] Tool execution provider: ${toolExecutionProvider}`);
+  if (toolExecutionModel) {
+    console.log(`[CONFIG] Tool execution model: ${toolExecutionModel}`);
+  }
+  if (toolExecutionCompareMode) {
+    console.log(`[CONFIG] Tool execution compare mode: enabled`);
+  }
+}
+if (suggestionModeModel.toLowerCase() !== "default") {
+  console.log(`[CONFIG] Suggestion mode model: ${suggestionModeModel}`);
+}
+if (topicDetectionModel.toLowerCase() !== "default") {
+  console.log(`[CONFIG] Topic detection model: ${topicDetectionModel}`);
 }
 
 // Memory system configuration (Titans-inspired long-term memory)
@@ -216,6 +267,7 @@ const smartToolSelectionTokenBudget = Number.parseInt(
   process.env.SMART_TOOL_SELECTION_TOKEN_BUDGET ?? "2500",
   10
 );
+
 
 // Headroom sidecar configuration
 const headroomEnabled = process.env.HEADROOM_ENABLED === "true";
@@ -280,10 +332,27 @@ if (modelProvider === "openai" && !openAIApiKey) {
 }
 
 if (modelProvider === "ollama") {
-  try {
-    new URL(ollamaEndpoint);
-  } catch (err) {
-    throw new Error("OLLAMA_ENDPOINT must be a valid URL (default: http://localhost:11434)");
+  if (!ollamaModel) {
+    throw new Error("OLLAMA_MODEL is required when MODEL_PROVIDER=ollama");
+  }
+  if (!ollamaEndpoint && !ollamaCloudEndpoint) {
+    throw new Error(
+      "Set OLLAMA_ENDPOINT (local) or OLLAMA_CLOUD_ENDPOINT (cloud) when MODEL_PROVIDER=ollama"
+    );
+  }
+  if (ollamaEndpoint) {
+    try {
+      new URL(ollamaEndpoint);
+    } catch {
+      throw new Error("OLLAMA_ENDPOINT must be a valid URL");
+    }
+  }
+  if (ollamaCloudEndpoint) {
+    try {
+      new URL(ollamaCloudEndpoint);
+    } catch {
+      throw new Error("OLLAMA_CLOUD_ENDPOINT must be a valid URL");
+    }
   }
 }
 
@@ -313,8 +382,8 @@ if (modelProvider === "bedrock" && !bedrockApiKey) {
 
 // Validate hybrid routing configuration
 if (preferOllama) {
-  if (!ollamaEndpoint) {
-    throw new Error("PREFER_OLLAMA is set but OLLAMA_ENDPOINT is not configured");
+  if (!ollamaEndpoint && !ollamaCloudEndpoint) {
+    throw new Error("PREFER_OLLAMA is set but neither OLLAMA_ENDPOINT nor OLLAMA_CLOUD_ENDPOINT is configured");
   }
   if (fallbackEnabled && !SUPPORTED_MODEL_PROVIDERS.has(fallbackProvider)) {
     throw new Error(
@@ -354,9 +423,15 @@ const databricksUrl =
     ? `${rawBaseUrl}${endpointPath.startsWith("/") ? "" : "/"}${endpointPath}`
     : null;
 
+// Set MODEL_DEFAULT env var to use a specific model (e.g. "llama3.1" for Ollama).
+// Without it, the default falls back to a Databricks Claude model regardless of MODEL_PROVIDER.
 const defaultModel =
   process.env.MODEL_DEFAULT ??
   (modelProvider === "azure-anthropic" ? "claude-opus-4-5" : "databricks-claude-sonnet-4-5");
+
+// Force server-side model configuration, ignoring client requests
+// Useful when you want to enforce a specific model regardless of what the client asks for
+const enforceServerModel = process.env.ENFORCE_SERVER_MODEL?.toLowerCase() === "true";
 
 const port = Number.parseInt(process.env.PORT ?? "8080", 10);
 const sessionDbPath =
@@ -393,6 +468,8 @@ const webSearchMaxRetries = Number.parseInt(process.env.WEB_SEARCH_MAX_RETRIES ?
 
 const policyMaxSteps = Number.parseInt(process.env.POLICY_MAX_STEPS ?? "8", 10);
 const policyMaxToolCalls = Number.parseInt(process.env.POLICY_MAX_TOOL_CALLS ?? "12", 10);
+const policyMaxToolCallsPerRequest = Number.parseInt(process.env.POLICY_MAX_TOOL_CALLS_PER_REQUEST ?? "12", 10);
+const policyMaxDurationMs = Number.parseInt(process.env.POLICY_MAX_DURATION_MS ?? "120000", 10);
 const policyToolLoopThreshold = Number.parseInt(process.env.POLICY_TOOL_LOOP_THRESHOLD ?? "10", 10);
 const policyDisallowedTools =
   process.env.POLICY_DISALLOWED_TOOLS?.split(",")
@@ -498,6 +575,7 @@ const agentsMaxConcurrent = Number.parseInt(process.env.AGENTS_MAX_CONCURRENT ??
 const agentsDefaultModel = process.env.AGENTS_DEFAULT_MODEL ?? "haiku";
 const agentsMaxSteps = Number.parseInt(process.env.AGENTS_MAX_STEPS ?? "15", 10);
 const agentsTimeout = Number.parseInt(process.env.AGENTS_TIMEOUT ?? "120000", 10);
+const agentsAutoSpawn = process.env.AGENTS_AUTO_SPAWN !== "false"; // default true when agents enabled
 
 // LLM Audit logging configuration
 const auditEnabled = process.env.LLM_AUDIT_ENABLED === "true"; // default false
@@ -551,6 +629,8 @@ var config = {
     model: ollamaModel,
     timeout: Number.isNaN(ollamaTimeout) ? 120000 : ollamaTimeout,
     keepAlive: ollamaKeepAlive,
+    apiKey: ollamaApiKey,
+    cloudEndpoint: ollamaCloudEndpoint,
     embeddingsEndpoint: ollamaEmbeddingsEndpoint,
     embeddingsModel: ollamaEmbeddingsModel,
   },
@@ -606,7 +686,9 @@ var config = {
   modelProvider: {
     type: modelProvider,
     defaultModel,
+    enforceServerModel,
     suggestionModeModel,
+    topicDetectionModel,
     // Hybrid routing settings
     preferOllama,
     fallbackEnabled,
@@ -614,7 +696,13 @@ var config = {
     openRouterMaxToolsForRouting,
     fallbackProvider,
   },
+  aggressiveToolPatching,
+  toolParserMode,
+  toolParserCompareMode,
   toolExecutionMode,
+  toolExecutionProvider,
+  toolExecutionModel,
+  toolExecutionCompareMode,
   server: {
     jsonLimit: process.env.REQUEST_JSON_LIMIT ?? "1gb",
   },
@@ -647,6 +735,8 @@ var config = {
   policy: {
     maxStepsPerTurn: Number.isNaN(policyMaxSteps) ? 8 : policyMaxSteps,
     maxToolCallsPerTurn: Number.isNaN(policyMaxToolCalls) ? 12 : policyMaxToolCalls,
+    maxToolCallsPerRequest: Number.isNaN(policyMaxToolCallsPerRequest) ? 12 : policyMaxToolCallsPerRequest,
+    maxDurationMs: Number.isNaN(policyMaxDurationMs) ? 120000 : policyMaxDurationMs,
     toolLoopThreshold: Number.isNaN(policyToolLoopThreshold) ? 10 : policyToolLoopThreshold, // Max tool results before force-terminating
     disallowedTools: policyDisallowedTools,
     git: {
@@ -719,6 +809,7 @@ var config = {
     defaultModel: agentsDefaultModel,
     maxSteps: Number.isNaN(agentsMaxSteps) ? 15 : agentsMaxSteps,
     timeout: Number.isNaN(agentsTimeout) ? 120000 : agentsTimeout,
+    autoSpawn: agentsAutoSpawn,
   },
   tests: {
     defaultCommand: testDefaultCommand ? testDefaultCommand.trim() : null,
@@ -773,7 +864,7 @@ var config = {
   },
   toon: {
     enabled: toonEnabled,
-    minBytes: Number.isNaN(toonMinBytes) ? 4096 : toonMinBytes,
+    minBytes: toonMinBytes,
     failOpen: toonFailOpen,
     logStats: toonLogStats,
   },
@@ -883,7 +974,8 @@ function reloadConfig() {
   // API keys and endpoints
   config.databricks.apiKey = process.env.DATABRICKS_API_KEY;
   config.azureAnthropic.apiKey = process.env.AZURE_ANTHROPIC_API_KEY ?? null;
-  config.ollama.model = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:7b";
+  config.ollama.model = process.env.OLLAMA_MODEL?.trim() || null;
+  config.ollama.cloudEndpoint = process.env.OLLAMA_CLOUD_ENDPOINT?.trim() || null;
   config.openrouter.apiKey = process.env.OPENROUTER_API_KEY ?? null;
   config.openrouter.model = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
   config.azureOpenAI.apiKey = process.env.AZURE_OPENAI_API_KEY?.trim() || null;
@@ -894,6 +986,13 @@ function reloadConfig() {
   config.vertex.apiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
   config.vertex.model = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
 
+  // Aggressive tool patching
+  config.aggressiveToolPatching = process.env.AGGRESSIVE_TOOL_PATCHING === "true";
+
+  // Per-model tool parser
+  config.toolParserMode = (process.env.TOOL_PARSER_MODE ?? "parser").toLowerCase();
+  config.toolParserCompareMode = process.env.TOOL_PARSER_COMPARE_MODE === "true";
+
   // Model provider settings
   const newProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
   if (SUPPORTED_MODEL_PROVIDERS.has(newProvider)) {
@@ -903,12 +1002,7 @@ function reloadConfig() {
   config.modelProvider.fallbackEnabled = process.env.FALLBACK_ENABLED !== "false";
   config.modelProvider.fallbackProvider = (process.env.FALLBACK_PROVIDER ?? "databricks").toLowerCase();
   config.modelProvider.suggestionModeModel = (process.env.SUGGESTION_MODE_MODEL ?? "default").trim();
-
-  config.toon.enabled = process.env.TOON_ENABLED === "true";
-  const newToonMinBytes = Number.parseInt(process.env.TOON_MIN_BYTES ?? "4096", 10);
-  config.toon.minBytes = Number.isNaN(newToonMinBytes) ? 4096 : newToonMinBytes;
-  config.toon.failOpen = process.env.TOON_FAIL_OPEN !== "false";
-  config.toon.logStats = process.env.TOON_LOG_STATS !== "false";
+  config.modelProvider.topicDetectionModel = (process.env.TOPIC_DETECTION_MODEL ?? "default").trim();
 
   // Log level
   config.logger.level = process.env.LOG_LEVEL ?? "info";

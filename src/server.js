@@ -1,6 +1,51 @@
 const express = require("express");
 const compression = require("compression");
 const config = require("./config");
+
+// Clear logs directory BEFORE initializing loggers
+// This prevents the issue where loggers hold file handles to deleted files
+const fs = require("fs");
+const path = require("path");
+const logFile = process.env.LOG_FILE;
+if (logFile) {
+  const logsDir = path.dirname(logFile);
+  try {
+    if (fs.existsSync(logsDir)) {
+      const files = fs.readdirSync(logsDir);
+      let deletedCount = 0;
+      for (const file of files) {
+        const filePath = path.join(logsDir, file);
+        const stat = fs.statSync(filePath);
+        if (stat.isFile()) {
+          fs.unlinkSync(filePath);
+          deletedCount++;
+        }
+      }
+      if (deletedCount > 0) {
+        console.log(`[STARTUP] Cleared ${deletedCount} log file(s) from ${logsDir}`);
+      }
+
+      // Also delete oversized-errors directory and its contents
+      const oversizedErrorsDir = path.join(logsDir, "oversized-errors");
+      if (fs.existsSync(oversizedErrorsDir)) {
+        const errorFiles = fs.readdirSync(oversizedErrorsDir);
+        let errorFilesDeleted = 0;
+        for (const file of errorFiles) {
+          const filePath = path.join(oversizedErrorsDir, file);
+          fs.unlinkSync(filePath);
+          errorFilesDeleted++;
+        }
+        fs.rmdirSync(oversizedErrorsDir);
+        if (errorFilesDeleted > 0) {
+          console.log(`[STARTUP] Cleared ${errorFilesDeleted} oversized error file(s) and removed directory`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[STARTUP] Failed to clear logs: ${err.message}`);
+  }
+}
+
 const loggingMiddleware = require("./api/middleware/logging");
 const router = require("./api/router");
 const { sessionMiddleware } = require("./api/middleware/session");
@@ -33,6 +78,7 @@ const { getWorkerPool, isWorkerPoolReady } = require("./workers/pool");
 const lazyLoader = require("./tools/lazy-loader");
 const { setLazyLoader } = require("./tools");
 const { waitForOllama } = require("./clients/ollama-startup");
+const { initializeProgressServer, shutdownProgressServer } = require("./progress/server");
 
 // Initialize MCP
 initialiseMcp();
@@ -211,6 +257,13 @@ async function start() {
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
   });
 
+  // Initialize progress server for external tool listening
+  const progressServer = initializeProgressServer();
+  if (progressServer) {
+    const { getProgressEmitter } = require('./progress/emitter');
+    getProgressEmitter().on('progress', (event) => progressServer.broadcast(event));
+  }
+
   // Start session cleanup manager
   const { getSessionCleanupManager } = require("./sessions/cleanup");
   const sessionCleanup = getSessionCleanupManager();
@@ -237,6 +290,12 @@ async function start() {
       await pool.shutdown();
     });
   }
+
+  // Register Progress Server shutdown callback
+  shutdownManager.onShutdown(() => {
+    logger.info("Stopping progress WebSocket server on shutdown");
+    shutdownProgressServer();
+  });
 
   // Initialize hot reload config watcher
   if (config.hotReload?.enabled !== false) {

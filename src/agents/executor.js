@@ -162,22 +162,14 @@ class SubagentExecutor {
       payload.tools = filteredTools;
     }
 
-    // Determine provider based on model family.
-    // Subagents should use the currently configured MODEL_PROVIDER and avoid
-    // hard-fallbacks to Azure when Azure is not selected/configured.
-    let forceProvider = null;
-    const modelLower = String(payload.model || "").toLowerCase();
-    const isClaudeFamilyModel =
-      modelLower.includes("claude") ||
-      modelLower.includes("sonnet") ||
-      modelLower.includes("haiku") ||
-      modelLower.includes("opus");
-    const isGptFamilyModel = modelLower.includes("gpt");
+    // Subagents always use the same provider as the main session
+    const config = require('../config');
+    const forceProvider = config.modelProvider?.type || null;
 
-    if (isClaudeFamilyModel || isGptFamilyModel) {
-      const config = require('../config');
-      // `type` is the canonical key; `provider` kept as legacy fallback.
-      forceProvider = config.modelProvider?.type || config.modelProvider?.provider || null;
+    // For Ollama: agent definitions use Claude names ("haiku" → "claude-3-haiku-20240307")
+    // which Ollama doesn't know. Override to use the configured Ollama model.
+    if (forceProvider === 'ollama' && config.ollama?.model) {
+      payload.model = config.ollama.model;
     }
 
     logger.debug({

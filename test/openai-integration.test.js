@@ -112,6 +112,7 @@ describe("OpenAI Integration", () => {
 
       process.env.MODEL_PROVIDER = "ollama";
       process.env.PREFER_OLLAMA = "true";
+      process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.OLLAMA_MAX_TOOLS_FOR_ROUTING = "2";
       process.env.OPENROUTER_MAX_TOOLS_FOR_ROUTING = "5";
@@ -136,6 +137,7 @@ describe("OpenAI Integration", () => {
     it("should use openai as fallback provider when configured", () => {
       process.env.MODEL_PROVIDER = "ollama";
       process.env.PREFER_OLLAMA = "true";
+      process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
       process.env.OLLAMA_MODEL = "qwen2.5-coder:latest";
       process.env.FALLBACK_PROVIDER = "openai";
       process.env.OPENAI_API_KEY = "sk-test-key";

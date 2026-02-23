@@ -16,12 +16,13 @@ const logger = require('../logger');
  * @returns {Promise<number[]>} - Embedding vector
  */
 async function generateOllamaEmbedding(text) {
+  const { getOllamaHeaders } = require("../clients/ollama-utils");
   const endpoint = config.ollama?.embeddingsEndpoint || 'http://localhost:11434/api/embeddings';
   const model = config.ollama?.embeddingsModel || 'nomic-embed-text';
 
   const response = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getOllamaHeaders(),
     body: JSON.stringify({
       model,
       prompt: text,

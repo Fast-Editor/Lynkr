@@ -1,4 +1,6 @@
 const pino = require("pino");
+const fs = require("fs");
+const path = require("path");
 const config = require("../config");
 const { createOversizedErrorStream } = require("./oversized-error-stream");
 
@@ -64,6 +66,19 @@ streams.push({
 			: process.stdout,
 });
 
+// File output stream (LOG_FILE env var, e.g. ./logs/lynkr.log)
+const logFile = process.env.LOG_FILE;
+if (logFile) {
+	const logDir = path.dirname(logFile);
+	if (!fs.existsSync(logDir)) {
+		fs.mkdirSync(logDir, { recursive: true });
+	}
+	streams.push({
+		level: config.logger.level,
+		stream: pino.destination({ dest: logFile, sync: false }),
+	});
+}
+
 // Oversized error stream (if enabled)
 if (config.oversizedErrorLogging?.enabled) {
 	streams.push({
@@ -79,6 +94,29 @@ const logger = pino(
 		name: "claude-backend",
 		base: {
 			env: config.env,
+		},
+		// Use local timezone for timestamps instead of UTC
+		timestamp: () => {
+			const now = new Date();
+
+			// Get all components in local timezone
+			const year = now.getFullYear();
+			const month = String(now.getMonth() + 1).padStart(2, '0');
+			const day = String(now.getDate()).padStart(2, '0');
+			const hours = String(now.getHours()).padStart(2, '0');
+			const minutes = String(now.getMinutes()).padStart(2, '0');
+			const seconds = String(now.getSeconds()).padStart(2, '0');
+			const ms = String(now.getMilliseconds()).padStart(3, '0');
+
+			// Get timezone offset
+			const tzOffset = -now.getTimezoneOffset();
+			const offsetHours = String(Math.floor(Math.abs(tzOffset) / 60)).padStart(2, '0');
+			const offsetMins = String(Math.abs(tzOffset) % 60).padStart(2, '0');
+			const offsetSign = tzOffset >= 0 ? '+' : '-';
+
+			const timestamp = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${ms}${offsetSign}${offsetHours}:${offsetMins}`;
+
+			return `,"time":"${timestamp}"`;
 		},
 		redact: {
 			paths: ["req.headers.authorization", "req.headers.cookie"],

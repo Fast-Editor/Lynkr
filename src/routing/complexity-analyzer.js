@@ -469,6 +469,7 @@ async function getContentEmbedding(content) {
   }
 
   try {
+    const { getOllamaHeaders } = require("../clients/ollama-utils");
     const endpoint = config.ollama?.embeddingsEndpoint ||
                      config.llamacpp?.embeddingsEndpoint;
 
@@ -476,7 +477,7 @@ async function getContentEmbedding(content) {
 
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getOllamaHeaders(),
       body: JSON.stringify({
         model: config.ollama?.embeddingsModel || 'nomic-embed-text',
         prompt: content.slice(0, 512),  // Limit for performance

@@ -84,7 +84,7 @@ function getBestCloudProvider(options = {}) {
  * Get the best available local provider
  */
 function getBestLocalProvider() {
-  if (config.ollama?.endpoint) return 'ollama';
+  if (config.ollama?.endpoint || config.ollama?.cloudEndpoint) return 'ollama';
   if (config.llamacpp?.endpoint) return 'llamacpp';
   if (config.lmstudio?.endpoint) return 'lmstudio';
 

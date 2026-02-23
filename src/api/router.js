@@ -2,11 +2,13 @@ const express = require("express");
 const { processMessage } = require("../orchestrator");
 const { getSession } = require("../sessions");
 const metrics = require("../metrics");
+const config = require("../config");
 const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");
 const { getRoutingHeaders, getRoutingStats, analyzeComplexity } = require("../routing");
 const { validateCwd } = require("../workspace");
+const logger = require("../logger");
 
 const router = express.Router();
 
@@ -120,6 +122,13 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // Support both query parameter (?stream=true) and body parameter ({"stream": true})
     const wantsStream = Boolean(req.query?.stream === 'true' || req.body?.stream);
     const hasTools = Array.isArray(req.body?.tools) && req.body.tools.length > 0;
+
+    logger.info({
+      sessionId: req.headers['x-claude-session-id'],
+      wantsStream,
+      hasTools,
+      willUseStreamingPath: wantsStream || hasTools
+    }, "=== REQUEST ROUTING DECISION ===");
 
     // Analyze complexity for routing headers (Phase 3)
     const complexity = analyzeComplexity(req.body);
@@ -243,6 +252,13 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
       const msg = result.body;
 
+      // Surface error responses (e.g. tool_call_loop) as visible text
+      if (msg.error && !msg.content) {
+        const errorText = msg.error.message || msg.message || JSON.stringify(msg.error);
+        msg.content = [{ type: "text", text: `⚠️ ${errorText}` }];
+        msg.stop_reason = "end_turn";
+      }
+
       // 1. message_start
       res.write(`event: message_start\n`);
       res.write(`data: ${JSON.stringify({
@@ -338,6 +354,13 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
     // Legacy streaming wrapper (for tool-based requests that requested streaming)
     if (wantsStream && hasTools) {
+      logger.info({
+        sessionId: req.headers['x-claude-session-id'],
+        pathType: 'legacy_streaming_wrapper',
+        wantsStream,
+        hasTools
+      }, "=== USING LEGACY STREAMING WRAPPER (TOOL-BASED WITH STREAMING) ===");
+
       metrics.recordStreamingStart();
       res.set({
         "Content-Type": "text/event-stream",
@@ -358,6 +381,20 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
       // Use proper Anthropic SSE format
       const msg = result.body;
+
+      // Surface error responses (e.g. tool_call_loop) as visible text
+      if (msg.error && !msg.content) {
+        const errorText = msg.error.message || msg.message || JSON.stringify(msg.error);
+        msg.content = [{ type: "text", text: `⚠️ ${errorText}` }];
+        msg.stop_reason = "end_turn";
+      }
+
+      logger.info({
+        sessionId: req.headers['x-claude-session-id'],
+        eventType: 'message_start',
+        streamingWithTools: true,
+        hasContent: !!(msg.content && msg.content.length > 0)
+      }, "=== SENDING SSE MESSAGE_START ===");
 
       // 1. message_start
       res.write(`event: message_start\n`);
@@ -419,9 +456,52 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
           res.write(`event: content_block_stop\n`);
           res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: i })}\n\n`);
+        } else if (block.type === "tool_result") {
+          // === TOOL_RESULT SSE STREAMING - ENTERED ===
+          logger.info({
+            blockIndex: i,
+            blockType: block.type,
+            toolUseId: block.tool_use_id,
+            contentType: typeof block.content,
+            contentLength: typeof block.content === 'string' ? block.content.length : JSON.stringify(block.content).length
+          }, "=== SSE: STREAMING TOOL_RESULT BLOCK - START ===");
+
+          // Stream tool_result blocks so CLI can display actual tool output
+          res.write(`event: content_block_start\n`);
+          res.write(`data: ${JSON.stringify({
+            type: "content_block_start",
+            index: i,
+            content_block: { type: "tool_result", tool_use_id: block.tool_use_id, content: "" }
+          })}\n\n`);
+
+          // Stream the actual content
+          const content = typeof block.content === 'string'
+            ? block.content
+            : JSON.stringify(block.content);
+
+          logger.info({
+            blockIndex: i,
+            contentLength: content.length,
+            contentPreview: content.substring(0, 200)
+          }, "=== SSE: STREAMING TOOL_RESULT CONTENT ===");
+
+          res.write(`event: content_block_delta\n`);
+          res.write(`data: ${JSON.stringify({
+            type: "content_block_delta",
+            index: i,
+            delta: { type: "tool_result_delta", content: content }
+          })}\n\n`);
+
+          res.write(`event: content_block_stop\n`);
+          res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: i })}\n\n`);
+
+          // === TOOL_RESULT SSE STREAMING - COMPLETED ===
+          logger.info({
+            blockIndex: i,
+            toolUseId: block.tool_use_id
+          }, "=== SSE: STREAMING TOOL_RESULT BLOCK - END ===");
         }
       }
-
       // 3. message_delta with stop_reason
       res.write(`event: message_delta\n`);
       res.write(`data: ${JSON.stringify({
@@ -446,6 +526,26 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       }
     });
 
+    // Add tool execution provider headers
+    if (config.toolExecutionProvider) {
+      res.setHeader('X-Tool-Execution-Provider', config.toolExecutionProvider);
+      if (config.toolExecutionModel) {
+        res.setHeader('X-Tool-Execution-Model', config.toolExecutionModel);
+      }
+      if (config.toolExecutionCompareMode) {
+        res.setHeader('X-Tool-Execution-Compare-Mode', 'true');
+      }
+    }
+
+    // Add tool call comparison headers if available
+    if (result.toolCallComparison) {
+      res.setHeader('X-Tool-Call-Selected-Provider', result.toolCallComparison.selectedProvider);
+      res.setHeader('X-Tool-Call-Selection-Reason', result.toolCallComparison.reason);
+      if (result.toolCallComparison.scores) {
+        res.setHeader('X-Tool-Call-Scores', JSON.stringify(result.toolCallComparison.scores));
+      }
+    }
+
     if (result.headers) {
       Object.entries(result.headers).forEach(([key, value]) => {
         if (value !== undefined) {
@@ -453,6 +553,16 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         }
       });
     }
+
+
+    // DIAGNOSTIC: Log response being sent to client
+    logger.info({
+      status: result.status,
+      hasBody: !!result.body,
+      bodyKeys: result.body ? Object.keys(result.body) : [],
+      bodyType: typeof result.body,
+      contentLength: result.body ? JSON.stringify(result.body).length : 0
+    }, "=== SENDING RESPONSE TO CLIENT ===");
 
     metrics.recordResponse(result.status);
     res.status(result.status).send(result.body);

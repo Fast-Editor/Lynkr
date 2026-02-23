@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "description": "User whitelist - extends default whitelist without modifying it. Copy to tool-whitelist-user.json and add your custom patterns.",
+  "needsTools": [
+    "bd",
+    "bd *",
+    "make",
+    "make *",
+    "cargo",
+    "cargo *"
+  ],
+  "noTools": [
+    "what does bd do",
+    "how does * work"
+  ]
+}
