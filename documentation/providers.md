@@ -137,19 +137,25 @@ LMSTUDIO_ENDPOINT=http://workstation.local:1234
 
 ```env
 MODEL_PROVIDER=bedrock
-AWS_BEDROCK_API_KEY=your-bearer-token
+AWS_BEDROCK_API_KEY=ABSK...your-api-key
 AWS_BEDROCK_REGION=us-east-1
-AWS_BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
+AWS_BEDROCK_MODEL_ID=us.anthropic.claude-3-5-sonnet-20241022-v2:0
 ```
 
 #### Getting AWS Bedrock API Key
 
+> **Important:** Lynkr uses Bedrock **API Key** authentication (Bearer token), NOT standard IAM credentials (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`). Standard IAM/SigV4 credentials will not work.
+
 1. Log in to [AWS Console](https://console.aws.amazon.com/)
-2. Navigate to **Bedrock** → **API Keys**
-3. Click **Generate API Key**
-4. Copy the bearer token (this is your `AWS_BEDROCK_API_KEY`)
-5. Enable model access in Bedrock console
-6. See: [AWS Bedrock API Keys Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-generate.html)
+2. Navigate to **Amazon Bedrock** → **API keys** (in the left sidebar)
+3. Generate a long-term or short-term API key
+4. Copy the API key (starts with `ABSK`) — this is your `AWS_BEDROCK_API_KEY`
+5. Enable model access in Bedrock console for your desired models
+6. See: [AWS Bedrock API Keys Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html)
+
+> **Common Mistake:** Setting `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` will NOT work with Lynkr. You must use the Bedrock-specific API Key (`AWS_BEDROCK_API_KEY`, starts with `ABSK`).
+
+> **Model IDs:** When using API key auth, use inference profile model IDs with the region prefix (e.g., `us.anthropic.claude-3-5-sonnet-20241022-v2:0` instead of `anthropic.claude-3-5-sonnet-20241022-v2:0`).
 
 #### Available Regions
 

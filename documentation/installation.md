@@ -296,9 +296,9 @@ npm install -g lynkr
 
 # Configure
 export MODEL_PROVIDER=bedrock
-export AWS_BEDROCK_API_KEY=AKIAIOSFODNN7EXAMPLE
+export AWS_BEDROCK_API_KEY=ABSK...your-bedrock-api-key
 export AWS_BEDROCK_REGION=us-east-1
-export AWS_BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
+export AWS_BEDROCK_MODEL_ID=us.anthropic.claude-3-5-sonnet-20241022-v2:0
 
 # Start
 lynkr start
