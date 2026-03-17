@@ -22,6 +22,8 @@ const {
 const { getAgenticDetector, AGENT_TYPES } = require('./agentic-detector');
 const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
 const { getCostOptimizer } = require('./cost-optimizer');
+const { getPreferenceRouter } = require('./preference-router');
+const mlRouter = require('./ml-router');
 
 // Local providers
 const LOCAL_PROVIDERS = ['ollama', 'llamacpp', 'lmstudio'];
@@ -206,6 +208,38 @@ async function determineProviderSmart(payload, options = {}) {
     }
   }
 
+  // ML-based scoring (if configured)
+  let mlResult = null;
+  const strategy = mlRouter.getStrategy();
+  if (strategy === 'ml' || strategy === 'hybrid') {
+    try {
+      mlResult = await mlRouter.classify(content);
+      if (mlResult) {
+        if (strategy === 'ml') {
+          // Pure ML: replace heuristic score entirely
+          analysis.score = Math.round(mlResult.score * 100);
+          analysis.mlScore = mlResult.score;
+          method = 'ml';
+        } else {
+          // Hybrid: blend heuristic and ML scores
+          const originalScore = analysis.score;
+          analysis.score = mlRouter.hybridScore(analysis.score, mlResult.score);
+          analysis.mlScore = mlResult.score;
+          analysis.heuristicScore = originalScore;
+          method = 'hybrid';
+        }
+        logger.debug({
+          strategy,
+          mlScore: Math.round(mlResult.score * 100) / 100,
+          mlTier: mlResult.tier,
+          finalScore: analysis.score,
+        }, '[Routing] ML routing applied');
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] ML classification failed, using heuristic');
+    }
+  }
+
   // Tier-based model selection
   let selectedModel = null;
   let tier = null;
@@ -241,6 +275,29 @@ async function determineProviderSmart(payload, options = {}) {
   provider = modelSelection.provider;
   selectedModel = modelSelection.model;
   logger.debug({ tier, provider, model: selectedModel }, '[Routing] Using tier config');
+
+  // Domain preference routing: override provider if user has domain preferences
+  let domainResult = null;
+  if (config.routing?.preferences && Object.keys(config.routing.preferences).length > 0) {
+    try {
+      const preferenceRouter = getPreferenceRouter();
+      domainResult = preferenceRouter.resolve(payload, tier);
+      if (domainResult) {
+        provider = domainResult.provider;
+        selectedModel = domainResult.model;
+        method = 'domain_preference';
+        analysis.domain = domainResult.domain;
+        logger.debug({
+          domain: domainResult.domain,
+          provider,
+          model: selectedModel,
+          source: domainResult.source,
+        }, '[Routing] Domain preference applied');
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, 'Domain preference routing failed');
+    }
+  }
 
   // Cost optimization: check if cheaper model can handle this tier
   let costOptimized = false;
@@ -286,6 +343,8 @@ async function determineProviderSmart(payload, options = {}) {
     analysis,
     embeddingsResult,
     agenticResult,
+    domainResult,
+    mlResult,
     costOptimized,
   };
 
@@ -346,6 +405,15 @@ function getRoutingHeaders(decision) {
     headers['X-Lynkr-Cost-Optimized'] = 'true';
   }
 
+  if (decision.domainResult?.domain) {
+    headers['X-Lynkr-Domain'] = decision.domainResult.domain;
+  }
+
+  if (decision.mlResult) {
+    headers['X-Lynkr-ML-Score'] = String(Math.round(decision.mlResult.score * 100) / 100);
+    headers['X-Lynkr-Routing-Strategy'] = decision.method;
+  }
+
   return headers;
 }
 
@@ -379,6 +447,8 @@ module.exports = {
   getAgenticDetector,
   getModelTierSelector,
   getCostOptimizer,
+  getPreferenceRouter,
+  mlRouter,
   AGENT_TYPES,
   TIER_DEFINITIONS,
 };

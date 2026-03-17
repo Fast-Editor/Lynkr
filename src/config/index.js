@@ -26,6 +26,44 @@ function parseList(value, options = {}) {
     .filter(Boolean);
 }
 
+/**
+ * Parse ROUTING_PREFERENCES env var.
+ * Format: "security:anthropic|openai,code:openai|anthropic,ml:ollama"
+ * Returns: { security: ['anthropic','openai'], code: ['openai','anthropic'], ml: ['ollama'] }
+ */
+function parseRoutingPreferences(value) {
+  if (typeof value !== "string" || value.trim().length === 0) return {};
+  const result = {};
+  for (const entry of value.split(",")) {
+    const colonIdx = entry.indexOf(":");
+    if (colonIdx === -1) continue;
+    const domain = entry.substring(0, colonIdx).trim().toLowerCase();
+    const providers = entry.substring(colonIdx + 1).trim();
+    if (!domain || !providers) continue;
+    result[domain] = providers.split("|").map((p) => p.trim().toLowerCase()).filter(Boolean);
+  }
+  return result;
+}
+
+/**
+ * Parse ROUTING_DOMAINS env var (custom domain keywords).
+ * Format: "security:audit,vulnerability,CVE;frontend:css,react,tailwind"
+ * Returns: { security: ['audit','vulnerability','cve'], frontend: ['css','react','tailwind'] }
+ */
+function parseRoutingDomains(value) {
+  if (typeof value !== "string" || value.trim().length === 0) return {};
+  const result = {};
+  for (const entry of value.split(";")) {
+    const colonIdx = entry.indexOf(":");
+    if (colonIdx === -1) continue;
+    const domain = entry.substring(0, colonIdx).trim().toLowerCase();
+    const keywords = entry.substring(colonIdx + 1).trim();
+    if (!domain || !keywords) continue;
+    result[domain] = keywords.split(",").map((k) => k.trim().toLowerCase()).filter(Boolean);
+  }
+  return result;
+}
+
 function parseMountList(value) {
   if (typeof value !== "string" || value.trim().length === 0) return [];
   return value
@@ -907,6 +945,18 @@ var config = {
     weightedScoring: true,
     costOptimization: true,
     agenticDetection: true,
+    preferences: parseRoutingPreferences(process.env.ROUTING_PREFERENCES),
+    customDomains: parseRoutingDomains(process.env.ROUTING_DOMAINS),
+    strategy: (process.env.ROUTING_STRATEGY ?? "heuristic").toLowerCase(),
+    mlRouter: {
+      modelPath: process.env.ML_ROUTER_MODEL?.trim() || null,
+      weight: parseFloat(process.env.ML_ROUTER_WEIGHT ?? "0.6"),
+      thresholds: {
+        reasoning: parseFloat(process.env.ML_ROUTER_THRESHOLD_REASONING ?? "0.75"),
+        complex: parseFloat(process.env.ML_ROUTER_THRESHOLD_COMPLEX ?? "0.50"),
+        medium: parseFloat(process.env.ML_ROUTER_THRESHOLD_MEDIUM ?? "0.25"),
+      },
+    },
   },
 
   // Model Tier Configuration (REQUIRED)
@@ -957,6 +1007,15 @@ function reloadConfig() {
   // TinyFish config reload
   config.tinyfish.apiKey = process.env.TINYFISH_API_KEY?.trim() || null;
   config.tinyfish.browserProfile = process.env.TINYFISH_BROWSER_PROFILE?.trim() || "lite";
+
+  // Routing preferences reload
+  config.routing.preferences = parseRoutingPreferences(process.env.ROUTING_PREFERENCES);
+  config.routing.customDomains = parseRoutingDomains(process.env.ROUTING_DOMAINS);
+  config.routing.strategy = (process.env.ROUTING_STRATEGY ?? "heuristic").toLowerCase();
+  config.routing.mlRouter.weight = parseFloat(process.env.ML_ROUTER_WEIGHT ?? "0.6");
+  config.routing.mlRouter.thresholds.reasoning = parseFloat(process.env.ML_ROUTER_THRESHOLD_REASONING ?? "0.75");
+  config.routing.mlRouter.thresholds.complex = parseFloat(process.env.ML_ROUTER_THRESHOLD_COMPLEX ?? "0.50");
+  config.routing.mlRouter.thresholds.medium = parseFloat(process.env.ML_ROUTER_THRESHOLD_MEDIUM ?? "0.25");
 
   config.toon.enabled = process.env.TOON_ENABLED === "true";
   const newToonMinBytes = Number.parseInt(process.env.TOON_MIN_BYTES ?? "4096", 10);

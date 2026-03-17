@@ -45,6 +45,13 @@ services:
       TIER_MEDIUM: ${TIER_MEDIUM:-}
       TIER_COMPLEX: ${TIER_COMPLEX:-}
       TIER_REASONING: ${TIER_REASONING:-}
+      # Domain-Aware Routing Preferences
+      ROUTING_PREFERENCES: ${ROUTING_PREFERENCES:-}
+      ROUTING_DOMAINS: ${ROUTING_DOMAINS:-}
+      # ML-Based Routing
+      ROUTING_STRATEGY: ${ROUTING_STRATEGY:-heuristic}
+      ML_ROUTER_MODEL: ${ML_ROUTER_MODEL:-}
+      ML_ROUTER_WEIGHT: ${ML_ROUTER_WEIGHT:-0.6}
 #      OLLAMA_ENDPOINT: http://ollama:11434
       OLLAMA_ENDPOINT: http://host.docker.internal:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}

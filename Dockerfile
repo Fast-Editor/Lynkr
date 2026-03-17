@@ -266,6 +266,16 @@ ENV HOT_RELOAD_ENABLED="true" \
 #     TIER_COMPLEX="azure-openai:gpt-4o" \
 #     TIER_REASONING="azure-openai:gpt-4o"
 
+# Domain-Aware Routing Preferences (optional)
+# Format: ROUTING_PREFERENCES=domain:provider1|provider2,...
+# ENV ROUTING_PREFERENCES="" \
+#     ROUTING_DOMAINS=""
+
+# ML-Based Routing (optional)
+# ENV ROUTING_STRATEGY="heuristic" \
+#     ML_ROUTER_MODEL="" \
+#     ML_ROUTER_WEIGHT="0.6"
+
 # Switch to non-root user
 USER node
 
