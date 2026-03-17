@@ -434,8 +434,10 @@ router.post("/chat/completions", async (req, res) => {
     //      that have a mapping in CLIENT_TOOL_MAPPINGS — this ensures clients like
     //      Codex don't see tools they can't handle (Task, WebFetch, NotebookEdit)
     //      while Claude Code (unknown client) gets the full IDE_SAFE_TOOLS set.
+    // Skip injection if client explicitly opted out (tool_choice: "none" or empty tools array).
     const clientType = detectClient(req.headers);
-    if (!anthropicRequest.tools || anthropicRequest.tools.length === 0) {
+    const clientExplicitlyDisabledTools = req.body.tool_choice === "none" || Array.isArray(req.body.tools);
+    if (!clientExplicitlyDisabledTools && (!anthropicRequest.tools || anthropicRequest.tools.length === 0)) {
       const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
       const clientTools = clientMappings
         ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
@@ -1478,8 +1480,10 @@ router.post("/responses", async (req, res) => {
     }, "After Chat→Anthropic conversion");
 
     // Inject tools if client didn't send any (same two-layer filtering as chat/completions).
+    // Skip injection if client explicitly opted out (tool_choice: "none" or empty tools array).
     const clientType = detectClient(req.headers);
-    if (!anthropicRequest.tools || anthropicRequest.tools.length === 0) {
+    const clientExplicitlyDisabledTools = req.body.tool_choice === "none" || Array.isArray(req.body.tools);
+    if (!clientExplicitlyDisabledTools && (!anthropicRequest.tools || anthropicRequest.tools.length === 0)) {
       const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
       const clientTools = clientMappings
         ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
