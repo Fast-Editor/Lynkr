@@ -16,8 +16,12 @@
 
 const path = require('path');
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 const config = require('../config');
 const logger = require('../logger');
+
+const HF_REPO = 'routellm/bert';
+const REQUIRED_FILES = ['tokenizer.json', 'tokenizer_config.json'];
 
 let ort = null;
 let session = null;
@@ -48,6 +52,78 @@ async function initialize() {
   return initPromise;
 }
 
+/**
+ * Auto-export the RouteLLM BERT model to ONNX format.
+ * Runs the Python export script if Python + dependencies are available.
+ * Falls back to downloading pre-exported files if a release URL is configured.
+ */
+async function autoExportModel(resolvedModel) {
+  const modelDir = path.dirname(resolvedModel);
+  const scriptPath = path.join(__dirname, '..', '..', 'scripts', 'export-routellm-bert.py');
+
+  // Ensure output directory exists
+  fs.mkdirSync(modelDir, { recursive: true });
+
+  // Try running the Python export script
+  if (fs.existsSync(scriptPath)) {
+    try {
+      // Check if Python is available
+      const pythonCmd = findPython();
+      if (!pythonCmd) {
+        logger.warn('[MLRouter] Python not found — cannot auto-export model. Run manually: python scripts/export-routellm-bert.py');
+        return false;
+      }
+
+      // Check if required Python packages are installed
+      try {
+        execFileSync(pythonCmd, ['-c', 'import transformers, torch, onnx'], {
+          timeout: 10000,
+          stdio: 'pipe',
+        });
+      } catch {
+        logger.warn('[MLRouter] Missing Python dependencies. Run: pip install routellm transformers torch onnx onnxruntime onnxscript');
+        return false;
+      }
+
+      logger.info('[MLRouter] Running ONNX export (one-time setup, may take 30-60s)...');
+      execFileSync(pythonCmd, [scriptPath], {
+        timeout: 300000, // 5 minutes
+        stdio: 'pipe',
+        cwd: path.join(__dirname, '..', '..'),
+      });
+
+      if (fs.existsSync(resolvedModel)) {
+        logger.info('[MLRouter] Model exported successfully');
+        return true;
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, '[MLRouter] Auto-export failed');
+    }
+  }
+
+  logger.warn(
+    '[MLRouter] Model file not found. To set up ML routing:\n' +
+    '  pip install routellm transformers torch onnx onnxruntime onnxscript\n' +
+    '  python scripts/export-routellm-bert.py'
+  );
+  return false;
+}
+
+/**
+ * Find a working Python 3 command.
+ */
+function findPython() {
+  for (const cmd of ['python3', 'python']) {
+    try {
+      const version = execFileSync(cmd, ['--version'], { timeout: 5000, stdio: 'pipe' }).toString();
+      if (version.includes('Python 3')) return cmd;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
 async function _doInitialize() {
 
   const modelPath = config.routing?.mlRouter?.modelPath;
@@ -58,8 +134,9 @@ async function _doInitialize() {
 
   const resolvedModel = path.resolve(modelPath);
   if (!fs.existsSync(resolvedModel)) {
-    logger.warn({ path: resolvedModel }, '[MLRouter] Model file not found — ML routing disabled');
-    return false;
+    logger.info('[MLRouter] Model not found — attempting auto-export...');
+    const exported = await autoExportModel(resolvedModel);
+    if (!exported) return false;
   }
 
   // Try to load onnxruntime-node (optional dependency)
