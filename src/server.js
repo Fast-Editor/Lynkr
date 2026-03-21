@@ -78,18 +78,8 @@ function createApp() {
   // Metrics collection
   app.use(metricsMiddleware);
 
-  // Enable compression for all responses (gzip/deflate)
-  app.use(compression({
-    level: 6, // Balanced compression level
-    threshold: 1024, // Only compress responses > 1KB
-    filter: (req, res) => {
-      // Don't compress event streams
-      if (res.getHeader('Content-Type') === 'text/event-stream') {
-        return false;
-      }
-      return compression.filter(req, res);
-    }
-  }));
+  // Note: If using a tunnel (ngrok, Cloudflare Tunnel) and seeing BrotliDecompressionError,
+  // start ngrok with: ngrok http 8081 --request-header-remove "Accept-Encoding"
 
   app.use(express.json({ limit: config.server.jsonLimit }));
   app.use(sessionMiddleware);
