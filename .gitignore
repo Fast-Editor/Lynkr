@@ -26,6 +26,7 @@ PLAN-worker-thread-pool.md
 PLAN-per-client-model-routing.md
 CLAWROUTER_ROUTING_PLAN.md
 models/router/*.onnx
+models/router/*.onnx.data
 models/router/*.json
 models/router/*.bin
 models/router/*.txt

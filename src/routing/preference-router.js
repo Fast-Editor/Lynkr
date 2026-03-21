@@ -167,19 +167,37 @@ class PreferenceRouter {
 
   /**
    * Main entry point: detect domains from payload and resolve provider preference.
+   * Supports explicit agent role hint via X-Agent-Role header (passed as options.agentRole).
+   * When an agent role is provided, it takes priority over text-based domain detection.
+   *
    * @param {Object} payload - Request payload with messages
    * @param {string} tier - Selected tier
+   * @param {Object} [options] - Additional options
+   * @param {string} [options.agentRole] - Explicit domain hint from X-Agent-Role header
    * @returns {Object|null} { provider, model, domain, source } or null
    */
-  resolve(payload, tier) {
+  resolve(payload, tier, options = {}) {
     if (!tier) return null;
     const preferences = config.routing?.preferences || {};
     if (Object.keys(preferences).length === 0) return null;
 
-    const content = extractContent(payload);
-    if (!content) return null;
+    let domains;
+    const agentRole = options.agentRole?.toLowerCase()?.trim();
 
-    const domains = this.detectDomains(content);
+    if (agentRole) {
+      // Explicit agent role takes priority — use it as the top domain
+      // Also detect from content and append as fallback domains
+      const content = extractContent(payload);
+      const detectedDomains = content ? this.detectDomains(content) : [];
+      // Put agent role first, then any detected domains (deduplicated)
+      domains = [agentRole, ...detectedDomains.filter(d => d !== agentRole)];
+      logger.debug({ agentRole, detectedDomains, domains }, '[PreferenceRouter] Agent role hint applied');
+    } else {
+      const content = extractContent(payload);
+      if (!content) return null;
+      domains = this.detectDomains(content);
+    }
+
     if (domains.length === 0) return null;
 
     const result = this.resolveProvider(domains, tier);
@@ -190,6 +208,7 @@ class PreferenceRouter {
         model: result.model,
         allDomains: domains,
         tier,
+        agentRole: agentRole || null,
       }, '[PreferenceRouter] Domain preference applied');
     }
 

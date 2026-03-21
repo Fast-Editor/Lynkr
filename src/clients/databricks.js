@@ -2007,9 +2007,13 @@ async function invokeModel(body, options = {}) {
   const healthTracker = getHealthTracker();
 
   // Determine provider via async tier routing
+  const routingOptions = {};
+  if (body._agentRole) {
+    routingOptions.agentRole = body._agentRole;
+  }
   const routingResult = options.forceProvider
     ? { provider: options.forceProvider, model: null, method: 'forced' }
-    : await determineProviderSmart(body);
+    : await determineProviderSmart(body, routingOptions);
   const initialProvider = routingResult.provider;
   const tierSelectedModel = routingResult.model;
 

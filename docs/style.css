@@ -3,7 +3,7 @@
    Inspired by shadcn/ui + liquidos.ai
    ========================================= */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+/* Fonts loaded via <link> in HTML head for better performance */
 
 /* ===== DESIGN TOKENS (shadcn-inspired) ===== */
 :root {
@@ -1192,8 +1192,8 @@ body {
   }
 }
 
-/* Hide default markdown h1 */
-h1:first-of-type {
+/* Hide default GitHub Pages markdown h1 (not the hero h1) */
+.markdown-body > h1:first-of-type {
   display: none;
 }
 

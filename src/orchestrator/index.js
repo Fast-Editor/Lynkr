@@ -3905,6 +3905,12 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   const cleanPayload = sanitizePayload(payload);
 
+  // Pass through X-Agent-Role header as a transient routing hint
+  const agentRole = headers?.['x-agent-role'];
+  if (agentRole) {
+    cleanPayload._agentRole = agentRole;
+  }
+
   // Proactively load tools based on prompt content (lazy loading)
   try {
     const { loaded } = lazyLoader.ensureToolsForPrompt(cleanPayload.messages);

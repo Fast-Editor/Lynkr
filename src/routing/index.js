@@ -281,7 +281,7 @@ async function determineProviderSmart(payload, options = {}) {
   if (config.routing?.preferences && Object.keys(config.routing.preferences).length > 0) {
     try {
       const preferenceRouter = getPreferenceRouter();
-      domainResult = preferenceRouter.resolve(payload, tier);
+      domainResult = preferenceRouter.resolve(payload, tier, { agentRole: options.agentRole });
       if (domainResult) {
         provider = domainResult.provider;
         selectedModel = domainResult.model;
@@ -346,6 +346,7 @@ async function determineProviderSmart(payload, options = {}) {
     domainResult,
     mlResult,
     costOptimized,
+    agentRole: options.agentRole || null,
   };
 
   // Phase 3: Record metrics
@@ -407,6 +408,10 @@ function getRoutingHeaders(decision) {
 
   if (decision.domainResult?.domain) {
     headers['X-Lynkr-Domain'] = decision.domainResult.domain;
+  }
+
+  if (decision.agentRole) {
+    headers['X-Lynkr-Agent-Role'] = decision.agentRole;
   }
 
   if (decision.mlResult) {
