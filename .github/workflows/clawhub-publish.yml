@@ -1,0 +1,35 @@
+name: Publish to ClawHub
+
+on:
+  push:
+    paths:
+      - 'skills/lynkr/**'
+    branches:
+      - main
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install ClawHub CLI
+        run: npm i -g clawhub
+
+      - name: Login to ClawHub
+        run: clawhub login --token ${{ secrets.CLAWHUB_AUTH }}
+
+      - name: Publish skill
+        run: |
+          clawhub publish ./skills/lynkr \
+            --slug lynkr \
+            --name "Lynkr AI Routing Proxy" \
+            --version 0.6.0 \
+            --changelog "Initial release - intelligent LLM routing with 12+ providers" \
+            --tags latest \
+            --force

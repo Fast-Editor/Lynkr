@@ -3434,6 +3434,15 @@ IMPORTANT TOOL USAGE RULES:
       }
     }
 
+    // Attach routing metadata for OpenClaw model name rewriting
+    if (databricksResponse.routingDecision) {
+      anthropicPayload._routingMeta = {
+        provider: databricksResponse.routingDecision.provider,
+        model: databricksResponse.routingDecision.model,
+        tier: databricksResponse.routingDecision.tier,
+      };
+    }
+
     appendTurnToSession(session, {
       role: "assistant",
       type: "message",

@@ -28,6 +28,23 @@ const { IDE_SAFE_TOOLS } = require("../clients/standard-tools");
 const router = express.Router();
 
 /**
+ * Resolve the model name for OpenAI responses.
+ * In OpenClaw mode, returns the actual provider/model from routing metadata.
+ */
+function resolveResponseModel(resultBody, requestModel) {
+  if (config.openclaw?.enabled && resultBody?._routingMeta) {
+    const meta = resultBody._routingMeta;
+    if (meta.provider && meta.model) {
+      return `${meta.provider}/${meta.model}`;
+    }
+    if (meta.provider) {
+      return meta.provider;
+    }
+  }
+  return requestModel;
+}
+
+/**
  * Client detection - identifies which AI coding tool is making the request
  * @param {Object} headers - Request headers
  * @returns {string} Client type: 'codex', 'cline', 'continue', or 'unknown'
@@ -499,7 +516,8 @@ router.post("/chat/completions", async (req, res) => {
         }
 
         // Convert to OpenAI format
-        const openaiResponse = convertAnthropicToOpenAI(result.body, req.body.model);
+        const streamModel = resolveResponseModel(result.body, req.body.model);
+        const openaiResponse = convertAnthropicToOpenAI(result.body, streamModel);
 
         // Debug: Log what we're about to stream
         logger.debug({
@@ -539,7 +557,7 @@ router.post("/chat/completions", async (req, res) => {
           id: openaiResponse.id,
           object: "chat.completion.chunk",
           created: openaiResponse.created,
-          model: req.body.model,
+          model: streamModel,
           system_fingerprint: "fp_lynkr",
           choices: [{
             index: 0,
@@ -561,7 +579,7 @@ router.post("/chat/completions", async (req, res) => {
             id: openaiResponse.id,
             object: "chat.completion.chunk",
             created: openaiResponse.created,
-            model: req.body.model,
+            model: streamModel,
             system_fingerprint: "fp_lynkr",
             choices: [{
               index: 0,
@@ -581,7 +599,7 @@ router.post("/chat/completions", async (req, res) => {
               id: openaiResponse.id,
               object: "chat.completion.chunk",
               created: openaiResponse.created,
-              model: req.body.model,
+              model: streamModel,
               choices: [{
                 index: 0,
                 delta: {
@@ -608,7 +626,7 @@ router.post("/chat/completions", async (req, res) => {
           id: openaiResponse.id,
           object: "chat.completion.chunk",
           created: openaiResponse.created,
-          model: req.body.model,
+          model: streamModel,
           system_fingerprint: "fp_lynkr",
           choices: [{
             index: 0,
@@ -679,7 +697,7 @@ router.post("/chat/completions", async (req, res) => {
       }, "Orchestrator result structure");
 
       // Convert Anthropic response to OpenAI format
-      const openaiResponse = convertAnthropicToOpenAI(result.body, req.body.model);
+      const openaiResponse = convertAnthropicToOpenAI(result.body, resolveResponseModel(result.body, req.body.model));
 
       // Map tool names for known IDE clients
       if (clientType !== "unknown" && openaiResponse.choices?.[0]?.message?.tool_calls?.length > 0) {
@@ -1535,7 +1553,8 @@ router.post("/responses", async (req, res) => {
         }, "=== ORCHESTRATOR RESULT FOR RESPONSES API ===");
 
         // Convert back: Anthropic → OpenAI → Responses
-        const chatResponse = convertAnthropicToOpenAI(result.body, req.body.model);
+        const responsesModel = resolveResponseModel(result.body, req.body.model);
+        const chatResponse = convertAnthropicToOpenAI(result.body, responsesModel);
 
         logger.debug({
           chatContent: chatResponse.choices?.[0]?.message?.content?.substring(0, 200),
@@ -1597,7 +1616,7 @@ router.post("/responses", async (req, res) => {
             object: "response",
             status: "in_progress",
             created_at: createdAt,
-            model: req.body.model,
+            model: responsesModel,
             output: [],
             usage: null
           },
@@ -1614,7 +1633,7 @@ router.post("/responses", async (req, res) => {
             object: "response",
             status: "in_progress",
             created_at: createdAt,
-            model: req.body.model,
+            model: responsesModel,
             output: [],
             usage: null
           },
@@ -1793,7 +1812,7 @@ router.post("/responses", async (req, res) => {
             object: "response",
             status: "completed",
             created_at: createdAt,
-            model: req.body.model,
+            model: responsesModel,
             output: outputItems,
             usage: {
               input_tokens: responsesResponse.usage?.prompt_tokens || 0,
@@ -1846,7 +1865,7 @@ router.post("/responses", async (req, res) => {
       });
 
       // Convert back: Anthropic → OpenAI → Responses
-      const chatResponse = convertAnthropicToOpenAI(result.body, req.body.model);
+      const chatResponse = convertAnthropicToOpenAI(result.body, resolveResponseModel(result.body, req.body.model));
       const responsesResponse = convertChatToResponses(chatResponse);
 
       logger.info({

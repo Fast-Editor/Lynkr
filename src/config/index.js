@@ -918,6 +918,11 @@ var config = {
     COMPLEX: process.env.TIER_COMPLEX?.trim() || null,
     REASONING: process.env.TIER_REASONING?.trim() || null,
   },
+
+  // OpenClaw integration
+  openclaw: {
+    enabled: process.env.OPENCLAW_MODE === "true",
+  },
 };
 
 /**
@@ -963,6 +968,9 @@ function reloadConfig() {
   config.toon.minBytes = Number.isNaN(newToonMinBytes) ? 4096 : newToonMinBytes;
   config.toon.failOpen = process.env.TOON_FAIL_OPEN !== "false";
   config.toon.logStats = process.env.TOON_LOG_STATS !== "false";
+
+  // OpenClaw
+  config.openclaw.enabled = process.env.OPENCLAW_MODE === "true";
 
   // Log level
   config.logger.level = process.env.LOG_LEVEL ?? "info";
