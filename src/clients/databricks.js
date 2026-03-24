@@ -2000,6 +2000,54 @@ function convertGeminiToAnthropic(response, requestedModel) {
   };
 }
 
+async function invokeCodex(body) {
+  const { getCodexProcess } = require("./codex-process");
+  const { convertAnthropicToCodexPrompt, convertCodexResponseToAnthropic } = require("./codex-utils");
+
+  const codex = getCodexProcess();
+  await codex.ensureRunning();
+
+  const model = body._tierModel || config.codex?.model || "gpt-5.3-codex";
+  const { prompt, systemContext } = convertAnthropicToCodexPrompt(body);
+
+  if (!prompt) {
+    throw new Error("Codex: no prompt content to send");
+  }
+
+  // Start a new thread
+  const threadParams = { model };
+  if (systemContext) {
+    threadParams.instructions = systemContext;
+  }
+  const threadResult = await codex.sendRequest("thread/start", threadParams);
+  const threadId = threadResult?.threadId || threadResult?.id;
+
+  if (!threadId) {
+    throw new Error("Codex: thread/start did not return a threadId");
+  }
+
+  logger.debug({ threadId, model, promptLength: prompt.length }, "[Codex] Thread started");
+
+  // Send the turn and collect response
+  const turnResult = await codex.sendTurn(threadId, prompt, model);
+
+  logger.debug({
+    threadId,
+    responseLength: turnResult.text?.length || 0,
+  }, "[Codex] Turn completed");
+
+  // Convert to Anthropic format
+  const anthropicJson = convertCodexResponseToAnthropic(turnResult, model);
+
+  return {
+    ok: true,
+    status: 200,
+    json: anthropicJson,
+    text: JSON.stringify(anthropicJson),
+    contentType: "application/json",
+  };
+}
+
 async function invokeModel(body, options = {}) {
   const { determineProviderSmart, isFallbackEnabled, getFallbackProvider } = require("./routing");
   const metricsCollector = getMetricsCollector();
@@ -2081,6 +2129,8 @@ async function invokeModel(body, options = {}) {
         return await invokeVertex(body);
       } else if (initialProvider === "moonshot") {
         return await invokeMoonshot(body);
+      } else if (initialProvider === "codex") {
+        return await invokeCodex(body);
       }
       return await invokeDatabricks(body);
     });

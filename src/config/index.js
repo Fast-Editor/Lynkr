@@ -618,6 +618,12 @@ var config = {
     endpoint: moonshotEndpoint,
     model: moonshotModel,
   },
+  codex: {
+    enabled: process.env.CODEX_ENABLED !== "false",
+    binaryPath: process.env.CODEX_BINARY_PATH?.trim() || null,
+    model: process.env.CODEX_MODEL?.trim() || "gpt-5.3-codex",
+    timeout: Number.parseInt(process.env.CODEX_TIMEOUT || "120000", 10) || 120000,
+  },
   hotReload: {
     enabled: hotReloadEnabled,
     debounceMs: Number.isNaN(hotReloadDebounceMs) ? 1000 : hotReloadDebounceMs,

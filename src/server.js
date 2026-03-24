@@ -228,6 +228,17 @@ async function start() {
     });
   }
 
+  // Register Codex process shutdown callback
+  shutdownManager.onShutdown(async () => {
+    try {
+      const { getCodexProcess } = require("./clients/codex-process");
+      const codex = getCodexProcess();
+      if (codex.child) {
+        await codex.shutdown();
+      }
+    } catch { /* ignore if codex never started */ }
+  });
+
   // Initialize hot reload config watcher
   if (config.hotReload?.enabled !== false) {
     const watcher = initConfigWatcher({

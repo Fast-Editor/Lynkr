@@ -55,6 +55,8 @@ function getDestinationUrl(providerType) {
       return config.vertex?.endpoint ?? 'unknown';
     case 'moonshot':
       return config.moonshot?.endpoint ?? 'unknown';
+    case 'codex':
+      return 'codex://app-server (local process)';
     default:
       return 'unknown';
   }
@@ -3146,6 +3148,12 @@ IMPORTANT TOOL USAGE RULES:
         hasJson: !!databricksResponse.json,
         jsonContent: JSON.stringify(databricksResponse.json?.content)?.substring(0, 300),
       }, "=== MOONSHOT ORCHESTRATOR DEBUG ===");
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
+    } else if (actualProvider === "codex") {
+      // Codex responses are already in Anthropic format from invokeCodex
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
