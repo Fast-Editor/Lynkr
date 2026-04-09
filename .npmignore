@@ -11,3 +11,42 @@ Dockerfile
 docker/
 docker-compose.yml
 src/orchestrator/index.js.backup
+
+# ML model files (users export locally via scripts/export-routellm-bert.py)
+models/router/*.onnx
+models/router/*.onnx.data
+models/router/*.json
+models/router/*.bin
+models/router/*.txt
+!models/router/README.md
+
+# Test files
+test/
+test-*.js
+test-*.sh
+final-test.js
+
+# Docs and plans
+*.md
+!README.md
+!models/router/README.md
+docs/
+documentation/
+.github/
+
+# Examples
+examples/
+
+# Headroom sidecar (optional, installed separately)
+headroom-sidecar/
+
+# Scripts (setup.js is needed, others are optional)
+scripts/audit-log-reader.js
+scripts/compact-dictionary.js
+scripts/test-deduplication.js
+scripts/export-routellm-bert.py
+
+# Misc
+CITATIONS.bib
+monitor-agents.sh
+src/db/database.sqlite

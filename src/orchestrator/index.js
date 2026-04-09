@@ -1923,6 +1923,11 @@ IMPORTANT TOOL USAGE RULES:
     });
   }
 
+  // Thread workspace for code-graph integration (auto-detected or from header)
+  if (headers?.["x-lynkr-workspace"]) {
+    cleanPayload._workspace = headers["x-lynkr-workspace"];
+  }
+
   let databricksResponse;
   try {
     databricksResponse = await invokeModel(cleanPayload);

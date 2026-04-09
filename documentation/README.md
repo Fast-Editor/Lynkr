@@ -30,10 +30,10 @@ Connect Lynkr to your development tools:
 Understand Lynkr's capabilities:
 
 - **[Architecture & Features](features.md)** - System architecture, request flow, format conversion, and core capabilities
-- **[Routing & Model Tiering](routing.md)** - 4-tier model system, 15-dimension complexity scoring, agentic workflow detection, and cost optimization
+- **[Routing & Model Tiering](routing.md)** - 4-tier model system, 5-phase complexity scoring (including Graphify structural analysis), agentic workflow detection, routing telemetry, and cost optimization
 - **[Memory System](memory-system.md)** - Titans-inspired long-term memory with surprise-based filtering and decay
-- **[Token Optimization](token-optimization.md)** - Achieve 60-80% cost reduction through smart tool selection, prompt caching, and memory deduplication
-- **[Headroom Compression](headroom.md)** - 47-92% token reduction through intelligent context compression (Smart Crusher, CCR, LLMLingua)
+- **[Token Optimization](token-optimization.md)** - Achieve 60-80% cost reduction through 7 optimization phases including Distill-powered structural dedup, delta rendering, and smart compression
+- **[Headroom Compression](headroom.md)** - 47-92% token reduction through intelligent context compression (Smart Crusher, CCR, LLMLingua) with auto-rebuild on start
 - **[Tools & Execution Modes](tools.md)** - Tool calling, server vs client execution, custom tool integration, MCP support
 
 ---
@@ -75,6 +75,12 @@ Get help and contribute:
 
 ### Features & Optimization
 - [Features](features.md) | [Routing](routing.md) | [Memory System](memory-system.md) | [Token Optimization](token-optimization.md) | [Headroom](headroom.md) | [Tools](tools.md)
+
+### New in v8.0
+- **Graphify Integration** — Knowledge graph-powered routing with god node detection and community cohesion
+- **Distill Compression** — Structural similarity, delta rendering, and smart dedup for tool outputs
+- **Routing Telemetry** — SQLite-backed decision recording with quality scoring and latency tracking
+- **Headroom Auto-Rebuild** — Always runs latest code on `npm start`
 
 ### Deployment & Production
 - [Docker](docker.md) | [Production](production.md) | [API Reference](api.md)

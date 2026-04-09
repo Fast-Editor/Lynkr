@@ -415,8 +415,8 @@ router.get("/health/providers", (req, res) => {
     // Get circuit breaker states
     const circuitBreakerStates = {};
     const allBreakers = registry.getAll();
-    for (const [name, breaker] of Object.entries(allBreakers)) {
-      circuitBreakerStates[name] = breaker.state;
+    for (const breaker of allBreakers) {
+      circuitBreakerStates[breaker.name] = breaker.state;
     }
 
     // Get all provider health
@@ -452,7 +452,8 @@ router.get("/health/providers/:name", (req, res) => {
 
     // Get circuit breaker state for this provider
     const allBreakers = registry.getAll();
-    const circuitState = allBreakers[providerName]?.state || "CLOSED";
+    const breakerState = allBreakers.find((b) => b.name === providerName);
+    const circuitState = breakerState?.state || "CLOSED";
 
     // Get detailed metrics
     const metrics = healthTracker.getProviderMetrics(providerName);
@@ -474,6 +475,119 @@ router.get("/health/providers/:name", (req, res) => {
         message: error.message || "Failed to get provider health details"
       }
     });
+  }
+});
+
+// ============================================================================
+// Routing Telemetry Endpoints
+// ============================================================================
+
+const telemetry = require("../routing/telemetry");
+const { getLatencyTracker } = require("../routing/latency-tracker");
+
+/**
+ * GET /v1/routing/stats
+ *
+ * Aggregated routing telemetry statistics.
+ */
+router.get("/routing/stats", (req, res) => {
+  try {
+    const since = req.query.since ? Number(req.query.since) : undefined;
+    const until = req.query.until ? Number(req.query.until) : undefined;
+    const stats = telemetry.getStats({ since, until });
+
+    if (!stats) {
+      return res.json({ object: "routing_stats", data: null, message: "No telemetry data available" });
+    }
+
+    // Merge latency tracker percentiles
+    const latencyTracker = getLatencyTracker();
+    const latencyStats = {};
+    for (const [provider, pStats] of latencyTracker.getAllStats()) {
+      latencyStats[provider] = pStats;
+    }
+
+    res.json({
+      object: "routing_stats",
+      data: { ...stats, latencyPercentiles: latencyStats },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error({ error: error.message }, "Error getting routing stats");
+    res.status(500).json({ error: { type: "server_error", message: error.message } });
+  }
+});
+
+/**
+ * GET /v1/routing/stats/:provider
+ *
+ * Per-provider routing telemetry.
+ */
+router.get("/routing/stats/:provider", (req, res) => {
+  try {
+    const provider = req.params.provider.toLowerCase();
+    const since = req.query.since ? Number(req.query.since) : undefined;
+    const stats = telemetry.getProviderStats(provider, { since });
+
+    if (!stats) {
+      return res.json({ object: "provider_routing_stats", data: null, message: `No data for ${provider}` });
+    }
+
+    const latencyTracker = getLatencyTracker();
+    const latency = latencyTracker.getStats(provider);
+
+    res.json({
+      object: "provider_routing_stats",
+      provider,
+      data: { ...stats, latency },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error({ error: error.message }, "Error getting provider routing stats");
+    res.status(500).json({ error: { type: "server_error", message: error.message } });
+  }
+});
+
+/**
+ * GET /v1/routing/telemetry
+ *
+ * Raw telemetry records (most recent first).
+ */
+router.get("/routing/telemetry", (req, res) => {
+  try {
+    const filters = {
+      provider: req.query.provider,
+      tier: req.query.tier,
+      since: req.query.since ? Number(req.query.since) : undefined,
+      limit: req.query.limit ? Number(req.query.limit) : 100,
+    };
+    const records = telemetry.query(filters);
+
+    res.json({ object: "telemetry_list", data: records, count: records.length });
+  } catch (error) {
+    logger.error({ error: error.message }, "Error querying telemetry");
+    res.status(500).json({ error: { type: "server_error", message: error.message } });
+  }
+});
+
+/**
+ * GET /v1/routing/accuracy
+ *
+ * Routing accuracy analysis (over/under-provisioned percentages).
+ */
+router.get("/routing/accuracy", (req, res) => {
+  try {
+    const since = req.query.since ? Number(req.query.since) : undefined;
+    const accuracy = telemetry.getRoutingAccuracy({ since });
+
+    res.json({
+      object: "routing_accuracy",
+      data: accuracy,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error({ error: error.message }, "Error getting routing accuracy");
+    res.status(500).json({ error: { type: "server_error", message: error.message } });
   }
 });
 

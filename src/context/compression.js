@@ -11,6 +11,7 @@
 
 const logger = require('../logger');
 const config = require('../config');
+const distill = require('./distill');
 
 /**
  * Compress conversation history to fit within token budget
@@ -60,6 +61,18 @@ function compressHistory(messages, options = {}) {
   } else {
     // Just compress tool results in old messages
     compressed = oldMessages.map(msg => compressMessage(msg));
+  }
+
+  // Apply Distill dedup across all old messages to collapse repetitive tool results
+  if (compressed.length > 0) {
+    const dedupResult = distill.deduplicateHistory(compressed);
+    if (dedupResult.stats.deduplicated > 0) {
+      compressed = dedupResult.messages;
+      logger.debug({
+        checked: dedupResult.stats.checked,
+        deduplicated: dedupResult.stats.deduplicated,
+      }, '[Distill] History dedup applied to old messages');
+    }
   }
 
   // Add recent messages (may compress tool results but keep content)
@@ -248,12 +261,15 @@ function compressContentBlock(block) {
  * Compress tool result block
  *
  * Tool results can be very large (file contents, bash output).
- * Compress while preserving essential information.
+ * Uses Distill algorithms (normalization, delta, dedup) before
+ * falling back to head/tail truncation.
  *
  * @param {Object} block - tool_result block
+ * @param {Object} options - Options for compression
+ * @param {string} options.previousResult - Previous tool result for delta rendering
  * @returns {Object} Compressed tool_result
  */
-function compressToolResultBlock(block) {
+function compressToolResultBlock(block, options = {}) {
   if (!block || block.type !== 'tool_result') return block;
 
   const compressed = {
@@ -261,18 +277,32 @@ function compressToolResultBlock(block) {
     tool_use_id: block.tool_use_id,
   };
 
-  // Compress content
+  // Compress content using Distill when content is large enough to benefit
   if (typeof block.content === 'string') {
-    compressed.content = compressText(block.content, 500);
+    if (block.content.length > 500) {
+      const result = distill.compressToolResult(block.content, {
+        previousResult: options.previousResult,
+        maxLength: 500,
+      });
+      compressed.content = result.text;
+    } else {
+      compressed.content = block.content;
+    }
   } else if (Array.isArray(block.content)) {
     compressed.content = block.content.map(item => {
       if (typeof item === 'string') {
-        return compressText(item, 500);
+        if (item.length > 500) {
+          return distill.compressToolResult(item, { maxLength: 500 }).text;
+        }
+        return item;
       } else if (item.type === 'text') {
-        return {
-          type: 'text',
-          text: compressText(item.text, 500)
-        };
+        if (item.text && item.text.length > 500) {
+          return {
+            type: 'text',
+            text: distill.compressToolResult(item.text, { maxLength: 500 }).text,
+          };
+        }
+        return item;
       }
       return item;
     });
@@ -453,7 +483,10 @@ module.exports = {
   compressHistory,
   compressMessage,
   compressToolResults,
+  compressToolResultBlock,
   calculateCompressionStats,
   needsCompression,
   summarizeOldHistory,
+  // Distill re-exports for direct access
+  distill,
 };

@@ -925,6 +925,14 @@ var config = {
     REASONING: process.env.TIER_REASONING?.trim() || null,
   },
 
+  // Graphify knowledge graph integration (structural analysis)
+  codeGraph: {
+    enabled: process.env.CODE_GRAPH_ENABLED === 'true',
+    command: process.env.CODE_GRAPH_COMMAND || 'graphify',
+    workspace: process.env.CODE_GRAPH_WORKSPACE || process.cwd(),
+    timeout: parseInt(process.env.CODE_GRAPH_TIMEOUT, 10) || 10000,
+  },
+
   // OpenClaw integration
   openclaw: {
     enabled: process.env.OPENCLAW_MODE === "true",

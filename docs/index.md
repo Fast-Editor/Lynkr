@@ -47,7 +47,7 @@
     "description": "Self-hosted LLM proxy server that enables Claude Code, Cursor, and AI coding tools to work with any LLM provider with 60-80% cost reduction.",
     "url": "https://github.com/vishalveerareddy123/Lynkr",
     "downloadUrl": "https://www.npmjs.com/package/lynkr",
-    "softwareVersion": "6.0",
+    "softwareVersion": "8.0",
     "author": {
       "@type": "Person",
       "name": "Vishal Veera Reddy",
@@ -104,7 +104,7 @@
 <section class="hero">
   <div class="hero-badge">
     <span class="hero-badge-dot"></span>
-    <span>v6.0 — Production Ready</span>
+    <span>v8.0 — Production Ready</span>
   </div>
 
   <h1 class="hero-title">
@@ -148,7 +148,7 @@
       <div class="hero-stat-label">Cost Savings</div>
     </div>
     <div class="hero-stat">
-      <div class="hero-stat-value">400+</div>
+      <div class="hero-stat-value">650+</div>
       <div class="hero-stat-label">Tests</div>
     </div>
     <div class="hero-stat">
@@ -223,6 +223,30 @@
         <h3 class="feature-title">Hierarchical Routing</h3>
         <p class="feature-description">
           Intelligent request routing across model tiers — automatically route simple tasks to faster models and complex ones to more capable models.
+        </p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔬</div>
+        <h3 class="feature-title">Code Intelligence</h3>
+        <p class="feature-description">
+          Graphify knowledge graph integration — AST-based blast radius analysis, god node detection, and community cohesion scoring across 19 languages.
+        </p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📈</div>
+        <h3 class="feature-title">Routing Telemetry</h3>
+        <p class="feature-description">
+          Every routing decision is recorded with quality scoring and latency tracking. Data-driven improvement of routing accuracy over time.
+        </p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🗜️</div>
+        <h3 class="feature-title">Distill Compression</h3>
+        <p class="feature-description">
+          Structural similarity detection, delta rendering, and smart deduplication of tool outputs — ported from samuelfaj/distill for LLM-optimized compression.
         </p>
       </div>
     </div>

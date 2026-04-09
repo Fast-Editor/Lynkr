@@ -133,7 +133,7 @@ Additional tier preferences (fallback models per provider) can be defined in `co
 
 ## Complexity Scoring Algorithm
 
-The complexity analyzer implements 4 phases to produce a score from 0-100.
+The complexity analyzer implements 5 phases to produce a score from 0-100.
 
 ### Phase 1: Basic Scoring
 
@@ -261,6 +261,42 @@ Metrics are exposed via the `/metrics` endpoint and `X-Lynkr-*` response headers
 ### Phase 4: Embeddings-Based Similarity (Optional)
 
 When an embeddings model is configured (`OLLAMA_EMBEDDINGS_MODEL`), the analyzer can compare request content against reference embeddings for complex and simple tasks using cosine similarity. This produces a score adjustment of -10 to +10 points.
+
+### Phase 5: Structural Analysis via Graphify (Optional)
+
+When [Graphify](https://github.com/safishamsi/graphify) is enabled (`CODE_GRAPH_ENABLED=true`), the analyzer extracts file paths from the request and queries Graphify's knowledge graph for structural complexity signals.
+
+**How it works:**
+1. File paths are extracted from tool_use blocks, system prompts, and message text (supports both Anthropic and OpenAI formats)
+2. Three parallel queries are sent to Graphify: `get_neighbors` (blast radius), `god_nodes`, and `graph_stats`
+3. Results are scored and added to the complexity score
+
+**Scoring (capped at +35):**
+
+| Signal | Points | Condition |
+|--------|--------|-----------|
+| High blast radius | +15 | > 30 affected files |
+| Medium blast radius | +10 | > 10 affected files |
+| Low blast radius | +5 | > 5 affected files |
+| Deep dependencies | +5 | Dependency depth > 4 |
+| Infrastructure file | +10 | Editing Docker, CI/CD, config files |
+| Low test coverage | +5 | < 30% test files in affected set |
+| God node touched | +10 | Editing a hub class many things depend on |
+| Low community cohesion | +5 | Cohesion < 0.15 with multiple communities |
+
+**God node detection:** Graphify identifies the most-connected entities in the codebase (hub classes, central modules). Editing these has outsized impact — the router upgrades the request to a stronger model.
+
+**Community cohesion:** Graphify uses Leiden clustering to group related code. Low cohesion means loosely-coupled code where changes are harder to reason about safely.
+
+**Configuration:**
+```bash
+CODE_GRAPH_ENABLED=true
+CODE_GRAPH_COMMAND=graphify           # CLI command (default: graphify)
+CODE_GRAPH_WORKSPACE=/path/to/repo    # Optional — auto-detected from file paths
+CODE_GRAPH_TIMEOUT=10000              # Query timeout in ms (default: 10000)
+```
+
+**Workspace auto-detection:** You don't need to set `CODE_GRAPH_WORKSPACE`. Lynkr automatically detects the workspace from absolute file paths in the request by finding their common directory prefix. This works per-request, so different conversations about different repos route correctly.
 
 ---
 
@@ -410,6 +446,10 @@ Every response includes routing metadata in `X-Lynkr-*` headers:
 | `OLLAMA_MAX_TOOLS_FOR_ROUTING` | `3` | Max tools before routing away from Ollama |
 | `OPENROUTER_MAX_TOOLS_FOR_ROUTING` | `15` | Max tools before routing away from OpenRouter |
 | `OLLAMA_EMBEDDINGS_MODEL` | *(none)* | Embeddings model for Phase 4 similarity |
+| `CODE_GRAPH_ENABLED` | `false` | Enable Graphify structural analysis (Phase 5) |
+| `CODE_GRAPH_COMMAND` | `graphify` | Graphify CLI command |
+| `CODE_GRAPH_WORKSPACE` | `process.cwd()` | Default workspace (auto-detected per request) |
+| `CODE_GRAPH_TIMEOUT` | `10000` | Graphify query timeout in ms |
 
 ### Smart Tool Selection Modes
 
@@ -436,22 +476,71 @@ Every response includes routing metadata in `X-Lynkr-*` headers:
 4. Analyze complexity:
    └─ Calculate score 0-100 (standard or weighted mode)
 
-5. Optional: Embeddings adjustment:
+5. Optional: Graphify structural analysis:
+   └─ Query knowledge graph for blast radius, god nodes, community cohesion
+   └─ Adjust score by up to +35
+
+6. Optional: Embeddings adjustment:
    └─ Adjust score by -10 to +10 based on semantic similarity
 
-6. Agentic detection:
+7. Agentic detection:
    └─ If agentic → Boost score, enforce minimum tier
    └─ If AUTONOMOUS → Force cloud provider
 
-7. Map score to tier (SIMPLE/MEDIUM/COMPLEX/REASONING)
+8. Map score to tier (SIMPLE/MEDIUM/COMPLEX/REASONING)
 
-8. Select provider:model from matching TIER_* env var
+9. Select provider:model from matching TIER_* env var
 
-9. Optional: Cost optimization
-   └─ Check for cheaper model that can handle the tier
+10. Optional: Cost optimization
+    └─ Check for cheaper model that can handle the tier
 
-10. Return { provider, model, tier, score, method }
+11. Record telemetry (provider, tier, latency, quality score)
+
+12. Return { provider, model, tier, score, method }
 ```
+
+---
+
+## Routing Telemetry
+
+Every routing decision is recorded in a SQLite telemetry store (`.lynkr/telemetry.db`) for analysis and continuous improvement.
+
+### Telemetry Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /v1/routing/stats` | Aggregated stats with latency percentiles per provider |
+| `GET /v1/routing/stats/:provider` | Per-provider statistics |
+| `GET /v1/routing/telemetry` | Raw telemetry records with query filters |
+| `GET /v1/routing/accuracy` | Over/under-provisioned routing percentage |
+
+### Recorded Fields
+
+Each telemetry record captures 20+ fields including: request ID, provider, tier, complexity score, latency, quality score (0-100), token usage, whether fallback was used, retry count, error type, and Graphify signals (blast radius, god node, cohesion).
+
+### Quality Scoring
+
+Every response is scored 0-100 for quality using heuristic signals:
+
+| Signal | Points |
+|--------|--------|
+| HTTP 200 status | +10 |
+| Output tokens > 100 | +5 |
+| Tools used in response | +10 |
+| No fallback triggered | +5 |
+| No retries needed | +5 |
+| Error occurred | -30 |
+| Fallback was used | -10 |
+| Multiple retries | -10 |
+| Latency > 30s | -10 |
+| Tier mismatch (REASONING request got low output) | -15 |
+
+### Latency Tracking
+
+Per-provider latency is tracked in a 200-sample circular buffer. Statistics exposed:
+- P50, P95, P99 latency
+- Average latency
+- Latency-based score penalty (-5 to +10 points)
 
 ---
 
@@ -460,11 +549,15 @@ Every response includes routing metadata in `X-Lynkr-*` headers:
 | File | Description |
 |------|-------------|
 | `src/routing/index.js` | Main routing orchestrator (`determineProviderSmart()`) |
-| `src/routing/complexity-analyzer.js` | 4-phase complexity analysis, 15-dimension weighted scoring |
+| `src/routing/complexity-analyzer.js` | 5-phase complexity analysis, 15-dimension weighted scoring, Graphify integration |
 | `src/routing/agentic-detector.js` | Agentic workflow detection and classification |
 | `src/routing/model-tiers.js` | Tier definitions, model selection from `TIER_*` env vars |
 | `src/routing/model-registry.js` | Multi-source pricing (LiteLLM, models.dev, Databricks fallback) |
 | `src/routing/cost-optimizer.js` | Cost tracking, cheapest model finder, savings calculation |
+| `src/routing/telemetry.js` | SQLite-backed routing telemetry store |
+| `src/routing/quality-scorer.js` | Response quality scoring (0-100) |
+| `src/routing/latency-tracker.js` | Per-provider latency tracking with percentiles |
+| `src/tools/code-graph.js` | Graphify integration — knowledge graph queries for structural analysis |
 
 ---
 

@@ -136,7 +136,7 @@ router.post("/routing/analyze", async (req, res) => {
     const { getModelTierSelector } = require("../routing/model-tiers");
     const { getModelRegistry } = require("../routing/model-registry");
 
-    const analysis = analyzeComplexity(req.body, { weighted: req.query.weighted === "true" });
+    const analysis = await analyzeComplexity(req.body, { weighted: req.query.weighted === "true" });
     const agentic = getAgenticDetector().detect(req.body);
     const selector = getModelTierSelector();
     const tier = selector.getTier(analysis.score);
@@ -216,7 +216,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     const hasTools = Array.isArray(req.body?.tools) && req.body.tools.length > 0;
 
     // Analyze complexity for routing headers (Phase 3)
-    const complexity = analyzeComplexity(req.body);
+    const complexity = await analyzeComplexity(req.body);
     let preRouteProvider = 'cloud';
     if (complexity.recommendation === 'local') {
       // Use tier config to determine actual provider instead of hardcoding 'ollama'
