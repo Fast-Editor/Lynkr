@@ -77,7 +77,9 @@ async function hasAnthropicEndpoint(baseUrl) {
   if (anthropicEndpointAvailable !== null) return anthropicEndpointAvailable;
 
   try {
-    // Send a minimal request — we only care about whether the route exists
+    // Probe using the configured model — "probe" doesn't exist and Ollama
+    // returns 404 for unknown models, which we'd misinterpret as "no endpoint"
+    const probeModel = config.ollama?.model || "llama3.2";
     const res = await fetch(`${baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
@@ -85,15 +87,22 @@ async function hasAnthropicEndpoint(baseUrl) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "probe",
+        model: probeModel,
         max_tokens: 1,
         messages: [{ role: "user", content: "hi" }],
       }),
     });
 
-    // 404 → endpoint doesn't exist (old Ollama)
-    // Any other status (200, 400, 500) → endpoint exists
-    anthropicEndpointAvailable = res.status !== 404;
+    // 404 with "not found" in body → model not found (endpoint exists)
+    // 404 with no body or HTML → endpoint doesn't exist (old Ollama)
+    // Any 200/400/500 → endpoint exists
+    if (res.status === 404) {
+      const body = await res.text().catch(() => "");
+      // Ollama returns JSON with "model" in the error for missing models
+      anthropicEndpointAvailable = body.includes("model") || body.includes("not found");
+    } else {
+      anthropicEndpointAvailable = true;
+    }
     logger.info(
       { available: anthropicEndpointAvailable, status: res.status },
       anthropicEndpointAvailable

@@ -1,6 +1,6 @@
 {
   "name": "lynkr",
-  "version": "8.0.1",
+  "version": "9.0.1",
   "description": "Self-hosted Claude Code & Cursor proxy with Databricks,AWS BedRock,Azure  adapters, openrouter, Ollama,llamacpp,LM Studio, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
@@ -71,6 +71,7 @@
     "tree-sitter-typescript": "^0.21.0"
   },
   "devDependencies": {
+    "@napi-rs/cli": "^3.6.2",
     "eslint": "^8.57.0",
     "nodemon": "^3.1.0",
     "pino-pretty": "^10.2.0"
