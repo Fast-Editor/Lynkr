@@ -1,5 +1,6 @@
 const { registerTool } = require(".");
 const { listServers, ensureClient } = require("../mcp");
+const config = require("../config");
 const logger = require("../logger");
 
 const REMOTE_TOOL_PREFIX = "mcp";
@@ -12,6 +13,12 @@ function sanitiseName(value) {
 }
 
 async function registerRemoteTools() {
+  // Code Mode: register 4 meta-tools instead of individual remote tools
+  if (config.mcp?.codeMode?.enabled) {
+    const { registerCodeModeTools } = require("./code-mode");
+    registerCodeModeTools();
+    return;
+  }
   const servers = listServers();
   await Promise.all(
     servers.map(async (server) => {

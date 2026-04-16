@@ -591,4 +591,58 @@ router.get("/routing/accuracy", (req, res) => {
   }
 });
 
+// ── Admin: Hot Reload Config + Reset Circuit Breakers ─────────────────
+
+router.post("/admin/reload", (req, res) => {
+  try {
+    config.reloadConfig();
+    const registry = getCircuitBreakerRegistry();
+    const states = registry.getAll();
+    res.json({
+      object: "admin_reload",
+      status: "ok",
+      reloaded: [
+        "modelTiers",
+        "apiKeys",
+        "providerSettings",
+        "circuitBreakers",
+      ],
+      circuitBreakers: states.map(s => ({ name: s.name, state: s.state })),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error({ error: error.message }, "Admin reload failed");
+    res.status(500).json({ error: { type: "server_error", message: error.message } });
+  }
+});
+
+router.post("/admin/circuit-breakers/reset", (req, res) => {
+  try {
+    const provider = req.query.provider || req.body?.provider;
+    const registry = getCircuitBreakerRegistry();
+
+    if (provider) {
+      const breaker = registry.breakers?.get(provider);
+      if (breaker) {
+        breaker.reset();
+        res.json({ object: "circuit_breaker_reset", provider, status: "reset" });
+      } else {
+        res.status(404).json({ error: { message: `No circuit breaker for provider: ${provider}` } });
+      }
+    } else {
+      registry.resetAll();
+      const states = registry.getAll();
+      res.json({
+        object: "circuit_breaker_reset",
+        provider: "all",
+        status: "reset",
+        breakers: states.map(s => ({ name: s.name, state: s.state })),
+      });
+    }
+  } catch (error) {
+    logger.error({ error: error.message }, "Circuit breaker reset failed");
+    res.status(500).json({ error: { type: "server_error", message: error.message } });
+  }
+});
+
 module.exports = router;

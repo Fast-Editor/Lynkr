@@ -210,13 +210,17 @@ router.post("/api/event_logging/batch", (req, res) => {
 
 router.post("/v1/messages", rateLimiter, async (req, res, next) => {
   try {
+    const { createTimer } = require("../utils/perf-timer");
+    const timer = createTimer("POST /v1/messages");
     metrics.recordRequest();
     // Support both query parameter (?stream=true) and body parameter ({"stream": true})
     const wantsStream = Boolean(req.query?.stream === 'true' || req.body?.stream);
     const hasTools = Array.isArray(req.body?.tools) && req.body.tools.length > 0;
+    timer.mark("parseRequest");
 
     // Analyze complexity for routing headers (Phase 3)
     const complexity = await analyzeComplexity(req.body);
+    timer.mark("analyzeComplexity");
     let preRouteProvider = 'cloud';
     if (complexity.recommendation === 'local') {
       // Use tier config to determine actual provider instead of hardcoding 'ollama'
@@ -430,6 +434,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     }
 
     // Non-streaming or tool-based requests (buffered path)
+    timer.mark("preProcessMessage");
     const result = await processMessage({
       payload: req.body,
       headers: req.headers,
@@ -440,6 +445,8 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         maxDurationMs: req.body?.max_duration_ms,
       },
     });
+    timer.mark("processMessage");
+    timer.done();
 
     // Legacy streaming wrapper (for tool-based requests that requested streaming)
     if (wantsStream && hasTools) {

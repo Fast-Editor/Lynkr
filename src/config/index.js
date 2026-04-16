@@ -739,6 +739,10 @@ var config = {
       manifestPath: sandboxManifestPath,
       manifestDirs: sandboxManifestDirs,
     },
+    codeMode: {
+      enabled: process.env.CODE_MODE_ENABLED === 'true',
+      toolListCacheTtl: parseInt(process.env.CODE_MODE_CACHE_TTL, 10) || 60_000,
+    },
   },
   promptCache: {
     enabled: promptCacheEnabled,
@@ -933,6 +937,12 @@ var config = {
     timeout: parseInt(process.env.CODE_GRAPH_TIMEOUT, 10) || 10000,
   },
 
+  // Large payload optimization (skip cloning media blocks that get discarded)
+  largePayload: {
+    enabled: process.env.LARGE_PAYLOAD_OPTIMIZATION !== 'false',
+    threshold: parseInt(process.env.LARGE_PAYLOAD_THRESHOLD, 10) || 1_048_576,
+  },
+
   // OpenClaw integration
   openclaw: {
     enabled: process.env.OPENCLAW_MODE === "true",
@@ -983,11 +993,36 @@ function reloadConfig() {
   config.toon.failOpen = process.env.TOON_FAIL_OPEN !== "false";
   config.toon.logStats = process.env.TOON_LOG_STATS !== "false";
 
+  // Tier routing (critical for fixing model name issues without restart)
+  config.modelTiers.SIMPLE = process.env.TIER_SIMPLE?.trim() || null;
+  config.modelTiers.MEDIUM = process.env.TIER_MEDIUM?.trim() || null;
+  config.modelTiers.COMPLEX = process.env.TIER_COMPLEX?.trim() || null;
+  config.modelTiers.REASONING = process.env.TIER_REASONING?.trim() || null;
+  config.modelTiers.enabled = !!(config.modelTiers.SIMPLE && config.modelTiers.MEDIUM && config.modelTiers.COMPLEX && config.modelTiers.REASONING);
+
+  // Ollama model
+  config.ollama.endpoint = process.env.OLLAMA_ENDPOINT ?? config.ollama.endpoint;
+
   // OpenClaw
   config.openclaw.enabled = process.env.OPENCLAW_MODE === "true";
 
+  // Graphify
+  config.codeGraph.enabled = process.env.CODE_GRAPH_ENABLED === 'true';
+
+  // Code Mode
+  config.mcp.codeMode.enabled = process.env.CODE_MODE_ENABLED === 'true';
+
   // Log level
   config.logger.level = process.env.LOG_LEVEL ?? "info";
+
+  // Reset circuit breakers so stale OPEN states don't persist
+  try {
+    const { getCircuitBreakerRegistry } = require('../clients/circuit-breaker');
+    getCircuitBreakerRegistry().resetAll();
+    console.log("[CONFIG] Circuit breakers reset");
+  } catch (e) {
+    // Ignore if not yet initialized
+  }
 
   console.log("[CONFIG] Configuration reloaded from environment");
   return config;

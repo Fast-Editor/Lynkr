@@ -1087,7 +1087,10 @@ function toAnthropicResponse(openai, requestedModel, wantsThinking) {
 }
 
 function sanitizePayload(payload) {
-  const clean = JSON.parse(JSON.stringify(payload ?? {}));
+  const { clonePayloadSmart } = require("../utils/payload");
+  const providerType = config.modelProvider?.type ?? "databricks";
+  const willFlatten = providerType !== "azure-anthropic";
+  const clean = clonePayloadSmart(payload ?? {}, { willFlatten });
   const requestedModel =
     (typeof payload?.model === "string" && payload.model.trim().length > 0
       ? payload.model.trim()
@@ -1095,11 +1098,10 @@ function sanitizePayload(payload) {
     config.modelProvider?.defaultModel ??
     "databricks-claude-sonnet-4-5";
   clean.model = requestedModel;
-  if (!clean.max_tokens) {                                                                                                                                                                                                                           
-    clean.max_tokens = 16384;                     
-  }  
-  const providerType = config.modelProvider?.type ?? "databricks";
-  const flattenContent = providerType !== "azure-anthropic";
+  if (!clean.max_tokens) {
+    clean.max_tokens = 16384;
+  }
+  const flattenContent = willFlatten;
   clean.messages = normaliseMessages(clean, { flattenContent }).filter((msg) => {
     const hasToolCalls =
       Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0;
@@ -1554,6 +1556,8 @@ async function runAgentLoop({
   headers,
 }) {
   logger.debug({ providerType, messageCount: cleanPayload.messages?.length }, 'runAgentLoop entered');
+  const { createTimer } = require("../utils/perf-timer");
+  const agentTimer = createTimer("agentLoop");
   const settings = resolveLoopOptions(options);
   // Initialize audit logger (no-op if disabled)
   const auditLogger = createAuditLogger(config.audit);
@@ -1636,6 +1640,7 @@ async function runAgentLoop({
     }
 
 
+    if (steps === 1 && agentTimer) agentTimer.mark("preCompression");
     if (steps === 1 && config.historyCompression?.enabled !== false) {
       try {
         if (historyCompression.needsCompression(cleanPayload.messages)) {
@@ -1928,9 +1933,11 @@ IMPORTANT TOOL USAGE RULES:
     cleanPayload._workspace = headers["x-lynkr-workspace"];
   }
 
+  if (agentTimer) agentTimer.mark("preInvokeModel");
   let databricksResponse;
   try {
     databricksResponse = await invokeModel(cleanPayload);
+    if (agentTimer) agentTimer.mark("invokeModel");
   } catch (modelError) {
     const isConnectionError = modelError.cause?.code === 'ECONNREFUSED'
       || modelError.message?.includes('fetch failed')
@@ -3509,6 +3516,7 @@ IMPORTANT TOOL USAGE RULES:
       },
       "Agent loop completed successfully",
     );
+    if (agentTimer) { agentTimer.mark("responseReady"); agentTimer.done(); }
     return {
       response: {
         status: 200,
@@ -3925,7 +3933,11 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     }
   }
 
+  const { createTimer } = require("../utils/perf-timer");
+  const pTimer = createTimer("processMessage");
+
   const cleanPayload = sanitizePayload(payload);
+  pTimer.mark("sanitizePayload");
 
   // Proactively load tools based on prompt content (lazy loading)
   try {
@@ -3936,6 +3948,7 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
   } catch (err) {
     logger.debug({ error: err.message }, "Lazy tool loading check failed");
   }
+  pTimer.mark("lazyToolLoad");
 
   appendTurnToSession(session, {
     role: "user",
@@ -3945,12 +3958,14 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     },
     type: "message",
   });
+  pTimer.mark("sessionAppend");
 
   let cacheKey = null;
   let cachedResponse = null;
   if (promptCache.isEnabled()) {
     // cleanPayload is already a deep clone from sanitizePayload, no need to clone again
     const { key, entry } = promptCache.lookup(cleanPayload);
+    pTimer.mark("cacheCheck");
     cacheKey = key;
     if (entry?.value) {
       try {
@@ -4040,6 +4055,7 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
   // NOTE: Tool loop guard moved to BEFORE sanitizePayload() since sanitization
   // removes conversation history (consecutive same-role messages)
 
+  pTimer.mark("preAgentLoop");
   const loopResult = await runAgentLoop({
     cleanPayload,
     requestedModel,
@@ -4051,6 +4067,8 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     providerType: config.modelProvider?.type ?? "databricks",
     headers,
   });
+  pTimer.mark("agentLoopDone");
+  pTimer.done();
 
   // Store successful responses in semantic cache for future fuzzy matching
   if (semanticCache.isEnabled() && semanticLookupResult && !semanticLookupResult.hit) {

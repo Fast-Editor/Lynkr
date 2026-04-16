@@ -270,7 +270,7 @@ async function invokeOllama(body) {
     const ollamaBody = {
       model: modelName,
       messages: body.messages,
-      max_tokens: body.max_tokens || 4096,
+      max_tokens: body.max_tokens || 16384,
       stream: false,
     };
 
@@ -395,7 +395,7 @@ async function invokeOpenRouter(body) {
     model: body._suggestionModeModel || body._tierModel || config.openrouter.model,
     messages,
     temperature: body.temperature ?? 0.7,
-    max_tokens: body.max_tokens ?? 4096,
+    max_tokens: body.max_tokens ?? 16384,
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
@@ -478,7 +478,7 @@ async function invokeAzureOpenAI(body) {
   const azureBody = {
     messages,
     temperature: body.temperature ?? 0.3,  // Lower temperature for more deterministic, action-oriented behavior
-    max_tokens: Math.min(body.max_tokens ?? 4096, 16384),  // Cap at Azure OpenAI's limit
+    max_tokens: Math.min(body.max_tokens ?? 16384, 16384),  // Cap at Azure OpenAI's limit
     top_p: body.top_p ?? 1.0,
     stream: false,  // Force non-streaming for Azure OpenAI - streaming format conversion not yet implemented
     model: body._suggestionModeModel || body._tierModel || config.azureOpenAI.deployment
@@ -874,7 +874,7 @@ async function invokeOpenAI(body) {
     model: body._suggestionModeModel || body._tierModel || config.openai.model || "gpt-4o",
     messages,
     temperature: body.temperature ?? 0.7,
-    max_tokens: body.max_tokens ?? 4096,
+    max_tokens: body.max_tokens ?? 16384,
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
@@ -975,7 +975,7 @@ async function invokeLlamaCpp(body) {
   const llamacppBody = {
     messages: deduplicated,
     temperature: body.temperature ?? 0.7,
-    max_tokens: body.max_tokens ?? 4096,
+    max_tokens: body.max_tokens ?? 16384,
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
@@ -1059,7 +1059,7 @@ async function invokeLMStudio(body) {
   const lmstudioBody = {
     messages,
     temperature: body.temperature ?? 0.7,
-    max_tokens: body.max_tokens ?? 4096,
+    max_tokens: body.max_tokens ?? 16384,
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
@@ -1374,7 +1374,7 @@ async function invokeZai(body) {
     zaiBody = {
       model: mappedModel,
       messages,
-      max_tokens: body.max_tokens || 4096,
+      max_tokens: body.max_tokens || 16384,
       temperature: body.temperature ?? 0.7,
       stream: body.stream,
     };
@@ -1520,7 +1520,7 @@ async function invokeMoonshot(body) {
   const moonshotBody = {
     model: mappedModel,
     messages,
-    max_tokens: body.max_tokens || 4096,
+    max_tokens: body.max_tokens || 16384,
     temperature: body.temperature ?? 0.7,
     top_p: body.top_p ?? 1.0,
     stream: false,  // Force non-streaming - OpenAI SSE to Anthropic SSE conversion not implemented
@@ -1751,7 +1751,7 @@ async function invokeVertex(body) {
     contents,
     generationConfig: {
       temperature: body.temperature ?? 0.7,
-      maxOutputTokens: body.max_tokens || 4096,
+      maxOutputTokens: body.max_tokens || 16384,
       topP: body.top_p ?? 1.0,
     }
   };
