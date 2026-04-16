@@ -64,7 +64,7 @@ Lynkr uses a multi-phase complexity analysis to route each request to the optima
 | COMPLEX (51-75) | Multi-file changes, debugging | Capable models (o1-mini, Claude Sonnet) |
 | REASONING (76-100) | Security audits, architecture | Best models (o1, Claude Opus) |
 
-Includes agentic workflow detection, 15-dimension weighted scoring, and cost optimization.
+Includes agentic workflow detection, 15-dimension weighted scoring, Graphify structural analysis, and cost optimization.
 See **[Routing & Model Tiering](routing.md)** for full details.
 
 **Automatic Fallback:**
@@ -101,15 +101,22 @@ Provider response
 
 ### 4. Token Optimization
 
-**6 Phases Applied:**
+**7 Phases Applied:**
 1. Smart tool selection
 2. Prompt caching
 3. Memory deduplication
-4. Tool response truncation
+4. Tool response truncation (Distill-powered)
 5. Dynamic system prompts
-6. Conversation compression
+6. Conversation compression with structural dedup
+7. Headroom context compression (optional sidecar)
 
 **Result:** 60-80% token reduction
+
+**Distill Algorithms:** Lynkr ports core algorithms from [samuelfaj/distill](https://github.com/samuelfaj/distill) for intelligent compression:
+- **Structural similarity** (Jaccard on normalized line signatures) — detects repetitive tool outputs
+- **Delta rendering** — only sends changed content between sequential tool results
+- **Bad distillation detection** — heuristics to detect when compression is worse than original
+- **History dedup** — collapses structurally similar tool results across conversation history
 
 ### 5. Tool Execution
 
@@ -184,6 +191,10 @@ data: {}
 **Reliability:**
 - `circuit-breaker.js` - Circuit breaker pattern
 - `retry.js` - Exponential backoff with jitter
+- `resilience.js` - Combined resilience middleware
+
+**Code Intelligence:**
+- `code-graph.js` - Graphify knowledge graph integration (blast radius, god nodes, community cohesion)
 
 ### Orchestrator (`src/orchestrator/`)
 
@@ -289,9 +300,11 @@ data: {}
 ### 2. Token Optimization
 
 **60-80% Cost Reduction:**
-- 6 optimization phases
+- 7 optimization phases (including Distill-powered compression)
 - $77k-$115k annual savings
 - Automatic optimization
+- Structural dedup of repetitive tool outputs
+- Delta rendering for sequential similar results
 
 ### 3. Long-Term Memory
 
@@ -301,7 +314,26 @@ data: {}
 - Multi-signal retrieval
 - Automatic extraction
 
-### 4. Production Hardening
+### 4. Graphify Code Intelligence
+
+**Knowledge Graph-Powered Routing:**
+- [Graphify](https://github.com/safishamsi/graphify) integration for AST-based code understanding
+- 19-language support via tree-sitter
+- God node detection — identifies hub classes that many things depend on
+- Leiden community detection with cohesion scoring
+- Blast radius analysis — how many files are affected by a change
+- Per-request workspace auto-detection from file paths
+
+### 5. Routing Telemetry
+
+**Data-Driven Routing Improvement:**
+- SQLite-backed telemetry store records every routing decision
+- Response quality scoring (0-100) with 10+ heuristic signals
+- Per-provider latency tracking (P50/P95/P99)
+- Routing accuracy analysis (over/under-provisioned detection)
+- REST API endpoints for querying telemetry data
+
+### 6. Production Hardening
 
 **14 Features:**
 - Circuit breakers
@@ -311,7 +343,7 @@ data: {}
 - Health checks
 - Error resilience
 
-### 5. MCP Integration
+### 7. MCP Integration
 
 **Model Context Protocol:**
 - Automatic discovery
@@ -319,7 +351,7 @@ data: {}
 - Dynamic tool registration
 - Sandbox isolation
 
-### 6. IDE Compatibility
+### 8. IDE Compatibility
 
 **Works With:**
 - Claude Code CLI (native)

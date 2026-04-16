@@ -2,17 +2,19 @@
  * Complexity Analyzer Module
  *
  * Analyzes request complexity to determine optimal model routing.
- * Implements all 4 phases of auto model selection:
+ * Implements all 5 phases of auto model selection:
  * - Phase 1: Basic Scoring (token count, tool count, task classification)
  * - Phase 2: Advanced Classification (code complexity, reasoning detection)
  * - Phase 3: Learning & Tracking (metrics, feedback storage)
  * - Phase 4: ML-Based (embeddings similarity)
+ * - Phase 5: Structural Analysis (code-review-graph blast radius & dependency signals)
  *
  * @module routing/complexity-analyzer
  */
 
 const logger = require('../logger');
 const config = require('../config');
+const codeGraph = require('../tools/code-graph');
 
 // ============================================================================
 // PHASE 1: Basic Scoring Patterns
@@ -177,6 +179,189 @@ const routingMetrics = {
     };
   },
 };
+
+// ============================================================================
+// PHASE 5: Structural Analysis Helpers (code-review-graph)
+// ============================================================================
+
+/** Pattern to match file paths in message content */
+const FILE_PATH_PATTERN = /(?:^|\s|["'`(])([.\w/-]+\.(?:js|ts|py|rb|go|rs|java|cpp|c|h|jsx|tsx|vue|svelte|json|yaml|yml|toml|sql|sh|bash|css|scss|html))\b/gi;
+
+/**
+ * Extract file paths from text using the FILE_PATH_PATTERN regex.
+ * @param {string} text
+ * @param {Set<string>} paths — accumulator set
+ */
+function extractPathsFromText(text, paths) {
+  if (typeof text !== 'string') return;
+  for (const match of text.matchAll(FILE_PATH_PATTERN)) {
+    paths.add(match[1]);
+  }
+}
+
+/**
+ * Extract file paths from the full conversation payload.
+ *
+ * Supports both Anthropic and OpenAI message formats:
+ * - Anthropic: system (string/array), messages with tool_use/tool_result blocks
+ * - OpenAI: messages with role=system, tool_calls with function.arguments
+ * - Cursor/Windsurf: file context embedded in system prompts
+ * - Codex CLI / Aider: function call arguments with file paths
+ *
+ * @param {Object} payload — request payload
+ * @returns {string[]} deduplicated file paths
+ */
+function extractFilePaths(payload) {
+  const paths = new Set();
+
+  if (!payload) return [];
+
+  // --- Anthropic system prompt (string or array of content blocks) ---
+  if (typeof payload.system === 'string') {
+    extractPathsFromText(payload.system, paths);
+  } else if (Array.isArray(payload.system)) {
+    for (const block of payload.system) {
+      if (block?.type === 'text' && block.text) {
+        extractPathsFromText(block.text, paths);
+      }
+    }
+  }
+
+  if (!Array.isArray(payload.messages)) return Array.from(paths);
+
+  for (const msg of payload.messages) {
+    // --- String content (both Anthropic and OpenAI) ---
+    if (typeof msg.content === 'string') {
+      extractPathsFromText(msg.content, paths);
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        // Text blocks (Anthropic format)
+        if (block?.type === 'text' && block.text) {
+          extractPathsFromText(block.text, paths);
+        }
+        // Tool use blocks (Anthropic format — Claude Code, Cline, Zed)
+        if (block?.type === 'tool_use' && block.input) {
+          const input = block.input;
+          if (typeof input.file_path === 'string') paths.add(input.file_path);
+          if (typeof input.path === 'string') paths.add(input.path);
+          if (typeof input.command === 'string') {
+            extractPathsFromText(input.command, paths);
+          }
+        }
+        // Tool result blocks (Anthropic format)
+        if (block?.type === 'tool_result') {
+          const resultContent = Array.isArray(block.content) ? block.content : [];
+          for (const rc of resultContent) {
+            if (rc?.type === 'text' && rc.text) {
+              extractPathsFromText(rc.text, paths);
+            }
+          }
+        }
+      }
+    }
+
+    // --- OpenAI tool_calls format (Codex CLI, Aider, Continue.dev) ---
+    if (Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        if (tc?.function?.arguments) {
+          try {
+            // function.arguments is a JSON string in OpenAI format
+            const args = typeof tc.function.arguments === 'string'
+              ? JSON.parse(tc.function.arguments)
+              : tc.function.arguments;
+            if (typeof args.file_path === 'string') paths.add(args.file_path);
+            if (typeof args.path === 'string') paths.add(args.path);
+            if (typeof args.command === 'string') {
+              extractPathsFromText(args.command, paths);
+            }
+            // Also scan the full arguments text for paths
+            if (typeof tc.function.arguments === 'string') {
+              extractPathsFromText(tc.function.arguments, paths);
+            }
+          } catch {
+            // If arguments isn't valid JSON, scan as text
+            if (typeof tc.function.arguments === 'string') {
+              extractPathsFromText(tc.function.arguments, paths);
+            }
+          }
+        }
+      }
+    }
+
+    // --- OpenAI function_call format (legacy, some tools still use it) ---
+    if (msg.function_call?.arguments) {
+      try {
+        const args = typeof msg.function_call.arguments === 'string'
+          ? JSON.parse(msg.function_call.arguments)
+          : msg.function_call.arguments;
+        if (typeof args.file_path === 'string') paths.add(args.file_path);
+        if (typeof args.path === 'string') paths.add(args.path);
+      } catch {
+        if (typeof msg.function_call.arguments === 'string') {
+          extractPathsFromText(msg.function_call.arguments, paths);
+        }
+      }
+    }
+  }
+
+  return Array.from(paths);
+}
+
+/**
+ * Calculate score adjustment from Graphify complexity signals.
+ * Capped at +35 (increased from +25 due to richer signals).
+ *
+ * @param {{ blast_radius: number, dependency_depth: number, test_coverage_pct: number, is_infrastructure: boolean, god_node_touched: boolean, community_count: number, cohesion: number }} signals
+ * @returns {{ adjustment: number, reasons: string[] }}
+ */
+function scoreGraphSignals(signals) {
+  let adjustment = 0;
+  const reasons = [];
+
+  // Blast radius — how many files are affected
+  if (signals.blast_radius > 30) {
+    adjustment += 15;
+    reasons.push('blast_radius_high');
+  } else if (signals.blast_radius > 10) {
+    adjustment += 10;
+    reasons.push('blast_radius_medium');
+  } else if (signals.blast_radius > 5) {
+    adjustment += 5;
+    reasons.push('blast_radius_low');
+  }
+
+  // Dependency depth — deep call chains are harder to reason about
+  if (signals.dependency_depth > 4) {
+    adjustment += 5;
+    reasons.push('deep_dependencies');
+  }
+
+  // Infrastructure files — config/CI/deploy changes are high-risk
+  if (signals.is_infrastructure) {
+    adjustment += 10;
+    reasons.push('infrastructure_file');
+  }
+
+  // Low test coverage — changes in untested areas are riskier
+  if (signals.test_coverage_pct < 30) {
+    adjustment += 5;
+    reasons.push('low_test_coverage');
+  }
+
+  // God node touched — editing a hub class that many things depend on
+  if (signals.god_node_touched) {
+    adjustment += 10;
+    reasons.push('god_node_touched');
+  }
+
+  // Low community cohesion — loosely coupled code is harder to change safely
+  if (typeof signals.cohesion === 'number' && signals.cohesion < 0.15 && signals.community_count > 1) {
+    adjustment += 5;
+    reasons.push('low_community_cohesion');
+  }
+
+  return { adjustment: Math.min(adjustment, 35), reasons };
+}
 
 // ============================================================================
 // CORE ANALYSIS FUNCTIONS
@@ -546,7 +731,7 @@ function getThreshold() {
  * @param {Object} options - Analysis options
  * @returns {Object} Complexity analysis result
  */
-function analyzeComplexity(payload, options = {}) {
+async function analyzeComplexity(payload, options = {}) {
   const content = extractContent(payload);
   const messageCount = payload?.messages?.length ?? 0;
   const useWeighted = options.weighted ?? config.routing?.weightedScoring ?? false;
@@ -568,7 +753,7 @@ function analyzeComplexity(payload, options = {}) {
       recommendation = weighted.score >= threshold ? 'cloud' : 'local';
     }
 
-    return {
+    const result = {
       score: weighted.score,
       threshold,
       mode: 'weighted',
@@ -578,7 +763,39 @@ function analyzeComplexity(payload, options = {}) {
       meta: weighted.meta,
       forceReason: taskTypeResult.reason?.startsWith('force_') ? taskTypeResult.reason : null,
       content: content.slice(0, 100) + (content.length > 100 ? '...' : ''),
+      graphSignals: null,
     };
+
+    // Phase 5: Structural Analysis (code-review-graph, optional)
+    try {
+      const filePaths = extractFilePaths(payload);
+      const graphOpts = { filePaths, workspace: options?.workspace };
+      const graphAvailable = await codeGraph.isAvailable(graphOpts);
+      if (graphAvailable && filePaths.length > 0) {
+        const signals = await codeGraph.getComplexitySignals(filePaths, graphOpts);
+        if (signals) {
+          const { adjustment, reasons } = scoreGraphSignals(signals);
+          result.score = Math.min(result.score + adjustment, 100);
+          result.graphSignals = { ...signals, adjustment, reasons };
+
+          // Re-evaluate recommendation with adjusted score
+          if (!result.forceReason) {
+            result.recommendation = result.score >= threshold ? 'cloud' : 'local';
+          }
+
+          logger.debug({
+            filePaths: filePaths.slice(0, 5),
+            signals,
+            adjustment,
+            reasons,
+          }, '[complexity] Phase 5: graph signals applied');
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[complexity] Phase 5: code-graph query failed');
+    }
+
+    return result;
   }
 
   // Standard scoring (original logic)
@@ -600,7 +817,7 @@ function analyzeComplexity(payload, options = {}) {
 
   // Conversation length bonus (long conversations tend to be complex)
   const conversationBonus = messageCount > 10 ? 5 : (messageCount > 5 ? 2 : 0);
-  const adjustedScore = Math.min(totalScore + conversationBonus, 100);
+  let adjustedScore = Math.min(totalScore + conversationBonus, 100);
 
   // Determine recommendation
   const threshold = getThreshold();
@@ -615,7 +832,7 @@ function analyzeComplexity(payload, options = {}) {
     recommendation = adjustedScore >= threshold ? 'cloud' : 'local';
   }
 
-  return {
+  const result = {
     score: adjustedScore,
     threshold,
     mode,
@@ -629,7 +846,39 @@ function analyzeComplexity(payload, options = {}) {
       conversationBonus,
     },
     content: content.slice(0, 100) + (content.length > 100 ? '...' : ''),
+    graphSignals: null,
   };
+
+  // Phase 5: Structural Analysis (code-review-graph, optional)
+  try {
+    const filePaths = extractFilePaths(payload);
+    const graphOpts = { filePaths, workspace: options?.workspace };
+    const graphAvailable = await codeGraph.isAvailable(graphOpts);
+    if (graphAvailable && filePaths.length > 0) {
+      const signals = await codeGraph.getComplexitySignals(filePaths, graphOpts);
+      if (signals) {
+        const { adjustment, reasons } = scoreGraphSignals(signals);
+        result.score = Math.min(result.score + adjustment, 100);
+        result.graphSignals = { ...signals, adjustment, reasons };
+
+        // Re-evaluate recommendation with adjusted score
+        if (taskTypeResult.reason !== 'force_local' && taskTypeResult.reason !== 'force_cloud') {
+          result.recommendation = result.score >= threshold ? 'cloud' : 'local';
+        }
+
+        logger.debug({
+          filePaths: filePaths.slice(0, 5),
+          signals,
+          adjustment,
+          reasons,
+        }, '[complexity] Phase 5: graph signals applied');
+      }
+    }
+  } catch (err) {
+    logger.debug({ err: err.message }, '[complexity] Phase 5: code-graph query failed');
+  }
+
+  return result;
 }
 
 /**
@@ -783,6 +1032,10 @@ module.exports = {
   // Phase 4: Embeddings
   analyzeWithEmbeddings,
   getContentEmbedding,
+
+  // Phase 5: Structural Analysis (code-review-graph)
+  extractFilePaths,
+  scoreGraphSignals,
 
   // Constants (for testing)
   PATTERNS,

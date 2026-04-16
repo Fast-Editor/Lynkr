@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const config = require("../config");
 const http = require("http");
 const https = require("https");
@@ -5,6 +6,7 @@ const { withRetry } = require("./retry");
 const { getCircuitBreakerRegistry } = require("./circuit-breaker");
 const { getMetricsCollector } = require("../observability/metrics");
 const { getHealthTracker } = require("../observability/health-tracker");
+const { createBulkhead } = require("./resilience");
 const logger = require("../logger");
 const { STANDARD_TOOLS, STANDARD_TOOL_NAMES } = require("./standard-tools");
 const { convertAnthropicToolsToOpenRouter } = require("./openrouter-utils");
@@ -12,6 +14,9 @@ const {
   detectModelFamily
 } = require("./bedrock-utils");
 const { getGPTSystemPromptAddendum } = require("./gpt-utils");
+const telemetry = require("../routing/telemetry");
+const { scoreResponseQuality } = require("../routing/quality-scorer");
+const { getLatencyTracker } = require("../routing/latency-tracker");
 
 
 
@@ -20,53 +25,11 @@ if (typeof fetch !== "function") {
   throw new Error("Node 18+ is required for the built-in fetch API.");
 }
 
-/**
- * Simple Semaphore for limiting concurrent requests
- * Used to prevent Z.AI rate limiting from parallel Claude Code CLI calls
- */
-class Semaphore {
-  constructor(maxConcurrent = 2) {
-    this.maxConcurrent = maxConcurrent;
-    this.current = 0;
-    this.queue = [];
-  }
-
-  async acquire() {
-    if (this.current < this.maxConcurrent) {
-      this.current++;
-      return;
-    }
-
-    // Wait in queue
-    return new Promise((resolve) => {
-      this.queue.push(resolve);
-    });
-  }
-
-  release() {
-    this.current--;
-    if (this.queue.length > 0 && this.current < this.maxConcurrent) {
-      this.current++;
-      const next = this.queue.shift();
-      next();
-    }
-  }
-
-  async run(fn) {
-    await this.acquire();
-    try {
-      return await fn();
-    } finally {
-      this.release();
-    }
-  }
-}
-
-// Z.AI request semaphore - limit concurrent requests to avoid rate limiting
+// Z.AI request bulkhead - limit concurrent requests to avoid rate limiting
 // Configurable via ZAI_MAX_CONCURRENT env var (default: 2)
 const zaiMaxConcurrent = parseInt(process.env.ZAI_MAX_CONCURRENT || '2', 10);
-const zaiSemaphore = new Semaphore(zaiMaxConcurrent);
-logger.info({ maxConcurrent: zaiMaxConcurrent }, "Z.AI semaphore initialized");
+const zaiSemaphore = createBulkhead({ maxConcurrent: zaiMaxConcurrent, maxQueue: 50 });
+logger.info({ maxConcurrent: zaiMaxConcurrent }, "Z.AI bulkhead initialized");
 
 
 
@@ -307,7 +270,7 @@ async function invokeOllama(body) {
     const ollamaBody = {
       model: modelName,
       messages: body.messages,
-      max_tokens: body.max_tokens || 4096,
+      max_tokens: body.max_tokens || 16384,
       stream: false,
     };
 
@@ -432,7 +395,7 @@ async function invokeOpenRouter(body) {
     model: body._suggestionModeModel || body._tierModel || config.openrouter.model,
     messages,
     temperature: body.temperature ?? 0.7,
-    max_tokens: body.max_tokens ?? 4096,
+    max_tokens: body.max_tokens ?? 16384,
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
@@ -515,7 +478,7 @@ async function invokeAzureOpenAI(body) {
   const azureBody = {
     messages,
     temperature: body.temperature ?? 0.3,  // Lower temperature for more deterministic, action-oriented behavior
-    max_tokens: Math.min(body.max_tokens ?? 4096, 16384),  // Cap at Azure OpenAI's limit
+    max_tokens: Math.min(body.max_tokens ?? 16384, 16384),  // Cap at Azure OpenAI's limit
     top_p: body.top_p ?? 1.0,
     stream: false,  // Force non-streaming for Azure OpenAI - streaming format conversion not yet implemented
     model: body._suggestionModeModel || body._tierModel || config.azureOpenAI.deployment
@@ -911,7 +874,7 @@ async function invokeOpenAI(body) {
     model: body._suggestionModeModel || body._tierModel || config.openai.model || "gpt-4o",
     messages,
     temperature: body.temperature ?? 0.7,
-    max_tokens: body.max_tokens ?? 4096,
+    max_tokens: body.max_tokens ?? 16384,
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
@@ -1012,7 +975,7 @@ async function invokeLlamaCpp(body) {
   const llamacppBody = {
     messages: deduplicated,
     temperature: body.temperature ?? 0.7,
-    max_tokens: body.max_tokens ?? 4096,
+    max_tokens: body.max_tokens ?? 16384,
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
@@ -1096,7 +1059,7 @@ async function invokeLMStudio(body) {
   const lmstudioBody = {
     messages,
     temperature: body.temperature ?? 0.7,
-    max_tokens: body.max_tokens ?? 4096,
+    max_tokens: body.max_tokens ?? 16384,
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
@@ -1411,7 +1374,7 @@ async function invokeZai(body) {
     zaiBody = {
       model: mappedModel,
       messages,
-      max_tokens: body.max_tokens || 4096,
+      max_tokens: body.max_tokens || 16384,
       temperature: body.temperature ?? 0.7,
       stream: body.stream,
     };
@@ -1473,12 +1436,9 @@ async function invokeZai(body) {
     zaiBody: JSON.stringify(zaiBody).substring(0, 1000),
   }, "Z.AI request body (truncated)");
 
-  // Use semaphore to limit concurrent Z.AI requests (prevents rate limiting)
-  return zaiSemaphore.run(async () => {
-    logger.debug({
-      queueLength: zaiSemaphore.queue.length,
-      currentConcurrent: zaiSemaphore.current,
-    }, "Z.AI semaphore status");
+  // Use bulkhead to limit concurrent Z.AI requests (prevents rate limiting)
+  return zaiSemaphore.execute(async () => {
+    logger.debug("Z.AI bulkhead executing request");
 
     const response = await performJsonRequest(endpoint, { headers, body: zaiBody }, "Z.AI");
 
@@ -1560,7 +1520,7 @@ async function invokeMoonshot(body) {
   const moonshotBody = {
     model: mappedModel,
     messages,
-    max_tokens: body.max_tokens || 4096,
+    max_tokens: body.max_tokens || 16384,
     temperature: body.temperature ?? 0.7,
     top_p: body.top_p ?? 1.0,
     stream: false,  // Force non-streaming - OpenAI SSE to Anthropic SSE conversion not implemented
@@ -1791,7 +1751,7 @@ async function invokeVertex(body) {
     contents,
     generationConfig: {
       temperature: body.temperature ?? 0.7,
-      maxOutputTokens: body.max_tokens || 4096,
+      maxOutputTokens: body.max_tokens || 16384,
       topP: body.top_p ?? 1.0,
     }
   };
@@ -2000,6 +1960,54 @@ function convertGeminiToAnthropic(response, requestedModel) {
   };
 }
 
+async function invokeCodex(body) {
+  const { getCodexProcess } = require("./codex-process");
+  const { convertAnthropicToCodexPrompt, convertCodexResponseToAnthropic } = require("./codex-utils");
+
+  const codex = getCodexProcess();
+  await codex.ensureRunning();
+
+  const model = body._tierModel || config.codex?.model || "gpt-5.3-codex";
+  const { prompt, systemContext } = convertAnthropicToCodexPrompt(body);
+
+  if (!prompt) {
+    throw new Error("Codex: no prompt content to send");
+  }
+
+  // Start a new thread
+  const threadParams = { model };
+  if (systemContext) {
+    threadParams.instructions = systemContext;
+  }
+  const threadResult = await codex.sendRequest("thread/start", threadParams);
+  const threadId = threadResult?.threadId || threadResult?.id;
+
+  if (!threadId) {
+    throw new Error("Codex: thread/start did not return a threadId");
+  }
+
+  logger.debug({ threadId, model, promptLength: prompt.length }, "[Codex] Thread started");
+
+  // Send the turn and collect response
+  const turnResult = await codex.sendTurn(threadId, prompt, model);
+
+  logger.debug({
+    threadId,
+    responseLength: turnResult.text?.length || 0,
+  }, "[Codex] Turn completed");
+
+  // Convert to Anthropic format
+  const anthropicJson = convertCodexResponseToAnthropic(turnResult, model);
+
+  return {
+    ok: true,
+    status: 200,
+    json: anthropicJson,
+    text: JSON.stringify(anthropicJson),
+    contentType: "application/json",
+  };
+}
+
 async function invokeModel(body, options = {}) {
   const { determineProviderSmart, isFallbackEnabled, getFallbackProvider } = require("./routing");
   const metricsCollector = getMetricsCollector();
@@ -2007,9 +2015,11 @@ async function invokeModel(body, options = {}) {
   const healthTracker = getHealthTracker();
 
   // Determine provider via async tier routing
+  // Thread workspace for code-graph integration (from X-Lynkr-Workspace header or body._workspace)
+  const workspace = body._workspace || options.workspace || null;
   const routingResult = options.forceProvider
     ? { provider: options.forceProvider, model: null, method: 'forced' }
-    : await determineProviderSmart(body);
+    : await determineProviderSmart(body, { workspace });
   const initialProvider = routingResult.provider;
   const tierSelectedModel = routingResult.model;
 
@@ -2081,6 +2091,8 @@ async function invokeModel(body, options = {}) {
         return await invokeVertex(body);
       } else if (initialProvider === "moonshot") {
         return await invokeMoonshot(body);
+      } else if (initialProvider === "codex") {
+        return await invokeCodex(body);
       }
       return await invokeDatabricks(body);
     });
@@ -2091,10 +2103,13 @@ async function invokeModel(body, options = {}) {
     metricsCollector.recordDatabricksRequest(true, retries);
     healthTracker.recordSuccess(initialProvider, latency);
 
+    // Record latency for routing intelligence
+    getLatencyTracker().record(initialProvider, latency);
+
     // Record tokens and cost savings
+    const outputTokens = result.json?.usage?.output_tokens || result.json?.usage?.completion_tokens || 0;
+    const inputTokens = result.json?.usage?.input_tokens || result.json?.usage?.prompt_tokens || 0;
     if (result.json?.usage) {
-      const inputTokens = result.json.usage.input_tokens || result.json.usage.prompt_tokens || 0;
-      const outputTokens = result.json.usage.output_tokens || result.json.usage.completion_tokens || 0;
       metricsCollector.recordTokens(inputTokens, outputTokens);
 
       // Estimate cost savings if Ollama was used
@@ -2103,6 +2118,53 @@ async function invokeModel(body, options = {}) {
         metricsCollector.recordCostSavings(savings);
       }
     }
+
+    // Count tool calls in response
+    const toolCallsMade = result.json?.content?.filter?.(
+      (b) => b.type === "tool_use"
+    )?.length || 0;
+
+    // Compute quality score
+    const qualityScore = scoreResponseQuality(
+      { tier: routingDecision.tier, hasTools: Array.isArray(body?.tools) && body.tools.length > 0 },
+      null,
+      {
+        status_code: 200,
+        output_tokens: outputTokens,
+        tool_calls_made: toolCallsMade,
+        was_fallback: false,
+        retry_count: retries,
+        error_type: null,
+        latency_ms: latency,
+      }
+    );
+
+    // Record routing telemetry (non-blocking)
+    telemetry.record({
+      request_id: crypto.randomUUID(),
+      session_id: body._sessionId || null,
+      timestamp: Date.now(),
+      complexity_score: routingResult.score ?? null,
+      tier: routingDecision.tier,
+      agentic_type: routingResult.agenticResult?.agentType || null,
+      tool_count: Array.isArray(body?.tools) ? body.tools.length : 0,
+      input_tokens: inputTokens || null,
+      message_count: Array.isArray(body?.messages) ? body.messages.length : 0,
+      request_type: routingResult.analysis?.requestType || null,
+      provider: initialProvider,
+      model: routingDecision.model,
+      routing_method: routingDecision.method,
+      was_fallback: false,
+      output_tokens: outputTokens || null,
+      latency_ms: latency,
+      status_code: 200,
+      error_type: null,
+      tool_calls_made: toolCallsMade,
+      retry_count: retries,
+      circuit_breaker_state: breaker.state,
+      quality_score: qualityScore,
+      tokens_per_second: outputTokens && latency > 0 ? outputTokens / (latency / 1000) : null,
+    });
 
     // Return result with provider info and routing decision for headers
     return {
@@ -2113,8 +2175,10 @@ async function invokeModel(body, options = {}) {
 
   } catch (err) {
     // Record failure
+    const failLatency = Date.now() - startTime;
     metricsCollector.recordProviderFailure(initialProvider);
     healthTracker.recordFailure(initialProvider, err, err.status);
+    getLatencyTracker().record(initialProvider, failLatency);
 
     // Check if we should fallback (any provider can fall back, not just ollama)
     const shouldFallback =
@@ -2124,6 +2188,33 @@ async function invokeModel(body, options = {}) {
 
     if (!shouldFallback) {
       metricsCollector.recordDatabricksRequest(false, retries);
+
+      // Record failed telemetry
+      telemetry.record({
+        request_id: crypto.randomUUID(),
+        session_id: body._sessionId || null,
+        timestamp: Date.now(),
+        complexity_score: routingResult.score ?? null,
+        tier: routingDecision.tier,
+        agentic_type: routingResult.agenticResult?.agentType || null,
+        tool_count: Array.isArray(body?.tools) ? body.tools.length : 0,
+        input_tokens: null,
+        message_count: Array.isArray(body?.messages) ? body.messages.length : 0,
+        request_type: routingResult.analysis?.requestType || null,
+        provider: initialProvider,
+        model: routingDecision.model,
+        routing_method: routingDecision.method,
+        was_fallback: false,
+        latency_ms: failLatency,
+        status_code: err.status || null,
+        error_type: err.code || err.name || "unknown",
+        quality_score: scoreResponseQuality(
+          { tier: routingDecision.tier, hasTools: Array.isArray(body?.tools) && body.tools.length > 0 },
+          null,
+          { error_type: err.code || err.name, was_fallback: false, retry_count: retries, latency_ms: failLatency }
+        ),
+      });
+
       throw err;
     }
 
@@ -2197,6 +2288,45 @@ async function invokeModel(body, options = {}) {
         totalLatency: Date.now() - startTime,
       }, "Fallback to cloud provider succeeded");
 
+      // Record latency for fallback provider
+      getLatencyTracker().record(fallbackProvider, fallbackLatency);
+
+      // Capture fallback telemetry
+      const fbOutputTokens = fallbackResult.json?.usage?.output_tokens || fallbackResult.json?.usage?.completion_tokens || 0;
+      const fbInputTokens = fallbackResult.json?.usage?.input_tokens || fallbackResult.json?.usage?.prompt_tokens || 0;
+      const fbToolCalls = fallbackResult.json?.content?.filter?.(
+        (b) => b.type === "tool_use"
+      )?.length || 0;
+
+      telemetry.record({
+        request_id: crypto.randomUUID(),
+        session_id: body._sessionId || null,
+        timestamp: Date.now(),
+        complexity_score: routingResult.score ?? null,
+        tier: routingDecision.tier,
+        agentic_type: routingResult.agenticResult?.agentType || null,
+        tool_count: Array.isArray(body?.tools) ? body.tools.length : 0,
+        input_tokens: fbInputTokens || null,
+        message_count: Array.isArray(body?.messages) ? body.messages.length : 0,
+        request_type: routingResult.analysis?.requestType || null,
+        provider: fallbackProvider,
+        model: routingDecision.model,
+        routing_method: "fallback",
+        was_fallback: true,
+        output_tokens: fbOutputTokens || null,
+        latency_ms: Date.now() - startTime,
+        status_code: 200,
+        error_type: null,
+        tool_calls_made: fbToolCalls,
+        retry_count: 0,
+        quality_score: scoreResponseQuality(
+          { tier: routingDecision.tier, hasTools: Array.isArray(body?.tools) && body.tools.length > 0 },
+          null,
+          { status_code: 200, output_tokens: fbOutputTokens, tool_calls_made: fbToolCalls, was_fallback: true, retry_count: 0, latency_ms: Date.now() - startTime }
+        ),
+        tokens_per_second: fbOutputTokens && fallbackLatency > 0 ? fbOutputTokens / (fallbackLatency / 1000) : null,
+      });
+
       // Return result with actual provider used (fallback provider) and routing decision
       return {
         ...fallbackResult,
@@ -2214,6 +2344,23 @@ async function invokeModel(body, options = {}) {
       metricsCollector.recordFallbackFailure();
       metricsCollector.recordDatabricksRequest(false, retries);
       healthTracker.recordFailure(fallbackProvider, fallbackErr, fallbackErr.status);
+
+      // Record double-failure telemetry
+      telemetry.record({
+        request_id: crypto.randomUUID(),
+        session_id: body._sessionId || null,
+        timestamp: Date.now(),
+        complexity_score: routingResult.score ?? null,
+        tier: routingDecision.tier,
+        provider: fallbackProvider,
+        model: routingDecision.model,
+        routing_method: "fallback",
+        was_fallback: true,
+        latency_ms: Date.now() - startTime,
+        status_code: fallbackErr.status || null,
+        error_type: fallbackErr.code || fallbackErr.name || "double_failure",
+        quality_score: 0,
+      });
 
       logger.error({
         originalProvider: initialProvider,

@@ -23,6 +23,11 @@ const { getAgenticDetector, AGENT_TYPES } = require('./agentic-detector');
 const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
 const { getCostOptimizer } = require('./cost-optimizer');
 
+// Telemetry modules
+const telemetry = require('./telemetry');
+const { scoreResponseQuality } = require('./quality-scorer');
+const { getLatencyTracker } = require('./latency-tracker');
+
 // Local providers
 const LOCAL_PROVIDERS = ['ollama', 'llamacpp', 'lmstudio'];
 
@@ -148,9 +153,9 @@ async function determineProviderSmart(payload, options = {}) {
     return decision;
   }
 
-  // Full complexity analysis
+  // Full complexity analysis (pass workspace for code-graph integration)
   const useWeightedScoring = config.routing?.weightedScoring ?? false;
-  const analysis = analyzeComplexity(payload, { weighted: useWeightedScoring });
+  const analysis = await analyzeComplexity(payload, { weighted: useWeightedScoring, workspace: options.workspace });
 
   // Phase 4: Optional embeddings adjustment
   let embeddingsResult = null;
@@ -381,4 +386,9 @@ module.exports = {
   getCostOptimizer,
   AGENT_TYPES,
   TIER_DEFINITIONS,
+
+  // Telemetry
+  telemetry,
+  scoreResponseQuality,
+  getLatencyTracker,
 };

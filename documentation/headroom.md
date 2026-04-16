@@ -45,9 +45,11 @@ npm start
 ```
 
 Lynkr will automatically:
-1. Pull the `lynkr/headroom-sidecar:latest` Docker image
+1. Rebuild the Headroom Docker image if source files changed (`--build` flag)
 2. Start the container with configured settings
 3. Wait for health checks to pass
+
+> **Auto-rebuild:** The prestart script uses `docker compose up -d --build`, so you always get the latest Headroom code when source files change. Docker layer caching makes this instant when nothing changed.
 4. Begin compressing requests
 
 ### 3. Verify It's Working

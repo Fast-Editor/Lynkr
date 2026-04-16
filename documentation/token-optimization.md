@@ -167,35 +167,77 @@ Savings: 75% (15,000 tokens saved)
 
 ---
 
-### Phase 6: Conversation Compression (15-25% reduction)
+### Phase 6: Conversation Compression with Distill (20-40% reduction)
 
-**Problem:** Long conversation history accumulates tokens.
+**Problem:** Long conversation history accumulates tokens, especially with repetitive tool outputs.
 
-**Solution:** Compress old messages while keeping recent ones detailed.
+**Solution:** Compress old messages using Distill algorithms while keeping recent ones detailed.
 
 **How it works:**
 - Last 5 messages: Full detail
 - Messages 6-20: Summarized
 - Messages 21+: Archived (not sent)
+- **Distill structural dedup**: Repetitive tool results across history are collapsed
+- **Delta rendering**: Sequential similar tool outputs show only changes
+- **ANSI/whitespace normalization**: Cleans up noisy terminal output
+
+**Distill Algorithms (ported from [samuelfaj/distill](https://github.com/samuelfaj/distill)):**
+
+| Algorithm | What it does | Savings |
+|-----------|-------------|---------|
+| Structural similarity | Jaccard index on normalized line signatures — detects near-duplicate tool results | 30-50% on repetitive outputs |
+| Delta rendering | Only sends added/removed lines between sequential results | 60-90% when re-reading same files |
+| Block deduplication | Collapses consecutive similar sections within a single output | 20-40% on verbose logs |
+| Bad distillation detection | Prevents compression when it would lose too much information | Quality guard |
+| Text normalization | Strips ANSI codes, normalizes whitespace and line endings | 5-10% on terminal output |
 
 **Example:**
 ```
 20-turn conversation without compression: 100,000 tokens
-With compression: 25,000 tokens (last 5 full + 15 summarized)
-Savings: 75% (75,000 tokens saved)
+With Distill compression: 20,000 tokens
+  - Old messages summarized: -60,000 tokens
+  - Duplicate tool results collapsed: -15,000 tokens
+  - Delta rendering on re-reads: -5,000 tokens
+Savings: 80% (80,000 tokens saved)
 ```
 
 **Configuration:**
 ```bash
 # Automatic - no configuration needed
-# Lynkr manages conversation history
+# Distill algorithms are built into the compression pipeline
+HISTORY_COMPRESSION_ENABLED=true     # Enable conversation compression (default: true)
+HISTORY_KEEP_RECENT_TURNS=10         # Keep last N turns verbatim (default: 10)
+HISTORY_SUMMARIZE_OLDER=true         # Summarize older turns (default: true)
+```
+
+---
+
+### Phase 7: Headroom Context Compression (Optional, 47-92% reduction)
+
+**Problem:** Even with all other optimizations, large requests can still exceed context limits.
+
+**Solution:** [Headroom](headroom.md) is a Python sidecar that applies ML-based compression.
+
+**How it works:**
+- Smart Crusher: Statistical JSON field compression
+- Cache Aligner: Stabilizes dynamic content for provider cache hits
+- CCR: Reversible compression with on-demand retrieval
+- Rolling Window: Token budget enforcement
+- LLMLingua (optional): BERT-based 20x compression
+
+**Auto-rebuild:** When you run `npm start`, Lynkr automatically rebuilds the Headroom Docker image if source files changed — ensuring you always run the latest code.
+
+**Configuration:**
+```bash
+HEADROOM_ENABLED=true
+# See headroom.md for full configuration reference
 ```
 
 ---
 
 ## Combined Savings
 
-When all 6 phases work together:
+When all 7 phases work together (8 with Headroom):
 
 **Example Request Flow:**
 

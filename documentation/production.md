@@ -6,9 +6,10 @@ Complete guide to deploying Lynkr in production with 14 hardening features for r
 
 ## Overview
 
-Lynkr includes 14 production-ready features:
+Lynkr includes 16 production-ready features:
 - **Reliability:** Circuit breakers, retries, load shedding, graceful shutdown
-- **Observability:** Prometheus metrics, structured logging, health checks
+- **Observability:** Prometheus metrics, structured logging, health checks, routing telemetry
+- **Intelligence:** Graphify code analysis, Distill compression, quality scoring
 - **Security:** Input validation, policy enforcement, sandboxing
 - **Performance:** Minimal overhead (~7μs), 140K req/sec throughput
 

@@ -77,6 +77,11 @@ const TOOL_CATEGORIES = {
     loader: () => require('./agent-task').registerAgentTaskTool,
     priority: 2,
   },
+  'code-mode': {
+    keywords: ['mcp', 'execute', 'server', 'tool', 'code mode'],
+    loader: () => require('./code-mode').registerCodeModeTools,
+    priority: 3,
+  },
 };
 
 /**
@@ -280,6 +285,12 @@ function loadCategoryForTool(toolName) {
     // MCP tools
     'workspace_sandbox_sessions': 'mcp',
     'workspace_mcp_servers': 'mcp',
+
+    // Code Mode meta-tools
+    'mcp_list_tools': 'code-mode',
+    'mcp_tool_info': 'code-mode',
+    'mcp_tool_docs': 'code-mode',
+    'mcp_execute': 'code-mode',
 
     // Agent task
     // TinyFish (web agent)

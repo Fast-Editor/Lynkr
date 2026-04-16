@@ -316,6 +316,17 @@ function selectToolsSmartly(tools, classification, options = {}) {
     selectedTools = selectedTools.filter(t => minimalTools.includes(t.name));
   }
 
+  // Code Mode: always include the 4 meta-tools (only ~700 tokens total)
+  const codeConfig = require('../config');
+  if (codeConfig.mcp?.codeMode?.enabled) {
+    const codeModeNames = new Set(['mcp_list_tools', 'mcp_tool_info', 'mcp_tool_docs', 'mcp_execute']);
+    for (const tool of tools) {
+      if (codeModeNames.has(tool.name) && !selectedTools.some(t => t.name === tool.name)) {
+        selectedTools.push(tool);
+      }
+    }
+  }
+
   return selectedTools;
 }
 
