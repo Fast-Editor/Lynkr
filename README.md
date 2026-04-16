@@ -3,7 +3,7 @@
 ### Run Claude Code, Cursor, and Codex on any model. One proxy, every provider.
 
 [![npm version](https://img.shields.io/npm/v/lynkr.svg)](https://www.npmjs.com/package/lynkr)
-[![Tests](https://img.shields.io/badge/tests-652%20passing-brightgreen)](https://github.com/vishalveerareddy123/Lynkr)
+[![Tests](https://img.shields.io/badge/tests-699%20passing-brightgreen)](https://github.com/Fast-Editor/Lynkr)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-20%2B-green)](https://nodejs.org)
 [![Homebrew Tap](https://img.shields.io/badge/homebrew-lynkr-brightgreen.svg)](https://github.com/vishalveerareddy123/homebrew-lynkr)
@@ -11,9 +11,9 @@
 
 <table>
 <tr>
-<td align="center"><strong>10+</strong><br/>LLM Providers</td>
+<td align="center"><strong>12+</strong><br/>LLM Providers</td>
 <td align="center"><strong>60-80%</strong><br/>Cost Reduction</td>
-<td align="center"><strong>652</strong><br/>Tests Passing</td>
+<td align="center"><strong>699</strong><br/>Tests Passing</td>
 <td align="center"><strong>0</strong><br/>Code Changes Required</td>
 </tr>
 </table>
@@ -139,12 +139,16 @@ const { text } = await generateText({
 | **MLX Server** | Local | Apple Silicon optimized | **Free** |
 | **AWS Bedrock** | Cloud | 100+ (Claude, Llama, Mistral, Titan) | $$ |
 | **OpenRouter** | Cloud | 100+ (GPT, Claude, Llama, Gemini) | $-$$ |
-| **Databricks** | Cloud | Claude Sonnet 4.5, Opus 4.5 | $$$ |
-| **Azure OpenAI** | Cloud | GPT-4o, GPT-5, o1, o3 | $$$ |
+| **Databricks** | Cloud | Claude Sonnet 4.5, Opus 4.6 | $$$ |
+| **Azure OpenAI** | Cloud | GPT-4o, o1, o3 | $$$ |
 | **Azure Anthropic** | Cloud | Claude models | $$$ |
-| **OpenAI** | Cloud | GPT-4o, o1, o3 | $$$ |
+| **OpenAI** | Cloud | GPT-4o, o3, o4-mini | $$$ |
+| **Google Vertex** | Cloud | Gemini 2.5 Pro/Flash | $$$ |
+| **Moonshot AI** | Cloud | Kimi K2 Thinking/Turbo | $$ |
+| **Z.AI** | Cloud | GLM-4.7 | $$ |
+| **DeepSeek** | Cloud | DeepSeek Reasoner, R1 | $ |
 
-4 local providers for **100% offline, free** usage. 6+ cloud providers for scale.
+4 local providers for **100% offline, free** usage. 10+ cloud providers for scale.
 
 ---
 
@@ -166,6 +170,9 @@ const { text } = await generateText({
 | **Transaction fees** | None | None (OSS) / Paid enterprise | 5.5% on credits | Free tier / Paid |
 | **Dependencies** | Node.js only | Python, Prisma, PostgreSQL | N/A | Docker, Python |
 | **Format conversion** | Anthropic <-> OpenAI (automatic) | Automatic | N/A | Automatic |
+| **Code intelligence** | Graphify (19-lang AST graph) | No | No | No |
+| **Routing telemetry** | Built-in (SQLite + REST API) | No | Dashboard | Dashboard |
+| **Admin hot-reload** | Yes (no restart) | Requires restart | N/A | Requires restart |
 | **License** | Apache 2.0 | MIT | Proprietary | MIT (gateway) |
 
 **Lynkr's edge:** Purpose-built for AI coding tools. Not a general LLM gateway — a proxy that understands Claude Code, Cursor, and Codex natively, with built-in token optimization, complexity-based routing, and a memory system designed for coding workflows. Installs in one command, runs on Node.js, zero infrastructure required.
@@ -188,20 +195,29 @@ const { text } = await generateText({
 
 Lynkr isn't just a passthrough proxy. It's an optimization layer.
 
-### Smart Routing
-Routes requests to the right model based on task complexity. Simple questions go to fast/cheap models. Complex architectural tasks go to powerful models. You configure the tiers.
+### Smart Routing (5-Phase)
+Routes requests to the right model based on 5-phase complexity analysis. Simple questions go to fast/cheap models. Complex architectural tasks go to powerful models. Includes Graphify structural analysis for code-aware routing.
 
-### Token Optimization
+- **Complexity scoring** — 15-dimension weighted scoring with agentic workflow detection
+- **Graphify integration** — AST-based knowledge graph detects god nodes, community cohesion, blast radius across 19 languages
+- **Routing telemetry** — every decision recorded with quality scoring (0-100) and latency tracking (P50/P95/P99)
+
+### Token Optimization (7 Phases)
 - **Smart tool selection** — only sends tools relevant to the current task
-- **Prompt compression** — removes redundant context before sending
+- **Code Mode** — replaces 100+ MCP tools with 4 meta-tools (~96% token reduction)
+- **Distill compression** — structural similarity, delta rendering, smart dedup of repetitive tool outputs
+- **Prompt caching** — SHA-256 keyed LRU cache
 - **Memory deduplication** — eliminates repeated information across turns
-- **TOON format** — compact serialization that cuts token count
+- **History compression** — sliding window with Distill-powered structural dedup
+- **Headroom sidecar** — optional 47-92% ML-based compression (Smart Crusher, CCR, LLMLingua)
 
 ### Enterprise Resilience
-- **Circuit breakers** — automatic failover when a provider goes down
+- **Circuit breakers** — automatic failover with half-open probe recovery
+- **Admin hot-reload** — `POST /v1/admin/reload` reloads config + resets circuit breakers without restart
 - **Load shedding** — graceful degradation under high load
 - **Prometheus metrics** — full observability at `/metrics`
 - **Health checks** — K8s-ready endpoints at `/health`
+- **Performance timer** — per-request timing breakdown with `PERF_TIMER=true`
 
 ### Memory System
 Titans-inspired long-term memory with surprise-based filtering. The system remembers important context across sessions and forgets noise — reducing token waste from repeated context.
@@ -214,8 +230,12 @@ SEMANTIC_CACHE_ENABLED=true
 SEMANTIC_CACHE_THRESHOLD=0.95
 ```
 
-### MCP Integration
-Automatic Model Context Protocol server discovery and orchestration. Your MCP tools work through Lynkr without configuration.
+### MCP Integration + Code Mode
+Automatic Model Context Protocol server discovery and orchestration. Your MCP tools work through Lynkr without configuration. Enable Code Mode to replace 100+ MCP tool definitions with 4 lightweight meta-tools:
+
+```bash
+CODE_MODE_ENABLED=true  # ~96% reduction in tool-catalog tokens
+```
 
 ---
 
@@ -233,7 +253,7 @@ docker-compose up -d
 
 **Git Clone**
 ```bash
-git clone https://github.com/vishalveerareddy123/Lynkr.git
+git clone https://github.com/Fast-Editor/Lynkr.git
 cd Lynkr && npm install && cp .env.example .env
 npm start
 ```
@@ -251,7 +271,7 @@ brew install lynkr
 | Guide | Description |
 |-------|-------------|
 | [Installation](documentation/installation.md) | All installation methods |
-| [Provider Config](documentation/providers.md) | Setup for all 10+ providers |
+| [Provider Config](documentation/providers.md) | Setup for all 12+ providers |
 | [Claude Code CLI](documentation/claude-code-cli.md) | Detailed Claude Code integration |
 | [Codex CLI](documentation/codex-cli.md) | Codex config.toml setup |
 | [Cursor IDE](documentation/cursor-integration.md) | Cursor integration + troubleshooting |
@@ -293,8 +313,8 @@ Apache 2.0 — See [LICENSE](LICENSE).
 
 ## Community
 
-- [GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions) — Questions and tips
-- [Report Issues](https://github.com/vishalveerareddy123/Lynkr/issues) — Bug reports and feature requests
+- [GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions) — Questions and tips
+- [Report Issues](https://github.com/Fast-Editor/Lynkr/issues) — Bug reports and feature requests
 - [NPM Package](https://www.npmjs.com/package/lynkr) — Official package
 - [DeepWiki](https://deepwiki.com/vishalveerareddy123/Lynkr) — AI-powered docs search
 

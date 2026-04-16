@@ -949,8 +949,8 @@ pm2 logs lynkr
 
 ### Community Support
 
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Ask questions
-- **[GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report bugs
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Ask questions
+- **[GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report bugs
 - **[FAQ](faq.md)** - Frequently asked questions
 
 ---
@@ -960,8 +960,8 @@ pm2 logs lynkr
 If you've tried the above solutions and still have problems:
 
 1. **Enable debug logging** and check logs
-2. **Search [GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** for similar problems
-3. **Ask in [GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** with:
+2. **Search [GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** for similar problems
+3. **Ask in [GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** with:
    - Lynkr version
    - Provider being used
    - Full error message

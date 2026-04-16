@@ -57,7 +57,7 @@ lynkr
 **One-line installation:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vishalveerareddy123/Lynkr/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Fast-Editor/Lynkr/main/install.sh | bash
 ```
 
 This will:
@@ -68,7 +68,7 @@ This will:
 
 **Custom installation directory:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vishalveerareddy123/Lynkr/main/install.sh | bash -s -- --dir /opt/lynkr
+curl -fsSL https://raw.githubusercontent.com/Fast-Editor/Lynkr/main/install.sh | bash -s -- --dir /opt/lynkr
 ```
 
 ---
@@ -79,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/vishalveerareddy123/Lynkr/main/inst
 
 ```bash
 # Clone repository
-git clone https://github.com/vishalveerareddy123/Lynkr.git
+git clone https://github.com/Fast-Editor/Lynkr.git
 cd Lynkr
 
 # Install dependencies
@@ -145,7 +145,7 @@ brew upgrade lynkr
 
 ```bash
 # Clone repository
-git clone https://github.com/vishalveerareddy123/Lynkr.git
+git clone https://github.com/Fast-Editor/Lynkr.git
 cd Lynkr
 
 # Copy environment template
@@ -754,5 +754,5 @@ ollama list
 
 - **[Troubleshooting Guide](troubleshooting.md)** - Common issues and solutions
 - **[FAQ](faq.md)** - Frequently asked questions
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Community Q&A
-- **[GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report bugs
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Community Q&A
+- **[GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report bugs

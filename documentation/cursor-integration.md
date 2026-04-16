@@ -729,6 +729,6 @@ OLLAMA_EMBEDDINGS_MODEL=nomic-embed-text
 
 ## Getting Help
 
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Community Q&A
-- **[GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report bugs
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Community Q&A
+- **[GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report bugs
 - **[Troubleshooting Guide](troubleshooting.md)** - Common issues and solutions

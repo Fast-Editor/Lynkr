@@ -61,10 +61,10 @@ Get help and contribute:
 
 ## External Resources
 
-- **[DeepWiki Documentation](https://deepwiki.com/vishalveerareddy123/Lynkr)** - AI-powered documentation search and Q&A
-- **[GitHub Repository](https://github.com/vishalveerareddy123/Lynkr)** - Source code and issue tracker
+- **[DeepWiki Documentation](https://deepwiki.com/Fast-Editor/Lynkr)** - AI-powered documentation search and Q&A
+- **[GitHub Repository](https://github.com/Fast-Editor/Lynkr)** - Source code and issue tracker
 - **[NPM Package](https://www.npmjs.com/package/lynkr)** - Official npm package
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Community Q&A and feature discussions
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Community Q&A and feature discussions
 
 ---
 
@@ -80,6 +80,10 @@ Get help and contribute:
 - **Graphify Integration** — Knowledge graph-powered routing with god node detection and community cohesion
 - **Distill Compression** — Structural similarity, delta rendering, and smart dedup for tool outputs
 - **Routing Telemetry** — SQLite-backed decision recording with quality scoring and latency tracking
+- **Code Mode** — 4 MCP meta-tools replace 100+ individual definitions (~96% token savings)
+- **Admin Hot-Reload** — `POST /v1/admin/reload` reloads config + resets circuit breakers without restart
+- **Large Payload Passthrough** — Smart cloning skips base64 media that will be discarded
+- **Performance Timer** — Per-request timing breakdown with `PERF_TIMER=true`
 - **Headroom Auto-Rebuild** — Always runs latest code on `npm start`
 
 ### Deployment & Production
@@ -104,4 +108,4 @@ Each guide is self-contained but cross-linked where relevant.
 
 ---
 
-**Need help?** Check [Troubleshooting](troubleshooting.md) or visit [GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions).
+**Need help?** Check [Troubleshooting](troubleshooting.md) or visit [GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions).

@@ -394,4 +394,4 @@ curl http://localhost:8081/metrics/token-usage
 
 ---
 
-**Need help?** Visit [GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions) or check the [FAQ](faq.md).
+**Need help?** Visit [GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions) or check the [FAQ](faq.md).

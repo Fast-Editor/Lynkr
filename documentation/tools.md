@@ -693,5 +693,5 @@ curl -X POST http://localhost:8081/v1/messages \
 
 ## Getting Help
 
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Ask questions
-- **[GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report issues
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Ask questions
+- **[GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report issues

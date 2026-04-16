@@ -619,11 +619,11 @@ beforeEach(() => {
 
 - **[Contributing Guide](contributing.md)** - How to contribute
 - **[Development Setup](contributing.md#development-setup)** - Set up dev environment
-- **[GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report test failures
+- **[GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report test failures
 
 ---
 
 ## Getting Help
 
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Ask questions
-- **[GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report bugs
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Ask questions
+- **[GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report bugs

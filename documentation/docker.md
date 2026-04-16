@@ -10,7 +10,7 @@ Complete guide to deploying Lynkr with Docker and docker-compose, including GPU 
 
 **1. Clone repository:**
 ```bash
-git clone https://github.com/vishalveerareddy123/Lynkr.git
+git clone https://github.com/Fast-Editor/Lynkr.git
 cd Lynkr
 ```
 
@@ -870,5 +870,5 @@ docker-compose.yml:
 
 ## Getting Help
 
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Ask questions
-- **[GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report issues
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Ask questions
+- **[GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report issues

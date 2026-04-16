@@ -98,7 +98,7 @@ lynkr start
 
 **Option 3: Git Clone**
 ```bash
-git clone https://github.com/vishalveerareddy123/Lynkr.git
+git clone https://github.com/Fast-Editor/Lynkr.git
 cd Lynkr && npm install && npm start
 ```
 
@@ -441,7 +441,7 @@ See [Production Hardening Guide](production.md) for details.
 
 **docker-compose (Recommended):**
 ```bash
-git clone https://github.com/vishalveerareddy123/Lynkr.git
+git clone https://github.com/Fast-Editor/Lynkr.git
 cd Lynkr
 cp .env.example .env
 # Edit .env with your credentials
@@ -667,13 +667,13 @@ Use Ollama or llama.cpp for 100% local, private operation.
 ### Where can I get help?
 
 - **[Troubleshooting Guide](troubleshooting.md)** - Common issues and solutions
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Community Q&A
-- **[GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report bugs
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Community Q&A
+- **[GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report bugs
 - **[Documentation](README.md)** - Complete guides
 
 ### How do I report a bug?
 
-1. Check [GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues) for existing reports
+1. Check [GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues) for existing reports
 2. If new, create an issue with:
    - Lynkr version
    - Provider being used

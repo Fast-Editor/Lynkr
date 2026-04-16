@@ -1011,5 +1011,5 @@ _* Tool calling only supported by Claude models on Bedrock_
 
 - **[FAQ](faq.md)** - Frequently asked questions
 - **[Troubleshooting Guide](troubleshooting.md)** - Common issues
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Community Q&A
-- **[GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report bugs
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Community Q&A
+- **[GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report bugs

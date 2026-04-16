@@ -10,7 +10,7 @@ Thank you for your interest in contributing to Lynkr! This guide will help you g
 
 Found a bug? Please report it:
 
-1. **Search [existing issues](https://github.com/vishalveerareddy123/Lynkr/issues)** first
+1. **Search [existing issues](https://github.com/Fast-Editor/Lynkr/issues)** first
 2. **Create a new issue** with:
    - Lynkr version
    - Provider being used
@@ -23,7 +23,7 @@ Found a bug? Please report it:
 
 Have an idea for a new feature?
 
-1. **Search [GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** first
+1. **Search [GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** first
 2. **Create a discussion** describing:
    - The problem you're solving
    - Proposed solution
@@ -556,9 +556,9 @@ describe("Your Tool", () => {
 
 ### Getting Help
 
-- **[GitHub Discussions](https://github.com/vishalveerareddy123/Lynkr/discussions)** - Ask questions
+- **[GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions)** - Ask questions
 - **[Discord](https://discord.gg/qF7DDxrX)** - Real-time chat
-- **[Issues](https://github.com/vishalveerareddy123/Lynkr/issues)** - Report bugs
+- **[Issues](https://github.com/Fast-Editor/Lynkr/issues)** - Report bugs
 
 ---
 
