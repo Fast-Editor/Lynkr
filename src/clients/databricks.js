@@ -271,7 +271,7 @@ async function invokeOllama(body) {
       model: modelName,
       messages: body.messages,
       max_tokens: body.max_tokens || 16384,
-      stream: false,
+      stream: body.stream ?? false,
     };
 
     if (body.system) ollamaBody.system = body.system;
@@ -338,7 +338,7 @@ async function invokeOllama(body) {
   const ollamaBody = {
     model: modelName,
     messages: deduplicated,
-    stream: false,
+    stream: body.stream ?? false,
     options: {
       temperature: body.temperature ?? 0.7,
       num_predict: body.max_tokens ?? 16384,
