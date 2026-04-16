@@ -24,6 +24,13 @@ jobs:
       - name: Login to ClawHub
         run: clawhub login --token ${{ secrets.CLAWHUB_AUTH }}
 
+      - name: Extract version from SKILL.md
+        id: version
+        run: |
+          VERSION=$(grep '^version:' skills/lynkr/SKILL.md | head -1 | awk '{print $2}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: $VERSION"
+
       - name: Publish skill (with retry)
         run: |
           for attempt in 1 2 3; do
@@ -31,8 +38,8 @@ jobs:
             clawhub publish ./skills/lynkr \
               --slug lynkr \
               --name "Lynkr AI Routing Proxy" \
-              --version 0.6.0 \
-              --changelog "Initial release - intelligent LLM routing with 12+ providers" \
+              --version ${{ steps.version.outputs.version }} \
+              --changelog "v${{ steps.version.outputs.version }} - Graphify, Distill, Code Mode, routing telemetry, admin reload" \
               --tags latest \
               && exit 0
             echo "Failed, waiting 60s before retry..."
