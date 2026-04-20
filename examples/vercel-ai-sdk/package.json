@@ -1,0 +1,15 @@
+{
+  "name": "lynkr-vercel-ai-sdk-example",
+  "version": "1.0.0",
+  "description": "Example: Using Lynkr with the Vercel AI SDK",
+  "type": "module",
+  "scripts": {
+    "chat": "node chat.mjs",
+    "stream": "node stream.mjs",
+    "tools": "node tools.mjs"
+  },
+  "dependencies": {
+    "ai": "^4.0.0",
+    "@ai-sdk/openai-compatible": "^0.1.0"
+  }
+}

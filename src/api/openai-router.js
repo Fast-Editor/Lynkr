@@ -54,7 +54,7 @@ function detectClient(headers) {
   const clientHeader = (headers?.["x-client"] || headers?.["x-client-name"] || "").toLowerCase();
 
   // Check user-agent and custom headers
-  if (userAgent.includes("codex") || clientHeader.includes("codex")) {
+  if (userAgent.includes("codex") || clientHeader.includes("codex") || userAgent.includes("openai-codex")) {
     return "codex";
   }
   // Kilo Code is a fork of Cline - check for both
@@ -77,29 +77,14 @@ function detectClient(headers) {
  */
 const CLIENT_TOOL_MAPPINGS = {
   // ============== CODEX CLI ==============
-  // Confirmed tools: shell, apply_patch, read_file, write_file, list_dir, glob_file_search,
-  //   rg, web_search, update_plan, view_image, memory
-  // NOT supported: spawn_agent/spawn_thread (Task has no Codex equivalent)
+  // Codex v0.121.0 only recognises "shell" and "apply_patch" as built-in
+  // tools.  All other operations (read, list, grep, etc.) must go through
+  // shell commands — the model handles this naturally.
   codex: {
     "Bash": {
       name: "shell",
       mapArgs: (a) => ({
         command: ["bash", "-c", a.command || ""]
-      })
-    },
-    "Read": {
-      name: "read_file",
-      mapArgs: (a) => ({
-        path: a.file_path || a.path || "",
-        offset: a.offset,
-        limit: a.limit
-      })
-    },
-    "Write": {
-      name: "write_file",
-      mapArgs: (a) => ({
-        path: a.file_path || a.path || "",
-        content: a.content || ""
       })
     },
     "Edit": {
@@ -108,47 +93,6 @@ const CLIENT_TOOL_MAPPINGS = {
         path: a.file_path || a.path || "",
         old_string: a.old_string || "",
         new_string: a.new_string || ""
-      })
-    },
-    "Glob": {
-      name: "glob_file_search",
-      mapArgs: (a) => ({
-        pattern: a.pattern || "",
-        path: a.path
-      })
-    },
-    "Grep": {
-      name: "rg",
-      mapArgs: (a) => ({
-        pattern: a.pattern || "",
-        path: a.path,
-        include: a.glob || a.include,
-        type: a.type
-      })
-    },
-    "ListDir": {
-      name: "list_dir",
-      mapArgs: (a) => ({
-        path: a.path || a.directory
-      })
-    },
-    "TodoWrite": {
-      name: "update_plan",
-      mapArgs: (a) => ({
-        todos: a.todos || []
-      })
-    },
-    "WebSearch": {
-      name: "web_search",
-      mapArgs: (a) => ({
-        query: a.query || ""
-      })
-    },
-    "WebAgent": {
-      name: "web_agent",
-      mapArgs: (a) => ({
-        url: a.url || "",
-        goal: a.goal || ""
       })
     }
   },
@@ -456,7 +400,7 @@ router.post("/chat/completions", async (req, res) => {
     const clientExplicitlyDisabledTools = req.body.tool_choice === "none" || Array.isArray(req.body.tools);
     if (!clientExplicitlyDisabledTools && (!anthropicRequest.tools || anthropicRequest.tools.length === 0)) {
       const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
-      const clientTools = clientMappings
+      let clientTools = clientMappings
         ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
         : IDE_SAFE_TOOLS;
       anthropicRequest.tools = clientTools;
@@ -1474,6 +1418,29 @@ router.post("/responses", async (req, res) => {
       fullRequestBodyKeys: Object.keys(req.body)
     }, "=== RESPONSES API REQUEST ===");
 
+    // Resolve previous_response_id for session continuity
+    if (req.body.previous_response_id) {
+      const responseStore = require("../stores/response-store");
+      const prev = responseStore.getResponse(req.body.previous_response_id);
+      if (prev && Array.isArray(prev.messages)) {
+        const prevContext = [...prev.messages];
+        if (prev.assistantContent) {
+          prevContext.push({ role: "assistant", content: prev.assistantContent });
+        }
+        if (Array.isArray(req.body.input)) {
+          req.body.input = [...prevContext, ...req.body.input];
+        } else if (typeof req.body.input === "string") {
+          req.body.input = [...prevContext, { role: "user", content: req.body.input }];
+        }
+        logger.debug({
+          previousId: req.body.previous_response_id,
+          prependedMessages: prevContext.length,
+        }, "Resolved previous_response_id");
+      } else {
+        logger.warn({ previousId: req.body.previous_response_id }, "previous_response_id not found");
+      }
+    }
+
     // Convert Responses API to Chat Completions format
     const chatRequest = convertResponsesToChat(req.body);
 
@@ -1489,6 +1456,28 @@ router.post("/responses", async (req, res) => {
     // Convert to Anthropic format
     const anthropicRequest = convertOpenAIToAnthropic(chatRequest);
 
+    // Normalize tool_use names in conversation history to client format.
+    // Tool definitions are injected with client names (e.g., "shell", "read_file"),
+    // so tool_use blocks must also use client names to satisfy the Anthropic API
+    // requirement that tool_use names match tool definitions.
+    const clientType = detectClient(req.headers);
+    const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
+    if (clientMappings && Array.isArray(anthropicRequest.messages)) {
+      const lynkrToClient = {};
+      for (const [lynkrName, mapping] of Object.entries(clientMappings)) {
+        lynkrToClient[lynkrName] = mapping.name;
+      }
+
+      for (const msg of anthropicRequest.messages) {
+        if (!Array.isArray(msg.content)) continue;
+        for (const block of msg.content) {
+          if (block.type === 'tool_use' && lynkrToClient[block.name]) {
+            block.name = lynkrToClient[block.name];
+          }
+        }
+      }
+    }
+
     logger.debug({
       anthropicMessageCount: anthropicRequest.messages?.length,
       anthropicMessages: anthropicRequest.messages?.map(m => ({
@@ -1497,25 +1486,72 @@ router.post("/responses", async (req, res) => {
       }))
     }, "After Chat→Anthropic conversion");
 
-    // Inject tools if client didn't send any (same two-layer filtering as chat/completions).
-    // Skip injection if client explicitly opted out (tool_choice: "none" or empty tools array).
-    const clientType = detectClient(req.headers);
-    const clientExplicitlyDisabledTools = req.body.tool_choice === "none" || Array.isArray(req.body.tools);
-    if (!clientExplicitlyDisabledTools && (!anthropicRequest.tools || anthropicRequest.tools.length === 0)) {
+    // Inject tools if the Anthropic request has none.
+    // The client may have sent tools in Responses API format (top-level name)
+    // which convertOpenAIToAnthropic silently drops because it expects Chat
+    // Completions format ({function: {name}}).  Always check the CONVERTED
+    // result, not the raw request.
+    const clientDisabledToolChoice = req.body.tool_choice === "none";
+    if (!clientDisabledToolChoice && (!anthropicRequest.tools || anthropicRequest.tools.length === 0)) {
+      // Exclude server-side-only tools (Task, web_search, etc.) from the
+      // Responses endpoint — they can't be executed by external clients like
+      // Codex and would be converted to broken shell echo commands.
+      const RESPONSES_EXCLUDED_TOOLS = new Set(["Task", "AskUserQuestion", "TodoWrite", "WebSearch", "WebFetch", "WebAgent"]);
       const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
-      const clientTools = clientMappings
+      let clientTools = (clientMappings
         ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
-        : IDE_SAFE_TOOLS;
+        : IDE_SAFE_TOOLS
+      ).filter(t => !RESPONSES_EXCLUDED_TOOLS.has(t.name));
+
+      // Rename tools to client-expected names so the model uses the right names
+      // e.g., for Codex: "Read" → "read_file", "Bash" → "shell"
+      // The lynkrToClient map above normalizes any stale Lynkr names in history
+      if (clientMappings) {
+        clientTools = clientTools.map(t => {
+          const mapping = clientMappings[t.name];
+          if (!mapping) return t;
+          return {
+            ...t,
+            name: mapping.name,
+            description: t.description || '',
+          };
+        });
+      }
+
       anthropicRequest.tools = clientTools;
-      logger.debug({
+      logger.info({
         clientType,
         injectedToolCount: clientTools.length,
         injectedToolNames: clientTools.map(t => t.name),
         reason: clientMappings
-          ? `Known client '${clientType}' — filtered to mapped tools only`
+          ? `Known client '${clientType}' — tools renamed to client conventions`
           : "Unknown client — injecting full IDE_SAFE_TOOLS"
       }, "=== INJECTING TOOLS (responses) ===");
+    } else {
+      logger.info({
+        clientType,
+        clientDisabledToolChoice,
+        hasTools: !!anthropicRequest.tools,
+        toolCount: anthropicRequest.tools?.length || 0,
+        toolNames: anthropicRequest.tools?.map(t => t.name)?.slice(0, 10),
+        reqToolChoice: req.body.tool_choice,
+        reqToolsIsArray: Array.isArray(req.body.tools),
+        reqToolsLength: req.body.tools?.length,
+      }, "=== TOOLS NOT INJECTED (responses) ===");
     }
+
+    // ALWAYS strip server-side-only tools from the Responses endpoint.
+    // These can't be executed by external clients (Codex, etc.) and cause
+    // infinite retry loops when the model keeps calling them.
+    const RESPONSES_EXCLUDED = new Set(["Task", "AskUserQuestion", "TodoWrite", "WebSearch", "WebFetch", "WebAgent"]);
+    if (Array.isArray(anthropicRequest.tools)) {
+      anthropicRequest.tools = anthropicRequest.tools.filter(t => !RESPONSES_EXCLUDED.has(t.name));
+    }
+
+    // Snapshot tool names before the orchestrator can mutate them
+    const injectedToolNames = new Set(
+      (anthropicRequest.tools || []).map(t => t.name)
+    );
 
     // Get session
     const session = getSession(sessionId);
@@ -1526,294 +1562,282 @@ router.post("/responses", async (req, res) => {
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no"); // Prevent nginx buffering
-      res.flushHeaders(); // Ensure headers are sent immediately
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
 
       try {
-        // Force non-streaming from orchestrator
         anthropicRequest.stream = false;
 
-        const result = await orchestrator.processMessage({
-          payload: anthropicRequest,
-          headers: req.headers,
-          session: session,
-          options: {
-            maxSteps: req.body?.max_steps
-          }
-        });
+        // SSE comment keepalive (spec-compliant, ignored by all clients)
+        const keepalive = setInterval(() => {
+          try { res.write(`: keepalive\n\n`); } catch {}
+        }, 2000);
 
-        // Debug: Log what orchestrator returned
+        let result;
+        try {
+          result = await orchestrator.processMessage({
+            payload: anthropicRequest,
+            headers: req.headers,
+            session: session,
+            options: {
+              maxSteps: req.body?.max_steps
+            }
+          });
+        } finally {
+          clearInterval(keepalive);
+        }
+
         logger.debug({
           hasResult: !!result,
           hasBody: !!result?.body,
-          bodyKeys: result?.body ? Object.keys(result.body) : null,
-          bodyContent: result?.body?.content ? JSON.stringify(result.body.content).substring(0, 200) : null,
           bodyContentLength: result?.body?.content?.length || 0,
           terminationReason: result?.terminationReason
         }, "=== ORCHESTRATOR RESULT FOR RESPONSES API ===");
 
         // Convert back: Anthropic → OpenAI → Responses
         const responsesModel = resolveResponseModel(result.body, req.body.model);
+
+        // Guard: if orchestrator returned an error body, surface it as text
+        if (result.body?.error || result.status >= 400) {
+          const errMsg = result.body?.error?.message || result.body?.error || JSON.stringify(result.body);
+          logger.warn({ status: result.status, error: errMsg }, "Orchestrator returned error for Responses API");
+          const errChunks = [];
+          const errSse = (ev, d) => { errChunks.push(`event: ${ev}\ndata: ${JSON.stringify(d)}\n\n`); };
+          const errId = `resp_err_${Date.now()}`;
+          errSse("response.created", { type: "response.created", response: { id: errId, object: "response", status: "in_progress", output: [], usage: null }, sequence_number: 0 });
+          errSse("response.output_item.added", { type: "response.output_item.added", output_index: 0, item: { id: `msg_${Date.now()}`, type: "message", status: "in_progress", role: "assistant", content: [] }, sequence_number: 1 });
+          errSse("response.output_text.delta", { type: "response.output_text.delta", item_id: `msg_${Date.now()}`, output_index: 0, content_index: 0, delta: `Error: ${errMsg}`, sequence_number: 2 });
+          errSse("response.completed", { type: "response.completed", response: { id: errId, object: "response", status: "completed", output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: `Error: ${errMsg}` }] }], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } }, sequence_number: 3 });
+          res.end(errChunks.join(""));
+          return;
+        }
+
         const chatResponse = convertAnthropicToOpenAI(result.body, responsesModel);
-
-        logger.debug({
-          chatContent: chatResponse.choices?.[0]?.message?.content?.substring(0, 200),
-          chatContentLength: chatResponse.choices?.[0]?.message?.content?.length || 0,
-          hasToolCalls: !!chatResponse.choices?.[0]?.message?.tool_calls,
-          toolCallCount: chatResponse.choices?.[0]?.message?.tool_calls?.length || 0
-        }, "=== CHAT RESPONSE FOR RESPONSES API ===");
-
         const responsesResponse = convertChatToResponses(chatResponse);
 
-        // Get content and tool calls
-        const content = responsesResponse.content || "";
+        // Clean up tool result artifacts in content
+        let content = responsesResponse.content || "";
+        content = content.replace(/\{"output":"((?:[^"\\]|\\.)*)"\s*(?:,"metadata":\{[^}]*\})?\}/g, (match, output) => {
+          try { return JSON.parse(`"${output}"`); } catch { return output; }
+        });
+        content = content.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
         let toolCalls = chatResponse.choices?.[0]?.message?.tool_calls || [];
+
         const responseId = responsesResponse.id || `resp_${Date.now()}`;
         const messageId = `msg_${Date.now()}`;
         const createdAt = Math.floor(Date.now() / 1000);
         let sequenceNumber = 0;
         let outputIndex = 0;
 
-        // Check if client is a known AI coding tool and map tool names accordingly
-        const clientType = detectClient(req.headers);
-        if (clientType !== "unknown" && toolCalls.length > 0) {
-          logger.debug({
-            originalTools: toolCalls.map(t => t.function?.name),
-            clientType,
-            userAgent: req.headers["user-agent"]
-          }, `${clientType} client detected - mapping tool names`);
-
-          // Map Lynkr tools to client-specific equivalents
-          toolCalls = toolCalls.map(tc => {
-            const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);
-            return {
-              ...tc,
-              function: {
-                name: mapped.name,
-                arguments: mapped.arguments
-              }
-            };
-          });
-
-          logger.debug({
-            mappedTools: toolCalls.map(t => t.function?.name)
-          }, `Tool names mapped for ${clientType}`);
+        // Fallback: if model returned empty text AND no tool calls,
+        // the model may have failed to produce output. Surface what we have.
+        if (!content && toolCalls.length === 0) {
+          const body = result.body;
+          if (Array.isArray(body?.content)) {
+            content = body.content
+              .filter(b => b?.type === "text" && b?.text)
+              .map(b => b.text)
+              .join("\n") || "(The model returned an empty response.)";
+          } else {
+            content = "(The model returned an empty response.)";
+          }
         }
 
-        logger.debug({
-          content: content.substring(0, 100),
-          contentLength: content.length,
-          toolCallCount: toolCalls.length,
-          toolCallNames: toolCalls.map(t => t.function?.name),
-          clientType
-        }, "=== RESPONSES API STREAMING DATA ===");
+        // Universal tool→shell converter: ensures every tool call becomes
+        // a "shell" command that Codex (or any client) can execute.
+        // Server-side tools (Task, WebSearch, etc.) are dropped entirely.
+        if (toolCalls.length > 0) {
+          const SERVER_TOOLS = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent", "askuserquestion", "todowrite"]);
+          const converted = [];
+          for (const tc of toolCalls) {
+            const name = tc.function?.name || "";
+            const ln = name.toLowerCase();
 
-        // 1. Send response.created event
-        const createdEvent = {
+            // Convert server-side tools to useful shell equivalents
+            if (SERVER_TOOLS.has(ln)) {
+              let exploreCmd = "ls -la && head -100 README.md 2>/dev/null && cat package.json 2>/dev/null && ls src/ 2>/dev/null";
+              if (ln === "task") {
+                try {
+                  const taskArgs = JSON.parse(tc.function?.arguments || "{}");
+                  if (taskArgs.prompt && taskArgs.prompt.toLowerCase().includes("read")) {
+                    exploreCmd = "cat README.md 2>/dev/null && cat package.json 2>/dev/null";
+                  }
+                } catch {}
+              }
+              converted.push({ ...tc, function: { name: "shell", arguments: JSON.stringify({ command: ["bash", "-c", exploreCmd] }) } });
+              continue;
+            }
+
+            let args = {};
+            try { args = JSON.parse(tc.function?.arguments || "{}"); } catch {}
+
+            // Already a shell command — normalise to array format
+            if (ln === "shell" || ln === "bash") {
+              let cmd = args.command || "";
+              // Handle string-encoded arrays: '["bash","-c","ls"]'
+              if (typeof cmd === "string" && cmd.trim().startsWith("[")) {
+                try { cmd = JSON.parse(cmd); } catch {}
+              }
+              // Extract the actual command from ["bash", "-c", "actual command"]
+              if (Array.isArray(cmd) && cmd.length >= 3 && cmd[0] === "bash" && cmd[1] === "-c") {
+                converted.push({ ...tc, function: { name: "shell", arguments: JSON.stringify({ command: cmd }) } });
+              } else if (Array.isArray(cmd)) {
+                converted.push({ ...tc, function: { name: "shell", arguments: JSON.stringify({ command: ["bash", "-c", cmd.join(" ")] }) } });
+              } else {
+                converted.push({ ...tc, function: { name: "shell", arguments: JSON.stringify({ command: ["bash", "-c", String(cmd)] }) } });
+              }
+              continue;
+            }
+
+            // Convert known tools to equivalent shell commands
+            let shellCmd = "";
+            if (ln === "read" || ln === "read_file" || ln === "cat") {
+              shellCmd = `cat ${args.file_path || args.path || args.file || ""}`;
+            } else if (ln === "list_dir" || ln === "listdir" || ln === "ls") {
+              shellCmd = `ls -la ${args.path || args.directory || "."}`;
+            } else if (ln === "grep" || ln === "rg" || ln === "search" || ln === "search_files") {
+              shellCmd = `grep -rn '${(args.pattern || args.query || "").replace(/'/g, "'\\''")}' ${args.path || "."}`;
+            } else if (ln === "glob" || ln === "glob_file_search" || ln === "find") {
+              shellCmd = `find ${args.path || "."} -name '${(args.pattern || "*").replace(/'/g, "'\\''")}'`;
+            } else if (ln === "write" || ln === "write_file" || ln === "create_file") {
+              const p = args.file_path || args.path || args.file || "/dev/null";
+              shellCmd = `cat > '${p}' << 'LYNKR_EOF'\n${args.content || ""}\nLYNKR_EOF`;
+            } else if (ln === "edit" || ln === "apply_patch" || ln === "replace_in_file") {
+              converted.push({ ...tc, function: { name: "apply_patch", arguments: tc.function?.arguments || "{}" } });
+              continue;
+            } else {
+              // Truly unknown tool — safe echo
+              shellCmd = `echo 'Unknown tool: ${ln}'`;
+            }
+
+            converted.push({ ...tc, function: { name: "shell", arguments: JSON.stringify({ command: ["bash", "-c", shellCmd] }) } });
+          }
+          toolCalls = converted;
+
+          // If somehow all tools were dropped with nothing left, provide a default exploration
+          if (toolCalls.length === 0 && !content) {
+            toolCalls.push({
+              id: `call_${Date.now()}`,
+              type: "function",
+              function: { name: "shell", arguments: JSON.stringify({ command: ["bash", "-c", "ls -la && head -80 README.md 2>/dev/null"] }) }
+            });
+          }
+        }
+
+        // Build the entire SSE payload as a single buffer so the client
+        // receives all events atomically (prevents premature disconnect).
+        const chunks = [];
+        const sse = (event, data) => {
+          chunks.push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        };
+
+        // response.created
+        sse("response.created", {
           type: "response.created",
           response: {
-            id: responseId,
-            object: "response",
-            status: "in_progress",
-            created_at: createdAt,
-            model: responsesModel,
-            output: [],
-            usage: null
+            id: responseId, object: "response", status: "in_progress",
+            created_at: createdAt, model: responsesModel, output: [], usage: null
           },
           sequence_number: sequenceNumber++
-        };
-        res.write(`event: response.created\n`);
-        res.write(`data: ${JSON.stringify(createdEvent)}\n\n`);
+        });
 
-        // 2. Send response.in_progress event
-        const inProgressEvent = {
+        // response.in_progress
+        sse("response.in_progress", {
           type: "response.in_progress",
           response: {
-            id: responseId,
-            object: "response",
-            status: "in_progress",
-            created_at: createdAt,
-            model: responsesModel,
-            output: [],
-            usage: null
+            id: responseId, object: "response", status: "in_progress",
+            created_at: createdAt, model: responsesModel, output: [], usage: null
           },
           sequence_number: sequenceNumber++
-        };
-        res.write(`event: response.in_progress\n`);
-        res.write(`data: ${JSON.stringify(inProgressEvent)}\n\n`);
+        });
 
-        // Build output array for the final response
         const outputItems = [];
 
-        // Handle tool calls first (if any)
+        // Function call events
         for (const toolCall of toolCalls) {
           const toolCallId = toolCall.id || `call_${Date.now()}_${outputIndex}`;
           const functionName = toolCall.function?.name || "unknown";
           const functionArgs = toolCall.function?.arguments || "{}";
 
-          // Send function_call output item added
           const functionCallItem = {
-            id: toolCallId,
-            type: "function_call",
-            status: "completed",
-            name: functionName,
-            arguments: functionArgs,
-            call_id: toolCallId
+            id: toolCallId, type: "function_call", status: "completed",
+            name: functionName, arguments: functionArgs, call_id: toolCallId
           };
 
-          res.write(`event: response.output_item.added\n`);
-          res.write(`data: ${JSON.stringify({
-            type: "response.output_item.added",
-            output_index: outputIndex,
-            item: functionCallItem,
-            sequence_number: sequenceNumber++
-          })}\n\n`);
-
-          // Send function call arguments delta
-          res.write(`event: response.function_call_arguments.delta\n`);
-          res.write(`data: ${JSON.stringify({
-            type: "response.function_call_arguments.delta",
-            item_id: toolCallId,
-            output_index: outputIndex,
-            delta: functionArgs,
-            sequence_number: sequenceNumber++
-          })}\n\n`);
-
-          // Send function call arguments done
-          res.write(`event: response.function_call_arguments.done\n`);
-          res.write(`data: ${JSON.stringify({
-            type: "response.function_call_arguments.done",
-            item_id: toolCallId,
-            output_index: outputIndex,
-            arguments: functionArgs,
-            sequence_number: sequenceNumber++
-          })}\n\n`);
-
-          // Send output item done
-          res.write(`event: response.output_item.done\n`);
-          res.write(`data: ${JSON.stringify({
-            type: "response.output_item.done",
-            output_index: outputIndex,
-            item: functionCallItem,
-            sequence_number: sequenceNumber++
-          })}\n\n`);
+          sse("response.output_item.added", {
+            type: "response.output_item.added", output_index: outputIndex,
+            item: functionCallItem, sequence_number: sequenceNumber++
+          });
+          sse("response.function_call_arguments.delta", {
+            type: "response.function_call_arguments.delta", item_id: toolCallId,
+            output_index: outputIndex, delta: functionArgs, sequence_number: sequenceNumber++
+          });
+          sse("response.function_call_arguments.done", {
+            type: "response.function_call_arguments.done", item_id: toolCallId,
+            output_index: outputIndex, arguments: functionArgs, sequence_number: sequenceNumber++
+          });
+          sse("response.output_item.done", {
+            type: "response.output_item.done", output_index: outputIndex,
+            item: functionCallItem, sequence_number: sequenceNumber++
+          });
 
           outputItems.push(functionCallItem);
           outputIndex++;
         }
 
-        // Handle text content (if any)
+        // Text content events
         if (content) {
-          // 3. Send response.output_item.added event for message
-          const outputItemAddedEvent = {
-            type: "response.output_item.added",
-            output_index: outputIndex,
-            item: {
-              id: messageId,
-              type: "message",
-              status: "in_progress",
-              role: "assistant",
-              content: []
-            },
+          sse("response.output_item.added", {
+            type: "response.output_item.added", output_index: outputIndex,
+            item: { id: messageId, type: "message", status: "in_progress", role: "assistant", content: [] },
             sequence_number: sequenceNumber++
-          };
-          res.write(`event: response.output_item.added\n`);
-          res.write(`data: ${JSON.stringify(outputItemAddedEvent)}\n\n`);
+          });
+          sse("response.content_part.added", {
+            type: "response.content_part.added", item_id: messageId,
+            output_index: outputIndex, content_index: 0,
+            part: { type: "output_text", text: "" }, sequence_number: sequenceNumber++
+          });
 
-          // 4. Send response.content_part.added event
-          const contentPartAddedEvent = {
-            type: "response.content_part.added",
-            item_id: messageId,
-            output_index: outputIndex,
-            content_index: 0,
-            part: {
-              type: "output_text",
-              text: ""
-            },
-            sequence_number: sequenceNumber++
-          };
-          res.write(`event: response.content_part.added\n`);
-          res.write(`data: ${JSON.stringify(contentPartAddedEvent)}\n\n`);
-
-          // 5. Send content in word chunks using response.output_text.delta
           const words = content.split(" ");
           for (let i = 0; i < words.length; i++) {
             const word = words[i] + (i < words.length - 1 ? " " : "");
-            const deltaEvent = {
-              type: "response.output_text.delta",
-              item_id: messageId,
-              output_index: outputIndex,
-              content_index: 0,
-              delta: word,
-              sequence_number: sequenceNumber++
-            };
-            res.write(`event: response.output_text.delta\n`);
-            res.write(`data: ${JSON.stringify(deltaEvent)}\n\n`);
+            sse("response.output_text.delta", {
+              type: "response.output_text.delta", item_id: messageId,
+              output_index: outputIndex, content_index: 0,
+              delta: word, sequence_number: sequenceNumber++
+            });
           }
 
-          // 6. Send response.output_text.done event
-          const textDoneEvent = {
-            type: "response.output_text.done",
-            item_id: messageId,
-            output_index: outputIndex,
-            content_index: 0,
-            text: content,
-            sequence_number: sequenceNumber++
-          };
-          res.write(`event: response.output_text.done\n`);
-          res.write(`data: ${JSON.stringify(textDoneEvent)}\n\n`);
+          sse("response.output_text.done", {
+            type: "response.output_text.done", item_id: messageId,
+            output_index: outputIndex, content_index: 0,
+            text: content, sequence_number: sequenceNumber++
+          });
+          sse("response.content_part.done", {
+            type: "response.content_part.done", item_id: messageId,
+            output_index: outputIndex, content_index: 0,
+            part: { type: "output_text", text: content }, sequence_number: sequenceNumber++
+          });
 
-          // 7. Send response.content_part.done event
-          const contentPartDoneEvent = {
-            type: "response.content_part.done",
-            item_id: messageId,
-            output_index: outputIndex,
-            content_index: 0,
-            part: {
-              type: "output_text",
-              text: content
-            },
-            sequence_number: sequenceNumber++
-          };
-          res.write(`event: response.content_part.done\n`);
-          res.write(`data: ${JSON.stringify(contentPartDoneEvent)}\n\n`);
-
-          // 8. Send response.output_item.done event for message
           const messageItem = {
-            id: messageId,
-            type: "message",
-            status: "completed",
-            role: "assistant",
-            content: [
-              {
-                type: "output_text",
-                text: content
-              }
-            ]
+            id: messageId, type: "message", status: "completed", role: "assistant",
+            content: [{ type: "output_text", text: content }]
           };
-          const outputItemDoneEvent = {
-            type: "response.output_item.done",
-            output_index: outputIndex,
-            item: messageItem,
-            sequence_number: sequenceNumber++
-          };
-          res.write(`event: response.output_item.done\n`);
-          res.write(`data: ${JSON.stringify(outputItemDoneEvent)}\n\n`);
+          sse("response.output_item.done", {
+            type: "response.output_item.done", output_index: outputIndex,
+            item: messageItem, sequence_number: sequenceNumber++
+          });
 
           outputItems.push(messageItem);
           outputIndex++;
         }
 
-        // 9. Send response.completed event (OpenAI Responses API format)
-        const completedEvent = {
+        // response.completed (always last)
+        sse("response.completed", {
           type: "response.completed",
           response: {
-            id: responseId,
-            object: "response",
-            status: "completed",
-            created_at: createdAt,
-            model: responsesModel,
-            output: outputItems,
+            id: responseId, object: "response", status: "completed",
+            created_at: createdAt, model: responsesModel, output: outputItems,
             usage: {
               input_tokens: responsesResponse.usage?.prompt_tokens || 0,
               output_tokens: responsesResponse.usage?.completion_tokens || 0,
@@ -1821,34 +1845,52 @@ router.post("/responses", async (req, res) => {
             }
           },
           sequence_number: sequenceNumber++
-        };
-        res.write(`event: response.completed\n`);
-        res.write(`data: ${JSON.stringify(completedEvent)}\n\n`);
+        });
 
-        res.end();
+        // Write entire payload and close in one call
+        const payload = chunks.join("");
+        res.end(payload);
+
+        // Store response for previous_response_id continuity
+        try {
+          const responseStore = require("../stores/response-store");
+          responseStore.storeResponse(responseId, {
+            messages: chatRequest?.messages || [],
+            assistantContent: content || null,
+          });
+        } catch {}
 
         logger.info({
           duration: Date.now() - startTime,
           mode: "streaming",
           contentLength: content.length,
           toolCallCount: toolCalls.length,
-          sequenceNumber: sequenceNumber
+          payloadBytes: payload.length
         }, "=== RESPONSES API STREAMING COMPLETE ===");
 
       } catch (streamError) {
         logger.error({ error: streamError.message, stack: streamError.stack }, "Responses API streaming error");
 
-        // Send error via SSE
-        res.write(`event: error\n`);
-        res.write(`data: ${JSON.stringify({
-          type: "error",
-          error: {
-            message: streamError.message || "Internal server error",
-            type: "server_error",
-            code: "internal_error"
-          }
-        })}\n\n`);
-        res.end();
+        // Build error as a complete SSE payload with response.completed
+        const errorResponseId = `resp_err_${Date.now()}`;
+        const errorPayload = [
+          `event: response.created\ndata: ${JSON.stringify({
+            type: "response.created",
+            response: { id: errorResponseId, object: "response", status: "in_progress", output: [], usage: null },
+            sequence_number: 0
+          })}\n\n`,
+          `event: response.completed\ndata: ${JSON.stringify({
+            type: "response.completed",
+            response: {
+              id: errorResponseId, object: "response", status: "failed",
+              output: [{ type: "message", role: "assistant", status: "completed",
+                content: [{ type: "output_text", text: `Error: ${streamError.message || "Internal server error"}` }] }],
+              usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }
+            },
+            sequence_number: 1
+          })}\n\n`
+        ].join("");
+        try { res.end(errorPayload); } catch { try { res.end(); } catch {} }
       }
 
     } else {
@@ -1867,6 +1909,16 @@ router.post("/responses", async (req, res) => {
       // Convert back: Anthropic → OpenAI → Responses
       const chatResponse = convertAnthropicToOpenAI(result.body, resolveResponseModel(result.body, req.body.model));
       const responsesResponse = convertChatToResponses(chatResponse);
+
+      // Clean up tool result artifacts in content
+      if (responsesResponse.content) {
+        responsesResponse.content = responsesResponse.content
+          .replace(/\{"output":"((?:[^"\\]|\\.)*)"\s*(?:,"metadata":\{[^}]*\})?\}/g, (match, output) => {
+            try { return JSON.parse(`"${output}"`); } catch { return output; }
+          })
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t');
+      }
 
       logger.info({
         duration: Date.now() - startTime,

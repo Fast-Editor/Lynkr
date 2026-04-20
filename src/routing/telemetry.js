@@ -454,11 +454,49 @@ function cleanup(olderThanMs) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// In-memory stats cache (avoids SQLite queries on every /v1/routing/stats hit)
+// ---------------------------------------------------------------------------
+
+const STATS_CACHE_TTL = 5000; // 5 seconds
+let statsCache = null;
+let statsCacheTs = 0;
+
+function getStatsCached(timeRange = {}) {
+  const now = Date.now();
+  // Use cache for default time range (last 24h) — custom ranges bypass cache
+  if (!timeRange.since && !timeRange.until && statsCache && now - statsCacheTs < STATS_CACHE_TTL) {
+    return statsCache;
+  }
+  const result = getStats(timeRange);
+  if (!timeRange.since && !timeRange.until) {
+    statsCache = result;
+    statsCacheTs = now;
+  }
+  return result;
+}
+
+let providerStatsCache = new Map();
+let providerStatsCacheTs = 0;
+
+function getProviderStatsCached(provider, timeRange = {}) {
+  const now = Date.now();
+  if (!timeRange.since && !timeRange.until && providerStatsCache.has(provider) && now - providerStatsCacheTs < STATS_CACHE_TTL) {
+    return providerStatsCache.get(provider);
+  }
+  const result = getProviderStats(provider, timeRange);
+  if (!timeRange.since && !timeRange.until) {
+    providerStatsCache.set(provider, result);
+    providerStatsCacheTs = now;
+  }
+  return result;
+}
+
 module.exports = {
   record,
   query,
-  getStats,
-  getProviderStats,
+  getStats: getStatsCached,
+  getProviderStats: getProviderStatsCached,
   getRoutingAccuracy,
   cleanup,
 };

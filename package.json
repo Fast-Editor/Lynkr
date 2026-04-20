@@ -1,6 +1,6 @@
 {
   "name": "lynkr",
-  "version": "8.0.1",
+  "version": "9.0.1",
   "description": "Self-hosted Claude Code & Cursor proxy with Databricks,AWS BedRock,Azure  adapters, openrouter, Ollama,llamacpp,LM Studio, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
@@ -14,7 +14,7 @@
     "dev": "nodemon index.js",
     "lint": "eslint src index.js",
     "test": "npm run test:unit && npm run test:performance",
-    "test:unit": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js test/hybrid-routing-integration.test.js test/web-tools.test.js test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js test/azure-openai-config.test.js test/azure-openai-format-conversion.test.js test/azure-openai-routing.test.js test/azure-openai-streaming.test.js test/azure-openai-error-resilience.test.js test/azure-openai-integration.test.js test/openai-integration.test.js test/toon-compression.test.js test/llamacpp-integration.test.js test/resilience.test.js test/telemetry-routing.test.js test/memory/store.test.js test/memory/surprise.test.js test/memory/extractor.test.js test/memory/search.test.js test/memory/retriever.test.js test/distill.test.js test/large-payload.test.js test/code-mode.test.js",
+    "test:unit": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js test/hybrid-routing-integration.test.js test/web-tools.test.js test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js test/azure-openai-config.test.js test/azure-openai-format-conversion.test.js test/azure-openai-routing.test.js test/azure-openai-streaming.test.js test/azure-openai-error-resilience.test.js test/azure-openai-integration.test.js test/openai-integration.test.js test/toon-compression.test.js test/llamacpp-integration.test.js test/resilience.test.js test/telemetry-routing.test.js test/memory/store.test.js test/memory/surprise.test.js test/memory/extractor.test.js test/memory/search.test.js test/memory/retriever.test.js test/distill.test.js test/large-payload.test.js test/code-mode.test.js test/prompt-cache-injection.test.js",
     "test:memory": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/memory/store.test.js test/memory/surprise.test.js test/memory/extractor.test.js test/memory/search.test.js test/memory/retriever.test.js",
     "test:new-features": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/passthrough-mode.test.js test/openrouter-error-resilience.test.js test/format-conversion.test.js",
     "test:performance": "DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/hybrid-routing-performance.test.js && DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-tests.js",
@@ -71,6 +71,7 @@
     "tree-sitter-typescript": "^0.21.0"
   },
   "devDependencies": {
+    "@napi-rs/cli": "^3.6.2",
     "eslint": "^8.57.0",
     "nodemon": "^3.1.0",
     "pino-pretty": "^10.2.0"

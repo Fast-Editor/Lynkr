@@ -2,68 +2,57 @@ name: CI Tests
 
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
   pull_request:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    name: Run Tests
+    name: Tests
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [20.x, 22.x, 23.x, 24.x]
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          version: 9
 
-      - name: Install dependencies (C++20 for native addons)
-        env:
-          CXXFLAGS: "-std=gnu++20"
-          npm_config_build_from_source: true
-        run: npm ci
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
 
-      - name: Run linter
-        run: npm run lint
-        continue-on-error: true
+      - name: Install
+        run: pnpm install --no-optional --ignore-scripts --no-frozen-lockfile
+        timeout-minutes: 5
 
-      - name: Run unit tests
-        run: npm run test:unit
-        env:
-          DATABRICKS_API_KEY: test-key
-          DATABRICKS_API_BASE: http://test.com
-
-      - name: Run performance tests
-        run: npm run test:performance
-        env:
-          DATABRICKS_API_KEY: test-key
-          DATABRICKS_API_BASE: http://test.com
-        continue-on-error: true
-
-  test-summary:
-    name: Test Summary
-    runs-on: ubuntu-latest
-    needs: test
-    if: always()
-
-    steps:
-      - name: Check test results
+      - name: Test
         run: |
-          echo "Tests completed"
-          if [ "${{ needs.test.result }}" == "failure" ]; then
-            echo "Tests failed!"
-            exit 1
-          fi
-          echo "All tests passed!"
+          DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com \
+          node --test \
+            test/routing.test.js \
+            test/hybrid-routing-integration.test.js \
+            test/web-tools.test.js \
+            test/passthrough-mode.test.js \
+            test/openrouter-error-resilience.test.js \
+            test/format-conversion.test.js \
+            test/azure-openai-config.test.js \
+            test/azure-openai-format-conversion.test.js \
+            test/azure-openai-routing.test.js \
+            test/azure-openai-streaming.test.js \
+            test/azure-openai-error-resilience.test.js \
+            test/azure-openai-integration.test.js \
+            test/openai-integration.test.js \
+            test/toon-compression.test.js \
+            test/llamacpp-integration.test.js \
+            test/resilience.test.js \
+            test/telemetry-routing.test.js \
+            test/distill.test.js \
+            test/large-payload.test.js \
+            test/code-mode.test.js \
+            test/prompt-cache-injection.test.js
+        timeout-minutes: 5

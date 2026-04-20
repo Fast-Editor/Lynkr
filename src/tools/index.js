@@ -34,7 +34,7 @@ const TOOL_ALIASES = {
   webagent: "web_agent",
   WebAgent: "web_agent",
   tinyfish: "web_agent",
-  task: "fs_write",
+  task: "Task",
   write: "fs_write",
   filewrite: "fs_write",
   read: "fs_read",

@@ -71,9 +71,19 @@ function jaccardSimilarity(setA, setB) {
   return union === 0 ? 0 : intersection / union;
 }
 
+// Try to load native Rust implementation (3.7x faster for 100+ line blocks)
+let nativeSimilarity = null;
+try {
+  const native = require('../../native');
+  if (native.available && native.structuralSimilarity) {
+    nativeSimilarity = native.structuralSimilarity;
+  }
+} catch { /* native module not available — use JS */ }
+
 /**
  * Compute structural similarity between two text blocks.
  * Uses normalized line signatures + Jaccard index.
+ * Delegates to Rust native when available (3.7x faster).
  *
  * @param {string} a - First text
  * @param {string} b - Second text
@@ -82,6 +92,11 @@ function jaccardSimilarity(setA, setB) {
 function structuralSimilarity(a, b) {
   if (!a && !b) return 1;
   if (!a || !b) return 0;
+
+  // Use Rust for large inputs where the speedup offsets Napi boundary cost
+  if (nativeSimilarity && a.length + b.length > 500) {
+    return nativeSimilarity(a, b);
+  }
 
   const sigA = extractSignature(a);
   const sigB = extractSignature(b);

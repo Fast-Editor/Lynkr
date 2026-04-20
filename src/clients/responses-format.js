@@ -19,6 +19,7 @@ const logger = require("../logger");
 function mapClientToolToLynkr(clientToolName) {
   const reverseMapping = {
     // ============== CODEX CLI ==============
+    "shell": "Bash",
     "shell_command": "Bash",
     "read_file": "Read",
     "write_file": "Write",
@@ -140,13 +141,13 @@ function convertResponsesToChat(responsesRequest) {
 
         // Handle function_call (tool calls - convert to assistant with tool_calls)
         if (msg.type === 'function_call') {
-          // Map client tool names back to Lynkr names for model consistency
-          // Supports Codex CLI, Cline, Continue.dev
-          const lynkrToolName = mapClientToolToLynkr(msg.name);
+          // Keep the client's original tool name (e.g., "shell", "read_file")
+          // so it matches the tool definitions injected in the Responses endpoint.
+          // Mapping to Lynkr names here would cause a mismatch with
+          // client-named tool definitions sent to the model.
           logger.debug({
-            originalName: msg.name,
-            mappedName: lynkrToolName
-          }, "Mapping client tool name to Lynkr");
+            toolName: msg.name
+          }, "Preserving client tool name in function_call");
 
           return {
             role: 'assistant',
@@ -155,7 +156,7 @@ function convertResponsesToChat(responsesRequest) {
               id: msg.call_id || msg.id,
               type: 'function',
               function: {
-                name: lynkrToolName,
+                name: msg.name,
                 arguments: typeof msg.arguments === 'string' ? msg.arguments : JSON.stringify(msg.arguments || {})
               }
             }]
