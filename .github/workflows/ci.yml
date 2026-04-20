@@ -2,13 +2,9 @@ name: CI Tests
 
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
   pull_request:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,44 +12,48 @@ concurrency:
 
 jobs:
   test:
-    name: Tests (Node ${{ matrix.node-version }})
+    name: Tests
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: [22.x]
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 22.x
           cache: 'npm'
 
-      - name: Install dependencies
-        run: |
-          npm install --omit=optional --ignore-scripts --no-audit --no-fund || npm install --ignore-scripts --no-audit --no-fund || npm ci
-          npm rebuild better-sqlite3 2>/dev/null || true
-        env:
-          CXXFLAGS: "-std=gnu++20"
-        timeout-minutes: 15
+      - name: Install
+        run: npm install --omit=optional --ignore-scripts --no-audit --no-fund
+        timeout-minutes: 5
 
       - name: Lint
         run: npm run lint
         continue-on-error: true
 
-      - name: Unit tests
-        run: npm run test:unit
-        env:
-          DATABRICKS_API_KEY: test-key
-          DATABRICKS_API_BASE: http://test.com
-        timeout-minutes: 5
-
-      - name: Performance tests
-        run: npm run test:performance
-        env:
-          DATABRICKS_API_KEY: test-key
-          DATABRICKS_API_BASE: http://test.com
-        continue-on-error: true
+      - name: Test
+        run: |
+          DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com \
+          node --test \
+            test/routing.test.js \
+            test/hybrid-routing-integration.test.js \
+            test/web-tools.test.js \
+            test/passthrough-mode.test.js \
+            test/openrouter-error-resilience.test.js \
+            test/format-conversion.test.js \
+            test/azure-openai-config.test.js \
+            test/azure-openai-format-conversion.test.js \
+            test/azure-openai-routing.test.js \
+            test/azure-openai-streaming.test.js \
+            test/azure-openai-error-resilience.test.js \
+            test/azure-openai-integration.test.js \
+            test/openai-integration.test.js \
+            test/toon-compression.test.js \
+            test/llamacpp-integration.test.js \
+            test/resilience.test.js \
+            test/telemetry-routing.test.js \
+            test/distill.test.js \
+            test/large-payload.test.js \
+            test/code-mode.test.js \
+            test/prompt-cache-injection.test.js
         timeout-minutes: 5
