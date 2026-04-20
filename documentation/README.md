@@ -20,6 +20,7 @@ Connect Lynkr to your development tools:
 
 - **[Claude Code CLI Setup](claude-code-cli.md)** - Configure Claude Code CLI to use Lynkr
 - **[Codex CLI Setup](codex-cli.md)** - Configure OpenAI Codex CLI with Lynkr (config.toml, wire_api, troubleshooting)
+- **[OpenClaw Integration](openclaw-integration.md)** - Use OpenClaw with Lynkr as its AI backend
 - **[Cursor IDE Integration](cursor-integration.md)** - Full Cursor IDE setup with troubleshooting
 - **[Embeddings Configuration](embeddings.md)** - Enable @Codebase semantic search with 4 provider options (Ollama, llama.cpp, OpenRouter, OpenAI)
 
@@ -71,10 +72,21 @@ Get help and contribute:
 ## Quick Navigation by Topic
 
 ### Setup & Configuration
-- [Installation](installation.md) | [Providers](providers.md) | [Claude Code](claude-code-cli.md) | [Codex CLI](codex-cli.md) | [Cursor](cursor-integration.md) | [Embeddings](embeddings.md)
+- [Installation](installation.md) | [Providers](providers.md) | [Claude Code](claude-code-cli.md) | [Codex CLI](codex-cli.md) | [OpenClaw](openclaw-integration.md) | [Cursor](cursor-integration.md) | [Embeddings](embeddings.md)
 
 ### Features & Optimization
 - [Features](features.md) | [Routing](routing.md) | [Memory System](memory-system.md) | [Token Optimization](token-optimization.md) | [Headroom](headroom.md) | [Tools](tools.md)
+
+### New in v9.0
+- **Codex CLI Full Support** — OpenAI Responses API (`/v1/responses`) with SSE streaming, tool-to-shell conversion, session continuity via `previous_response_id`
+- **OpenClaw Integration** — `OPENCLAW_MODE=true` rewrites model names with actual provider/model
+- **Extended Thinking Passthrough** — `reasoning_content` from Moonshot/DeepSeek emitted as thinking blocks; `anthropic-beta` header forwarded to native providers
+- **Universal Tool Call Extractor** — Parses XML/JSON tool calls from model text output (Minimax, Qwen, GLM, Llama, Mistral, DeepSeek, GPT-OSS — 10 formats)
+- **Files API** — `POST/GET/DELETE /v1/files` with local filesystem storage and multipart upload
+- **Citations API** — Anthropic citations preserved through format conversion
+- **PDF/Document Input** — Base64 document and image blocks pass through to supporting providers
+- **Provider Capabilities Registry** — Categorizes providers by thinking support (native, reasoning_content, none)
+- **Prompt Cache Injection** — Provider-side `cache_control` breakpoints for Anthropic-compatible providers
 
 ### New in v8.0
 - **Graphify Integration** — Knowledge graph-powered routing with god node detection and community cohesion

@@ -125,7 +125,24 @@ const { text } = await generateText({
 });
 ```
 
-> Works with any OpenAI-compatible client: Cline, Continue.dev, ClawdBot, KiloCode, and more.
+**OpenClaw**
+```json
+// openclaw.json
+{
+  "models": {
+    "providers": [{
+      "name": "lynkr",
+      "type": "openai-compatible",
+      "base_url": "http://localhost:8081/v1",
+      "api_key": "any-value",
+      "models": ["auto"]
+    }]
+  }
+}
+```
+Set `OPENCLAW_MODE=true` in Lynkr's `.env` to show actual provider/model in responses.
+
+> Works with any OpenAI-compatible client: Cline, Continue.dev, OpenClaw, KiloCode, and more.
 
 ---
 
@@ -274,6 +291,7 @@ brew install lynkr
 | [Provider Config](documentation/providers.md) | Setup for all 12+ providers |
 | [Claude Code CLI](documentation/claude-code-cli.md) | Detailed Claude Code integration |
 | [Codex CLI](documentation/codex-cli.md) | Codex config.toml setup |
+| [OpenClaw](documentation/openclaw-integration.md) | OpenClaw integration with tier routing |
 | [Cursor IDE](documentation/cursor-integration.md) | Cursor integration + troubleshooting |
 | [Embeddings](documentation/embeddings.md) | @Codebase semantic search (4 options) |
 | [Token Optimization](documentation/token-optimization.md) | 60-80% cost reduction strategies |

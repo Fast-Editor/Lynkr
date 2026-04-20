@@ -809,7 +809,7 @@ describe("llama.cpp Integration", () => {
       assert.strictEqual(result.stop_reason, "tool_use");
     });
 
-    it("should filter malformed JSON when model outputs ONLY JSON without tool_calls", () => {
+    it("should extract raw JSON tool calls when model outputs ONLY JSON without tool_calls", () => {
       process.env.MODEL_PROVIDER = "databricks";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
@@ -817,8 +817,7 @@ describe("llama.cpp Integration", () => {
       const { convertOpenRouterResponseToAnthropic } = require("../src/clients/openrouter-utils");
 
       // Simulate llama.cpp model that outputs JSON in content but doesn't provide tool_calls
-      // This is a model training/configuration issue - model learned to output JSON
-      // but llama.cpp server isn't converting it to structured tool_calls
+      // The XML tool extractor should extract these as proper tool_use blocks
       const response = {
         id: "chatcmpl-malformed",
         choices: [
@@ -826,7 +825,6 @@ describe("llama.cpp Integration", () => {
             message: {
               role: "assistant",
               content: '{"function": "Write", "parameters": {"file_path": "test.go", "content": "package main"}}',
-              // No tool_calls array - model error!
             },
             finish_reason: "stop"
           }
@@ -839,14 +837,14 @@ describe("llama.cpp Integration", () => {
 
       const result = convertOpenRouterResponseToAnthropic(response, "test-model");
 
-      // Should have 1 empty text block (JSON was filtered out)
-      assert.strictEqual(result.content.length, 1);
-      assert.strictEqual(result.content[0].type, "text");
-      assert.strictEqual(result.content[0].text, "");
-      assert.strictEqual(result.stop_reason, "end_turn");
+      // XML extractor should extract the JSON as a tool_use block
+      const toolUseBlocks = result.content.filter(b => b.type === "tool_use");
+      assert.ok(toolUseBlocks.length >= 1, "Should extract at least one tool_use from raw JSON");
+      assert.strictEqual(toolUseBlocks[0].name, "Write");
+      assert.strictEqual(result.stop_reason, "tool_use");
     });
 
-    it("should filter alternative JSON formats without tool_calls", () => {
+    it("should extract alternative JSON formats without tool_calls", () => {
       process.env.MODEL_PROVIDER = "databricks";
       process.env.DATABRICKS_API_KEY = "test-key";
       process.env.DATABRICKS_API_BASE = "http://test.com";
@@ -873,10 +871,10 @@ describe("llama.cpp Integration", () => {
 
       const result = convertOpenRouterResponseToAnthropic(response, "test-model");
 
-      // Should filter out the JSON
-      assert.strictEqual(result.content.length, 1);
-      assert.strictEqual(result.content[0].type, "text");
-      assert.strictEqual(result.content[0].text, "");
+      // XML extractor should extract the JSON as a tool_use block
+      const toolUseBlocks = result.content.filter(b => b.type === "tool_use");
+      assert.ok(toolUseBlocks.length >= 1, "Should extract at least one tool_use from raw JSON");
+      assert.strictEqual(toolUseBlocks[0].name, "Read");
     });
   });
 });
