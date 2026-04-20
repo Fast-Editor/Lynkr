@@ -36,8 +36,12 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm install --no-optional --ignore-scripts --no-audit --no-fund
-        timeout-minutes: 10
+        run: |
+          npm install --omit=optional --ignore-scripts --no-audit --no-fund || npm install --ignore-scripts --no-audit --no-fund || npm ci
+          npm rebuild better-sqlite3 2>/dev/null || true
+        env:
+          CXXFLAGS: "-std=gnu++20"
+        timeout-minutes: 15
 
       - name: Lint
         run: npm run lint
