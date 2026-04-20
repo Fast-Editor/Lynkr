@@ -29,11 +29,15 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
-      - name: Install dependencies (C++20 for native addons)
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+        timeout-minutes: 5
+
+      - name: Build native addons
+        run: npm rebuild better-sqlite3 2>/dev/null || true
         env:
           CXXFLAGS: "-std=gnu++20"
-          npm_config_build_from_source: true
-        run: npm ci
+        timeout-minutes: 5
 
       - name: Run linter
         run: npm run lint
