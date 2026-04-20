@@ -18,15 +18,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22.x
+          cache: 'pnpm'
 
       - name: Install
-        run: |
-          npm cache clean --force
-          npm ci --omit=optional --ignore-scripts
-        timeout-minutes: 10
+        run: pnpm install --no-optional --ignore-scripts --no-frozen-lockfile
+        timeout-minutes: 5
 
       - name: Test
         run: |
