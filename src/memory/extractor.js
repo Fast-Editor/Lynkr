@@ -312,6 +312,28 @@ async function createMemoryWithSurprise(options) {
 
     return memory;
   } catch (err) {
+    // FK constraint fails when session is ephemeral (passthrough mode) —
+    // retry without session link so the memory still gets saved
+    if (err.code === 'SQLITE_CONSTRAINT_FOREIGNKEY' && sessionId) {
+      try {
+        return store.createMemory({
+          sessionId: null,
+          content,
+          type,
+          category,
+          importance,
+          surpriseScore,
+          metadata: {
+            ...metadata,
+            extractedAt: Date.now(),
+            originalSessionId: sessionId,
+          },
+        });
+      } catch (retryErr) {
+        logger.warn({ err: retryErr, content }, 'Failed to store memory (retry without session)');
+        return null;
+      }
+    }
     logger.warn({ err, content }, 'Failed to store memory');
     return null;
   }

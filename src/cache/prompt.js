@@ -5,6 +5,15 @@ try {
 } catch {
   Database = null;
 }
+
+// Try to load native Rust cache key computation (4x faster for small payloads)
+let nativeCacheKey = null;
+try {
+  const native = require('../../native');
+  if (native.available && native.computeCacheKey) {
+    nativeCacheKey = native.computeCacheKey;
+  }
+} catch { /* native module not available — use JS */ }
 const path = require("path");
 const fs = require("fs");
 const config = require("../config");
@@ -164,6 +173,10 @@ class PromptCache {
         max_tokens: payload.max_tokens ?? null,
       };
       const serialised = stableStringify(canonical);
+      // Use Rust for small payloads where it's 4x faster
+      if (nativeCacheKey && serialised.length < 5000) {
+        return nativeCacheKey(serialised);
+      }
       return crypto.createHash("sha256").update(serialised).digest("hex");
     } catch (error) {
       logger.warn(

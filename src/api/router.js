@@ -369,7 +369,11 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       })}\n\n`);
 
       // 2. content_block_start and content_block_delta for each content block
-      const contentBlocks = msg.content || [];
+      // Filter out server-side tools that shouldn't reach the client
+      const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
+      const contentBlocks = (msg.content || []).filter(b =>
+        !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
+      );
       for (let i = 0; i < contentBlocks.length; i++) {
         const block = contentBlocks[i];
 
@@ -394,6 +398,25 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
             })}\n\n`);
           }
 
+          res.write(`event: content_block_stop\n`);
+          res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: i })}\n\n`);
+        } else if (block.type === "thinking") {
+          res.write(`event: content_block_start\n`);
+          res.write(`data: ${JSON.stringify({
+            type: "content_block_start",
+            index: i,
+            content_block: { type: "thinking", thinking: "" }
+          })}\n\n`);
+          const thinkingText = block.thinking || "";
+          const thinkChunkSize = 40;
+          for (let j = 0; j < thinkingText.length; j += thinkChunkSize) {
+            res.write(`event: content_block_delta\n`);
+            res.write(`data: ${JSON.stringify({
+              type: "content_block_delta",
+              index: i,
+              delta: { type: "thinking_delta", thinking: thinkingText.slice(j, j + thinkChunkSize) }
+            })}\n\n`);
+          }
           res.write(`event: content_block_stop\n`);
           res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: i })}\n\n`);
         } else if (block.type === "tool_use") {
@@ -488,7 +511,11 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       })}\n\n`);
 
       // 2. content_block_start and content_block_delta for each content block
-      const contentBlocks = msg.content || [];
+      // Filter out server-side tools that shouldn't reach the client
+      const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
+      const contentBlocks = (msg.content || []).filter(b =>
+        !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
+      );
       for (let i = 0; i < contentBlocks.length; i++) {
         const block = contentBlocks[i];
 
@@ -512,6 +539,25 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
             })}\n\n`);
           }
 
+          res.write(`event: content_block_stop\n`);
+          res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: i })}\n\n`);
+        } else if (block.type === "thinking") {
+          res.write(`event: content_block_start\n`);
+          res.write(`data: ${JSON.stringify({
+            type: "content_block_start",
+            index: i,
+            content_block: { type: "thinking", thinking: "" }
+          })}\n\n`);
+          const thinkingText = block.thinking || "";
+          const thinkChunkSize = 40;
+          for (let j = 0; j < thinkingText.length; j += thinkChunkSize) {
+            res.write(`event: content_block_delta\n`);
+            res.write(`data: ${JSON.stringify({
+              type: "content_block_delta",
+              index: i,
+              delta: { type: "thinking_delta", thinking: thinkingText.slice(j, j + thinkChunkSize) }
+            })}\n\n`);
+          }
           res.write(`event: content_block_stop\n`);
           res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: i })}\n\n`);
         } else if (block.type === "tool_use") {

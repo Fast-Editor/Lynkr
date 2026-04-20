@@ -147,6 +147,10 @@ function createApp() {
 
   app.use(router);
 
+  // Files API
+  const filesRouter = require("./api/files-router");
+  app.use("/v1", filesRouter);
+
   // 404 handler (must be after all routes)
   app.use(notFoundHandler);
 
@@ -195,6 +199,14 @@ async function start() {
   const provider = config.modelProvider?.type?.toLowerCase();
   if (provider === "ollama" || config.tiersReferenceOllama()) {
     await waitForOllama();
+
+    // Pre-probe Ollama's Anthropic API at startup (avoids 1-3s cold-start on first request)
+    try {
+      const { hasAnthropicEndpoint } = require("./clients/ollama-utils");
+      await hasAnthropicEndpoint(config.ollama.endpoint);
+    } catch (err) {
+      logger.debug({ err: err.message }, "Ollama Anthropic endpoint probe failed at startup");
+    }
   }
 
   const server = app.listen(config.port, () => {

@@ -89,12 +89,12 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
           tool_calls
         };
 
-        // Only add content if there's actual text, otherwise omit the field entirely
-        // Some providers require content to be present, so use empty string as fallback
+        // Moonshot/Kimi and some OpenAI-compatible APIs require content to
+        // be null (not empty string) when tool_calls are present.
         if (textContent && textContent.trim()) {
           message.content = textContent;
         } else {
-          message.content = '';
+          message.content = null;
         }
 
         converted.push(message);
@@ -146,37 +146,32 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
     }
   }
 
-  // Validate message sequence: tool messages must follow assistant messages with tool_calls
+  // Fix tool_call_id mismatches: ensure every tool message's tool_call_id
+  // matches the id in the preceding assistant's tool_calls array.
+  // IDs can drift when multiple conversion layers (Anthropic↔OpenAI) each
+  // generate their own IDs.
   for (let i = 0; i < converted.length; i++) {
     const msg = converted[i];
-    if (msg.role === 'tool') {
-      // Find the preceding assistant message with tool_calls
-      let foundMatchingToolCall = false;
-      for (let j = i - 1; j >= 0; j--) {
-        const prevMsg = converted[j];
-        if (prevMsg.role === 'assistant' && Array.isArray(prevMsg.tool_calls)) {
-          // Check if this tool result matches any of the tool calls
-          if (prevMsg.tool_calls.some(tc => tc.id === msg.tool_call_id)) {
-            foundMatchingToolCall = true;
-            break;
+    if (msg.role !== 'tool') continue;
+
+    // Find the nearest preceding assistant with tool_calls
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = converted[j];
+      if (prev.role === 'user') break;
+      if (prev.role === 'assistant' && Array.isArray(prev.tool_calls) && prev.tool_calls.length > 0) {
+        if (!prev.tool_calls.some(tc => tc.id === msg.tool_call_id)) {
+          // Mismatch — pick the first unmatched tool_call id
+          const usedIds = new Set();
+          for (let k = j + 1; k < converted.length; k++) {
+            if (converted[k].role === 'tool' && k !== i) usedIds.add(converted[k].tool_call_id);
+          }
+          const available = prev.tool_calls.find(tc => !usedIds.has(tc.id));
+          if (available) {
+            logger.info({ from: msg.tool_call_id, to: available.id }, "Fixed tool_call_id mismatch");
+            msg.tool_call_id = available.id;
           }
         }
-        // Stop if we hit another user message
-        if (prevMsg.role === 'user') break;
-      }
-
-      if (!foundMatchingToolCall) {
-        // Log but DON'T remove - the tool result may be valid but IDs mismatched due to format conversion
-        logger.debug({
-          messageIndex: i,
-          toolCallId: msg.tool_call_id,
-          precedingMessages: converted.slice(Math.max(0, i - 3), i).map(m => ({
-            role: m.role,
-            hasToolCalls: !!m.tool_calls,
-            toolCallIds: m.tool_calls?.map(tc => tc.id)
-          }))
-        }, "Tool message without matching tool_call - keeping for API to validate");
-        // Don't remove - let the API handle validation
+        break;
       }
     }
   }
@@ -242,6 +237,17 @@ function convertOpenRouterResponseToAnthropic(openRouterResponse, requestedModel
   const message = choice.message || {};
   const contentBlocks = [];
 
+  // Extract tool calls embedded as XML/text in content (Minimax, Qwen, GLM, etc.)
+  if (!message.tool_calls?.length && typeof message.content === "string" && message.content.trim()) {
+    const { extractToolCallsFromText } = require("./xml-tool-extractor");
+    const extracted = extractToolCallsFromText(message.content);
+    if (extracted.toolCalls.length > 0) {
+      message.tool_calls = extracted.toolCalls;
+      message.content = extracted.cleanedText;
+      choice.finish_reason = "tool_calls";
+    }
+  }
+
   // Check if there are tool calls present
   const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
 
@@ -262,14 +268,13 @@ function convertOpenRouterResponseToAnthropic(openRouterResponse, requestedModel
             trimmed.includes('"arguments"'));
   };
 
-  // Handle reasoning_content from thinking models (e.g., Kimi, o1)
+  // Emit reasoning_content as a thinking block (not as fallback text)
   let textContent = message.content || "";
-  if (!textContent.trim() && message.reasoning_content) {
-    logger.info({
-      hasReasoningContent: true,
-      reasoningLength: message.reasoning_content.length
-    }, "Using reasoning_content as primary content (thinking model detected)");
-    textContent = message.reasoning_content;
+  if (message.reasoning_content && typeof message.reasoning_content === "string") {
+    contentBlocks.push({ type: "thinking", thinking: message.reasoning_content });
+  }
+  if (!textContent.trim() && !message.reasoning_content) {
+    // No content at all — will be handled below
   }
 
   // Add text content if present, but skip if it's a duplicate/malformed tool call JSON

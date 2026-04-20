@@ -247,37 +247,8 @@ async function determineProviderSmart(payload, options = {}) {
   selectedModel = modelSelection.model;
   logger.debug({ tier, provider, model: selectedModel }, '[Routing] Using tier config');
 
-  // Cost optimization: check if cheaper model can handle this tier
-  let costOptimized = false;
-  if (config.routing?.costOptimization && tier) {
-    try {
-      const optimizer = getCostOptimizer();
-      const availableProviders = [provider];
-
-      // Also consider local provider if not already selected
-      const localProvider = getBestLocalProvider();
-      if (localProvider !== provider) {
-        availableProviders.push(localProvider);
-      }
-
-      const cheapest = optimizer.findCheapestForTier(tier, availableProviders);
-      if (cheapest && cheapest.provider !== provider) {
-        logger.debug({
-          from: provider,
-          to: cheapest.provider,
-          tier,
-          savings: `${cheapest.model} is cheaper`,
-        }, '[Routing] Cost optimization: switching provider');
-
-        provider = cheapest.provider;
-        selectedModel = cheapest.model;
-        costOptimized = true;
-        method = 'cost_optimized';
-      }
-    } catch (err) {
-      logger.debug({ err: err.message }, 'Cost optimization failed');
-    }
-  }
+  // TIER_* env vars are the final word — no cost optimization override.
+  // The user explicitly configured provider:model per tier; respect that.
 
   const decision = {
     provider,
@@ -291,7 +262,7 @@ async function determineProviderSmart(payload, options = {}) {
     analysis,
     embeddingsResult,
     agenticResult,
-    costOptimized,
+    costOptimized: false,
   };
 
   // Phase 3: Record metrics

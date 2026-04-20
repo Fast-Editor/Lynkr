@@ -77,25 +77,29 @@ async function hasAnthropicEndpoint(baseUrl) {
   if (anthropicEndpointAvailable !== null) return anthropicEndpointAvailable;
 
   try {
-    // Send a minimal request — we only care about whether the route exists
-    const res = await fetch(`${baseUrl}/v1/messages`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "probe",
-        max_tokens: 1,
-        messages: [{ role: "user", content: "hi" }],
-      }),
+    // Check Ollama version — /v1/messages requires v0.14.0+
+    // This is instant (no LLM inference) vs the old probe that sent a real request
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const versionRes = await fetch(`${baseUrl}/api/version`, {
+      method: "GET",
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
 
-    // 404 → endpoint doesn't exist (old Ollama)
-    // Any other status (200, 400, 500) → endpoint exists
-    anthropicEndpointAvailable = res.status !== 404;
+    if (versionRes.ok) {
+      const versionData = await versionRes.json().catch(() => null);
+      const version = versionData?.version || "0.0.0";
+      const [major, minor] = version.split(".").map(Number);
+
+      // v0.14.0+ has the Anthropic Messages API
+      anthropicEndpointAvailable = major > 0 || (major === 0 && minor >= 14);
+    } else {
+      // Can't determine version — fall back to legacy
+      anthropicEndpointAvailable = false;
+    }
     logger.info(
-      { available: anthropicEndpointAvailable, status: res.status },
+      { available: anthropicEndpointAvailable, status: versionRes.status },
       anthropicEndpointAvailable
         ? "Ollama Anthropic API detected (/v1/messages) — using native passthrough"
         : "Ollama Anthropic API not available — falling back to legacy /api/chat (upgrade to Ollama v0.14.0+ for best results)"
