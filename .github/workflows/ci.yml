@@ -37,9 +37,14 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
-        env:
-          npm_config_optional: false
+        run: |
+          # Remove optional native deps that crash npm on CI runners
+          node -e "
+            const pkg = require('./package.json');
+            delete pkg.optionalDependencies;
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          npm install --no-optional --ignore-scripts
         timeout-minutes: 10
 
       - name: Lint
