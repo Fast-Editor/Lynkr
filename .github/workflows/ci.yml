@@ -20,12 +20,8 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
-      fail-fast: true
       matrix:
         node-version: [22.x]
-        include:
-          - node-version: 20.x
-            optional: true
 
     steps:
       - uses: actions/checkout@v4
