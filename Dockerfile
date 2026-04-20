@@ -81,7 +81,10 @@ ENV NODE_ENV="production" \
     HOT_RELOAD_ENABLED="true" \
     # Rate limiting
     RATE_LIMIT_ENABLED="true" \
-    RATE_LIMIT_MAX="100"
+    RATE_LIMIT_MAX="100" \
+    # Cluster mode (multi-core, recommended for teams)
+    CLUSTER_ENABLED="true" \
+    CLUSTER_WORKERS="auto"
 
 USER node
 

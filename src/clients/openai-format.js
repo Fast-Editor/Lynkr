@@ -60,13 +60,16 @@ function convertOpenAIToAnthropic(openaiRequest) {
           if (part.type === "text") {
             return { type: "text", text: part.text };
           } else if (part.type === "image_url") {
-            return {
-              type: "image",
-              source: {
-                type: "url",
-                url: part.image_url.url
+            const url = part.image_url?.url || "";
+            if (url.startsWith("data:")) {
+              const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+              if (match) {
+                return { type: "image", source: { type: "base64", media_type: match[1], data: match[2] } };
               }
-            };
+            }
+            return { type: "image", source: { type: "url", url } };
+          } else if (part.type === "document" || part.type === "image") {
+            return part;
           }
           return part;
         });
@@ -208,10 +211,16 @@ function convertAnthropicToOpenAI(anthropicResponse, model = "claude-3-5-sonnet-
   // Convert content blocks to OpenAI format
   let messageContent = "";
   const toolCalls = [];
+  let citations = [];
 
   for (const block of content) {
     if (block.type === "text") {
       messageContent += block.text;
+      if (Array.isArray(block.citations)) {
+        citations.push(...block.citations);
+      }
+    } else if (block.type === "thinking") {
+      // Skip thinking blocks in OpenAI format (they don't have an equivalent)
     } else if (block.type === "tool_use") {
       toolCalls.push({
         id: block.id,
@@ -248,6 +257,11 @@ function convertAnthropicToOpenAI(anthropicResponse, model = "claude-3-5-sonnet-
       total_tokens: (usage?.input_tokens || 0) + (usage?.output_tokens || 0)
     }
   };
+
+  // Add citations if present
+  if (citations.length > 0) {
+    openaiResponse.citations = citations;
+  }
 
   // Add tool_calls if present
   if (toolCalls.length > 0) {

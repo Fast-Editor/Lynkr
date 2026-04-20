@@ -275,7 +275,7 @@ EXAMPLE: User says "explore this project" → Call Task with subagent_type="Expl
           description: "Optional model override. Default is appropriate for each agent type."
         }
       },
-      required: ["description", "prompt", "subagent_type"]
+      required: ["prompt"]
     }
   },
   {

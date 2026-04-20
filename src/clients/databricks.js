@@ -34,19 +34,20 @@ logger.info({ maxConcurrent: zaiMaxConcurrent }, "Z.AI bulkhead initialized");
 
 
 // HTTP connection pooling for better performance
+// Increased maxSockets for high-concurrency team deployments (50+ devs)
 const httpAgent = new http.Agent({
   keepAlive: true,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-  timeout: 60000,
+  maxSockets: 200,
+  maxFreeSockets: 20,
+  timeout: 120000,
   keepAliveMsecs: 30000,
 });
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-  timeout: 60000,
+  maxSockets: 200,
+  maxFreeSockets: 20,
+  timeout: 120000,
   keepAliveMsecs: 30000,
 });
 
@@ -1598,20 +1599,34 @@ function convertOpenAIToAnthropic(response) {
   const message = choice.message || {};
   const content = [];
 
+  // Extract tool calls embedded as XML/text in content (Minimax, Qwen, GLM, etc.)
+  if (!message.tool_calls?.length && typeof message.content === "string" && message.content.trim()) {
+    const { extractToolCallsFromText } = require("./xml-tool-extractor");
+    const extracted = extractToolCallsFromText(message.content);
+    if (extracted.toolCalls.length > 0) {
+      message.tool_calls = extracted.toolCalls;
+      message.content = extracted.cleanedText;
+      choice.finish_reason = "tool_calls";
+    }
+  }
+
   // Add text content from message.content
   // Don't add placeholder text if there are tool_calls - tools are the actual response
   const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
 
-  // Extract text content - handle thinking models that split content/reasoning
+  // Extract text content and reasoning from thinking models
   const textContent = typeof message.content === 'string' ? message.content : '';
   const reasoningContent = typeof message.reasoning_content === 'string' ? message.reasoning_content : '';
 
+  // Emit reasoning_content as a proper thinking block (not discarded)
+  if (reasoningContent) {
+    content.push({ type: "thinking", thinking: reasoningContent });
+  }
+
   if (textContent) {
-    // Has regular content - use it directly (ignore reasoning_content chain-of-thought)
     content.push({ type: "text", text: textContent });
-  } else if (reasoningContent) {
-    // Fallback: thinking models where content is empty but reasoning has the output
-    content.push({ type: "text", text: reasoningContent });
+  } else if (!reasoningContent) {
+    // No content and no reasoning — will be handled by the empty check below
   }
 
   // Convert tool calls
@@ -2027,6 +2042,11 @@ async function invokeModel(body, options = {}) {
   if (tierSelectedModel) {
     body._tierModel = tierSelectedModel;
   }
+
+  // Inject provider-side prompt caching (cache_control breakpoints)
+  // Reduces input token cost by up to 90% and latency by up to 80%
+  const { injectPromptCaching } = require('./prompt-cache-injection');
+  injectPromptCaching(body, initialProvider);
 
   // Build routing decision object for response headers
   const routingDecision = {

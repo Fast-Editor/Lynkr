@@ -68,7 +68,6 @@ const DROP_KEYS = new Set([
   "beta",
   "context_management",
   "stream",
-  "thinking",
   "max_steps",
   "max_duration_ms",
 ]);
@@ -187,7 +186,14 @@ function normaliseMessages(payload, options = {}) {
       const rawContent = message.content;
       let content;
       if (Array.isArray(rawContent)) {
-        content = flattenContent ? flattenBlocks(rawContent) : rawContent.slice();
+        const hasToolBlocks = rawContent.some(
+          (b) => b && (b.type === "tool_use" || b.type === "tool_result" || b.type === "document" || b.type === "image" || b.type === "thinking")
+        );
+        if (hasToolBlocks) {
+          content = rawContent.slice();
+        } else {
+          content = flattenContent ? flattenBlocks(rawContent) : rawContent.slice();
+        }
       } else if (rawContent === undefined || rawContent === null) {
         content = flattenContent ? "" : rawContent;
       } else if (typeof rawContent === "string") {
@@ -197,7 +203,11 @@ function normaliseMessages(payload, options = {}) {
       } else {
         content = rawContent;
       }
-      normalised.push({ role, content });
+      const entry = { role, content };
+      if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+        entry.tool_calls = message.tool_calls;
+      }
+      normalised.push(entry);
     }
   }
   return normalised;
@@ -470,8 +480,8 @@ function injectToolLoopStopInstruction(messages, threshold = 5) {
 // requests escape it.
 
 const DEDUP_MAX_SIGNATURES = 50;
-const DEDUP_WARN_THRESHOLD = 2;
-const DEDUP_TERMINATE_THRESHOLD = 3;
+const DEDUP_WARN_THRESHOLD = 5;
+const DEDUP_TERMINATE_THRESHOLD = 8;
 
 /**
  * Initialise session.metadata.toolCallDedup if missing.
@@ -1021,10 +1031,14 @@ function toAnthropicResponse(openai, requestedModel, wantsThinking) {
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
   const contentItems = [];
 
-  if (wantsThinking) {
+  // Pass through real reasoning_content as a thinking block
+  const reasoningContent = typeof message.reasoning_content === "string" ? message.reasoning_content : "";
+  if (reasoningContent && wantsThinking) {
+    contentItems.push({ type: "thinking", thinking: reasoningContent });
+  } else if (wantsThinking) {
     contentItems.push({
       type: "thinking",
-      thinking: "Reasoning not available from the backing Databricks model.",
+      thinking: "Reasoning not available from the backing model.",
     });
   }
 
@@ -1220,6 +1234,13 @@ function sanitizePayload(payload) {
   }
   DROP_KEYS.forEach((key) => delete clean[key]);
 
+  // Conditionally keep or strip the `thinking` parameter based on provider
+  const { getThinkingBehavior } = require("../clients/provider-capabilities");
+  const thinkingBehavior = getThinkingBehavior(providerType, clean.model);
+  if (clean.thinking && thinkingBehavior !== "native") {
+    delete clean.thinking;
+  }
+
   if (Array.isArray(clean.tools) && clean.tools.length === 0) {
     delete clean.tools;
   } else if (providerType === "databricks") {
@@ -1397,39 +1418,30 @@ function sanitizePayload(payload) {
   applyToonCompression(clean, config.toon, { logger });
 
   // FIX: Handle consecutive messages with the same role (causes llama.cpp 400 error)
-  // Strategy: Merge all consecutive messages, add instruction to focus on last request
+  // Strategy: Merge consecutive same-role messages, but NEVER merge messages
+  // that contain tool_use or tool_result blocks — they must stay intact for
+  // the provider's tool-call protocol.
   if (Array.isArray(clean.messages) && clean.messages.length > 0) {
     const merged = [];
     const messages = clean.messages;
 
+    const hasToolContent = (msg) => {
+      if (Array.isArray(msg?.content)) {
+        return msg.content.some(b => b && (b.type === 'tool_use' || b.type === 'tool_result'));
+      }
+      return Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0;
+    };
+
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
+      const prev = merged.length > 0 ? merged[merged.length - 1] : null;
 
-      if (merged.length > 0 && msg.role === merged[merged.length - 1].role) {
-        // Merge content with the previous message of the same role
-        const prevMsg = merged[merged.length - 1];
-        const prevContent = typeof prevMsg.content === 'string' ? prevMsg.content : JSON.stringify(prevMsg.content);
+      if (prev && msg.role === prev.role && !hasToolContent(msg) && !hasToolContent(prev)) {
+        const prevContent = typeof prev.content === 'string' ? prev.content : JSON.stringify(prev.content);
         const currContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        prevMsg.content = prevContent + '\n\n' + currContent;
-
-        logger.debug({
-          mergedRole: msg.role,
-          addedContentPreview: currContent.substring(0, 50)
-        }, 'Merged consecutive message with same role');
+        prev.content = prevContent + '\n\n' + currContent;
       } else {
         merged.push({ ...msg });
-      }
-    }
-
-    // If the last message is from user, add instruction to focus on the actual request
-    if (merged.length > 0 && merged[merged.length - 1].role === 'user') {
-      const lastMsg = merged[merged.length - 1];
-      const content = typeof lastMsg.content === 'string' ? lastMsg.content : JSON.stringify(lastMsg.content);
-
-      // Find the last actual user request (after all the context/instructions)
-      // Add a clear separator to help the model focus
-      if (content.length > 500) {
-        lastMsg.content = content + '\n\n---\nIMPORTANT: Focus on and respond ONLY to my most recent request above. Do not summarize or acknowledge previous instructions.';
       }
     }
 
@@ -1437,7 +1449,6 @@ function sanitizePayload(payload) {
       logger.debug({
         originalCount: clean.messages.length,
         mergedCount: merged.length,
-        reduced: clean.messages.length - merged.length
       }, 'Merged consecutive messages with same role');
     }
 
@@ -1882,7 +1893,17 @@ IMPORTANT TOOL USAGE RULES:
         cleanPayload.tools || [],
         {
           mode: config.headroom?.mode,
-          queryContext: cleanPayload.messages[cleanPayload.messages.length - 1]?.content,
+          queryContext: (() => {
+            const last = cleanPayload.messages[cleanPayload.messages.length - 1]?.content;
+            if (typeof last === 'string') return last;
+            if (Array.isArray(last)) {
+              return last
+                .map(b => (b?.type === 'text' ? b.text : b?.type === 'tool_result' ? String(b.content ?? '') : ''))
+                .filter(Boolean)
+                .join('\n') || null;
+            }
+            return null;
+          })(),
           model: requestedModel,
           modelLimit: modelContextWindow,
           tokenBudget: effectiveMax,
@@ -2127,6 +2148,21 @@ IMPORTANT TOOL USAGE RULES:
           _anthropic_block: block,
         }));
 
+      // Extract tool calls from text blocks that contain XML (some Ollama models)
+      if (toolCalls.length === 0) {
+        const { extractToolCallsFromText } = require("../clients/xml-tool-extractor");
+        for (const block of contentArray) {
+          if (block?.type === "text" && block?.text) {
+            const extracted = extractToolCallsFromText(block.text);
+            if (extracted.toolCalls.length > 0) {
+              toolCalls = extracted.toolCalls;
+              block.text = extracted.cleanedText || "";
+              break;
+            }
+          }
+        }
+      }
+
       logger.debug(
         {
           sessionId: session?.id ?? null,
@@ -2141,6 +2177,17 @@ IMPORTANT TOOL USAGE RULES:
       const choice = databricksResponse.json?.choices?.[0];
       message = choice?.message ?? {};
       toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+      // Extract tool calls embedded as XML/text in content (Minimax, Qwen, GLM, Llama, etc.)
+      if (toolCalls.length === 0 && typeof message.content === "string" && message.content.trim()) {
+        const { extractToolCallsFromText } = require("../clients/xml-tool-extractor");
+        const extracted = extractToolCallsFromText(message.content);
+        if (extracted.toolCalls.length > 0) {
+          toolCalls = extracted.toolCalls;
+          message.tool_calls = toolCalls;
+          message.content = extracted.cleanedText;
+        }
+      }
     }
 
     // Guard: drop hallucinated tool calls when no tools were sent to the model.
@@ -2262,7 +2309,7 @@ IMPORTANT TOOL USAGE RULES:
       const serverSideToolCalls = [];
       const clientSideToolCalls = [];
 
-      const SERVER_SIDE_TOOLS = new Set(["task", "web_search", "web_fetch", "websearch", "webfetch", "web_agent"]);
+      const SERVER_SIDE_TOOLS = new Set(["task", "Task", "web_search", "web_fetch", "websearch", "webfetch", "web_agent", "WebSearch", "WebFetch", "WebAgent"]);
 
       for (const call of toolCalls) {
         const toolName = (call.function?.name ?? call.name ?? "").toLowerCase();
@@ -2322,26 +2369,11 @@ IMPORTANT TOOL USAGE RULES:
         // then continue the conversation loop. For now, let's fall through to execute server-side tools.
         if (serverSideToolCalls.length === 0) {
           // No server-side tools - pure passthrough
-          // Record outbound client-side tool calls into cross-request dedup tracker
-          if (session && clientSideToolCalls.length > 0) {
-            ensureDedupStructure(session);
-            for (const call of clientSideToolCalls) {
-              recordCrossRequestToolCall(session, call);
-            }
-            // Persist dedup state (non-ephemeral sessions only)
-            if (session.id && !session._ephemeral) {
-              try { upsertSession(session.id, { metadata: session.metadata }); } catch (e) {
-                logger.debug({ err: e.message }, "Failed to persist outbound dedup state");
-              }
-            }
-            const { maxCount, toolName: dedupTool } = getMaxDedupCount(session);
-            logger.debug({
-              sessionId: session?.id ?? null,
-              clientToolCount: clientSideToolCalls.length,
-              maxDedupCount: maxCount,
-              maxDedupTool: dedupTool,
-            }, "Cross-request tool dedup: recorded outbound tool calls");
-          }
+          // Do NOT record outbound tool calls here — the inbound recording
+          // on the next request (when the client sends results back) is
+          // enough to detect real loops.  Recording both outbound + inbound
+          // for the same call double-counts and triggers the dedup warning
+          // on the very first normal tool round-trip.
 
           return {
             response: {
@@ -3787,150 +3819,9 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
       }
     }
 
-    // Client mode still uses the relaxed per-request threshold for the count-based guard
-    const effectiveThreshold = 10;
-    if (toolResultCount >= effectiveThreshold) {
-      logger.error({
-        toolResultCount,
-        toolUseCount,
-        threshold: effectiveThreshold,
-        sessionId: session?.id ?? null,
-      }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
-
-      let toolResultsSummary = "";
-      const messages = payload?.messages || [];
-      let lastUserTextIndex = -1;
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg?.role !== 'user') continue;
-        if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
-          lastUserTextIndex = i;
-          break;
-        }
-        if (Array.isArray(msg.content)) {
-          const hasText = msg.content.some(block =>
-            (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
-            (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
-          );
-          if (hasText) {
-            lastUserTextIndex = i;
-            break;
-          }
-        }
-      }
-      const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
-      for (let i = startIndex; i < messages.length; i++) {
-        const msg = messages[i];
-        if (!msg || !Array.isArray(msg.content)) continue;
-        for (const block of msg.content) {
-          if (block?.type === 'tool_result' && block?.content) {
-            const content = typeof block.content === 'string'
-              ? block.content
-              : JSON.stringify(block.content);
-            if (content && !content.includes('Found 0')) {
-              toolResultsSummary += content + "\n";
-            }
-          }
-        }
-      }
-
-      let responseText = `Based on the tool results, here's what I found:\n\n`;
-      if (toolResultsSummary.trim()) {
-        responseText += toolResultsSummary.trim();
-      } else {
-        responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
-      }
-
-      const forcedResponse = {
-        id: `msg_forced_${Date.now()}`,
-        type: "message",
-        role: "assistant",
-        content: [{ type: "text", text: responseText }],
-        model: requestedModel || "unknown",
-        stop_reason: "end_turn",
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 100 },
-      };
-
-      return {
-        status: 200,
-        body: forcedResponse,
-        terminationReason: "tool_loop_guard",
-      };
-    }
-  } else {
-    // Server mode: use existing threshold 2 with countToolCallsInHistory
-    const effectiveThreshold = toolLoopThreshold;
-
-    if (toolResultCount >= effectiveThreshold) {
-      logger.error({
-        toolResultCount,
-        toolUseCount,
-        threshold: effectiveThreshold,
-        sessionId: session?.id ?? null,
-      }, "[ToolLoopGuard] FORCE TERMINATING - too many tool calls in conversation");
-
-      let toolResultsSummary = "";
-      const messages = payload?.messages || [];
-      let lastUserTextIndex = -1;
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg?.role !== 'user') continue;
-        if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
-          lastUserTextIndex = i;
-          break;
-        }
-        if (Array.isArray(msg.content)) {
-          const hasText = msg.content.some(block =>
-            (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
-            (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
-          );
-          if (hasText) {
-            lastUserTextIndex = i;
-            break;
-          }
-        }
-      }
-      const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
-      for (let i = startIndex; i < messages.length; i++) {
-        const msg = messages[i];
-        if (!msg || !Array.isArray(msg.content)) continue;
-        for (const block of msg.content) {
-          if (block?.type === 'tool_result' && block?.content) {
-            const content = typeof block.content === 'string'
-              ? block.content
-              : JSON.stringify(block.content);
-            if (content && !content.includes('Found 0')) {
-              toolResultsSummary += content + "\n";
-            }
-          }
-        }
-      }
-
-      let responseText = `Based on the tool results, here's what I found:\n\n`;
-      if (toolResultsSummary.trim()) {
-        responseText += toolResultsSummary.trim();
-      } else {
-        responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
-      }
-
-      const forcedResponse = {
-        id: `msg_forced_${Date.now()}`,
-        type: "message",
-        role: "assistant",
-        content: [{ type: "text", text: responseText }],
-        model: requestedModel || "unknown",
-        stop_reason: "end_turn",
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 100 },
-      };
-
-      return {
-        status: 200,
-        body: forcedResponse,
-        terminationReason: "tool_loop_guard",
-      };
-    }
+    // No count-based tool_loop_guard. Natural limits (maxSteps, maxDurationMs,
+    // provider token/rate limits, client-side loop detection, and the
+    // cross-request dedup above) are sufficient protection.
   }
 
   const { createTimer } = require("../utils/perf-timer");

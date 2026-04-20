@@ -147,6 +147,10 @@ function createApp() {
 
   app.use(router);
 
+  // Files API
+  const filesRouter = require("./api/files-router");
+  app.use("/v1", filesRouter);
+
   // 404 handler (must be after all routes)
   app.use(notFoundHandler);
 

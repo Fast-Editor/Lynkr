@@ -929,6 +929,12 @@ var config = {
     REASONING: process.env.TIER_REASONING?.trim() || null,
   },
 
+  // Cluster mode (multi-core scaling for 50+ concurrent users)
+  cluster: {
+    enabled: process.env.CLUSTER_ENABLED === 'true',
+    workers: process.env.CLUSTER_WORKERS || 'auto',
+  },
+
   // Graphify knowledge graph integration (structural analysis)
   codeGraph: {
     enabled: process.env.CODE_GRAPH_ENABLED === 'true',
