@@ -30,14 +30,11 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
-        timeout-minutes: 10
-
-      - name: Build native addons
-        run: npm rebuild better-sqlite3 2>/dev/null || true
+        run: |
+          npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts 2>/dev/null || npm ci
         env:
-          CXXFLAGS: "-std=gnu++20"
-        timeout-minutes: 10
+          npm_config_optional: false
+        timeout-minutes: 15
 
       - name: Run linter
         run: npm run lint
