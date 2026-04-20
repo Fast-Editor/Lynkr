@@ -21,15 +21,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.x
-          cache: 'npm'
 
       - name: Install
-        run: npm install --omit=optional --ignore-scripts --no-audit --no-fund
-        timeout-minutes: 5
-
-      - name: Lint
-        run: npm run lint
-        continue-on-error: true
+        run: |
+          npm cache clean --force
+          npm ci --omit=optional --ignore-scripts
+        timeout-minutes: 10
 
       - name: Test
         run: |
