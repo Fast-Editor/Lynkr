@@ -55,6 +55,12 @@ lynkr start
 
 ### Install
 
+**One-line install (recommended):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Fast-Editor/Lynkr/main/install.sh | bash
+```
+
+**Or via npm:**
 ```bash
 npm install -g pino-pretty && npm install -g lynkr
 ```
@@ -258,7 +264,12 @@ CODE_MODE_ENABLED=true  # ~96% reduction in tool-catalog tokens
 
 ## Deployment Options
 
-**NPM (recommended)**
+**One-line install (recommended)**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Fast-Editor/Lynkr/main/install.sh | bash
+```
+
+**NPM**
 ```bash
 npm install -g lynkr && lynkr start
 ```

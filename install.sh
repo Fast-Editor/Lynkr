@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Lynkr Installation Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/vishalveerareddy123/Lynkr/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Fast-Editor/Lynkr/main/install.sh | bash
 #
 # This script installs Lynkr, a self-hosted Claude Code proxy with multi-provider support.
 #
@@ -125,7 +125,7 @@ create_env_file() {
             # Fallback: create minimal .env if .env.example doesn't exist
             cat > "$INSTALL_DIR/.env" << 'EOF'
 # Lynkr Configuration
-# For full options, see: https://github.com/vishalveerareddy123/Lynkr/blob/main/.env.example
+# For full options, see: https://github.com/Fast-Editor/Lynkr/blob/main/.env.example
 
 # Model Provider (databricks, openai, azure-openai, azure-anthropic, openrouter, ollama, llamacpp)
 MODEL_PROVIDER=ollama
@@ -247,7 +247,7 @@ print_next_steps() {
     echo "💡 ${YELLOW}Tip:${NC} Memory system is enabled by default"
     echo "   Lynkr remembers preferences and project context across sessions"
     echo ""
-    echo "📚 Documentation: ${BLUE}https://github.com/vishalveerareddy123/Lynkr${NC}"
+    echo "📚 Documentation: ${BLUE}https://github.com/Fast-Editor/Lynkr${NC}"
     echo "💬 Discord: ${BLUE}https://discord.gg/qF7DDxrX${NC}"
     echo ""
 }
