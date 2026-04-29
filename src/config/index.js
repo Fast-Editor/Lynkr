@@ -638,6 +638,9 @@ var config = {
     fallbackProvider,
   },
   toolExecutionMode,
+  toolResultCompression: {
+    enabled: true,
+  },
   server: {
     jsonLimit: process.env.REQUEST_JSON_LIMIT ?? "1gb",
   },

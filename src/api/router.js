@@ -213,7 +213,46 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     const { createTimer } = require("../utils/perf-timer");
     const timer = createTimer("POST /v1/messages");
     metrics.recordRequest();
-    // Support both query parameter (?stream=true) and body parameter ({"stream": true})
+
+    // Convert Anthropic server tools (web_search_20260209, etc.) to regular
+    // function tools so non-Anthropic providers can execute them via Lynkr.
+    // The orchestrator's SERVER_SIDE_TOOLS handling will execute them server-side.
+    if (Array.isArray(req.body?.tools)) {
+      const incomingToolTypes = req.body.tools.map(t => t?.type || t?.name).filter(Boolean);
+      logger.info({ incomingToolTypes }, "Incoming /v1/messages tool types");
+      req.body.tools = req.body.tools.map((tool) => {
+        if (tool?.type?.startsWith?.("web_search_20")) {
+          logger.info({ originalType: tool.type, name: tool.name }, "Converting web_search server tool to function tool");
+          return {
+            name: tool.name || "web_search",
+            description: "Search the web for up-to-date information. Returns relevant search results from the web.",
+            input_schema: {
+              type: "object",
+              properties: {
+                query: { type: "string", description: "Search query" },
+              },
+              required: ["query"],
+            },
+          };
+        }
+        if (tool?.type?.startsWith?.("web_fetch_")) {
+          return {
+            name: tool.name || "web_fetch",
+            description: "Fetch the contents of a URL.",
+            input_schema: {
+              type: "object",
+              properties: {
+                url: { type: "string", description: "URL to fetch" },
+              },
+              required: ["url"],
+            },
+          };
+        }
+        return tool;
+      });
+    }
+
+// Support both query parameter (?stream=true) and body parameter ({"stream": true})
     const wantsStream = Boolean(req.query?.stream === 'true' || req.body?.stream);
     const hasTools = Array.isArray(req.body?.tools) && req.body.tools.length > 0;
     timer.mark("parseRequest");
@@ -768,6 +807,18 @@ router.get("/metrics/compression", async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+router.get("/metrics/tool-compression", (req, res) => {
+  const { getMetrics } = require("../context/tool-result-compressor");
+  res.json(getMetrics());
+});
+
+router.get("/tee/:id", (req, res) => {
+  const { teeGet } = require("../context/tool-result-compressor");
+  const content = teeGet(req.params.id);
+  if (!content) return res.status(404).json({ error: "Tee entry not found or expired" });
+  res.type("text/plain").send(content);
 });
 
 router.get("/health/headroom", async (req, res) => {
