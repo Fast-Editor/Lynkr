@@ -152,7 +152,7 @@ function summariseResult(item) {
   return {
     title: item.title ?? item.name ?? null,
     url: item.url ?? item.link ?? null,
-    snippet: item.snippet ?? item.summary ?? item.excerpt ?? null,
+    snippet: item.snippet ?? item.content ?? item.summary ?? item.excerpt ?? null,
     score: item.score ?? item.rank ?? null,
     source: item.source ?? null,
     metadata: item.metadata ?? null,

@@ -1954,6 +1954,14 @@ IMPORTANT TOOL USAGE RULES:
     cleanPayload._workspace = headers["x-lynkr-workspace"];
   }
 
+  // RTK-inspired tool result compression: compress large tool_results
+  // before they reach the model (saves 60-90% on test/git/lint output)
+  if (config.toolResultCompression?.enabled !== false) {
+    const { compressToolResults } = require("../context/tool-result-compressor");
+    const tier = cleanPayload._routingTier || "MEDIUM";
+    compressToolResults(cleanPayload.messages, { tier });
+  }
+
   if (agentTimer) agentTimer.mark("preInvokeModel");
   let databricksResponse;
   try {
@@ -2214,6 +2222,7 @@ IMPORTANT TOOL USAGE RULES:
       } else {
         // Convert OpenAI/OpenRouter format to Anthropic content blocks
         const contentBlocks = [];
+        let toolCallIdx = 0;
 
         // Add text content if present
         if (message.content && typeof message.content === 'string' && message.content.trim()) {
@@ -2245,7 +2254,7 @@ IMPORTANT TOOL USAGE RULES:
 
           contentBlocks.push({
             type: "tool_use",
-            id: toolCall.id || `toolu_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            id: toolCall.id || `toolu_${Date.now()}_${(toolCallIdx++).toString(36)}_${Math.random().toString(36).substr(2, 6)}`,
             name: func.name || toolCall.name || "unknown",
             input
           });
@@ -2332,7 +2341,9 @@ IMPORTANT TOOL USAGE RULES:
             executionMode,
             clientTools: clientSideToolCalls.map((c) => c.function?.name ?? c.name),
           },
-          "Hybrid mode: returning non-Task tools to client, executing Task tools on server"
+          clientSideToolCalls.length > 1
+            ? `Parallel tool passthrough: ${clientSideToolCalls.length} tools → client`
+            : "Hybrid mode: returning non-Task tools to client, executing Task tools on server"
         );
 
         // Filter sessionContent to only include client-side tool_use blocks
