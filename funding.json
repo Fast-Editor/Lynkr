@@ -33,15 +33,9 @@
         "developer-tools",
         "proxy",
         "claude-code",
-        "cursor",
-        "codex",
         "ollama",
-        "openrouter",
-        "bedrock",
         "anthropic",
-        "openai",
-        "mcp",
-        "nodejs"
+        "openai"
       ]
     }
   ],
