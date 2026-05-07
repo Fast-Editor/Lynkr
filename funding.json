@@ -19,7 +19,7 @@
       "name": "Lynkr",
       "description": "A self-hosted AI gateway that decouples AI coding tools (Claude Code, Cursor, Codex, Cline, jcode, Pi) from their default LLM providers. Lynkr auto-detects the connecting tool, translates between Anthropic and OpenAI request formats, and routes to any of 12+ backends (Ollama, AWS Bedrock, Azure OpenAI, OpenRouter, Databricks, Moonshot, Google Vertex, llama.cpp, LM Studio, and more). A request-complexity classifier sends simple turns to free local models and complex ones to flagship cloud models, cutting per-developer AI bills 60-80% while removing vendor lock-in. Includes tool-result compression, MCP Code Mode (96% token reduction on tool definitions), persistent memory, and tier-based routing — all configured through a single .env file.",
       "webpageUrl": {
-        "url": "https://github.com/Fast-Editor/Lynkr"
+        "url": "https://fast-editor.github.io/Lynkr/"
       },
       "repositoryUrl": {
         "url": "https://github.com/Fast-Editor/Lynkr"
