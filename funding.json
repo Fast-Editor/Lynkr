@@ -1,0 +1,116 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.1.0",
+
+  "entity": {
+    "type": "individual",
+    "role": "maintainer",
+    "name": "Vishal Veera Reddy",
+    "email": "veerareddyvishal56@gmail.com",
+    "description": "Indian software engineer building open-source AI infrastructure. Sole maintainer of Lynkr, a self-hosted AI gateway that lets developers run any AI coding tool on any LLM provider.",
+    "webpageUrl": {
+      "url": "https://github.com/vishalveerareddy123"
+    }
+  },
+
+  "projects": [
+    {
+      "guid": "lynkr",
+      "name": "Lynkr",
+      "description": "A self-hosted AI gateway that decouples AI coding tools (Claude Code, Cursor, Codex, Cline, jcode, Pi) from their default LLM providers. Lynkr auto-detects the connecting tool, translates between Anthropic and OpenAI request formats, and routes to any of 12+ backends (Ollama, AWS Bedrock, Azure OpenAI, OpenRouter, Databricks, Moonshot, Google Vertex, llama.cpp, LM Studio, and more). A request-complexity classifier sends simple turns to free local models and complex ones to flagship cloud models, cutting per-developer AI bills 60-80% while removing vendor lock-in. Includes tool-result compression, MCP Code Mode (96% token reduction on tool definitions), persistent memory, and tier-based routing — all configured through a single .env file.",
+      "webpageUrl": {
+        "url": "https://github.com/Fast-Editor/Lynkr"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/Fast-Editor/Lynkr"
+      },
+      "licenses": ["spdx:Apache-2.0"],
+      "tags": [
+        "ai",
+        "ai-gateway",
+        "llm",
+        "llm-router",
+        "developer-tools",
+        "proxy",
+        "claude-code",
+        "cursor",
+        "codex",
+        "ollama",
+        "openrouter",
+        "bedrock",
+        "anthropic",
+        "openai",
+        "mcp",
+        "nodejs"
+      ]
+    }
+  ],
+
+  "funding": {
+    "channels": [
+      {
+        "guid": "github-sponsors",
+        "type": "payment-provider",
+        "address": "https://github.com/sponsors/vishalveerareddy123",
+        "description": "Support Lynkr development via GitHub Sponsors."
+      },
+      {
+        "guid": "fossunited-grant",
+        "type": "other",
+        "address": "grants@fossunited.org",
+        "description": "FOSS United Foundation grant channel for institutional FOSS funding."
+      },
+      {
+        "guid": "bank-transfer",
+        "type": "bank",
+        "address": "Available on request via the project email.",
+        "description": "Direct bank transfer for organisations or grant disbursements."
+      }
+    ],
+
+    "plans": [
+      {
+        "guid": "core-maintenance-2026",
+        "status": "active",
+        "name": "Core maintenance + roadmap (12 months)",
+        "description": "Funds full-time work on Lynkr's core gateway: provider-format conversions, tier routing, tool-call translation across 10+ model formats (Minimax, Qwen, GLM, Llama, DeepSeek, Mistral), tool-result compression, persistent memory, MCP Code Mode, observability, tests, and docs. Estimated cost reflects one Indian maintainer working full-time for a year.",
+        "amount": 500000,
+        "currency": "INR",
+        "frequency": "yearly",
+        "channels": ["fossunited-grant", "bank-transfer"]
+      },
+      {
+        "guid": "infra-2026",
+        "status": "active",
+        "name": "Infrastructure + benchmarks",
+        "description": "Funds CI runners, benchmark harness for cost/quality/latency comparisons across providers, public dashboard at lynkr.dev, and self-hosted SearXNG + telemetry mirrors used by Lynkr's web search and routing layers.",
+        "amount": 150000,
+        "currency": "INR",
+        "frequency": "yearly",
+        "channels": ["fossunited-grant", "bank-transfer"]
+      },
+      {
+        "guid": "community-sponsor",
+        "status": "active",
+        "name": "Community sponsorship",
+        "description": "Recurring small-amount sponsorship from individual developers and small teams who use Lynkr.",
+        "amount": 0,
+        "currency": "USD",
+        "frequency": "monthly",
+        "channels": ["github-sponsors"]
+      },
+      {
+        "guid": "one-time",
+        "status": "active",
+        "name": "One-time contribution",
+        "description": "Any-amount one-time contribution from users or supporters.",
+        "amount": 0,
+        "currency": "USD",
+        "frequency": "one-time",
+        "channels": ["github-sponsors", "bank-transfer"]
+      }
+    ],
+
+    "history": []
+  }
+}
