@@ -203,24 +203,37 @@ function convertAnthropicToOpenAI(anthropicResponse, model = "claude-3-5-sonnet-
 
   const { id, content, stop_reason, usage } = anthropicResponse;
 
-  // Validate required fields
-  if (!content || !Array.isArray(content)) {
-    throw new Error(`convertAnthropicToOpenAI: invalid content field (got ${typeof content})`);
+  // Tolerant fallback: providers sometimes return reasoning-only responses
+  // (Minimax/DeepSeek), error envelopes, or empty bodies. Treat missing/invalid
+  // content as an empty turn so jcode/Pi/Codex don't crash on the response.
+  const safeContent = Array.isArray(content) ? content : [];
+  if (safeContent.length === 0) {
+    logger.warn({
+      hasContent: content !== undefined,
+      contentType: typeof content,
+      stop_reason,
+      responseKeys: Object.keys(anthropicResponse),
+      hasError: !!anthropicResponse.error,
+      errorMessage: anthropicResponse.error?.message,
+    }, "convertAnthropicToOpenAI: empty/missing content, returning empty assistant message");
   }
 
   // Convert content blocks to OpenAI format
   let messageContent = "";
+  let reasoningContent = "";
   const toolCalls = [];
   let citations = [];
 
-  for (const block of content) {
+  for (const block of safeContent) {
     if (block.type === "text") {
       messageContent += block.text;
       if (Array.isArray(block.citations)) {
         citations.push(...block.citations);
       }
     } else if (block.type === "thinking") {
-      // Skip thinking blocks in OpenAI format (they don't have an equivalent)
+      // Preserve reasoning text so reasoning-only models (Minimax, DeepSeek-R1)
+      // surface visible output to OpenAI clients that don't render thinking blocks
+      reasoningContent += (block.thinking || "");
     } else if (block.type === "tool_use") {
       toolCalls.push({
         id: block.id,
@@ -231,6 +244,12 @@ function convertAnthropicToOpenAI(anthropicResponse, model = "claude-3-5-sonnet-
         }
       });
     }
+  }
+
+  // Fallback: if the model returned only reasoning (no visible text and no tools),
+  // promote reasoning into the visible content so jcode/Pi/Codex see something
+  if (!messageContent && !toolCalls.length && reasoningContent) {
+    messageContent = reasoningContent;
   }
 
   // Build OpenAI response
@@ -261,6 +280,13 @@ function convertAnthropicToOpenAI(anthropicResponse, model = "claude-3-5-sonnet-
   // Add citations if present
   if (citations.length > 0) {
     openaiResponse.citations = citations;
+  }
+
+  // Add reasoning_content as a side-channel field so clients that render
+  // thinking (e.g. some jcode / OpenRouter setups) can show it without losing
+  // it from the visible content fallback above
+  if (reasoningContent && reasoningContent !== messageContent) {
+    openaiResponse.choices[0].message.reasoning_content = reasoningContent;
   }
 
   // Add tool_calls if present

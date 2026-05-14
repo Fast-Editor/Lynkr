@@ -1,9 +1,11 @@
 const fs = require("fs");
+const fsp = require("fs").promises;
 const path = require("path");
 const crypto = require("crypto");
 const logger = require("../logger");
 
 const STORAGE_DIR = path.resolve(process.env.FILES_STORAGE_PATH || "./data/files");
+const METADATA_FILE = path.join(STORAGE_DIR, "_metadata.json");
 const MAX_FILES = parseInt(process.env.FILES_MAX_COUNT || "1000", 10);
 
 const metadata = new Map();
@@ -14,15 +16,46 @@ function ensureStorageDir() {
   }
 }
 
-function storeFile(buffer, { filename, purpose, mimeType }) {
+function persistMetadata() {
+  try {
+    const entries = Array.from(metadata.values());
+    fs.writeFileSync(METADATA_FILE, JSON.stringify(entries), "utf8");
+  } catch (err) {
+    logger.warn({ err: err.message }, "Failed to persist file metadata");
+  }
+}
+
+function loadMetadata() {
+  ensureStorageDir();
+  try {
+    if (!fs.existsSync(METADATA_FILE)) return;
+    const entries = JSON.parse(fs.readFileSync(METADATA_FILE, "utf8"));
+    for (const entry of entries) {
+      // Only restore entries whose backing file still exists on disk
+      if (fs.existsSync(entry.storage_path)) {
+        metadata.set(entry.id, entry);
+      } else {
+        logger.debug({ fileId: entry.id }, "Dropping orphaned metadata entry (file missing)");
+      }
+    }
+    logger.info({ count: metadata.size }, "File metadata restored from disk");
+  } catch (err) {
+    logger.warn({ err: err.message }, "Could not load file metadata; starting fresh");
+  }
+}
+
+// Restore metadata at module load so restarts don't orphan files
+loadMetadata();
+
+async function storeFile(buffer, { filename, purpose, mimeType }) {
   ensureStorageDir();
   if (metadata.size >= MAX_FILES) {
     const oldest = metadata.keys().next().value;
-    deleteFile(oldest);
+    await deleteFile(oldest);
   }
   const id = `file-${crypto.randomUUID()}`;
   const storagePath = path.join(STORAGE_DIR, id);
-  fs.writeFileSync(storagePath, buffer);
+  await fsp.writeFile(storagePath, buffer);
   const entry = {
     id,
     object: "file",
@@ -34,6 +67,7 @@ function storeFile(buffer, { filename, purpose, mimeType }) {
     storage_path: storagePath,
   };
   metadata.set(id, entry);
+  persistMetadata();
   logger.info({ fileId: id, bytes: buffer.length, filename }, "File stored");
   return entry;
 }
@@ -42,21 +76,22 @@ function getFile(id) {
   return metadata.get(id) || null;
 }
 
-function getFileContent(id) {
+async function getFileContent(id) {
   const entry = metadata.get(id);
   if (!entry) return null;
   try {
-    return fs.readFileSync(entry.storage_path);
+    return await fsp.readFile(entry.storage_path);
   } catch {
     return null;
   }
 }
 
-function deleteFile(id) {
+async function deleteFile(id) {
   const entry = metadata.get(id);
   if (!entry) return false;
-  try { fs.unlinkSync(entry.storage_path); } catch {}
+  try { await fsp.unlink(entry.storage_path); } catch {}
   metadata.delete(id);
+  persistMetadata();
   return true;
 }
 

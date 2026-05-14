@@ -221,7 +221,7 @@ async function invokeOllama(body) {
   const useAnthropicApi = await hasAnthropicEndpoint(config.ollama.endpoint);
 
   // Check if model supports tools FIRST (before wasteful injection)
-  const supportsTools = await checkOllamaToolSupport(config.ollama.model);
+  const supportsTools = await checkOllamaToolSupport(modelName);
   const injectToolsOllama = process.env.INJECT_TOOLS_OLLAMA !== "false";
 
   // Determine tools to send
@@ -476,13 +476,17 @@ async function invokeAzureOpenAI(body) {
   // System prompt injection disabled - breaks model response
   // Tool guidance now provided via tool descriptions instead
 
+  const azureDeployment = body._suggestionModeModel || body._tierModel || config.azureOpenAI.deployment || "";
+  const isGpt5 = /gpt-5/i.test(azureDeployment);
+  const maxTokensKey = isGpt5 ? "max_completion_tokens" : "max_tokens";
+
   const azureBody = {
     messages,
-    temperature: body.temperature ?? 0.3,  // Lower temperature for more deterministic, action-oriented behavior
-    max_tokens: Math.min(body.max_tokens ?? 16384, 16384),  // Cap at Azure OpenAI's limit
+    temperature: body.temperature ?? 0.3,
+    [maxTokensKey]: Math.min(body.max_tokens ?? 16384, 16384),
     top_p: body.top_p ?? 1.0,
-    stream: false,  // Force non-streaming for Azure OpenAI - streaming format conversion not yet implemented
-    model: body._suggestionModeModel || body._tierModel || config.azureOpenAI.deployment
+    stream: false,
+    model: azureDeployment
   };
 
   // Add tools - inject standard tools if client didn't send any (passthrough mode)

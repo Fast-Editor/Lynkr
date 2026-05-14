@@ -129,7 +129,19 @@
       "Bash(CLUSTER_ENABLED=true CLUSTER_WORKERS=2 DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com PORT=9999 timeout 8 node index.js)",
       "Bash(CLUSTER_ENABLED=true CLUSTER_WORKERS=2 DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com PORT=9999 node index.js)",
       "Bash(wait)",
-      "WebFetch(domain:docs.searxng.org)"
+      "WebFetch(domain:docs.searxng.org)",
+      "mcp__claude_ai_Sales_Success_Center_Content_Retriever__SSC_Retrieval",
+      "WebFetch(domain:docs.polymarket.com)",
+      "WebFetch(domain:polymarket.com)",
+      "WebFetch(domain:www.google.com)",
+      "WebFetch(domain:finance.yahoo.com)",
+      "WebFetch(domain:www.cnbc.com)",
+      "Bash(git -C /Users/vishalveera.reddy/claude-code status)",
+      "Bash(git -C /Users/vishalveera.reddy/claude-code log --oneline -3)",
+      "Bash(git *)",
+      "mcp__claude_ai_BT1_MCP__create_update_story",
+      "mcp__claude_ai_BT1_MCP__query_bt1_table",
+      "mcp__claude_ai_BT1_MCP__get_current_sprint"
     ],
     "deny": [],
     "ask": []

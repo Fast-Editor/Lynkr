@@ -280,9 +280,18 @@ function selectToolsSmartly(tools, classification, options = {}) {
 
   // Get relevant tool names for this request type
   const relevantToolNames = TOOL_SELECTION_MAP[requestType] || TOOL_SELECTION_MAP.coding;
+  const relevantLower = new Set(relevantToolNames.map(n => n.toLowerCase()));
 
-  // Filter to relevant tools only
-  let selectedTools = tools.filter(tool => relevantToolNames.includes(tool.name));
+  // Filter to relevant tools only (case-insensitive match so external clients
+  // using lowercase names like Pi's `bash`/`read` aren't filtered out)
+  let selectedTools = tools.filter(tool => relevantLower.has(String(tool.name || '').toLowerCase()));
+
+  // If nothing matched, the caller is using a tool ecosystem we don't recognize
+  // (e.g. Pi's read/write/edit/bash). Pass tools through untouched rather than
+  // deleting them — otherwise the LLM gets no schema and hallucinates defaults.
+  if (selectedTools.length === 0) {
+    return tools;
+  }
 
   // Mode-specific adjustments
   if (config.mode === 'aggressive') {

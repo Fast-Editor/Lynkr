@@ -366,7 +366,7 @@ router.post("/chat/completions", async (req, res) => {
       role: m.role,
       contentPreview: typeof m.content === 'string'
         ? m.content.substring(0, 200)
-        : JSON.stringify(m.content).substring(0, 200)
+        : (m.content == null ? null : (JSON.stringify(m.content) ?? '').substring(0, 200))
     }));
 
     logger.debug({

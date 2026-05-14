@@ -126,20 +126,6 @@ class HeadroomManager {
   }
 
   /**
-   * Track compression for proactive expansion
-   */
-  async ccrTrack(hashKey, turnNumber, toolName, sample) {
-    return client.ccrTrack(hashKey, turnNumber, toolName, sample);
-  }
-
-  /**
-   * Analyze query for proactive CCR expansion
-   */
-  async ccrAnalyze(query, turnNumber) {
-    return client.ccrAnalyze(query, turnNumber);
-  }
-
-  /**
    * Check if Headroom is enabled
    */
   isEnabled() {

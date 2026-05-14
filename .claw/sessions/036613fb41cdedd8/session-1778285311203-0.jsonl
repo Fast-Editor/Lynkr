@@ -1,0 +1,3 @@
+{"created_at_ms":1778285311202,"model":"claude-opus-4-6","session_id":"session-1778285311203-0","type":"session_meta","updated_at_ms":1778285311202,"version":1,"workspace_root":"/Users/vishalveera.reddy/claude-code"}
+{"text":"Hi","timestamp_ms":1778285313289,"type":"prompt_history"}
+{"message":{"blocks":[{"text":"Hi","type":"text"}],"role":"user"},"type":"message"}

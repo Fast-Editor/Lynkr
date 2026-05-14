@@ -1,11 +1,11 @@
 {
   "name": "lynkr",
-  "version": "9.0.1",
+  "version": "9.0.2",
   "description": "Self-hosted Claude Code & Cursor proxy with Databricks,AWS BedRock,Azure  adapters, openrouter, Ollama,llamacpp,LM Studio, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
-    "lynkr": "./bin/cli.js",
-    "lynkr-setup": "./scripts/setup.js"
+    "lynkr": "bin/cli.js",
+    "lynkr-setup": "scripts/setup.js"
   },
   "scripts": {
     "prestart": "node -e \"if(process.env.HEADROOM_ENABLED==='true'&&process.env.HEADROOM_DOCKER_ENABLED!=='false'){process.exit(0)}else{process.exit(1)}\" && docker compose --profile headroom up -d --build headroom 2>/dev/null || echo 'Headroom skipped (disabled or Docker not running)'",
@@ -34,7 +34,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vishalveerareddy123/Lynkr.git"
+    "url": "git+https://github.com/vishalveerareddy123/Lynkr.git"
   },
   "bugs": {
     "url": "https://github.com/vishalveerareddy123/Lynkr/issues"

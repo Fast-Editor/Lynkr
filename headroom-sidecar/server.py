@@ -1,95 +1,87 @@
 """
-Headroom Sidecar Server
-FastAPI application providing context compression via HTTP API
+Headroom Sidecar Server (v0.20+ compatible)
+
+FastAPI service that wraps the upstream `headroom` package's one-function
+`compress()` API. Lynkr's Node client calls these REST endpoints; the sidecar
+translates them into upstream library calls. Keeping the wire format stable
+means Lynkr's `src/headroom/client.js` does not need a major rewrite even
+though the upstream library's internals (Kompress-base, IntelligentContextManager,
+Rust hot path, etc.) have changed substantially since v0.5.
+
+Routes preserved:
+- GET  /health
+- GET  /metrics
+- POST /compress
+- POST /ccr/retrieve
+
+Routes removed (no callers in Lynkr):
+- POST /ccr/track
+- POST /ccr/analyze
+- POST /compress/llmlingua
 """
 
-import logging
-import time
 import hashlib
 import json
-from typing import Any, Dict, List, Optional
+import logging
+import time
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from config import config
 
-# Setup logging
 logging.basicConfig(
     level=getattr(logging, config.log_level.upper()),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("headroom-sidecar")
 
-# Initialize FastAPI app
 app = FastAPI(
     title="Headroom Sidecar",
     description="Context compression service for LLM requests",
-    version="1.0.0",
+    version="2.0.0",
 )
 
-# Try to import headroom, fallback to basic compression if not available
+# Try to import upstream headroom v0.20+ public API. If unavailable
+# (package missing or pinned to an older version that doesn't expose
+# the one-function API), fall back to a basic byte-level compressor
+# so the sidecar still serves traffic.
+HEADROOM_AVAILABLE = False
+HEADROOM_VERSION = "unknown"
+_compress_fn = None
+_CompressConfig = None
+
 try:
-    from headroom import (
-        TransformPipeline,
-        SmartCrusher,
-        SmartCrusherConfig,
-        ToolCrusher,
-        ToolCrusherConfig,
-        RollingWindow,
-        RollingWindowConfig,
-        AnthropicProvider,
-        OpenAIProvider,
+    from headroom import compress as _compress_fn
+    from headroom import CompressConfig as _CompressConfig
+
+    try:
+        from headroom import __version__ as HEADROOM_VERSION
+    except ImportError:
+        HEADROOM_VERSION = "v0.20+"
+
+    HEADROOM_AVAILABLE = True
+    logger.info(
+        "Loaded upstream headroom %s with one-function compress() API",
+        HEADROOM_VERSION,
     )
-    import warnings
-    warnings.filterwarnings("ignore", message=".*tiktoken approximation.*")
-
-    # Create transforms based on config
-    transforms = []
-
-    if config.smart_crusher_enabled:
-        transforms.append(SmartCrusher(SmartCrusherConfig(
-            enabled=True,
-            min_tokens_to_crush=config.smart_crusher_min_tokens,
-            max_items_after_crush=config.smart_crusher_max_items,
-        )))
-        logger.info("SmartCrusher enabled")
-
-    if config.tool_crusher_enabled:
-        transforms.append(ToolCrusher(ToolCrusherConfig(
-            enabled=True,
-        )))
-        logger.info("ToolCrusher enabled")
-
-    if config.rolling_window_enabled:
-        transforms.append(RollingWindow(RollingWindowConfig(
-            enabled=True,
-            keep_last_turns=config.keep_turns,
-        )))
-        logger.info("RollingWindow enabled")
-
-    # Create provider based on config
-    if config.provider == "openai":
-        headroom_provider = OpenAIProvider()
-    else:
-        headroom_provider = AnthropicProvider()
-
-    headroom_pipeline = TransformPipeline(transforms=transforms, provider=headroom_provider) if transforms else None
-    HEADROOM_AVAILABLE = headroom_pipeline is not None
-    logger.info(f"Headroom SDK loaded successfully with {len(transforms)} transforms (provider: {config.provider})")
 except ImportError as e:
-    logger.warning(f"Headroom SDK not available: {e}. Using basic compression.")
-    headroom_pipeline = None
-    HEADROOM_AVAILABLE = False
+    logger.warning(
+        "Upstream headroom package not available (%s). Falling back to basic compression.",
+        e,
+    )
 
-# CCR Store (in-memory with TTL)
+# CCR store — in-memory cache so the model can retrieve the original
+# bytes for any chunk that was compressed away. Kept here (rather than
+# delegating to upstream's retrieve API) because Lynkr's client uses
+# its own hash convention.
 ccr_store: Dict[str, Dict[str, Any]] = {}
 
 # Metrics
-metrics = {
+metrics: Dict[str, Any] = {
     "requests_total": 0,
     "compressions_applied": 0,
     "compressions_skipped": 0,
@@ -102,11 +94,13 @@ metrics = {
 }
 
 
-# Request/Response models
+# ---------- Request / Response models ----------
+
+
 class CompressRequest(BaseModel):
     messages: List[Dict[str, Any]]
     tools: Optional[List[Dict[str, Any]]] = None
-    model: Optional[str] = "claude-3-5-sonnet-20241022"
+    model: Optional[str] = "claude-sonnet-4-5-20250929"
     model_limit: Optional[int] = 200000
     mode: Optional[str] = None
     token_budget: Optional[int] = None
@@ -136,42 +130,86 @@ class CCRRetrieveResponse(BaseModel):
     error: Optional[str] = None
 
 
+# ---------- Helpers ----------
+
+
 def estimate_tokens(data: Any) -> int:
-    """Estimate token count (rough approximation: ~4 chars per token)"""
+    """Estimate token count (rough approximation: ~4 chars per token)."""
     text = json.dumps(data) if not isinstance(data, str) else data
     return len(text) // 4
 
 
 def generate_hash(content: Any) -> str:
-    """Generate hash for CCR storage"""
+    """Generate hash for CCR storage."""
     text = json.dumps(content, sort_keys=True)
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
 
-def cleanup_expired_ccr():
-    """Remove expired CCR entries"""
+def cleanup_expired_ccr() -> None:
     now = time.time()
     expired = [k for k, v in ccr_store.items() if now - v["timestamp"] > config.ccr_ttl]
     for key in expired:
         del ccr_store[key]
 
 
-def basic_compress(messages: List[Dict], tools: Optional[List] = None) -> Dict:
-    """Basic compression when Headroom SDK is not available"""
+def _build_compress_config(req: CompressRequest):
+    """Translate Lynkr's request fields into a CompressConfig instance.
+
+    Hardcodes Headroom v0.20's strongest settings:
+      - Kompress-base ML compression: enabled (default model)
+      - ICM (IntelligentContextManager): enabled by default in upstream
+      - SmartCrusher + CacheAligner: enabled by default in upstream
+      - protect_recent=4 (don't touch the active conversation)
+      - protect_analysis_context=True (preserve code under analyze/review)
+      - compress_system_messages=True (system prompts get compressed)
+      - compress_user_messages=False (skip user messages — coding-agent default)
+      - target_ratio=None (let the model decide ~85% compression)
+
+    Lynkr's `preserve_recent_turns` and `target_ratio` request fields can
+    still override per-request when explicitly set.
+    """
+    if _CompressConfig is None:
+        return None
+
+    cfg_kwargs: Dict[str, Any] = {
+        # Best defaults — keep all heavyweight transforms on
+        "compress_user_messages": False,
+        "compress_system_messages": True,
+        "protect_recent": 4,
+        "protect_analysis_context": True,
+        "min_tokens_to_compress": max(config.smart_crusher_min_tokens, 250),
+        # kompress_model=None means upstream default (chopratejas/kompress-base)
+        # which is the strongest text compressor. Do NOT set "disabled".
+        "kompress_model": None,
+    }
+
+    # Per-request overrides
+    if req.preserve_recent_turns is not None:
+        cfg_kwargs["protect_recent"] = req.preserve_recent_turns
+    if req.target_ratio is not None:
+        cfg_kwargs["target_ratio"] = req.target_ratio
+
+    return _CompressConfig(**cfg_kwargs)
+
+
+def _basic_compress(messages: List[Dict], tools: Optional[List]) -> Dict[str, Any]:
+    """Fallback compressor when upstream headroom is unavailable.
+
+    Stores any tool_result longer than 2000 chars in the CCR store and
+    replaces it with a short reference. Mirrors the behaviour of the
+    pre-v0.20 sidecar so existing clients still get *some* compression.
+    """
     tokens_before = estimate_tokens(messages)
-    compressed_messages = []
+    compressed_messages: List[Dict[str, Any]] = []
 
     for msg in messages:
         compressed_msg = msg.copy()
-
-        # Compress large tool results
         if msg.get("role") == "user" and isinstance(msg.get("content"), list):
             new_content = []
             for block in msg["content"]:
                 if block.get("type") == "tool_result":
                     content = block.get("content", "")
                     if isinstance(content, str) and len(content) > 2000:
-                        # Store in CCR and replace with reference
                         hash_key = generate_hash(content)
                         ccr_store[hash_key] = {
                             "content": content,
@@ -189,7 +227,6 @@ def basic_compress(messages: List[Dict], tools: Optional[List] = None) -> Dict:
         compressed_messages.append(compressed_msg)
 
     tokens_after = estimate_tokens(compressed_messages)
-
     return {
         "messages": compressed_messages,
         "tools": tools,
@@ -198,23 +235,29 @@ def basic_compress(messages: List[Dict], tools: Optional[List] = None) -> Dict:
             "tokens_before": tokens_before,
             "tokens_after": tokens_after,
             "tokens_saved": tokens_before - tokens_after,
-            "savings_percent": round(
-                (1 - tokens_after / tokens_before) * 100, 1
-            ) if tokens_before > 0 else 0,
+            "savings_percent": round((1 - tokens_after / tokens_before) * 100, 1)
+            if tokens_before > 0
+            else 0,
             "transforms_applied": ["basic_ccr"] if tokens_after < tokens_before else [],
             "latency_ms": 0,
         },
     }
 
 
+# ---------- Routes ----------
+
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
     cleanup_expired_ccr()
     return {
         "status": "healthy",
         "headroom_loaded": HEADROOM_AVAILABLE,
+        "headroom_version": HEADROOM_VERSION,
         "ccr_enabled": config.ccr_enabled,
+        # Field kept for backwards compatibility with Lynkr's client.
+        # In v0.20 LLMLingua-as-a-knob has been folded into CompressConfig
+        # via `kompress_model="disabled"`. We surface the same flag here.
         "llmlingua_enabled": config.llmlingua_enabled,
         "entries_cached": len(ccr_store),
         "config": config.to_dict(),
@@ -223,7 +266,6 @@ async def health_check():
 
 @app.get("/metrics")
 async def get_metrics():
-    """Get compression metrics"""
     return {
         **metrics,
         "average_compression_ratio": (
@@ -240,7 +282,6 @@ async def get_metrics():
 
 @app.post("/compress", response_model=CompressResponse)
 async def compress_messages(request: CompressRequest):
-    """Compress messages and tools"""
     start_time = time.time()
     metrics["requests_total"] += 1
 
@@ -248,7 +289,6 @@ async def compress_messages(request: CompressRequest):
         tokens_before = estimate_tokens(request.messages)
         metrics["total_tokens_before"] += tokens_before
 
-        # Skip if below minimum tokens
         if tokens_before < config.smart_crusher_min_tokens:
             metrics["compressions_skipped"] += 1
             return CompressResponse(
@@ -258,57 +298,69 @@ async def compress_messages(request: CompressRequest):
                 stats={
                     "skipped": True,
                     "reason": f"Below threshold ({tokens_before} < {config.smart_crusher_min_tokens})",
+                    "tokens_before": tokens_before,
+                    "tokens_after": tokens_before,
+                    "tokens_saved": 0,
+                    "savings_percent": 0,
+                    "transforms_applied": [],
+                    "latency_ms": round((time.time() - start_time) * 1000, 1),
                 },
             )
 
-        # Use Headroom SDK if available
-        if HEADROOM_AVAILABLE and headroom_pipeline:
+        # Preferred path: delegate to upstream headroom.compress()
+        if HEADROOM_AVAILABLE and _compress_fn is not None:
             try:
-                result = headroom_pipeline.apply(
+                result = _compress_fn(
                     request.messages,
-                    model=request.model,
-                    model_limit=request.model_limit,
+                    model=request.model or "claude-sonnet-4-5-20250929",
+                    model_limit=request.model_limit or 200000,
+                    config=_build_compress_config(request),
                 )
 
-                # Extract messages from TransformResult
-                if hasattr(result, 'messages'):
-                    compressed_messages = result.messages
-                    # transforms_applied may be strings or objects with .name
-                    if hasattr(result, 'transforms_applied'):
-                        transforms_applied = [t if isinstance(t, str) else getattr(t, 'name', str(t)) for t in result.transforms_applied]
-                    else:
-                        transforms_applied = []
-                elif isinstance(result, dict):
-                    compressed_messages = result.get("messages", request.messages)
-                    transforms_applied = result.get("transforms", [])
-                else:
-                    compressed_messages = result if isinstance(result, list) else request.messages
-                    transforms_applied = []
+                # CompressResult fields: messages, tokens_before, tokens_after,
+                # tokens_saved, compression_ratio, transforms_applied
+                compressed_messages = getattr(result, "messages", request.messages)
+                upstream_before = getattr(result, "tokens_before", tokens_before)
+                upstream_after = getattr(result, "tokens_after", None)
+                if upstream_after is None:
+                    upstream_after = estimate_tokens(compressed_messages)
 
-                tokens_after = estimate_tokens(compressed_messages)
-                metrics["total_tokens_after"] += tokens_after
+                metrics["total_tokens_after"] += upstream_after
                 metrics["compressions_applied"] += 1
+
+                transforms = getattr(result, "transforms_applied", []) or []
+                # transforms_applied may contain strings or objects with .name
+                transforms_named = [
+                    t if isinstance(t, str) else getattr(t, "name", str(t))
+                    for t in transforms
+                ]
 
                 return CompressResponse(
                     messages=compressed_messages,
-                    tools=request.tools,  # Tools not modified by current transforms
-                    compressed=tokens_after < tokens_before,
+                    tools=request.tools,
+                    compressed=upstream_after < upstream_before,
                     stats={
-                        "tokens_before": tokens_before,
-                        "tokens_after": tokens_after,
-                        "tokens_saved": tokens_before - tokens_after,
+                        "tokens_before": upstream_before,
+                        "tokens_after": upstream_after,
+                        "tokens_saved": upstream_before - upstream_after,
                         "savings_percent": round(
-                            (1 - tokens_after / tokens_before) * 100, 1
-                        ) if tokens_before > 0 else 0,
-                        "transforms_applied": transforms_applied,
+                            (1 - upstream_after / upstream_before) * 100, 1
+                        )
+                        if upstream_before > 0
+                        else 0,
+                        "compression_ratio": getattr(result, "compression_ratio", 0.0),
+                        "transforms_applied": transforms_named,
                         "latency_ms": round((time.time() - start_time) * 1000, 1),
+                        "headroom_version": HEADROOM_VERSION,
                     },
                 )
             except Exception as e:
-                logger.warning(f"Headroom SDK error, falling back to basic: {e}")
+                logger.warning(
+                    "headroom.compress() failed, falling back to basic: %s", e
+                )
 
-        # Fallback to basic compression
-        result = basic_compress(request.messages, request.tools)
+        # Fallback path: byte-level CCR-style compression
+        result = _basic_compress(request.messages, request.tools)
         metrics["total_tokens_after"] += result["stats"]["tokens_after"]
         if result["compressed"]:
             metrics["compressions_applied"] += 1
@@ -320,13 +372,12 @@ async def compress_messages(request: CompressRequest):
 
     except Exception as e:
         metrics["errors"] += 1
-        logger.error(f"Compression error: {e}")
+        logger.error("Compression error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/ccr/retrieve", response_model=CCRRetrieveResponse)
 async def ccr_retrieve(request: CCRRetrieveRequest):
-    """Retrieve content from CCR store"""
     cleanup_expired_ccr()
 
     if request.hash not in ccr_store:
@@ -339,10 +390,8 @@ async def ccr_retrieve(request: CCRRetrieveRequest):
     content = entry["content"]
     metrics["ccr_retrievals"] += 1
 
-    # If query provided, search within content
     if request.query:
         if isinstance(content, list):
-            # Filter list items by query
             filtered = [
                 item
                 for item in content
@@ -354,8 +403,7 @@ async def ccr_retrieve(request: CCRRetrieveRequest):
                 items_retrieved=len(filtered),
                 was_search=True,
             )
-        elif isinstance(content, str):
-            # Return content if query matches
+        if isinstance(content, str):
             if request.query.lower() in content.lower():
                 return CCRRetrieveResponse(
                     success=True,
@@ -368,7 +416,6 @@ async def ccr_retrieve(request: CCRRetrieveRequest):
                 error="Query not found in content",
             )
 
-    # Return full content
     return CCRRetrieveResponse(
         success=True,
         content=content,
@@ -377,75 +424,10 @@ async def ccr_retrieve(request: CCRRetrieveRequest):
     )
 
 
-@app.post("/ccr/track")
-async def ccr_track(
-    hash_key: str,
-    turn_number: int,
-    tool_name: str,
-    sample: str,
-):
-    """Track compression for proactive expansion"""
-    return {"tracked": True, "hash_key": hash_key}
-
-
-@app.post("/ccr/analyze")
-async def ccr_analyze(query: str, turn_number: int):
-    """Analyze query for proactive CCR expansion"""
-    # Simple keyword matching for expansion suggestions
-    expansions = []
-    for hash_key, entry in ccr_store.items():
-        if query.lower() in json.dumps(entry["content"]).lower():
-            expansions.append(
-                {
-                    "hash": hash_key,
-                    "tool_name": entry.get("tool_name", "unknown"),
-                    "relevance": 0.8,
-                }
-            )
-    return {"expansions": expansions[:5]}
-
-
-@app.post("/compress/llmlingua")
-async def llmlingua_compress(
-    text: str,
-    target_ratio: float = 0.5,
-    force_tokens: Optional[str] = None,
-):
-    """Compress text using LLMLingua (if available)"""
-    if not config.llmlingua_enabled:
-        raise HTTPException(status_code=400, detail="LLMLingua is not enabled")
-
-    try:
-        # Try to import and use llmlingua
-        from llmlingua import PromptCompressor
-
-        compressor = PromptCompressor(device_map=config.llmlingua_device)
-        result = compressor.compress_prompt(
-            text,
-            rate=target_ratio,
-            force_tokens=json.loads(force_tokens) if force_tokens else None,
-        )
-        return {
-            "compressed": result["compressed_prompt"],
-            "original_tokens": result.get("origin_tokens", len(text) // 4),
-            "compressed_tokens": result.get("compressed_tokens", len(result["compressed_prompt"]) // 4),
-            "ratio": result.get("rate", target_ratio),
-        }
-    except ImportError:
-        raise HTTPException(
-            status_code=501,
-            detail="LLMLingua not installed. Add llmlingua to requirements.txt",
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ---------- Entrypoint ----------
 
 
 if __name__ == "__main__":
-    logger.info(f"Starting Headroom sidecar on {config.host}:{config.port}")
-    logger.info(f"Configuration: {json.dumps(config.to_dict(), indent=2)}")
-    uvicorn.run(
-        app,
-        host=config.host,
-        port=config.port,
-        log_level=config.log_level,
-    )
+    logger.info("Starting Headroom sidecar on %s:%d", config.host, config.port)
+    logger.info("Headroom available: %s (version: %s)", HEADROOM_AVAILABLE, HEADROOM_VERSION)
+    uvicorn.run(app, host=config.host, port=config.port, log_level=config.log_level)

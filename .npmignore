@@ -1,8 +1,10 @@
 .DS_Store
 .git
 .claude/
+.lynkr/
 data/
 tmp/
+logs/
 node_modules/
 *.log
 .env
@@ -11,6 +13,28 @@ Dockerfile
 docker/
 docker-compose.yml
 src/orchestrator/index.js.backup
+
+# Rust build artifacts (60MB+ of garbage)
+native/target/
+native/target/**
+**/target/
+*.rlib
+*.rmeta
+*.dylib
+*.so
+*.d
+!native/index.js
+!native/lynkr-native.node
+
+# Cargo files (only ship what runtime needs)
+native/Cargo.lock
+native/build.rs
+
+# Database/runtime files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
 
 # ML model files (users export locally via scripts/export-routellm-bert.py)
 models/router/*.onnx

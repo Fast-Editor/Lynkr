@@ -33,7 +33,7 @@ router.post("/files", async (req, res) => {
           filename = parsed.filename || filename;
           mimeType = parsed.mimeType || mimeType;
           purpose = parsed.purpose || purpose;
-          const entry = fileStore.storeFile(parsed.file, { filename, purpose, mimeType });
+          const entry = await fileStore.storeFile(parsed.file, { filename, purpose, mimeType });
           return res.json(entry);
         }
       }
@@ -43,7 +43,7 @@ router.post("/files", async (req, res) => {
     mimeType = contentType.split(";")[0].trim() || mimeType;
     filename = req.headers["x-filename"] || filename;
     purpose = req.query.purpose || purpose;
-    const entry = fileStore.storeFile(buffer, { filename, purpose, mimeType });
+    const entry = await fileStore.storeFile(buffer, { filename, purpose, mimeType });
     res.json(entry);
   } catch (err) {
     logger.error({ err }, "File upload failed");
@@ -62,18 +62,18 @@ router.get("/files/:id", (req, res) => {
   res.json(file);
 });
 
-router.get("/files/:id/content", (req, res) => {
+router.get("/files/:id/content", async (req, res) => {
   const file = fileStore.getFile(req.params.id);
   if (!file) return res.status(404).json({ error: { message: "File not found" } });
-  const content = fileStore.getFileContent(req.params.id);
+  const content = await fileStore.getFileContent(req.params.id);
   if (!content) return res.status(404).json({ error: { message: "File content not found" } });
   res.setHeader("Content-Type", file.mime_type);
   res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
   res.send(content);
 });
 
-router.delete("/files/:id", (req, res) => {
-  const deleted = fileStore.deleteFile(req.params.id);
+router.delete("/files/:id", async (req, res) => {
+  const deleted = await fileStore.deleteFile(req.params.id);
   if (!deleted) return res.status(404).json({ error: { message: "File not found" } });
   res.json({ id: req.params.id, object: "file", deleted: true });
 });

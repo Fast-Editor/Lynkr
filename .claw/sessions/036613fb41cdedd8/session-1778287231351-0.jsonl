@@ -1,0 +1,3 @@
+{"created_at_ms":1778287231350,"model":"claude-opus-4-6","session_id":"session-1778287231351-0","type":"session_meta","updated_at_ms":1778287246326,"version":1,"workspace_root":"/Users/vishalveera.reddy/claude-code"}
+{"message":{"blocks":[{"text":"Hi","type":"text"}],"role":"user"},"type":"message"}
+{"message":{"blocks":[{"text":"Hi there! How can I help you today? Whether you need assistance with coding, debugging, exploring a codebase, running commands, or anything else - I'm here to help!","type":"text"}],"role":"assistant","usage":{"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":0,"output_tokens":86}},"type":"message"}
