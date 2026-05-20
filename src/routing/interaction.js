@@ -1,10 +1,9 @@
 /**
  * Routing Interaction Block
  *
- * Builds a CodexSaver-style "interaction" block that explains, in plain
- * text, what Lynkr decided to do with a request — which tier, which
- * provider, why it routed there, and what (if anything) the user
- * should do next.
+ * Builds an "interaction" block that explains, in plain text, what
+ * Lynkr decided to do with a request — which tier, which provider,
+ * why it routed there, and what (if anything) the user should do next.
  *
  * Lynkr already surfaces this information via X-Lynkr-* response
  * headers, but headers are invisible to most users in Claude Code /
@@ -12,16 +11,12 @@
  * so it shows up alongside the model's reply when the visible-routing
  * env flag is on (LYNKR_VISIBLE_ROUTING=true).
  *
- * Inspired by CodexSaver's CodexSaverEngine._interaction_payload:
- * https://github.com/fendouai/CodexSaver/blob/main/codexsaver/engine.py
- *
  * @module routing/interaction
  */
 
 /**
- * Rough estimate of cost savings vs always-COMPLEX baseline.
- * Mirrors CodexSaver's CostEstimator banding — not invoice-grade,
- * just a reproducible number for users to glance at.
+ * Rough estimate of cost savings vs always-COMPLEX baseline. Not
+ * invoice-grade, just a reproducible number for users to glance at.
  *
  * @param {string|null} tier
  * @param {string|null} provider

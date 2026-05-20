@@ -5,9 +5,6 @@
  * A trivially short edit to `auth/middleware.ts` is still high risk and
  * should not be served by a cheap local model.
  *
- * Inspired by CodexSaver's router.py (Apache-2.0 friendly):
- * https://github.com/fendouai/CodexSaver/blob/main/codexsaver/router.py
- *
  * @module routing/risk-analyzer
  */
 

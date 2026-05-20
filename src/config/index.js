@@ -920,8 +920,8 @@ var config = {
     weightedScoring: true,
     costOptimization: true,
     agenticDetection: true,
-    // Embed a CodexSaver-style interaction block in the response body
-    // so the user can see *why* a particular tier/provider was chosen.
+    // Embed an interaction block in the response body so the user can
+    // see *why* a particular tier/provider was chosen.
     visibleInteraction: process.env.LYNKR_VISIBLE_ROUTING === 'true',
     // Run user-supplied preflight commands before invoking the model.
     // If all exit 0, short-circuit the request with zero LLM cost.
