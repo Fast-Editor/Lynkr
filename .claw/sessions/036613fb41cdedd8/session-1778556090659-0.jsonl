@@ -1,0 +1,3 @@
+{"created_at_ms":1778556090658,"model":"claude-opus-4-6","session_id":"session-1778556090659-0","type":"session_meta","updated_at_ms":1778556090658,"version":1,"workspace_root":"/Users/vishalveera.reddy/claude-code"}
+{"text":"Read the whole repo and I want you to craft an email to a tech influencer and introduce this project. Focus on listing the key features and also ask for sponsorship if possible","timestamp_ms":1778556136935,"type":"prompt_history"}
+{"message":{"blocks":[{"text":"Read the whole repo and I want you to craft an email to a tech influencer and introduce this project. Focus on listing the key features and also ask for sponsorship if possible","type":"text"}],"role":"user"},"type":"message"}

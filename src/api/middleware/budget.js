@@ -57,11 +57,29 @@ function budgetMiddleware(req, res, next) {
     }, 'Budget warning: approaching limits');
   }
 
-  // Attach budget info to request for usage recording later
   req.budgetInfo = {
     userId,
     budgetCheck,
+    startTime: Date.now(),
   };
+
+  // Record usage after response completes
+  res.on('finish', () => {
+    try {
+      const usage = res.locals.usage;
+      if (!usage) return;
+      budgetManager.recordUsage(userId, req.session?.id || null, {
+        tokensInput: usage.prompt_tokens || usage.input_tokens || 0,
+        tokensOutput: usage.completion_tokens || usage.output_tokens || 0,
+        costUsd: usage.cost_usd || 0,
+        model: usage.model || null,
+        endpoint: req.path,
+        latencyMs: Date.now() - req.budgetInfo.startTime,
+      });
+    } catch (err) {
+      logger.warn({ err: err.message }, 'Failed to record usage after response');
+    }
+  });
 
   next();
 }

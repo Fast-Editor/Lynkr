@@ -1,14 +1,15 @@
-# Headroom Sidecar Dependencies
+# Headroom Sidecar Dependencies (v2 — upstream v0.20+)
 
 # Core framework
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
-pydantic>=2.5.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
 
-# Headroom SDK
-headroom-ai>=0.1.0
-
-# Optional: LLMLingua support (uncomment for ML compression)
-# llmlingua>=0.2.0
-# torch>=2.0.0
-# transformers>=4.36.0
+# Upstream Headroom — exposes the one-function compress() API.
+# Pin to v0.20.10 (last-tested upstream tag) to avoid chasing
+# breaking changes from a project shipping multiple releases per day.
+# Bump deliberately, not blindly. The [all] extra ships Kompress-base
+# (HuggingFace ML compressor) which is enabled by default for max
+# token savings — adds ~700MB to the image but pays back ~30% extra
+# compression on text-heavy outputs (logs, RAG chunks, search results).
+headroom-ai[all]==0.20.10

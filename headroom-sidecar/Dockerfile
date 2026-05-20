@@ -1,7 +1,8 @@
-# Headroom Sidecar - Context Compression Service
-# Provides 47-92% token reduction for LLM requests
+# Headroom Sidecar — Context Compression Service
+# Provides 47-92% token reduction for LLM requests.
+# v2 image targets upstream chopratejas/headroom v0.20+.
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

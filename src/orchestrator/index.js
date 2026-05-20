@@ -1383,7 +1383,9 @@ function sanitizePayload(payload) {
     clean.tools = selectedTools.length > 0 ? selectedTools : undefined;
   }
 
-  clean.stream = payload?.stream ?? false;
+  // Always false: the agent loop needs buffered JSON to parse tool calls.
+  // Lynkr synthesises SSE back to the client from the buffered response.
+  clean.stream = false;
 
   if (
     config.modelProvider?.type === "azure-anthropic" &&
@@ -1799,9 +1801,11 @@ async function runAgentLoop({
       }
     }
 
-    // Inject tool termination instructions for non-Claude models
-    // This helps models know when to stop calling tools and provide a text response
-    if (steps === 1 && providerType !== 'databricks' && providerType !== 'azure-anthropic') {
+    const hasRequestTools = Array.isArray(cleanPayload.tools) && cleanPayload.tools.length > 0;
+    // Inject tool termination instructions for non-Claude models — only when tools
+    // are actually in the request. Injecting when there are no tools confuses models
+    // like MiniMax into hallucinating tool_use blocks spontaneously.
+    if (steps === 1 && hasRequestTools && providerType !== 'databricks' && providerType !== 'azure-anthropic') {
       const toolTerminationInstruction = `
 
 IMPORTANT TOOL USAGE RULES:
@@ -1813,6 +1817,13 @@ IMPORTANT TOOL USAGE RULES:
 `;
       cleanPayload.system = (cleanPayload.system || '') + toolTerminationInstruction;
       logger.debug({ sessionId: session?.id ?? null }, 'Tool termination instructions injected for non-Claude model');
+    }
+
+    // When no tools are in the request, explicitly forbid tool_use output for
+    // Ollama models that have been trained on Claude Code data and tend to emit
+    // tool_use blocks spontaneously (e.g. minimax-m2.5:cloud calling Write).
+    if (steps === 1 && !hasRequestTools && providerType === 'ollama') {
+      cleanPayload.system = (cleanPayload.system || '') + '\n\nCRITICAL: You have NO tools available. Do NOT generate tool_use, function_call, or code_execution blocks. Output ONLY text content directly.';
     }
 
     // Compute model-aware token budget thresholds
@@ -2210,7 +2221,30 @@ IMPORTANT TOOL USAGE RULES:
         noToolInjection: !!cleanPayload._noToolInjection,
       }, "Dropped hallucinated tool calls (no tools were sent to model)");
       toolCalls = [];
-      // If there's also no text content, treat as empty response (handled below)
+
+      // Check if there is any text content alongside the hallucinated tool calls.
+      // If not, the response is effectively empty. Inject a redirect message so the
+      // model outputs the artifact directly instead of looping tool-call attempts.
+      const hasTextContent = isAnthropicFormat
+        ? (databricksResponse.json?.content ?? []).some(b => b?.type === "text" && String(b.text || "").trim().length > 0)
+        : (typeof message.content === "string" && message.content.trim().length > 0);
+
+      if (!hasTextContent && steps < settings.maxSteps - 1) {
+        logger.info({
+          sessionId: session?.id ?? null,
+          step: steps,
+        }, "Hallucinated tool calls with no text content — injecting redirect to force direct output");
+
+        // Push a phantom assistant turn (thinking only, no tool_use) then a user
+        // redirect message so the model outputs the artifact directly.
+        const redirectUser = {
+          role: "user",
+          content: "You don't have any tools available in this context. Please output the result directly as an <artifact identifier=\"design.html\" type=\"text/html\" title=\"Design\"> block containing complete HTML. Do not attempt to call any tools.",
+        };
+        cleanPayload.messages.push(redirectUser);
+        steps++;
+        continue;
+      }
     }
 
     if (toolCalls.length > 0) {

@@ -147,6 +147,9 @@ function createApp() {
 
   app.use(router);
 
+  // Dashboard UI
+  app.use('/dashboard', require('./dashboard/router'));
+
   // Files API
   const filesRouter = require("./api/files-router");
   app.use("/v1", filesRouter);

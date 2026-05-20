@@ -105,6 +105,9 @@ function init() {
 
       CREATE INDEX IF NOT EXISTS idx_telemetry_timestamp
         ON routing_telemetry(timestamp);
+
+      CREATE INDEX IF NOT EXISTS idx_telemetry_session_id
+        ON routing_telemetry(session_id, timestamp);
     `);
 
     logger.info({ dbPath }, "Routing telemetry database initialised");
@@ -232,6 +235,10 @@ function query(filters = {}) {
   if (filters.since) {
     clauses.push("timestamp >= @since");
     params.since = filters.since;
+  }
+  if (filters.session_id) {
+    clauses.push("session_id = @session_id");
+    params.session_id = filters.session_id;
   }
 
   const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";

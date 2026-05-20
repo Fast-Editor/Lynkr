@@ -58,6 +58,7 @@ async function checkHealth() {
       return {
         available: data.headroom_loaded === true,
         status: data.status,
+        version: data.headroom_version,
         ccrEnabled: data.ccr_enabled,
         llmlinguaEnabled: data.llmlingua_enabled,
         entriesCached: data.entries_cached,
@@ -154,8 +155,10 @@ async function compressMessages(messages, tools = [], options = {}) {
           tokensBefore: result.stats?.tokens_before,
           tokensAfter: result.stats?.tokens_after,
           savingsPercent: result.stats?.savings_percent,
+          compressionRatio: result.stats?.compression_ratio,
           latencyMs: result.stats?.latency_ms,
           transforms: result.stats?.transforms_applied,
+          headroomVersion: result.stats?.headroom_version,
         },
         "Headroom compression applied"
       );
@@ -246,112 +249,6 @@ async function ccrRetrieve(hash, query = null, maxResults = 20) {
 }
 
 /**
- * Track compression for proactive CCR expansion
- */
-async function ccrTrack(hashKey, turnNumber, toolName, sample) {
-  const headroomConfig = getConfig();
-
-  if (!isEnabled()) {
-    return { tracked: false };
-  }
-
-  try {
-    const params = new URLSearchParams({
-      hash_key: hashKey,
-      turn_number: String(turnNumber),
-      tool_name: toolName,
-      sample: sample.substring(0, 500),
-    });
-
-    const response = await fetch(`${headroomConfig.endpoint}/ccr/track?${params}`, {
-      method: "POST",
-      signal: AbortSignal.timeout(2000),
-    });
-
-    if (response.ok) {
-      return await response.json();
-    }
-    return { tracked: false };
-  } catch (err) {
-    logger.debug({ error: err.message }, "CCR tracking failed");
-    return { tracked: false };
-  }
-}
-
-/**
- * Analyze query for proactive CCR expansion
- */
-async function ccrAnalyze(query, turnNumber) {
-  const headroomConfig = getConfig();
-
-  if (!isEnabled()) {
-    return { expansions: [] };
-  }
-
-  try {
-    const response = await fetch(`${headroomConfig.endpoint}/ccr/analyze`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, turn_number: turnNumber }),
-      signal: AbortSignal.timeout(2000),
-    });
-
-    if (response.ok) {
-      return await response.json();
-    }
-    return { expansions: [] };
-  } catch (err) {
-    logger.debug({ error: err.message }, "CCR analysis failed");
-    return { expansions: [] };
-  }
-}
-
-/**
- * Compress text using LLMLingua-2 ML compression
- * (Optional - requires LLMLingua enabled in sidecar)
- */
-async function llmlinguaCompress(text, targetRatio = 0.5, forceTokens = null) {
-  const headroomConfig = getConfig();
-
-  if (!isEnabled()) {
-    return { success: false, error: "Headroom disabled" };
-  }
-
-  try {
-    const params = new URLSearchParams({
-      text,
-      target_ratio: String(targetRatio),
-    });
-
-    if (forceTokens && Array.isArray(forceTokens)) {
-      params.append("force_tokens", JSON.stringify(forceTokens));
-    }
-
-    const response = await fetch(`${headroomConfig.endpoint}/compress/llmlingua?${params}`, {
-      method: "POST",
-      signal: AbortSignal.timeout(30000), // LLMLingua can be slow
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      return { success: false, error };
-    }
-
-    const result = await response.json();
-    return {
-      success: true,
-      compressed: result.compressed,
-      originalTokens: result.original_tokens,
-      compressedTokens: result.compressed_tokens,
-      ratio: result.ratio,
-    };
-  } catch (err) {
-    logger.error({ error: err.message }, "LLMLingua compression failed");
-    return { success: false, error: err.message };
-  }
-}
-
-/**
  * Get client-side metrics
  */
 function getMetrics() {
@@ -424,9 +321,6 @@ module.exports = {
   checkHealth,
   compressMessages,
   ccrRetrieve,
-  ccrTrack,
-  ccrAnalyze,
-  llmlinguaCompress,
   getMetrics,
   getServerMetrics,
   getCombinedMetrics,

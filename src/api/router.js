@@ -8,6 +8,7 @@ const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");
 const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector } = require("../routing");
 const { validateCwd } = require("../workspace");
+const { renderText } = require("../utils/markdown-ansi");
 
 const router = express.Router();
 
@@ -61,6 +62,24 @@ function estimateTokenCount(messages = [], system = null) {
 
 router.get("/health", (req, res) => {
   res.json({ status: "ok" });
+});
+
+// Usage report — same data as `lynkr usage` CLI, served as JSON for
+// dashboards / agents / scripts that want to surface spend & savings.
+router.get("/v1/usage", (req, res) => {
+  try {
+    const aggregator = require("../usage/aggregator");
+    const window = req.query.window || (req.query.days ? `${parseInt(req.query.days, 10)}d` : "30d");
+    const usage = aggregator.getUsage({
+      window,
+      flagship: req.query.flagship,
+      provider: req.query.provider,
+      model: req.query.model,
+    });
+    res.json(usage);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Routing stats endpoint (Phase 3: Metrics)
@@ -424,17 +443,35 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
             content_block: { type: "text", text: "" }
           })}\n\n`);
 
-          // Send text in chunks
-          const text = block.text || "";
-          const chunkSize = 20;
-          for (let j = 0; j < text.length; j += chunkSize) {
-            const chunk = text.slice(j, j + chunkSize);
-            res.write(`event: content_block_delta\n`);
-            res.write(`data: ${JSON.stringify({
-              type: "content_block_delta",
-              index: i,
-              delta: { type: "text_delta", text: chunk }
-            })}\n\n`);
+          // Send text — one chunk when ANSI rendering is active (splitting
+          // ANSI escape sequences across 20-char chunks breaks terminal output).
+          // Plain text falls back to line-level chunks for a trickle effect.
+          // Never apply ANSI rendering to HTML content (<artifact> blocks):
+          // ANSI codes corrupt CSS selectors like `*` and break the browser viewer.
+          const rawBlockText = block.text || "";
+          const isHtmlContent = rawBlockText.includes("<artifact") || rawBlockText.trimStart().startsWith("<");
+          const text = isHtmlContent ? rawBlockText : renderText(rawBlockText);
+          const { enabled: ansiEnabled } = require("../utils/markdown-ansi");
+          if (ansiEnabled && !isHtmlContent) {
+            if (text.length > 0) {
+              res.write(`event: content_block_delta\n`);
+              res.write(`data: ${JSON.stringify({
+                type: "content_block_delta",
+                index: i,
+                delta: { type: "text_delta", text }
+              })}\n\n`);
+            }
+          } else {
+            const lines = text.split("\n");
+            for (const line of lines) {
+              const lineWithNl = line + "\n";
+              res.write(`event: content_block_delta\n`);
+              res.write(`data: ${JSON.stringify({
+                type: "content_block_delta",
+                index: i,
+                delta: { type: "text_delta", text: lineWithNl }
+              })}\n\n`);
+            }
           }
 
           res.write(`event: content_block_stop\n`);
@@ -459,22 +496,37 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           res.write(`event: content_block_stop\n`);
           res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: i })}\n\n`);
         } else if (block.type === "tool_use") {
-          res.write(`event: content_block_start\n`);
-          res.write(`data: ${JSON.stringify({
-            type: "content_block_start",
-            index: i,
-            content_block: { type: "tool_use", id: block.id, name: block.name, input: {} }
-          })}\n\n`);
-
-          res.write(`event: content_block_delta\n`);
-          res.write(`data: ${JSON.stringify({
-            type: "content_block_delta",
-            index: i,
-            delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) }
-          })}\n\n`);
-
-          res.write(`event: content_block_stop\n`);
-          res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: i })}\n\n`);
+          // Original request had no tools → model hallucinated a tool call.
+          // Extract file content from write-style tools and wrap it in an
+          // <artifact> block so open-design routes it to the Design panel.
+          const toolName = (block.name || "").toLowerCase();
+          const writeTools = new Set(["write", "create_file", "write_file", "str_replace_editor"]);
+          if (writeTools.has(toolName)) {
+            const rawContent = block.input?.content ?? block.input?.file_content ?? block.input?.new_content ?? "";
+            const filePath = String(block.input?.file_path ?? block.input?.filename ?? "design.html");
+            const content = String(rawContent);
+            if (content) {
+              // Wrap in <artifact> so open-design's parser routes it to the file viewer.
+              const identifier = filePath.replace(/[^a-zA-Z0-9._-]/g, "_");
+              const title = filePath;
+              const wrapped = `<artifact identifier="${identifier}" type="text/html" title="${title}">\n${content}\n</artifact>`;
+              res.write(`event: content_block_start\n`);
+              res.write(`data: ${JSON.stringify({
+                type: "content_block_start",
+                index: i,
+                content_block: { type: "text", text: "" }
+              })}\n\n`);
+              res.write(`event: content_block_delta\n`);
+              res.write(`data: ${JSON.stringify({
+                type: "content_block_delta",
+                index: i,
+                delta: { type: "text_delta", text: wrapped }
+              })}\n\n`);
+              res.write(`event: content_block_stop\n`);
+              res.write(`data: ${JSON.stringify({ type: "content_block_stop", index: i })}\n\n`);
+            }
+          }
+          // Non-write tool_use in a tool-less request is silently dropped.
         }
       }
 
@@ -566,16 +618,30 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
             content_block: { type: "text", text: "" }
           })}\n\n`);
 
-          const text = block.text || "";
-          const chunkSize = 20;
-          for (let j = 0; j < text.length; j += chunkSize) {
-            const chunk = text.slice(j, j + chunkSize);
-            res.write(`event: content_block_delta\n`);
-            res.write(`data: ${JSON.stringify({
-              type: "content_block_delta",
-              index: i,
-              delta: { type: "text_delta", text: chunk }
-            })}\n\n`);
+          const rawBlockText2 = block.text || "";
+          const isHtmlContent2 = rawBlockText2.includes("<artifact") || rawBlockText2.trimStart().startsWith("<");
+          const text = isHtmlContent2 ? rawBlockText2 : renderText(rawBlockText2);
+          const { enabled: ansiEnabled } = require("../utils/markdown-ansi");
+          if (ansiEnabled && !isHtmlContent2) {
+            if (text.length > 0) {
+              res.write(`event: content_block_delta\n`);
+              res.write(`data: ${JSON.stringify({
+                type: "content_block_delta",
+                index: i,
+                delta: { type: "text_delta", text }
+              })}\n\n`);
+            }
+          } else {
+            const lines = text.split("\n");
+            for (const line of lines) {
+              const lineWithNl = line + "\n";
+              res.write(`event: content_block_delta\n`);
+              res.write(`data: ${JSON.stringify({
+                type: "content_block_delta",
+                index: i,
+                delta: { type: "text_delta", text: lineWithNl }
+              })}\n\n`);
+            }
           }
 
           res.write(`event: content_block_stop\n`);

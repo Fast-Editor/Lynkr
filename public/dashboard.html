@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lynkr Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; }
+  .fade-in { animation: fadeIn 0.15s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  .ring-tab { transition: color 0.15s, border-color 0.15s; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #1e293b; }
+  ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .table-row:hover { background: rgba(59,130,246,0.07); }
+  .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.03em; }
+</style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+
+<!-- Top Nav -->
+<header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-50">
+  <div class="max-w-7xl mx-auto px-4 flex items-center h-14 gap-6">
+    <div class="flex items-center gap-2 mr-2">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      </svg>
+      <span class="font-bold text-white text-base tracking-tight">Lynkr</span>
+      <span id="nav-version" class="text-xs text-slate-500 ml-1"></span>
+    </div>
+
+    <nav class="flex gap-1">
+      <button onclick="App.navigate('overview')" data-page="overview"
+        class="ring-tab px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700">
+        Overview
+      </button>
+      <button onclick="App.navigate('usage')" data-page="usage"
+        class="ring-tab px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700">
+        Usage
+      </button>
+      <button onclick="App.navigate('routing')" data-page="routing"
+        class="ring-tab px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700">
+        Routing
+      </button>
+      <button onclick="App.navigate('logs')" data-page="logs"
+        class="ring-tab px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700">
+        Logs
+      </button>
+    </nav>
+
+    <div class="ml-auto flex items-center gap-3">
+      <div id="refresh-indicator" class="flex items-center gap-2 text-xs text-slate-500">
+        <div class="status-dot bg-green-500" id="live-dot"></div>
+        <span id="refresh-countdown">30s</span>
+      </div>
+      <button onclick="App.refresh()" class="text-xs text-slate-500 hover:text-slate-300 px-2 py-1 rounded hover:bg-slate-700">
+        ↺ Refresh
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- Page Content -->
+<main id="content" class="max-w-7xl mx-auto px-4 py-6"></main>
+
+<script>
+/* ─────────────────────────────────────────────
+   Helpers
+───────────────────────────────────────────── */
+const fmt = {
+  num:  n => (n ?? 0).toLocaleString(),
+  tok:  n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n||0),
+  usd:  n => '$'+(n||0).toFixed(4),
+  usd2: n => '$'+(n||0).toFixed(2),
+  pct:  n => (n||0).toFixed(1)+'%',
+  ms:   n => n == null ? '—' : n < 1000 ? n+'ms' : (n/1000).toFixed(1)+'s',
+  ago:  ts => {
+    if (!ts) return '—';
+    const s = Math.floor((Date.now()-ts)/1000);
+    if (s < 60)  return s+'s ago';
+    if (s < 3600) return Math.floor(s/60)+'m ago';
+    return Math.floor(s/3600)+'h ago';
+  },
+  time: ts => ts ? new Date(ts).toLocaleTimeString() : '—',
+};
+
+function tierColor(tier) {
+  return { SIMPLE:'text-green-400', MEDIUM:'text-blue-400', COMPLEX:'text-amber-400', REASONING:'text-purple-400' }[tier] || 'text-slate-400';
+}
+function tierBg(tier) {
+  return { SIMPLE:'bg-green-900/40 text-green-300', MEDIUM:'bg-blue-900/40 text-blue-300', COMPLEX:'bg-amber-900/40 text-amber-300', REASONING:'bg-purple-900/40 text-purple-300' }[tier] || 'bg-slate-700 text-slate-300';
+}
+function statusBadge(code) {
+  if (!code) return '<span class="badge bg-slate-700 text-slate-400">—</span>';
+  if (code < 300) return `<span class="badge bg-green-900/50 text-green-300">${code}</span>`;
+  if (code < 500) return `<span class="badge bg-amber-900/50 text-amber-300">${code}</span>`;
+  return `<span class="badge bg-red-900/50 text-red-300">${code}</span>`;
+}
+function providerDot(type) {
+  return type === 'local' ? 'bg-green-500' : 'bg-blue-500';
+}
+
+function card(inner, extra='') {
+  return `<div class="bg-slate-800 border border-slate-700 rounded-xl p-5 ${extra}">${inner}</div>`;
+}
+
+function statCard(label, value, sub='', color='text-white') {
+  return card(`
+    <div class="text-xs text-slate-500 uppercase tracking-wider mb-1">${label}</div>
+    <div class="text-2xl font-bold ${color}">${value}</div>
+    ${sub ? `<div class="text-xs text-slate-500 mt-1">${sub}</div>` : ''}
+  `);
+}
+
+function emptyState(msg) {
+  return `<div class="text-center py-16 text-slate-500">
+    <svg class="mx-auto mb-3 opacity-30" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <p class="text-sm">${msg}</p>
+  </div>`;
+}
+
+function loadingState() {
+  return `<div class="text-center py-16 text-slate-600">
+    <div class="inline-block w-6 h-6 border-2 border-slate-600 border-t-blue-500 rounded-full animate-spin"></div>
+  </div>`;
+}
+
+/* ─────────────────────────────────────────────
+   Main App
+───────────────────────────────────────────── */
+const App = {
+  page: 'overview',
+  data: {},
+  usageWindow: '7d',
+  logFilters: { provider: '', tier: '', error: false },
+  _refreshTimer: null,
+  _countdownTimer: null,
+  _countdown: 30,
+  _charts: {},
+
+  init() {
+    const hash = location.hash.slice(1) || 'overview';
+    this.navigate(hash, true);
+    this._startCountdown();
+  },
+
+  navigate(page, initial=false) {
+    this.page = page;
+    location.hash = page;
+    this._updateTabs();
+    document.getElementById('content').innerHTML = loadingState();
+    this._destroyCharts();
+    this.refresh();
+  },
+
+  _updateTabs() {
+    document.querySelectorAll('[data-page]').forEach(btn => {
+      const active = btn.dataset.page === this.page;
+      btn.className = active
+        ? 'ring-tab px-4 py-2 rounded-md text-sm font-medium text-white bg-slate-700'
+        : 'ring-tab px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700';
+    });
+  },
+
+  _startCountdown() {
+    this._countdown = 30;
+    clearInterval(this._countdownTimer);
+    this._countdownTimer = setInterval(() => {
+      this._countdown--;
+      const el = document.getElementById('refresh-countdown');
+      if (el) el.textContent = this._countdown + 's';
+      if (this._countdown <= 0) {
+        this._countdown = 30;
+        this.refresh(true); // silent refresh
+      }
+    }, 1000);
+  },
+
+  async refresh(silent=false) {
+    this._countdown = 30;
+    if (!silent) document.getElementById('content').innerHTML = loadingState();
+    const dot = document.getElementById('live-dot');
+    if (dot) { dot.className = 'status-dot bg-yellow-500'; }
+
+    try {
+      let data;
+      if (this.page === 'overview')  data = await this._fetch('/dashboard/api/overview');
+      if (this.page === 'usage')     data = await this._fetch(`/dashboard/api/usage?window=${this.usageWindow}`);
+      if (this.page === 'routing')   data = await this._fetch('/dashboard/api/routing');
+      if (this.page === 'logs') {
+        const q = new URLSearchParams({ limit: 100 });
+        if (this.logFilters.provider) q.set('provider', this.logFilters.provider);
+        if (this.logFilters.tier)     q.set('tier',     this.logFilters.tier);
+        if (this.logFilters.error)    q.set('error',    'true');
+        data = await this._fetch('/dashboard/api/logs?' + q);
+      }
+
+      this.data[this.page] = data;
+      this._render(data);
+      if (dot) dot.className = 'status-dot bg-green-500';
+
+      // update version/port in nav
+      if (this.page === 'overview' && data) {
+        const el = document.getElementById('nav-version');
+        if (el) el.textContent = `v${data.version} · :${data.port}`;
+      }
+    } catch (err) {
+      document.getElementById('content').innerHTML =
+        card(`<div class="text-red-400 text-sm">Failed to load: ${err.message}</div>`);
+      if (dot) dot.className = 'status-dot bg-red-500';
+    }
+  },
+
+  async _fetch(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  },
+
+  _render(data) {
+    this._destroyCharts();
+    const html = {
+      overview: () => this._renderOverview(data),
+      usage:    () => this._renderUsage(data),
+      routing:  () => this._renderRouting(data),
+      logs:     () => this._renderLogs(data),
+    }[this.page]?.() || '';
+    document.getElementById('content').innerHTML = `<div class="fade-in">${html}</div>`;
+    this._afterRender(data);
+  },
+
+  _destroyCharts() {
+    Object.values(this._charts).forEach(c => { try { c.destroy(); } catch {} });
+    this._charts = {};
+  },
+
+  /* ── OVERVIEW ────────────────────────────── */
+  _renderOverview(d) {
+    if (!d) return emptyState('No data');
+    const t = d.today;
+    const s = d.stats;
+
+    const providerCards = d.providers.length === 0
+      ? `<p class="text-slate-500 text-sm">No providers configured</p>`
+      : d.providers.map(p => `
+        <div class="flex items-center justify-between bg-slate-700/50 rounded-lg px-4 py-3">
+          <div class="flex items-center gap-2">
+            <span class="status-dot ${providerDot(p.type)}"></span>
+            <span class="text-sm font-medium text-slate-200">${p.name}</span>
+          </div>
+          <span class="text-xs ${p.type === 'local' ? 'text-green-400' : 'text-blue-400'}">${p.type}</span>
+        </div>`).join('');
+
+    const recentRows = (d.recentRequests || []).map(r => `
+      <tr class="table-row border-b border-slate-700/50">
+        <td class="py-2 px-3 text-xs text-slate-500">${fmt.ago(r.timestamp)}</td>
+        <td class="py-2 px-3 text-xs font-mono text-slate-300">${r.provider || '—'}</td>
+        <td class="py-2 px-3 text-xs text-slate-400 max-w-[160px] truncate">${r.model || '—'}</td>
+        <td class="py-2 px-3"><span class="badge ${tierBg(r.tier)}">${r.tier || '—'}</span></td>
+        <td class="py-2 px-3 text-xs text-slate-400">${fmt.ms(r.latency_ms)}</td>
+        <td class="py-2 px-3">${statusBadge(r.status_code)}</td>
+        <td class="py-2 px-3 text-xs text-slate-400">${r.error_type ? `<span class="text-red-400">${r.error_type}</span>` : '—'}</td>
+      </tr>`).join('');
+
+    return `
+      <!-- Stat cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        ${statCard('Requests Today',  fmt.num(t.requests),     `${fmt.num(d.metrics.requestsTotal)} total lifetime`)}
+        ${statCard('Tokens Today',    fmt.tok(t.totalTokens),  `${fmt.num(d.metrics.responsesError)} errors lifetime`, 'text-white')}
+        ${statCard('Cost Today',      fmt.usd(t.cost),         `${fmt.usd(t.flagshipCost||0)} flagship equiv.`, 'text-amber-300')}
+        ${statCard('Saved Today',     fmt.usd(t.saved),        `${fmt.pct(t.savedPercent)} vs flagship`, 'text-green-400')}
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        <!-- Providers -->
+        ${card(`
+          <h3 class="text-sm font-semibold text-slate-300 mb-3">Configured Providers</h3>
+          <div class="flex flex-col gap-2">${providerCards}</div>
+        `)}
+
+        <!-- 24h Stats -->
+        ${card(`
+          <h3 class="text-sm font-semibold text-slate-300 mb-3">Last ${d.statsWindow || '24h'}</h3>
+          ${s ? `
+            <div class="grid grid-cols-2 gap-3">
+              <div><p class="text-xs text-slate-500">Requests</p><p class="text-lg font-bold">${fmt.num(s.totalRequests)}</p></div>
+              <div><p class="text-xs text-slate-500">Error Rate</p><p class="text-lg font-bold ${s.errorRate > 5 ? 'text-red-400' : 'text-green-400'}">${fmt.pct(s.errorRate)}</p></div>
+              <div><p class="text-xs text-slate-500">Over-provisioned</p><p class="text-lg font-bold text-amber-400">${fmt.pct(s.overProvisionedPct)}</p></div>
+              <div><p class="text-xs text-slate-500">Under-provisioned</p><p class="text-lg font-bold text-red-400">${fmt.pct(s.underProvisionedPct)}</p></div>
+            </div>
+          ` : emptyState('No requests yet')}
+        `, 'col-span-2')}
+      </div>
+
+      <!-- Recent Requests -->
+      ${card(`
+        <h3 class="text-sm font-semibold text-slate-300 mb-3">Recent Requests</h3>
+        ${recentRows.length === 0 ? emptyState('No requests recorded yet') : `
+          <div class="overflow-x-auto">
+            <table class="w-full text-left">
+              <thead>
+                <tr class="border-b border-slate-700">
+                  <th class="py-2 px-3 text-xs text-slate-500 font-medium">When</th>
+                  <th class="py-2 px-3 text-xs text-slate-500 font-medium">Provider</th>
+                  <th class="py-2 px-3 text-xs text-slate-500 font-medium">Model</th>
+                  <th class="py-2 px-3 text-xs text-slate-500 font-medium">Tier</th>
+                  <th class="py-2 px-3 text-xs text-slate-500 font-medium">Latency</th>
+                  <th class="py-2 px-3 text-xs text-slate-500 font-medium">Status</th>
+                  <th class="py-2 px-3 text-xs text-slate-500 font-medium">Error</th>
+                </tr>
+              </thead>
+              <tbody>${recentRows}</tbody>
+            </table>
+          </div>
+        `}
+      `)}
+    `;
+  },
+
+  /* ── USAGE ───────────────────────────────── */
+  _renderUsage(d) {
+    if (!d) return emptyState('No data');
+    const t = d.totals;
+    const hasData = t?.requests > 0;
+
+    const windowBtns = ['1d','7d','30d','all'].map(w =>
+      `<button onclick="App.setUsageWindow('${w}')" class="px-3 py-1.5 text-xs rounded-md font-medium ${this.usageWindow===w ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'}">${w}</button>`
+    ).join('');
+
+    const tierRows = Object.entries(d.byTier || {}).sort((a,b)=>b[1].requests-a[1].requests).map(([tier, b]) => `
+      <tr class="table-row border-b border-slate-700/50">
+        <td class="py-2 px-4"><span class="badge ${tierBg(tier)}">${tier}</span></td>
+        <td class="py-2 px-4 text-sm">${fmt.num(b.requests)}</td>
+        <td class="py-2 px-4 text-sm text-slate-400">${fmt.tok(b.totalTokens)}</td>
+        <td class="py-2 px-4 text-sm text-amber-300">${fmt.usd(b.actualCost)}</td>
+        <td class="py-2 px-4 text-sm text-green-400">${fmt.usd(b.saved)}</td>
+        <td class="py-2 px-4 text-xs text-slate-500">${fmt.pct(b.savedPercent)}</td>
+      </tr>`).join('');
+
+    const providerRows = Object.entries(d.byProvider || {}).sort((a,b)=>b[1].requests-a[1].requests).map(([prov, b]) => `
+      <tr class="table-row border-b border-slate-700/50">
+        <td class="py-2 px-4 text-sm font-mono text-slate-300">${prov}</td>
+        <td class="py-2 px-4 text-sm">${fmt.num(b.requests)}</td>
+        <td class="py-2 px-4 text-sm text-slate-400">${fmt.tok(b.totalTokens)}</td>
+        <td class="py-2 px-4 text-sm text-amber-300">${fmt.usd(b.actualCost)}</td>
+        <td class="py-2 px-4 text-sm text-green-400">${fmt.usd(b.saved)}</td>
+        <td class="py-2 px-4 text-xs text-slate-500">${fmt.pct(b.savedPercent)}</td>
+      </tr>`).join('');
+
+    const modelRows = Object.entries(d.byModel || {}).sort((a,b)=>b[1].requests-a[1].requests).slice(0,20).map(([model, b]) => `
+      <tr class="table-row border-b border-slate-700/50">
+        <td class="py-2 px-4 text-xs font-mono text-slate-300 max-w-[220px] truncate">${model}</td>
+        <td class="py-2 px-4 text-sm">${fmt.num(b.requests)}</td>
+        <td class="py-2 px-4 text-sm text-slate-400">${fmt.tok(b.totalTokens)}</td>
+        <td class="py-2 px-4 text-sm text-amber-300">${fmt.usd(b.actualCost)}</td>
+        <td class="py-2 px-4 text-sm text-green-400">${fmt.usd(b.saved)}</td>
+      </tr>`).join('');
+
+    const tableHead = `
+      <thead><tr class="border-b border-slate-700">
+        <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Name</th>
+        <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Requests</th>
+        <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Tokens</th>
+        <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Cost</th>
+        <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Saved</th>
+        <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Saved%</th>
+      </tr></thead>`;
+
+    return `
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-lg font-semibold">Usage</h2>
+        <div class="flex gap-1 bg-slate-800 border border-slate-700 rounded-lg p-1">${windowBtns}</div>
+      </div>
+
+      <!-- Summary -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        ${statCard('Requests',     fmt.num(t?.requests),      d.since ? `since ${new Date(d.since).toLocaleDateString()}` : 'all time')}
+        ${statCard('Total Tokens', fmt.tok(t?.totalTokens),   `${fmt.tok(t?.inputTokens)} in / ${fmt.tok(t?.outputTokens)} out`)}
+        ${statCard('Actual Cost',  fmt.usd2(t?.actualCost),   `vs ${fmt.usd2(t?.flagshipCost)} flagship`, 'text-amber-300')}
+        ${statCard('Total Saved',  fmt.usd2(t?.saved),        `${fmt.pct(t?.savedPercent)} savings rate`, 'text-green-400')}
+      </div>
+
+      ${!hasData ? card(emptyState('No usage data for this window. Make some requests first.')) : `
+        <!-- Chart -->
+        ${card(`
+          <h3 class="text-sm font-semibold text-slate-300 mb-4">Daily Requests by Tier</h3>
+          <div style="height:220px"><canvas id="usage-chart"></canvas></div>
+        `, 'mb-6')}
+
+        <!-- By Tier -->
+        ${card(`
+          <h3 class="text-sm font-semibold text-slate-300 mb-3">By Tier</h3>
+          ${tierRows ? `<table class="w-full">${tableHead}<tbody>${tierRows}</tbody></table>` : emptyState('No tier data')}
+        `, 'mb-4')}
+
+        <!-- By Provider -->
+        ${card(`
+          <h3 class="text-sm font-semibold text-slate-300 mb-3">By Provider</h3>
+          ${providerRows ? `<table class="w-full">${tableHead}<tbody>${providerRows}</tbody></table>` : emptyState('No provider data')}
+        `, 'mb-4')}
+
+        <!-- By Model -->
+        ${card(`
+          <h3 class="text-sm font-semibold text-slate-300 mb-3">By Model <span class="text-slate-500 font-normal text-xs">(top 20)</span></h3>
+          ${modelRows ? `<div class="overflow-x-auto"><table class="w-full">${tableHead}<tbody>${modelRows}</tbody></table></div>` : emptyState('No model data')}
+        `)}
+      `}
+    `;
+  },
+
+  /* ── ROUTING ─────────────────────────────── */
+  _renderRouting(d) {
+    if (!d) return emptyState('No data');
+
+    const tierColors = { SIMPLE:'border-green-700/60 bg-green-900/20', MEDIUM:'border-blue-700/60 bg-blue-900/20', COMPLEX:'border-amber-700/60 bg-amber-900/20', REASONING:'border-purple-700/60 bg-purple-900/20' };
+    const tierTextColors = { SIMPLE:'text-green-300', MEDIUM:'text-blue-300', COMPLEX:'text-amber-300', REASONING:'text-purple-300' };
+
+    const tierCards = Object.entries(d.tierDefinitions || {}).map(([name, def]) => `
+      <div class="border rounded-xl p-4 ${tierColors[name] || 'border-slate-700 bg-slate-800'}">
+        <div class="flex items-center justify-between mb-2">
+          <span class="font-semibold text-sm ${tierTextColors[name] || 'text-slate-300'}">${name}</span>
+          <span class="text-xs text-slate-500">${def.range[0]}–${def.range[1]}</span>
+        </div>
+        <p class="text-xs text-slate-400">${def.description}</p>
+      </div>`).join('');
+
+    const acc = d.accuracy;
+    const providerRows = Object.entries(d.providerStats || {}).map(([name, s]) => `
+      <tr class="table-row border-b border-slate-700/50">
+        <td class="py-2.5 px-4 text-sm font-mono text-slate-300">${name}</td>
+        <td class="py-2.5 px-4 text-sm">${fmt.num(s.total)}</td>
+        <td class="py-2.5 px-4 text-sm">${fmt.ms(s.avgLatency)}</td>
+        <td class="py-2.5 px-4 text-sm ${s.errorRate > 5 ? 'text-red-400' : 'text-green-400'}">${fmt.pct(s.errorRate)}</td>
+        <td class="py-2.5 px-4 text-sm text-slate-400">${fmt.pct(s.fallbackRate)}</td>
+        <td class="py-2.5 px-4 text-sm text-slate-400">${s.avgTokensPerSecond != null ? s.avgTokensPerSecond+' t/s' : '—'}</td>
+        <td class="py-2.5 px-4 text-sm text-amber-300">${fmt.usd(s.totalCost)}</td>
+      </tr>`).join('');
+
+    const cbEntries = Object.entries(d.circuitBreakers || {});
+    const cbRows = cbEntries.map(([name, cb]) => {
+      const state = cb.state || 'unknown';
+      const stateColor = state === 'open' ? 'text-red-400' : state === 'half-open' ? 'text-amber-400' : 'text-green-400';
+      return `<tr class="table-row border-b border-slate-700/50">
+        <td class="py-2.5 px-4 text-sm font-mono text-slate-300">${name}</td>
+        <td class="py-2.5 px-4 text-sm font-semibold ${stateColor}">${state}</td>
+        <td class="py-2.5 px-4 text-sm text-slate-400">${cb.failures ?? '—'}</td>
+        <td class="py-2.5 px-4 text-xs text-slate-500">${cb.lastFailure ? fmt.ago(cb.lastFailure) : '—'}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <h2 class="text-lg font-semibold mb-5">Routing</h2>
+
+      <!-- Tiers -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">${tierCards}</div>
+
+      <!-- Accuracy -->
+      ${card(`
+        <h3 class="text-sm font-semibold text-slate-300 mb-4">Routing Accuracy (last ${d.window || '24h'})</h3>
+        ${acc ? `
+          <div class="grid grid-cols-3 gap-4">
+            <div class="text-center">
+              <p class="text-2xl font-bold">${fmt.num(acc.totalRequests)}</p>
+              <p class="text-xs text-slate-500 mt-1">Total Requests</p>
+            </div>
+            <div class="text-center">
+              <p class="text-2xl font-bold text-amber-400">${fmt.pct(acc.overProvisionedPct)}</p>
+              <p class="text-xs text-slate-500 mt-1">Over-provisioned</p>
+              <p class="text-xs text-slate-600">(used REASONING for simple task)</p>
+            </div>
+            <div class="text-center">
+              <p class="text-2xl font-bold text-red-400">${fmt.pct(acc.underProvisionedPct)}</p>
+              <p class="text-xs text-slate-500 mt-1">Under-provisioned</p>
+              <p class="text-xs text-slate-600">(low quality on SIMPLE tier)</p>
+            </div>
+          </div>
+        ` : emptyState('No routing data for last 24h')}
+      `, 'mb-6')}
+
+      <!-- Provider Stats -->
+      ${card(`
+        <h3 class="text-sm font-semibold text-slate-300 mb-3">Provider Stats (last ${d.window || '24h'})</h3>
+        ${providerRows ? `
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead><tr class="border-b border-slate-700">
+                <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Provider</th>
+                <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Requests</th>
+                <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Avg Latency</th>
+                <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Error Rate</th>
+                <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Fallback Rate</th>
+                <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Avg t/s</th>
+                <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Cost</th>
+              </tr></thead>
+              <tbody>${providerRows}</tbody>
+            </table>
+          </div>
+        ` : emptyState('No provider stats yet')}
+      `, 'mb-6')}
+
+      <!-- Circuit Breakers -->
+      ${card(`
+        <h3 class="text-sm font-semibold text-slate-300 mb-3">Circuit Breakers</h3>
+        ${cbRows ? `
+          <table class="w-full">
+            <thead><tr class="border-b border-slate-700">
+              <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Name</th>
+              <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">State</th>
+              <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Failures</th>
+              <th class="py-2 px-4 text-xs text-slate-500 font-medium text-left">Last Failure</th>
+            </tr></thead>
+            <tbody>${cbRows}</tbody>
+          </table>
+        ` : emptyState('No circuit breakers active')}
+      `)}
+    `;
+  },
+
+  /* ── LOGS ────────────────────────────────── */
+  _renderLogs(rows) {
+    rows = rows || [];
+
+    const providers = [...new Set(rows.map(r => r.provider).filter(Boolean))];
+    const tiers     = ['SIMPLE','MEDIUM','COMPLEX','REASONING'];
+
+    const providerOpts = ['', ...providers].map(p =>
+      `<option value="${p}" ${this.logFilters.provider===p?'selected':''}>${p||'All providers'}</option>`
+    ).join('');
+
+    const tierOpts = ['', ...tiers].map(t =>
+      `<option value="${t}" ${this.logFilters.tier===t?'selected':''}>${t||'All tiers'}</option>`
+    ).join('');
+
+    const tableRows = rows.map(r => `
+      <tr class="table-row border-b border-slate-700/40 text-sm">
+        <td class="py-2 px-3 text-xs text-slate-500 whitespace-nowrap">${fmt.time(r.timestamp)}</td>
+        <td class="py-2 px-3 text-xs font-mono text-slate-300">${r.provider||'—'}</td>
+        <td class="py-2 px-3 text-xs text-slate-400 max-w-[160px] truncate" title="${r.model||''}">${r.model||'—'}</td>
+        <td class="py-2 px-3"><span class="badge ${tierBg(r.tier)}">${r.tier||'—'}</span></td>
+        <td class="py-2 px-3 text-xs text-slate-400">${r.input_tokens!=null?fmt.tok(r.input_tokens):'—'}</td>
+        <td class="py-2 px-3 text-xs text-slate-400">${r.output_tokens!=null?fmt.tok(r.output_tokens):'—'}</td>
+        <td class="py-2 px-3 text-xs text-slate-400">${fmt.ms(r.latency_ms)}</td>
+        <td class="py-2 px-3">${statusBadge(r.status_code)}</td>
+        <td class="py-2 px-3 text-xs ${r.error_type?'text-red-400':'text-slate-500'}">${r.error_type||'—'}</td>
+        <td class="py-2 px-3 text-xs text-amber-300">${r.cost_usd!=null?fmt.usd(r.cost_usd):'—'}</td>
+        <td class="py-2 px-3">${r.was_fallback?'<span class="badge bg-amber-900/40 text-amber-300">fallback</span>':'—'}</td>
+      </tr>`).join('');
+
+    return `
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-lg font-semibold">Request Logs</h2>
+        <span class="text-xs text-slate-500">${rows.length} rows</span>
+      </div>
+
+      <!-- Filters -->
+      ${card(`
+        <div class="flex flex-wrap gap-3 items-center">
+          <select onchange="App.setLogFilter('provider', this.value)"
+            class="bg-slate-700 border border-slate-600 text-slate-300 text-sm rounded-lg px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+            ${providerOpts}
+          </select>
+          <select onchange="App.setLogFilter('tier', this.value)"
+            class="bg-slate-700 border border-slate-600 text-slate-300 text-sm rounded-lg px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+            ${tierOpts}
+          </select>
+          <label class="flex items-center gap-2 text-sm text-slate-400 cursor-pointer">
+            <input type="checkbox" ${this.logFilters.error?'checked':''} onchange="App.setLogFilter('error', this.checked)"
+              class="rounded border-slate-600 bg-slate-700 text-blue-600 focus:ring-blue-500">
+            Errors only
+          </label>
+        </div>
+      `, 'mb-4')}
+
+      <!-- Table -->
+      ${rows.length === 0 ? card(emptyState('No log entries match your filters')) : card(`
+        <div class="overflow-x-auto">
+          <table class="w-full min-w-[900px]">
+            <thead><tr class="border-b border-slate-700">
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Time</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Provider</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Model</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Tier</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">In</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Out</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Latency</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Status</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Error</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Cost</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Flags</th>
+            </tr></thead>
+            <tbody>${tableRows}</tbody>
+          </table>
+        </div>
+      `)}
+    `;
+  },
+
+  /* ── After render hooks (charts) ─────────── */
+  _afterRender(data) {
+    if (this.page === 'usage' && data?.daily?.length && data.totals?.requests > 0) {
+      this._drawUsageChart(data.daily);
+    }
+  },
+
+  _drawUsageChart(daily) {
+    const canvas = document.getElementById('usage-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+
+    const TIER_COLORS = {
+      SIMPLE:    'rgba(34,197,94,0.8)',
+      MEDIUM:    'rgba(59,130,246,0.8)',
+      COMPLEX:   'rgba(245,158,11,0.8)',
+      REASONING: 'rgba(168,85,247,0.8)',
+      UNKNOWN:   'rgba(100,116,139,0.5)',
+    };
+
+    const allTiers = [...new Set(daily.flatMap(d => Object.keys(d.byTier)))];
+
+    const datasets = allTiers.map(tier => ({
+      label: tier,
+      data: daily.map(d => d.byTier[tier] || 0),
+      backgroundColor: TIER_COLORS[tier] || TIER_COLORS.UNKNOWN,
+      borderRadius: 3,
+      borderSkipped: false,
+    }));
+
+    this._charts.usage = new Chart(canvas, {
+      type: 'bar',
+      data: { labels: daily.map(d => d.label), datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+          tooltip: { backgroundColor: '#1e293b', titleColor: '#f1f5f9', bodyColor: '#94a3b8', borderColor: '#334155', borderWidth: 1 },
+        },
+        scales: {
+          x: { stacked: true, ticks: { color: '#64748b', font: { size: 11 } }, grid: { color: '#1e293b' } },
+          y: { stacked: true, ticks: { color: '#64748b', font: { size: 11 } }, grid: { color: '#334155' }, beginAtZero: true },
+        },
+      },
+    });
+  },
+
+  /* ── Public actions ──────────────────────── */
+  setUsageWindow(w) {
+    this.usageWindow = w;
+    this.refresh();
+  },
+
+  setLogFilter(key, value) {
+    this.logFilters[key] = value;
+    this.refresh();
+  },
+};
+
+window.addEventListener('hashchange', () => App.navigate(location.hash.slice(1) || 'overview'));
+App.init();
+</script>
+</body>
+</html>

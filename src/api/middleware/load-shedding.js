@@ -1,3 +1,4 @@
+const os = require("os");
 const logger = require("../../logger");
 const { ServiceUnavailableError } = require("./error-handling");
 
@@ -55,6 +56,20 @@ class LoadShedder {
       return true;
     }
 
+    // Check RSS / system memory
+    const rssPercent = memUsage.rss / os.totalmem();
+    if (rssPercent > this.memoryThreshold) {
+      logger.warn(
+        {
+          rssPercent: (rssPercent * 100).toFixed(2),
+          threshold: (this.memoryThreshold * 100).toFixed(2),
+        },
+        "Load shedding: RSS memory usage exceeded threshold"
+      );
+      this.cachedOverloadState = true;
+      return true;
+    }
+
     // Check active requests
     if (this.activeRequests > this.activeRequestsThreshold) {
       logger.warn(
@@ -81,8 +96,10 @@ class LoadShedder {
       activeRequests: this.activeRequests,
       totalShed: this.totalShed,
       heapUsedPercent: ((memUsage.heapUsed / memUsage.heapTotal) * 100).toFixed(2),
+      rssPercent: ((memUsage.rss / os.totalmem()) * 100).toFixed(2),
       thresholds: {
         heapThreshold: (this.heapThreshold * 100).toFixed(2),
+        memoryThreshold: (this.memoryThreshold * 100).toFixed(2),
         activeRequestsThreshold: this.activeRequestsThreshold,
       },
     };
