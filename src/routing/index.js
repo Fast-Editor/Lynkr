@@ -22,6 +22,7 @@ const {
 const { getAgenticDetector, AGENT_TYPES } = require('./agentic-detector');
 const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
 const { getCostOptimizer } = require('./cost-optimizer');
+const { analyzeRisk } = require('./risk-analyzer');
 
 // Telemetry modules
 const telemetry = require('./telemetry');
@@ -97,6 +98,18 @@ function getBestLocalProvider() {
 async function determineProviderSmart(payload, options = {}) {
   const primaryProvider = config.modelProvider?.type ?? 'databricks';
 
+  // Risk analysis runs orthogonally to complexity. We compute it once
+  // up-front so it can short-circuit force_local and feed the tier
+  // selector below. Even when tier routing is disabled we still surface
+  // the signal for telemetry.
+  let risk = null;
+  try {
+    risk = analyzeRisk(payload);
+  } catch (err) {
+    logger.debug({ err: err.message }, '[Routing] Risk analysis failed, ignoring');
+    risk = null;
+  }
+
   // If tier routing is disabled, use static configuration
   if (!config.modelTiers?.enabled) {
     return {
@@ -104,7 +117,37 @@ async function determineProviderSmart(payload, options = {}) {
       model: null,
       method: 'static',
       reason: 'tier_routing_disabled',
+      risk,
     };
+  }
+
+  // High-risk requests jump straight to COMPLEX and skip the rest of
+  // the analysis. This is independent of complexity score — a one-line
+  // edit to auth/middleware.ts should never go to a local model.
+  if (risk?.level === 'high' && isFallbackEnabled()) {
+    try {
+      const selector = getModelTierSelector();
+      const modelSelection = selector.selectModel('COMPLEX', null);
+      const decision = {
+        provider: modelSelection.provider,
+        model: modelSelection.model,
+        tier: 'COMPLEX',
+        method: 'risk',
+        reason: 'high_risk_forced_tier',
+        score: 100,
+        risk,
+      };
+      routingMetrics.record(decision);
+      logger.debug({
+        tier: 'COMPLEX',
+        provider: decision.provider,
+        instructionHits: risk.instructionHits,
+        pathHits: risk.pathHits,
+      }, '[Routing] High risk → forcing tier');
+      return decision;
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Risk-forced tier selection failed, falling through');
+    }
   }
 
   // Quick check for force patterns
@@ -121,6 +164,7 @@ async function determineProviderSmart(payload, options = {}) {
           method: 'force',
           reason: 'force_local_pattern',
           score: 0,
+          risk,
         };
         routingMetrics.record(decision);
         return decision;
@@ -135,6 +179,7 @@ async function determineProviderSmart(payload, options = {}) {
       method: 'force',
       reason: 'force_local_pattern',
       score: 0,
+      risk,
     };
     routingMetrics.record(decision);
     return decision;
@@ -148,6 +193,7 @@ async function determineProviderSmart(payload, options = {}) {
       method: 'force',
       reason: 'force_cloud_pattern',
       score: 100,
+      risk,
     };
     routingMetrics.record(decision);
     return decision;
@@ -201,6 +247,7 @@ async function determineProviderSmart(payload, options = {}) {
             reason: 'autonomous_workflow',
             score: analysis.score,
             agenticResult,
+            risk,
           };
           routingMetrics.record(decision);
           return decision;
@@ -263,6 +310,7 @@ async function determineProviderSmart(payload, options = {}) {
     embeddingsResult,
     agenticResult,
     costOptimized: false,
+    risk,
   };
 
   // Phase 3: Record metrics
@@ -322,6 +370,18 @@ function getRoutingHeaders(decision) {
     headers['X-Lynkr-Cost-Optimized'] = 'true';
   }
 
+  if (decision.risk?.level) {
+    headers['X-Lynkr-Risk'] = decision.risk.level;
+    const hits = Array.from(new Set([
+      ...(decision.risk.instructionHits || []),
+      ...(decision.risk.pathHits || []),
+    ]));
+    if (hits.length > 0) {
+      // Header values are ASCII-only; comma-join the first few hits.
+      headers['X-Lynkr-Risk-Hits'] = hits.slice(0, 8).join(',');
+    }
+  }
+
   return headers;
 }
 
@@ -350,6 +410,7 @@ module.exports = {
 
   // Re-export analyzer for direct access
   analyzeComplexity: require('./complexity-analyzer').analyzeComplexity,
+  analyzeRisk,
 
   // Intelligent routing modules
   getAgenticDetector,

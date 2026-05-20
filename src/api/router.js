@@ -6,7 +6,8 @@ const logger = require("../logger");
 const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");
-const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector } = require("../routing");
+const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector, analyzeRisk } = require("../routing");
+const { buildInteractionBlock } = require("../routing/interaction");
 const { validateCwd } = require("../workspace");
 const { renderText } = require("../utils/markdown-ansi");
 
@@ -279,24 +280,70 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // Analyze complexity for routing headers (Phase 3)
     const complexity = await analyzeComplexity(req.body);
     timer.mark("analyzeComplexity");
+
+    // Risk axis runs alongside complexity. Cheap pure-string scan, no I/O.
+    let preRouteRisk = null;
+    try {
+      preRouteRisk = analyzeRisk(req.body);
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Router] Risk analysis failed in pre-route');
+    }
+
+    // Pre-route tier: high-risk forces COMPLEX, otherwise tier is
+    // inferred from the complexity recommendation. The actual final
+    // tier may differ (invokeModel re-runs determineProviderSmart) —
+    // this is best-effort for header surfacing.
     let preRouteProvider = 'cloud';
-    if (complexity.recommendation === 'local') {
-      // Use tier config to determine actual provider instead of hardcoding 'ollama'
+    let preRouteTier = null;
+    let preRouteModel = null;
+    let preRouteMethod = 'complexity';
+    let preRouteReason = complexity.breakdown?.taskType?.reason || complexity.recommendation;
+
+    if (preRouteRisk?.level === 'high') {
       try {
         const selector = getModelTierSelector();
-        const tierResult = selector.selectModel('SIMPLE', null);
+        const tierResult = selector.selectModel('COMPLEX', null);
         preRouteProvider = tierResult.provider;
+        preRouteTier = 'COMPLEX';
+        preRouteModel = tierResult.model;
+        preRouteMethod = 'risk';
+        preRouteReason = 'high_risk_forced_tier';
       } catch (_) {
-        preRouteProvider = 'ollama';
+        // Risk-forced tier not configured; fall back to normal flow.
       }
     }
-    const routingHeaders = getRoutingHeaders({
+
+    if (!preRouteTier) {
+      if (complexity.recommendation === 'local') {
+        try {
+          const selector = getModelTierSelector();
+          const tierResult = selector.selectModel('SIMPLE', null);
+          preRouteProvider = tierResult.provider;
+          preRouteTier = 'SIMPLE';
+          preRouteModel = tierResult.model;
+        } catch (_) {
+          preRouteProvider = 'ollama';
+        }
+      }
+    }
+
+    const preRouteDecision = {
       provider: preRouteProvider,
+      tier: preRouteTier,
+      model: preRouteModel,
+      method: preRouteMethod,
+      reason: preRouteReason,
       score: complexity.score,
       threshold: complexity.threshold,
-      method: 'complexity',
-      reason: complexity.breakdown?.taskType?.reason || complexity.recommendation,
-    });
+      risk: preRouteRisk,
+    };
+
+    const routingHeaders = getRoutingHeaders(preRouteDecision);
+
+    // Build the interaction block once. It travels in headers always
+    // (X-Lynkr-Interaction-* derived fields) and optionally into the
+    // response body when LYNKR_VISIBLE_ROUTING=true.
+    const interaction = buildInteractionBlock(preRouteDecision);
 
     // Extract client CWD from request body or header
     const clientCwd = validateCwd(req.body?.cwd || req.headers['x-workspace-cwd']);
@@ -717,8 +764,33 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       });
     }
 
+    // Inject visible interaction block into the response body when
+    // LYNKR_VISIBLE_ROUTING=true. We only mutate JSON bodies — and only
+    // when the response looks like a valid Anthropic Message — so this
+    // is a no-op for streamed / error / non-message responses.
+    let finalBody = result.body;
+    if (
+      config.routing?.visibleInteraction &&
+      interaction &&
+      result.status >= 200 && result.status < 300 &&
+      result.body
+    ) {
+      try {
+        const text = Buffer.isBuffer(result.body) ? result.body.toString('utf8') : result.body;
+        if (typeof text === 'string' && text.startsWith('{')) {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed === 'object' && parsed.type === 'message') {
+            parsed.lynkr_interaction = interaction;
+            finalBody = JSON.stringify(parsed);
+          }
+        }
+      } catch (err) {
+        logger.debug({ err: err.message }, '[Router] Skipped interaction injection (non-JSON body)');
+      }
+    }
+
     metrics.recordResponse(result.status);
-    res.status(result.status).send(result.body);
+    res.status(result.status).send(finalBody);
   } catch (error) {
     next(error);
   }

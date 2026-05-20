@@ -17,6 +17,7 @@ const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = req
 const { createAuditLogger } = require("../logger/audit-logger");
 const { getResolvedIp, runWithDnsContext } = require("../clients/dns-logger");
 const { getShuttingDown } = require("../api/health");
+const { tryPreflight, buildSatisfiedResponse: buildPreflightResponse } = require("./preflight");
 const crypto = require("crypto");
 const { asyncClone, asyncTransform, getPoolStats } = require("../workers/helpers");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
@@ -3721,6 +3722,28 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
       durationMs: 0,
       terminationReason: "suggestion_mode_skip",
     };
+  }
+
+  // === PREFLIGHT CHECK ===
+  // If the request supplied preflight_commands and they all pass in
+  // the workspace, the work is already done — short-circuit with a
+  // synthetic response and never touch the model. No-op when the
+  // feature is disabled or the request didn't opt in.
+  const preflightResult = tryPreflight({ payload, cwd });
+  if (preflightResult?.satisfied) {
+    logger.info({
+      commands: preflightResult.results.length,
+      reason: preflightResult.reason,
+    }, '[Preflight] Satisfied — skipping model call');
+    return buildPreflightResponse({
+      model: requestedModel,
+      preflightResult,
+    });
+  }
+  if (preflightResult && !preflightResult.satisfied) {
+    logger.debug({
+      failedCommand: preflightResult.failedCommand,
+    }, '[Preflight] Not satisfied — proceeding with model call');
   }
 
   // === TOOL LOOP GUARD (EARLY CHECK) ===
