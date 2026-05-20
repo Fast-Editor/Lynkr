@@ -7,9 +7,7 @@
  *
  * Typical use case: a fix-the-failing-test request that arrives after
  * the test already passes (CI lag, retry-after-fix, idempotent agent
- * retries). CodexSaver's WorkPacketRuntime.preflight_checks pioneered
- * this pattern:
- * https://github.com/fendouai/CodexSaver/blob/main/codexsaver/work_packet.py
+ * retries).
  *
  * The request opts in by including a top-level `preflight_commands`
  * array on the Anthropic-format payload, e.g.:
