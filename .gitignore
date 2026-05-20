@@ -14,6 +14,9 @@ monitor-agents.sh
 .env.local
 test-agents-simple.js
 .claude/
+.claw/
+.deepsec/
+.lynkr/
 
 AGENT_TYPES_PLAN.md
 README_SEO_OPTIMIZATION_PLAN.md

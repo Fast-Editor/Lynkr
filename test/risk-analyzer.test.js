@@ -1,0 +1,112 @@
+const assert = require('assert');
+const { describe, it } = require('node:test');
+
+const { analyzeRisk } = require('../src/routing/risk-analyzer');
+
+function userPayload(text) {
+  return { messages: [{ role: 'user', content: text }] };
+}
+
+describe('analyzeRisk', () => {
+  describe('low risk', () => {
+    it('returns low for plain edits with no sensitive paths', () => {
+      const r = analyzeRisk(userPayload('add a comment to utils.js'));
+      assert.strictEqual(r.level, 'low');
+      assert.deepStrictEqual(r.pathHits, []);
+      assert.deepStrictEqual(r.instructionHits, []);
+    });
+
+    it('returns low for generic questions', () => {
+      const r = analyzeRisk(userPayload('what does this function do?'));
+      assert.strictEqual(r.level, 'low');
+    });
+  });
+
+  describe('high risk via path', () => {
+    it('flags writes to auth/* paths', () => {
+      const r = analyzeRisk(userPayload('fix the bug in src/auth/middleware.ts'));
+      assert.strictEqual(r.level, 'high');
+      assert.ok(r.pathHits.includes('auth'));
+    });
+
+    it('flags writes to payment-related paths', () => {
+      const r = analyzeRisk(userPayload('update src/billing/invoice.ts'));
+      assert.strictEqual(r.level, 'high');
+      assert.ok(r.pathHits.includes('billing'));
+    });
+
+    it('flags .env additions', () => {
+      const r = analyzeRisk(userPayload('add OPENAI_API_KEY to .env.example'));
+      assert.strictEqual(r.level, 'high');
+    });
+  });
+
+  describe('medium risk', () => {
+    it('downgrades read-only intent on protected paths', () => {
+      const r = analyzeRisk(userPayload('explain how src/auth/middleware.ts works'));
+      assert.strictEqual(r.level, 'medium');
+      assert.ok(r.pathHits.includes('auth'));
+    });
+
+    it('downgrades summarize intent on protected paths', () => {
+      const r = analyzeRisk(userPayload('summarize the rbac module'));
+      assert.strictEqual(r.level, 'medium');
+    });
+  });
+
+  describe('high risk via instruction keywords', () => {
+    it('flags "production" requests regardless of path', () => {
+      const r = analyzeRisk(userPayload('this is a production hotfix'));
+      assert.strictEqual(r.level, 'high');
+      assert.ok(r.instructionHits.includes('production'));
+    });
+
+    it('flags "authentication" requests', () => {
+      const r = analyzeRisk(userPayload('design a new authentication flow'));
+      assert.strictEqual(r.level, 'high');
+    });
+
+    it('flags migration requests', () => {
+      const r = analyzeRisk(userPayload('write a migration to add the email column'));
+      assert.strictEqual(r.level, 'high');
+    });
+
+    it('beats path-only read-only downgrades when instruction is sensitive', () => {
+      const r = analyzeRisk(userPayload('explain the production deploy pipeline'));
+      // "production" hit makes this high even though "explain" is read-only.
+      assert.strictEqual(r.level, 'high');
+    });
+  });
+
+  describe('tool_use scanning', () => {
+    it('flags protected paths reached via tool_use blocks', () => {
+      const payload = {
+        messages: [
+          { role: 'user', content: 'do the thing' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool_use', id: 't1', name: 'Edit',
+                input: { file_path: 'src/auth/login.ts', old_string: 'a', new_string: 'b' } },
+            ],
+          },
+        ],
+      };
+      const r = analyzeRisk(payload);
+      assert.strictEqual(r.level, 'high');
+      assert.ok(r.paths.some(p => p.includes('auth/login.ts')));
+    });
+  });
+
+  describe('hardening', () => {
+    it('does not throw on empty payload', () => {
+      const r = analyzeRisk({});
+      assert.strictEqual(r.level, 'low');
+    });
+
+    it('does not throw on null content', () => {
+      const r = analyzeRisk({ messages: [{ role: 'user', content: null }] });
+      assert.strictEqual(r.level, 'low');
+    });
+  });
+});
