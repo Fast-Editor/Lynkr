@@ -14,16 +14,29 @@ const logger = require('../logger');
 const config = require('../config');
 
 // Default configuration (can be overridden via config.semanticCache)
+//
+// Phase 2.1 of the routing overhaul: defaults aligned with the plan
+// (10K entries, 0.95 threshold matches research on GPT Semantic Cache).
+// Short-TTL keywords trigger a reduced TTL rather than blocking caching.
 function getDefaultConfig() {
   const configOverrides = config.semanticCache || {};
   return {
     enabled: configOverrides.enabled ?? true,
     similarityThreshold: configOverrides.similarityThreshold ?? 0.92,
-    maxEntries: configOverrides.maxEntries ?? 500,
+    maxEntries: configOverrides.maxEntries ?? 10000,
     ttlMs: configOverrides.ttlMs ?? 3600000,  // 1 hour
+    shortTtlMs: configOverrides.shortTtlMs ?? 300000, // 5 min for time-sensitive queries
+    shortTtlPatterns: [
+      /\bnow\b/i,
+      /\btoday\b/i,
+      /\bcurrent\b/i,
+      /\blatest\b/i,
+      /\brecent\b/i,
+      /\bjust\s+now\b/i,
+    ],
     minPromptLength: 20,        // Don't cache very short prompts
     maxPromptLength: 5000,      // Don't cache very long prompts (too specific)
-    excludePatterns: [          // Patterns to exclude from caching
+    excludePatterns: [          // Patterns to fully exclude from caching
       /current time/i,
       /today's date/i,
       /right now/i,
@@ -31,6 +44,19 @@ function getDefaultConfig() {
       /weather/i,
     ],
   };
+}
+
+/**
+ * Phase 2.1 helper: determine the TTL to apply to a given prompt.
+ * Time-sensitive keywords ("now", "today", "current") get a short TTL so
+ * stale answers don't persist for an hour.
+ */
+function _ttlForPrompt(promptText, cfg) {
+  if (!promptText || !Array.isArray(cfg.shortTtlPatterns)) return cfg.ttlMs;
+  for (const re of cfg.shortTtlPatterns) {
+    if (re.test(promptText)) return cfg.shortTtlMs;
+  }
+  return cfg.ttlMs;
 }
 
 class SemanticCache {

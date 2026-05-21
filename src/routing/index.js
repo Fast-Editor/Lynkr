@@ -29,8 +29,30 @@ const telemetry = require('./telemetry');
 const { scoreResponseQuality } = require('./quality-scorer');
 const { getLatencyTracker } = require('./latency-tracker');
 
+// Phase 1 modules
+const contextValidator = require('./context-validator');
+const { countPayloadTokens } = require('./tokenizer');
+
 // Local providers
 const LOCAL_PROVIDERS = ['ollama', 'llamacpp', 'lmstudio'];
+
+/**
+ * List of providers that currently have credentials configured.
+ * Used by the Phase 1.2 cost-optimizer override to scope candidates.
+ */
+function _enabledProviders() {
+  const out = [];
+  if (config.databricks?.url && config.databricks?.apiKey) out.push('databricks');
+  if (config.azureAnthropic?.endpoint && config.azureAnthropic?.apiKey) out.push('azure-anthropic');
+  if (config.bedrock?.apiKey) out.push('bedrock');
+  if (config.openrouter?.apiKey) out.push('openrouter');
+  if (config.openai?.apiKey) out.push('openai');
+  if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) out.push('azure-openai');
+  if (config.ollama?.endpoint) out.push('ollama');
+  if (config.llamacpp?.endpoint) out.push('llamacpp');
+  if (config.lmstudio?.endpoint) out.push('lmstudio');
+  return out;
+}
 
 /**
  * Check if a provider is local
@@ -283,9 +305,11 @@ async function determineProviderSmart(payload, options = {}) {
     }
   }
 
-  // Apply routing decision based on tier config (TIER_* env vars are mandatory)
+  // Apply routing decision based on tier config (TIER_* env vars take precedence
+  // but Phase 1.2 lets the cost-optimizer pick a cheaper qualifying model when safe).
   let provider;
   let method = 'tier_config';
+  let costOptimized = false;
 
   const selector = getModelTierSelector();
   const modelSelection = selector.selectModel(tier, null);
@@ -294,8 +318,70 @@ async function determineProviderSmart(payload, options = {}) {
   selectedModel = modelSelection.model;
   logger.debug({ tier, provider, model: selectedModel }, '[Routing] Using tier config');
 
-  // TIER_* env vars are the final word — no cost optimization override.
-  // The user explicitly configured provider:model per tier; respect that.
+  // Phase 1.2 — cost-optimizer override.
+  // Only kick in when:
+  //  - feature flag enabled (default true, disable with LYNKR_COST_OPTIMIZE=false)
+  //  - risk level is not high (high-risk keeps the explicitly-configured model)
+  //  - the optimizer finds a meaningfully cheaper qualifying model
+  const costOptimizeEnabled = process.env.LYNKR_COST_OPTIMIZE !== 'false'
+    && config.routing?.costOptimize !== false;
+  if (costOptimizeEnabled && risk?.level !== 'high') {
+    try {
+      const optimizer = getCostOptimizer();
+      const availableProviders = _enabledProviders();
+      const cheapest = optimizer.findCheapestForTier(tier, availableProviders);
+      if (cheapest && cheapest.model && cheapest.model !== selectedModel) {
+        const current = optimizer.estimateCost(selectedModel, 1000);
+        const candidate = optimizer.estimateCost(cheapest.model, 1000);
+        if (candidate.totalEstimate > 0 && candidate.totalEstimate < current.totalEstimate * 0.75) {
+          logger.debug({
+            tier,
+            from: `${provider}:${selectedModel}`,
+            to: `${cheapest.provider}:${cheapest.model}`,
+            savedPerK: (current.totalEstimate - candidate.totalEstimate).toFixed(6),
+          }, '[Routing] Cost-optimizer override');
+          provider = cheapest.provider;
+          selectedModel = cheapest.model;
+          method = 'tier_config+cost_optimized';
+          costOptimized = true;
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Cost-optimize failed, keeping tier_config selection');
+    }
+  }
+
+  // Phase 1.3 — context window validation. If estimated tokens exceed the
+  // selected model's context (with response headroom), escalate to a
+  // context-capable model regardless of tier.
+  try {
+    const estimatedTokens = countPayloadTokens(payload, selectedModel);
+    const ctxResult = contextValidator.validate(selectedModel, estimatedTokens);
+    if (!ctxResult.ok) {
+      const capable = selector.findContextCapable(estimatedTokens, tier);
+      if (capable) {
+        logger.info({
+          from: `${provider}:${selectedModel}`,
+          to: `${capable.provider}:${capable.model}`,
+          required: estimatedTokens,
+          oldContext: ctxResult.context,
+          newContext: capable.context,
+        }, '[Routing] Context window escalation');
+        provider = capable.provider;
+        selectedModel = capable.model;
+        if (capable.tier) tier = capable.tier;
+        method = method + '+context_escalated';
+      } else {
+        logger.warn({
+          model: selectedModel,
+          required: estimatedTokens,
+          available: ctxResult.context,
+        }, '[Routing] No context-capable fallback — request may fail upstream');
+      }
+    }
+  } catch (err) {
+    logger.debug({ err: err.message }, '[Routing] Context validation failed, proceeding without check');
+  }
 
   const decision = {
     provider,
@@ -309,7 +395,7 @@ async function determineProviderSmart(payload, options = {}) {
     analysis,
     embeddingsResult,
     agenticResult,
-    costOptimized: false,
+    costOptimized,
     risk,
   };
 

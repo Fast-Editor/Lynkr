@@ -17,48 +17,15 @@ const router = express.Router();
 const rateLimiter = createRateLimiter();
 
 /**
- * Estimate token count for messages
- * Uses rough approximation of ~4 characters per token
- * @param {Array} messages - Array of message objects with role and content
- * @param {string|Array} system - System prompt (string or array of content blocks)
- * @returns {number} Estimated input token count
+ * Estimate token count for messages.
+ *
+ * Phase 1.1: tiktoken-backed via routing/tokenizer (graceful fallback to chars/4
+ * if js-tiktoken is unavailable).
  */
-function estimateTokenCount(messages = [], system = null) {
-  let totalChars = 0;
+const { countMessagesTokens } = require("../routing/tokenizer");
 
-  // Count system prompt characters
-  if (system) {
-    if (typeof system === "string") {
-      totalChars += system.length;
-    } else if (Array.isArray(system)) {
-      system.forEach((block) => {
-        if (block.type === "text" && block.text) {
-          totalChars += block.text.length;
-        }
-      });
-    }
-  }
-
-  // Count message characters
-  messages.forEach((msg) => {
-    if (msg.content) {
-      if (typeof msg.content === "string") {
-        totalChars += msg.content.length;
-      } else if (Array.isArray(msg.content)) {
-        msg.content.forEach((block) => {
-          if (block.type === "text" && block.text) {
-            totalChars += block.text.length;
-          } else if (block.type === "image" && block.source?.data) {
-            // Images: rough estimate based on base64 length
-            totalChars += Math.floor(block.source.data.length / 6);
-          }
-        });
-      }
-    }
-  });
-
-  // Estimate tokens: ~4 characters per token
-  return Math.ceil(totalChars / 4);
+function estimateTokenCount(messages = [], system = null, model = null) {
+  return countMessagesTokens(messages, system, model);
 }
 
 router.get("/health", (req, res) => {

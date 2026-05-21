@@ -2202,7 +2202,7 @@ async function invokeModel(body, options = {}) {
     const failLatency = Date.now() - startTime;
     metricsCollector.recordProviderFailure(initialProvider);
     healthTracker.recordFailure(initialProvider, err, err.status);
-    getLatencyTracker().record(initialProvider, failLatency);
+    getLatencyTracker().record(initialProvider, routingDecision?.model, failLatency);
 
     // Check if we should fallback (any provider can fall back, not just ollama)
     const shouldFallback =
@@ -2313,7 +2313,7 @@ async function invokeModel(body, options = {}) {
       }, "Fallback to cloud provider succeeded");
 
       // Record latency for fallback provider
-      getLatencyTracker().record(fallbackProvider, fallbackLatency);
+      getLatencyTracker().record(fallbackProvider, routingDecision?.model, fallbackLatency);
 
       // Capture fallback telemetry
       const fbOutputTokens = fallbackResult.json?.usage?.output_tokens || fallbackResult.json?.usage?.completion_tokens || 0;

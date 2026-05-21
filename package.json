@@ -1,6 +1,6 @@
 {
   "name": "lynkr",
-  "version": "9.0.2",
+  "version": "9.1.2",
   "description": "Self-hosted Claude Code & Cursor proxy with Databricks,AWS BedRock,Azure  adapters, openrouter, Ollama,llamacpp,LM Studio, workspace tooling, and MCP integration.",
   "main": "index.js",
   "bin": {
@@ -55,6 +55,8 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
     "fast-glob": "^3.3.2",
+    "hnswlib-node": "^3.0.0",
+    "js-tiktoken": "^1.0.20",
     "js-yaml": "^4.1.1",
     "openai": "^6.14.0",
     "pino": "^8.17.2",
