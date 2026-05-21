@@ -22,7 +22,14 @@ const {
 const { getAgenticDetector, AGENT_TYPES } = require('./agentic-detector');
 const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
 const { getCostOptimizer } = require('./cost-optimizer');
-const { analyzeRisk } = require('./risk-analyzer');
+const { analyzeRisk } = require('./risk-classifier');
+
+// Phase 3-6 routing modules
+const { getKnnRouter } = require('./knn-router');
+const { getBandit } = require('./bandit');
+const { getShadowPolicy, compareAndLog: shadowCompareAndLog } = require('./shadow-mode');
+const { chooseFastest } = require('./deadline');
+const { applyTenantOverrides } = require('./tenant-policy');
 
 // Telemetry modules
 const telemetry = require('./telemetry');
@@ -383,6 +390,123 @@ async function determineProviderSmart(payload, options = {}) {
     logger.debug({ err: err.message }, '[Routing] Context validation failed, proceeding without check');
   }
 
+  // Phase 3.1 — kNN routing hint.
+  // If the index has enough entries, query it with the last user message.
+  // A high-confidence kNN suggestion overrides the heuristic selection.
+  let knnResult = null;
+  if (config.routing?.knnEnabled !== false) {
+    try {
+      const msgs = payload?.messages;
+      const lastMsg = Array.isArray(msgs) ? msgs[msgs.length - 1]?.content : null;
+      const queryText = typeof lastMsg === 'string' ? lastMsg
+        : Array.isArray(lastMsg) ? lastMsg.filter(b => b?.type === 'text').map(b => b.text || '').join(' ')
+        : null;
+      if (queryText) {
+        knnResult = await getKnnRouter().query(queryText);
+        if (knnResult && knnResult.confidence > 0.7 && knnResult.model && knnResult.model !== selectedModel) {
+          logger.debug({
+            from: `${provider}:${selectedModel}`,
+            to: `${knnResult.provider}:${knnResult.model}`,
+            confidence: knnResult.confidence.toFixed(3),
+          }, '[Routing] kNN override');
+          provider = knnResult.provider;
+          selectedModel = knnResult.model;
+          method = method + '+knn';
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] kNN query failed, ignoring');
+    }
+  }
+
+  // Phase 4.1 — LinUCB bandit intra-tier selection.
+  // When there are two candidates (heuristic vs kNN), the bandit picks the
+  // one with the highest estimated UCB score for the current context.
+  if (config.routing?.banditEnabled !== false && knnResult && knnResult.model) {
+    try {
+      // Build candidates: current selection and kNN alternative if different
+      const allCandidates = [{ provider, model: selectedModel }];
+      if (knnResult.model !== selectedModel) {
+        allCandidates.push({ provider: knnResult.provider, model: knnResult.model });
+      }
+
+      if (allCandidates.length > 1) {
+        const bandit = getBandit();
+        const TASK_TYPES = ['code_gen', 'summarization', 'reasoning', 'factoid', 'chat', 'other'];
+        const inferredTask = (analysis.breakdown?.taskType?.reason || 'other').toLowerCase();
+        const taskIdx = Math.max(0, TASK_TYPES.findIndex(t => inferredTask.includes(t)));
+        const ctx = [
+          (analysis.score || 0) / 100,
+          Math.log(Math.max(1, analysis.breakdown?.tokenCount || 0) + 1) / 15,
+          ((payload?.tools?.length ?? 0) > 0) ? 1 : 0,
+          options.streaming ? 1 : 0,
+          risk?.level === 'high' ? 1 : risk?.level === 'medium' ? 0.5 : 0,
+          agenticResult?.isAgentic ? 1 : 0,
+          ...TASK_TYPES.map((_, i) => i === taskIdx ? 1 : 0),
+        ];
+        const picked = bandit.pick(tier, allCandidates, ctx);
+        if (picked && picked.model !== selectedModel) {
+          logger.debug({
+            from: `${provider}:${selectedModel}`,
+            to: `${picked.provider}:${picked.model}`,
+            ucb: picked.ucb?.toFixed(4),
+            explored: picked.explored,
+          }, '[Routing] Bandit override');
+          provider = picked.provider;
+          selectedModel = picked.model;
+          method = method + (picked.explored ? '+bandit_explore' : '+bandit');
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Bandit pick failed, ignoring');
+    }
+  }
+
+  // Phase 6.3 — deadline-aware fastest-model selection.
+  // Payload carries _deadlineMs injected by the orchestrator from the
+  // LYNKR-Deadline-Ms request header.
+  const deadlineMs = payload?._deadlineMs ?? null;
+  if (deadlineMs) {
+    try {
+      const fastest = chooseFastest([{ provider, model: selectedModel }], deadlineMs);
+      if (fastest && fastest.model !== selectedModel) {
+        logger.debug({
+          from: `${provider}:${selectedModel}`,
+          to: `${fastest.provider}:${fastest.model}`,
+          deadlineMs,
+        }, '[Routing] Deadline override');
+        provider = fastest.provider;
+        selectedModel = fastest.model;
+        method = method + '+deadline';
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Deadline check failed, ignoring');
+    }
+  }
+
+  // Phase 6.1 — per-tenant policy overrides.
+  // tenantPolicy comes from options (threaded from Express res.locals via
+  // orchestrator → databricks → here).
+  if (options.tenantPolicy) {
+    try {
+      const overridden = applyTenantOverrides(
+        { provider, model: selectedModel, tier, method },
+        options.tenantPolicy,
+      );
+      if (overridden && overridden.model !== selectedModel) {
+        logger.debug({
+          from: `${provider}:${selectedModel}`,
+          to: `${overridden.provider}:${overridden.model}`,
+        }, '[Routing] Tenant override');
+        provider = overridden.provider;
+        selectedModel = overridden.model;
+        method = overridden.method;
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Tenant override failed, ignoring');
+    }
+  }
+
   const decision = {
     provider,
     model: selectedModel,
@@ -397,7 +521,16 @@ async function determineProviderSmart(payload, options = {}) {
     agenticResult,
     costOptimized,
     risk,
+    knnResult,
   };
+
+  // Phase 4.4 — shadow-mode policy comparison (fire-and-forget).
+  const shadowFn = getShadowPolicy();
+  if (shadowFn) {
+    setImmediate(() =>
+      shadowCompareAndLog({ payload, activeDecision: decision, shadowFn }).catch(() => {})
+    );
+  }
 
   // Phase 3: Record metrics
   routingMetrics.record(decision);
@@ -504,6 +637,14 @@ module.exports = {
   getCostOptimizer,
   AGENT_TYPES,
   TIER_DEFINITIONS,
+
+  // Phase 3-6 modules
+  getKnnRouter,
+  getBandit,
+  getShadowPolicy,
+  shadowCompareAndLog,
+  chooseFastest,
+  applyTenantOverrides,
 
   // Telemetry
   telemetry,

@@ -338,6 +338,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         options: {
           maxSteps: req.body?.max_steps,
           maxDurationMs: req.body?.max_duration_ms,
+          tenantPolicy: res.locals?.tenantPolicy || null,
         },
       });
 
@@ -571,6 +572,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       options: {
         maxSteps: req.body?.max_steps,
         maxDurationMs: req.body?.max_duration_ms,
+        tenantPolicy: res.locals?.tenantPolicy || null,
       },
     });
     timer.mark("processMessage");

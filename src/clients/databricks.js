@@ -2036,9 +2036,10 @@ async function invokeModel(body, options = {}) {
   // Determine provider via async tier routing
   // Thread workspace for code-graph integration (from X-Lynkr-Workspace header or body._workspace)
   const workspace = body._workspace || options.workspace || null;
+  const tenantPolicy = body._tenantPolicy || options.tenantPolicy || null;
   const routingResult = options.forceProvider
     ? { provider: options.forceProvider, model: null, method: 'forced' }
-    : await determineProviderSmart(body, { workspace });
+    : await determineProviderSmart(body, { workspace, tenantPolicy });
   const initialProvider = routingResult.provider;
   const tierSelectedModel = routingResult.model;
 
@@ -2074,6 +2075,50 @@ async function invokeModel(body, options = {}) {
     reason: routingResult.reason,
     method: routingResult.method,
   }, "Provider routing decision");
+
+  // Phase 3.3 — small-first cascade (LYNKR_CASCADE_ENABLED=true to opt in).
+  // _cascadeInner prevents recursive cascade when invokeModel is called from inside.
+  if (!options._cascadeInner) {
+    const cascadeModule = require('../routing/cascade');
+    const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+    if (cascadeModule.shouldCascade({
+      tier: routingDecision.tier,
+      streaming: !!body.stream,
+      hasTools,
+    })) {
+      try {
+        const { getModelTierSelector } = require('../routing/model-tiers');
+        const simpleSelection = getModelTierSelector().selectModel('SIMPLE', null);
+        const cascadeResult = await cascadeModule.run({
+          payload: body,
+          smallModel: simpleSelection,
+          bigModel: { provider: initialProvider, model: tierSelectedModel },
+          invoke: async (provider, model, payload) => {
+            const cloned = { ...payload };
+            if (model) cloned._tierModel = model;
+            const resp = await invokeModel(cloned, { forceProvider: provider, _cascadeInner: true });
+            return resp.json; // confidence-scorer needs response body (.content)
+          },
+          taskType: body._taskType || routingResult.reason || 'reasoning',
+          threshold: 0.85,
+        });
+        logger.debug({
+          accepted: cascadeResult.cascadeStats.accepted,
+          usedModel: cascadeResult.usedModel,
+          totalMs: cascadeResult.cascadeStats.totalLatency,
+        }, '[Cascade] Result');
+        return {
+          ok: true,
+          status: 200,
+          json: cascadeResult.response,
+          stream: null,
+          routingDecision: { ...routingDecision, cascadeStats: cascadeResult.cascadeStats, usedModel: cascadeResult.usedModel },
+        };
+      } catch (err) {
+        logger.debug({ err: err.message }, '[Cascade] Failed, falling through to normal routing');
+      }
+    }
+  }
 
   metricsCollector.recordProviderRouting(initialProvider);
 
