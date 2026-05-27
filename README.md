@@ -63,17 +63,37 @@ curl -fsSL https://raw.githubusercontent.com/Fast-Editor/Lynkr/main/install.sh |
 
 **Or via npm:**
 ```bash
-npm install -g pino-pretty && npm install -g lynkr
+npm install -g lynkr
 ```
 
 ### Pick a Provider
 
-**Free & Local (Ollama)**
+**Free & Local (Ollama)** — no other config needed:
 ```bash
+# macOS / Linux
 export MODEL_PROVIDER=ollama
 export OLLAMA_MODEL=qwen2.5-coder:latest
+export FALLBACK_ENABLED=false
+export TIER_SIMPLE=ollama:qwen2.5-coder:latest
+export TIER_MEDIUM=ollama:qwen2.5-coder:latest
+export TIER_COMPLEX=ollama:qwen2.5-coder:latest
+export TIER_REASONING=ollama:qwen2.5-coder:latest
 lynkr start
 ```
+
+```cmd
+:: Windows (cmd.exe)
+set MODEL_PROVIDER=ollama
+set OLLAMA_MODEL=qwen2.5-coder:latest
+set FALLBACK_ENABLED=false
+set TIER_SIMPLE=ollama:qwen2.5-coder:latest
+set TIER_MEDIUM=ollama:qwen2.5-coder:latest
+set TIER_COMPLEX=ollama:qwen2.5-coder:latest
+set TIER_REASONING=ollama:qwen2.5-coder:latest
+lynkr start
+```
+
+> **Why the TIER_\* and FALLBACK_ENABLED lines?** Lynkr ships with tier-based routing on by default and a Databricks fallback. For Ollama-only mode, point every tier at your local model and disable the cloud fallback. A future release will infer this automatically when `MODEL_PROVIDER=ollama` and no other credentials are present.
 
 **AWS Bedrock (100+ models)**
 ```bash

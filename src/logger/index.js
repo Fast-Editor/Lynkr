@@ -51,19 +51,35 @@ const { createOversizedErrorStream } = require("./oversized-error-stream");
 const streams = [];
 
 // Main console output stream
+// pino-pretty is wrapped in try/catch so missing dep degrades to plain JSON
+// logs instead of crashing on startup. Set LOG_PRETTY=false to force JSON.
+const wantPretty = config.env === "development" && process.env.LOG_PRETTY !== "false";
+let prettyStream = process.stdout;
+if (wantPretty) {
+	try {
+		prettyStream = pino.transport({
+			target: "pino-pretty",
+			options: {
+				translateTime: "SYS:standard",
+				ignore: "pid,hostname",
+				colorize: true,
+			},
+		});
+	} catch (err) {
+		// pino-pretty unavailable (npm -g install can skip devDeps) — fall back
+		// to plain JSON on stdout. Logs still work, they're just less readable.
+		console.warn(
+			"[logger] pino-pretty unavailable, falling back to JSON logs. " +
+				"Install it explicitly with `npm i -g pino-pretty` if you want pretty output, " +
+				"or set LOG_PRETTY=false to silence this warning."
+		);
+		prettyStream = process.stdout;
+	}
+}
+
 streams.push({
 	level: config.logger.level,
-	stream:
-		config.env === "development"
-			? pino.transport({
-					target: "pino-pretty",
-					options: {
-						translateTime: "SYS:standard",
-						ignore: "pid,hostname",
-						colorize: true,
-					},
-				})
-			: process.stdout,
+	stream: prettyStream,
 });
 
 // File rotation stream (if enabled via LOG_FILE_ENABLED=true)
