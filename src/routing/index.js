@@ -44,6 +44,20 @@ const { countPayloadTokens } = require('./tokenizer');
 const LOCAL_PROVIDERS = ['ollama', 'llamacpp', 'lmstudio'];
 
 /**
+ * Returns true when any message content block is an image.
+ * Handles both string content and structured content arrays.
+ */
+function _payloadHasImages(payload) {
+  const messages = payload?.messages;
+  if (!Array.isArray(messages)) return false;
+  return messages.some(msg => {
+    const content = msg?.content;
+    if (!Array.isArray(content)) return false;
+    return content.some(block => block?.type === 'image' || block?.type === 'image_url');
+  });
+}
+
+/**
  * List of providers that currently have credentials configured.
  * Used by the Phase 1.2 cost-optimizer override to scope candidates.
  */
@@ -390,6 +404,36 @@ async function determineProviderSmart(payload, options = {}) {
     logger.debug({ err: err.message }, '[Routing] Context validation failed, proceeding without check');
   }
 
+  // Phase 1.4 — vision capability guard.
+  // If the payload contains image content blocks but the selected model lacks
+  // vision support, silently swap to the cheapest vision-capable model at or
+  // above the current tier. Prevents silent upstream failures.
+  if (_payloadHasImages(payload)) {
+    try {
+      const { getModelRegistrySync } = require('./model-registry');
+      const registry = getModelRegistrySync();
+      const modelInfo = registry.getCost(selectedModel);
+      if (!modelInfo?.vision) {
+        const visionModel = selector.findVisionCapable(tier);
+        if (visionModel) {
+          logger.info({
+            from: `${provider}:${selectedModel}`,
+            to: `${visionModel.provider}:${visionModel.model}`,
+            tier: visionModel.tier,
+          }, '[Routing] Vision guard — upgrading to vision-capable model');
+          provider = visionModel.provider;
+          selectedModel = visionModel.model;
+          if (visionModel.tier !== tier) tier = visionModel.tier;
+          method = method + '+vision_guard';
+        } else {
+          logger.warn({ model: selectedModel }, '[Routing] Vision guard — no vision-capable model found, request may fail');
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Vision guard check failed, proceeding');
+    }
+  }
+
   // Phase 3.1 — kNN routing hint.
   // If the index has enough entries, query it with the last user message.
   // A high-confidence kNN suggestion overrides the heuristic selection.
@@ -404,6 +448,7 @@ async function determineProviderSmart(payload, options = {}) {
       if (queryText) {
         knnResult = await getKnnRouter().query(queryText);
         if (knnResult && knnResult.confidence > 0.7 && knnResult.model && knnResult.model !== selectedModel) {
+          // High confidence — trust kNN's model recommendation directly.
           logger.debug({
             from: `${provider}:${selectedModel}`,
             to: `${knnResult.provider}:${knnResult.model}`,
@@ -412,6 +457,30 @@ async function determineProviderSmart(payload, options = {}) {
           provider = knnResult.provider;
           selectedModel = knnResult.model;
           method = method + '+knn';
+        } else if (knnResult && knnResult.confidence > 0.4 && knnResult.confidence <= 0.7) {
+          // Ambiguous signal — neighbors are split, we can't trust any single model
+          // recommendation. Err on quality: bump the current tier one step up so the
+          // request gets a more capable model rather than risking a bad answer from
+          // a model that was borderline for similar past requests.
+          const TIER_ORDER = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
+          const currentIdx = TIER_ORDER.indexOf(tier);
+          if (currentIdx >= 0 && currentIdx < TIER_ORDER.length - 1) {
+            const upgradedTier = TIER_ORDER[currentIdx + 1];
+            try {
+              const upgraded = selector.selectModel(upgradedTier, null);
+              logger.debug({
+                from: `${tier}:${provider}:${selectedModel}`,
+                to: `${upgradedTier}:${upgraded.provider}:${upgraded.model}`,
+                confidence: knnResult.confidence.toFixed(3),
+              }, '[Routing] kNN ambiguous — escalating tier for safety');
+              provider = upgraded.provider;
+              selectedModel = upgraded.model;
+              tier = upgradedTier;
+              method = method + '+knn_ambiguous_escalate';
+            } catch (err) {
+              logger.debug({ err: err.message }, '[Routing] kNN ambiguous escalation failed, keeping current tier');
+            }
+          }
         }
       }
     } catch (err) {

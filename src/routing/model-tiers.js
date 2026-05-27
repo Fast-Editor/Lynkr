@@ -176,6 +176,32 @@ class ModelTierSelector {
   }
 
   /**
+   * Find a vision-capable model at or above `preferredTier`.
+   * Walks tier order from preferred upward; returns null when none available.
+   */
+  findVisionCapable(preferredTier = null) {
+    const { getModelRegistrySync } = require('./model-registry');
+    const registry = getModelRegistrySync();
+    const tierOrder = preferredTier
+      ? [preferredTier, 'COMPLEX', 'REASONING', 'MEDIUM', 'SIMPLE']
+      : ['COMPLEX', 'REASONING', 'MEDIUM', 'SIMPLE'];
+    const seen = new Set();
+    for (const t of tierOrder) {
+      if (seen.has(t)) continue;
+      seen.add(t);
+      const tierConfig = this.tierConfig[t];
+      if (!tierConfig?.preferred) continue;
+      for (const [provider, models] of Object.entries(tierConfig.preferred)) {
+        for (const model of models) {
+          const info = registry.getCost(model);
+          if (info?.vision) return { provider, model, tier: t };
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * Get tier definition
    */
   getTierDefinition(tier) {
