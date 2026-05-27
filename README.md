@@ -1,9 +1,10 @@
 # Lynkr
 
-### Run Claude Code, Cursor, and Codex on any model. One proxy, every provider.
+### Self-hosted LLM gateway. Claude Code, Cursor, and Codex on any model — through one proxy.
+
+Lynkr is a self-hosted, open-source LLM gateway and **LiteLLM alternative** for teams that want tier-based routing, MCP Code Mode (~96% token reduction), Headroom compression, and trajectory export across 12+ providers. Drop-in support for Claude Code, Cursor, Codex, Cline, Continue, and the Vercel AI SDK. Apache 2.0, Node.js, one-command install.
 
 [![npm version](https://img.shields.io/npm/v/lynkr.svg)](https://www.npmjs.com/package/lynkr)
-[![Tests](https://img.shields.io/badge/tests-699%20passing-brightgreen)](https://github.com/Fast-Editor/Lynkr)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-20%2B-green)](https://nodejs.org)
 [![Homebrew Tap](https://img.shields.io/badge/homebrew-lynkr-brightgreen.svg)](https://github.com/vishalveerareddy123/homebrew-lynkr)
@@ -13,14 +14,14 @@
 <tr>
 <td align="center"><strong>12+</strong><br/>LLM Providers</td>
 <td align="center"><strong>60-80%</strong><br/>Cost Reduction</td>
-<td align="center"><strong>699</strong><br/>Tests Passing</td>
+<td align="center"><strong>Apache 2.0</strong><br/>Open Source</td>
 <td align="center"><strong>0</strong><br/>Code Changes Required</td>
 </tr>
 </table>
 
 ---
 
-## The Problem
+## Why You Need an LLM Gateway
 
 AI coding tools lock you into one provider. Claude Code requires Anthropic. Codex requires OpenAI. You can't use your company's Databricks endpoint, your local Ollama models, or your AWS Bedrock account — at least, not without Lynkr.
 
@@ -30,7 +31,7 @@ AI coding tools lock you into one provider. Claude Code requires Anthropic. Code
 - Enterprise teams can't route through their own cloud infrastructure
 - Provider outages take your entire workflow down
 
-## The Solution
+## Lynkr: One Self-Hosted Proxy for Every Provider
 
 Lynkr is a self-hosted proxy that sits between your AI coding tools and any LLM provider. One environment variable change, and your tools work with any model.
 
@@ -175,7 +176,7 @@ Set `OPENCLAW_MODE=true` in Lynkr's `.env` to show actual provider/model in resp
 
 ---
 
-## Why Lynkr Over Alternatives
+## Lynkr vs LiteLLM vs OpenRouter vs Portkey
 
 | Feature | Lynkr | LiteLLM (42K stars) | OpenRouter | PortKey |
 |---------|-------|---------------------|------------|---------|
@@ -202,6 +203,24 @@ Set `OPENCLAW_MODE=true` in Lynkr's `.env` to show actual provider/model in resp
 
 ---
 
+## MCP Code Mode — 96% Token Reduction on Heavy MCP Setups
+
+Most agents expose 100+ MCP tools directly to the model, blowing up the context window before the first user message. Lynkr's Code Mode collapses the entire MCP surface into 4 lightweight meta-tools that the model drives via generated code. Result: ~96% reduction in tool-catalog tokens.
+
+```bash
+CODE_MODE_ENABLED=true
+```
+
+## Headroom Integration — Auto-Managed Compression Sidecar
+
+Lynkr ships headroom as a first-class Docker sidecar. Flip `HEADROOM_ENABLED=true` and every request gets compressed through Smart Crusher, Cache Aligner, CCR, Rolling Window, and optional LLMLingua — 47-92% reduction depending on workload.
+
+## Trajectory Export — Training Data From Real Usage
+
+Every request through Lynkr can be exported as a structured trajectory (input, tool calls, model decisions, output) — ready for fine-tuning, distillation, or eval suites. Built-in JSONL writer, zero extra infra.
+
+---
+
 ## Cost Comparison
 
 | Scenario | Direct Anthropic | Lynkr + Ollama | Lynkr + OpenRouter | Lynkr + Bedrock |
@@ -214,7 +233,7 @@ Set `OPENCLAW_MODE=true` in Lynkr's `.env` to show actual provider/model in resp
 
 ---
 
-## What's Under the Hood
+## How Lynkr Works — Routing, Optimization, MCP
 
 Lynkr isn't just a passthrough proxy. It's an optimization layer.
 
@@ -337,6 +356,28 @@ We welcome contributions. See the [Contributing Guide](documentation/contributin
 ## License
 
 Apache 2.0 — See [LICENSE](LICENSE).
+
+---
+
+## FAQ
+
+**Is Lynkr a LiteLLM alternative?**
+Yes. Lynkr is a self-hosted LLM gateway that targets the same use case as LiteLLM, but ships in Node.js (no Python/Postgres dependency), with purpose-built support for Claude Code, Cursor, and Codex.
+
+**Does Lynkr work with Claude Code?**
+Yes — drop-in. Set `ANTHROPIC_BASE_URL=http://localhost:8081` and Claude Code talks to any of the 12+ providers Lynkr supports.
+
+**How does MCP Code Mode reduce tokens?**
+Instead of sending the full schema of 100+ MCP tools on every request, Lynkr exposes 4 meta-tools and lets the model invoke MCP servers via generated code. Tool-catalog tokens drop ~96%.
+
+**Is Lynkr open source?**
+Yes. Apache 2.0. https://github.com/Fast-Editor/Lynkr
+
+**Can I run Lynkr fully offline?**
+Yes. Use Ollama, llama.cpp, LM Studio, or MLX Server as the provider and Lynkr never makes an outbound call.
+
+**What's tier-based routing?**
+A complexity analyzer scores each request and routes simple prompts to cheap fast models, hard ones to frontier models. Configurable tiers, zero code changes in your agent.
 
 ---
 
