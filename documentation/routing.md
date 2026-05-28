@@ -461,42 +461,123 @@ Every response includes routing metadata in `X-Lynkr-*` headers:
 
 ---
 
+## Routing Safety Features
+
+### Vision Capability Guard
+
+Automatically upgrades to vision-capable models when images are detected in the request.
+
+**When it activates:**
+- Payload contains `type: 'image'` or `type: 'image_url'` content blocks
+- Selected model lacks `vision: true` capability in model registry
+
+**What it does:**
+1. Searches for cheapest vision-capable model at or above current tier
+2. Upgrades model and tier if necessary
+3. Tags routing method with `+vision_guard`
+
+**Example:**
+```
+Request: Image + "What's in this screenshot?"
+Initial: MEDIUM → ollama:llama3.2 (no vision)
+After guard: MEDIUM → anthropic:claude-sonnet-4-6 (vision: true)
+```
+
+**Tier escalation:** If no vision model exists at current tier, escalates to next tier up (SIMPLE→MEDIUM→COMPLEX→REASONING). If REASONING tier has no vision model, logs warning and keeps original selection (request will likely fail upstream).
+
+**No configuration needed** — automatic based on model registry vision field.
+
+---
+
+### kNN Ambiguous Confidence Escalation
+
+When kNN neighbor voting is split (no clear model winner), escalates tier to prioritize quality over cost.
+
+**Confidence thresholds:**
+- **>0.7 (high):** Trust kNN model recommendation, override heuristic
+- **0.4-0.7 (ambiguous):** Escalate tier one step for safety
+- **≤0.4 (low):** Ignore kNN, use heuristic selection
+
+**What it does (ambiguous range):**
+1. Current tier bumped one step: SIMPLE→MEDIUM→COMPLEX→REASONING
+2. Select model from upgraded tier
+3. Tag routing method with `+knn_ambiguous_escalate`
+
+**Example:**
+```
+Request: "Refactor the auth module"
+Heuristic: MEDIUM → openai:gpt-4o-mini (score 42)
+kNN: confidence=0.55 (neighbors split)
+Result: COMPLEX → anthropic:claude-opus-4-7
+```
+
+**REASONING ceiling:** REASONING tier never escalates (already at top).
+
+**Graceful fallback:** If upgraded tier is unconfigured (e.g., missing `TIER_COMPLEX`), keeps current tier.
+
+**Requires:** kNN enabled (`ROUTING_KNN_ENABLED=true`) with index of 1000+ samples at `data/knn/index.hnsw`.
+
+---
+
 ## Routing Decision Flow
 
 ```
 1. Are all 4 TIER_* env vars configured?
    └─ No → Return static provider (MODEL_PROVIDER), skip all routing
 
-2. Does content match FORCE_LOCAL patterns?
-   └─ Yes → Route to local provider
+2. Risk analysis:
+   └─ High risk → Force COMPLEX tier
 
-3. Does content match FORCE_CLOUD patterns?
+3. Does content match FORCE_LOCAL patterns?
+   └─ Yes → Route to SIMPLE tier
+
+4. Does content match FORCE_CLOUD patterns?
    └─ Yes → Route to best cloud provider (requires FALLBACK_ENABLED)
 
-4. Analyze complexity:
+5. Analyze complexity:
    └─ Calculate score 0-100 (standard or weighted mode)
 
-5. Optional: Graphify structural analysis:
+6. Optional: Graphify structural analysis:
    └─ Query knowledge graph for blast radius, god nodes, community cohesion
    └─ Adjust score by up to +35
 
-6. Optional: Embeddings adjustment:
+7. Optional: Embeddings adjustment:
    └─ Adjust score by -10 to +10 based on semantic similarity
 
-7. Agentic detection:
+8. Agentic detection:
    └─ If agentic → Boost score, enforce minimum tier
    └─ If AUTONOMOUS → Force cloud provider
 
-8. Map score to tier (SIMPLE/MEDIUM/COMPLEX/REASONING)
+9. Map score to tier (SIMPLE/MEDIUM/COMPLEX/REASONING)
 
-9. Select provider:model from matching TIER_* env var
+10. Select provider:model from matching TIER_* env var
 
-10. Optional: Cost optimization
-    └─ Check for cheaper model that can handle the tier
+11. Cost optimization:
+    └─ If enabled + not high-risk → find cheaper qualifying model
 
-11. Record telemetry (provider, tier, latency, quality score)
+12. Context window escalation:
+    └─ If estimated tokens > model context → escalate to larger-context model
 
-12. Return { provider, model, tier, score, method }
+13. Vision capability guard:
+    └─ If payload has images + model lacks vision → upgrade to vision model
+
+14. kNN routing:
+    └─ If confidence > 0.7 → override with kNN model
+    └─ If confidence 0.4-0.7 → escalate tier (ambiguous)
+    └─ If confidence ≤ 0.4 → ignore kNN
+
+15. LinUCB bandit:
+    └─ If multiple candidates → pick best via UCB score
+
+16. Deadline filter:
+    └─ If LYNKR-Deadline-Ms header → pick fastest qualifying model
+
+17. Tenant policy override:
+    └─ If tenant blocks model → replace via cost optimizer
+
+18. Record telemetry (provider, tier, latency, quality score)
+
+19. Return { provider, model, tier, score, method }
 ```
 
 ---
