@@ -6,7 +6,7 @@ Comprehensive guide to Lynkr's token optimization strategies that achieve 60-80%
 
 ## Overview
 
-Lynkr reduces token usage by **60-80%** through 6 intelligent optimization phases. At 100,000 requests/month, this translates to **$77k-$115k annual savings**.
+Lynkr reduces token usage by **60-80%** (up to **96%** with MCP Code Mode) through 7 intelligent optimization phases. At 100,000 requests/month, this translates to **$77k-$115k annual savings**.
 
 ---
 
@@ -24,7 +24,58 @@ Lynkr reduces token usage by **60-80%** through 6 intelligent optimization phase
 
 ---
 
-## 6 Optimization Phases
+## 7 Optimization Phases
+
+### Phase 0: MCP Code Mode (96% reduction for MCP tools)
+
+**Problem:** Sending 100+ MCP tool schemas consumes massive tokens (~17,500 tokens).
+
+**Solution:** Replace all MCP tool schemas with 4 meta-tools that enable lazy tool discovery.
+
+**How it works:**
+- **Without Code Mode:** Every MCP tool schema sent on every request
+- **With Code Mode:** Only 4 meta-tools sent (~700 tokens)
+  - `mcp_list_tools` → Discover available tools (compact listing)
+  - `mcp_tool_info` → Load full schema for one specific tool
+  - `mcp_tool_docs` → Get usage examples + parameters
+  - `mcp_execute` → Execute a tool by name with JSON args
+
+**Example workflow:**
+```
+Turn 1: mcp_list_tools({ server_id: "github" })
+  → Returns: ["create_issue", "list_prs", "merge_pr", ...]
+
+Turn 2: mcp_tool_info({ server_id: "github", tool_name: "create_issue" })
+  → Returns: { inputSchema: { title: string, body: string, ... } }
+
+Turn 3: mcp_execute({
+    server_id: "github",
+    tool_name: "create_issue",
+    arguments: { title: "Bug", body: "..." }
+  })
+```
+
+**Token savings:**
+```
+Without Code Mode: 100 tools × 175 tokens = 17,500 tokens
+With Code Mode: 4 meta-tools × 175 tokens = 700 tokens
+Savings: 96% (16,800 tokens saved)
+```
+
+**Trade-off:** Requires 3 sequential tool calls (discover → inspect → execute) instead of 1 direct call. This adds latency but saves massive context in MCP-heavy setups.
+
+**Configuration:**
+```bash
+# Enable MCP Code Mode
+CODE_MODE_ENABLED=true
+
+# Tool list cache TTL in milliseconds (default: 60000 = 1 minute)
+CODE_MODE_CACHE_TTL=60000
+```
+
+**Inspired by:** Bifrost's Code Mode architecture.
+
+---
 
 ### Phase 1: Smart Tool Selection (50-70% reduction)
 
@@ -212,7 +263,7 @@ HISTORY_SUMMARIZE_OLDER=true         # Summarize older turns (default: true)
 
 ---
 
-### Phase 7: Headroom Context Compression (Optional, 47-92% reduction)
+### Phase 8: Headroom Context Compression (Optional, 47-92% reduction)
 
 **Problem:** Even with all other optimizations, large requests can still exceed context limits.
 
@@ -237,7 +288,7 @@ HEADROOM_ENABLED=true
 
 ## Combined Savings
 
-When all 7 phases work together (8 with Headroom):
+When all 8 phases work together:
 
 **Example Request Flow:**
 

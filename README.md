@@ -225,14 +225,15 @@ Routes requests to the right model based on 5-phase complexity analysis. Simple 
 - **Graphify integration** — AST-based knowledge graph detects god nodes, community cohesion, blast radius across 19 languages
 - **Routing telemetry** — every decision recorded with quality scoring (0-100) and latency tracking (P50/P95/P99)
 
-### Token Optimization (7 Phases)
-- **Smart tool selection** — only sends tools relevant to the current task
-- **Code Mode** — replaces 100+ MCP tools with 4 meta-tools (~96% token reduction)
-- **Distill compression** — structural similarity, delta rendering, smart dedup of repetitive tool outputs
-- **Prompt caching** — SHA-256 keyed LRU cache
-- **Memory deduplication** — eliminates repeated information across turns
-- **History compression** — sliding window with Distill-powered structural dedup
-- **Headroom sidecar** — optional 47-92% ML-based compression (Smart Crusher, CCR, LLMLingua)
+### Token Optimization (8 Phases)
+- **MCP Code Mode** — replaces 100+ MCP tool schemas with 4 meta-tools (~96% reduction, lazy tool discovery)
+- **Smart tool selection** — only sends tools relevant to the current task (50-70% reduction)
+- **Prompt caching** — SHA-256 keyed LRU cache (30-45% reduction on repeated prompts)
+- **Memory deduplication** — eliminates repeated information across turns (20-30% reduction)
+- **Tool response truncation** — intelligent truncation of long outputs (15-25% reduction)
+- **Dynamic system prompts** — adapt complexity to request type (10-20% reduction)
+- **Distill compression** — structural similarity, delta rendering, smart dedup of repetitive tool outputs (20-40% reduction)
+- **Headroom sidecar** — optional ML-based compression: Smart Crusher, CCR, LLMLingua (47-92% reduction)
 
 ### Enterprise Resilience
 - **Circuit breakers** — automatic failover with half-open probe recovery
@@ -254,11 +255,21 @@ SEMANTIC_CACHE_THRESHOLD=0.95
 ```
 
 ### MCP Integration + Code Mode
-Automatic Model Context Protocol server discovery and orchestration. Your MCP tools work through Lynkr without configuration. Enable Code Mode to replace 100+ MCP tool definitions with 4 lightweight meta-tools:
+Automatic Model Context Protocol server discovery and orchestration. Your MCP tools work through Lynkr without configuration.
+
+**MCP Code Mode** — Token optimization for heavy MCP setups:
+- Replaces 100+ individual MCP tool schemas with 4 meta-tools
+- Reduces tool catalog from ~17,500 tokens to ~700 tokens (**96% reduction**)
+- Enables lazy tool discovery: model queries `mcp_list_tools`, then `mcp_tool_info`, then `mcp_execute`
+- Best for: 50+ MCP tools, long conversations, context-constrained setups
+- Trade-off: 3 sequential calls instead of 1 (adds ~2-3s latency)
 
 ```bash
-CODE_MODE_ENABLED=true  # ~96% reduction in tool-catalog tokens
+CODE_MODE_ENABLED=true          # Enable Code Mode
+CODE_MODE_CACHE_TTL=60000       # Tool list cache TTL (ms)
 ```
+
+See [Token Optimization Guide](documentation/token-optimization.md#phase-0-mcp-code-mode-96-reduction-for-mcp-tools) and [Tools Documentation](documentation/tools.md#mcp-code-mode-token-optimization) for details.
 
 ---
 
