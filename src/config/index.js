@@ -688,6 +688,7 @@ var config = {
   policy: {
     maxStepsPerTurn: Number.isNaN(policyMaxSteps) ? 8 : policyMaxSteps,
     maxToolCallsPerTurn: Number.isNaN(policyMaxToolCalls) ? 12 : policyMaxToolCalls,
+    maxToolCallsPerRequest: Number.isNaN(policyMaxToolCalls) ? 12 : policyMaxToolCalls, // Orchestrator uses this name
     toolLoopThreshold: Number.isNaN(policyToolLoopThreshold) ? 10 : policyToolLoopThreshold, // Max tool results before force-terminating
     disallowedTools: policyDisallowedTools,
     git: {
