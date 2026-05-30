@@ -3,7 +3,7 @@ services:
   lynkr:
     build: .
     container_name: lynkr
-    image: lynkr:2.0.0
+    image: lynkr:9.3.2
     ports:
       - "8081:8080"
     extra_hosts:
@@ -36,9 +36,10 @@ services:
       # OLLAMA CONFIGURATION (Local Models)
       # ============================================================
       # Recommended models for tool calling:
+      # - qwen2.5-coder:latest (best for coding)
       # - llama3.1:8b (good balance)
-      # - llama3.2 (latest)
-      # - qwen2.5:14b (strong reasoning, 7b struggles with tools)
+      # - llama3.2 (lightweight)
+      # - qwen2.5:14b (strong reasoning)
       # - mistral:7b-instruct (fast and capable)
       # Tier-based routing (set all 4 to enable)
       TIER_SIMPLE: ${TIER_SIMPLE:-}
@@ -47,7 +48,7 @@ services:
       TIER_REASONING: ${TIER_REASONING:-}
 #      OLLAMA_ENDPOINT: http://ollama:11434
       OLLAMA_ENDPOINT: http://host.docker.internal:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:latest}
       OLLAMA_MAX_TOOLS_FOR_ROUTING: ${OLLAMA_MAX_TOOLS_FOR_ROUTING:-3}
       # Ollama Embeddings (for Cursor @Codebase search)
       OLLAMA_EMBEDDINGS_MODEL: ${OLLAMA_EMBEDDINGS_MODEL:-nomic-embed-text}
@@ -328,7 +329,7 @@ services:
       retries: 3
       start_period: 40s
     labels:
-      - "com.lynkr.version=1.0.1"
+      - "com.lynkr.version=9.3.2"
       - "com.lynkr.description=Claude Code proxy with multi-provider support"
     # Uncomment to set resource limits
     # deploy:

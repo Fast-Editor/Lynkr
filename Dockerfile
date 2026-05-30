@@ -23,7 +23,7 @@ FROM node:24-alpine AS runtime
 
 ARG VCS_REF
 ARG BUILD_DATE
-ARG VERSION=8.0.1
+ARG VERSION=9.3.2
 
 LABEL org.opencontainers.image.title="Lynkr" \
       org.opencontainers.image.description="Universal LLM proxy for Claude Code, Cursor, and AI coding tools" \
@@ -68,7 +68,7 @@ ENV NODE_ENV="production" \
     SESSION_DB_PATH="/app/data/sessions.db" \
     # Ollama (default provider — free, local)
     OLLAMA_ENDPOINT="http://host.docker.internal:11434" \
-    OLLAMA_MODEL="llama3.2" \
+    OLLAMA_MODEL="qwen2.5-coder:latest" \
     # Fallback
     FALLBACK_ENABLED="false" \
     # Memory
