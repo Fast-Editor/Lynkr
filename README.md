@@ -449,7 +449,7 @@ LOAD_SHEDDING_ENABLED=true
 | **"Route not found: HEAD /"** | Ignore - harmless health check from Claude Code |
 | **"Hallucinated tool calls"** | Normal - Lynkr automatically filters invalid tools |
 | **"Safe Command DSL blocked"** | Add `POLICY_SAFE_COMMANDS_ENABLED=false` to `.env` |
-| **"spawn graphify ENOENT"** | Install graphify: `npm install -g @safishamsi/graphify` or set `CODE_GRAPH_ENABLED=false` |
+| **"spawn graphify ENOENT"** | Optional feature. Set `CODE_GRAPH_ENABLED=false` in `.env` (see Advanced Features section for installation) |
 | **Slow first request (20+ sec)** | Ollama loading model into memory. Add `OLLAMA_KEEP_ALIVE=30m` in Ollama config |
 | **No response after N turns** | Remove `POLICY_MAX_STEPS` and `POLICY_MAX_TOOL_CALLS` from `.env` (unlimited by default in v9.3.0+) |
 
@@ -487,16 +487,20 @@ curl -X POST http://localhost:8081/v1/admin/reload
 
 **Graphify** provides AST-based code analysis for smarter routing decisions.
 
-**Installation:**
+**Installation (Rust required):**
 ```bash
-# Option 1: npm (if available)
-npm install -g @safishamsi/graphify
+# Install Rust if not already installed
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
 
-# Option 2: Build from source (Rust required)
+# Build and install graphify
 git clone https://github.com/safishamsi/graphify
 cd graphify
 cargo build --release
 sudo cp target/release/graphify /usr/local/bin/
+
+# Verify installation
+graphify --version
 ```
 
 **Enable in `.env`:**
