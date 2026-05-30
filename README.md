@@ -121,13 +121,37 @@ POLICY_MAX_TOOL_CALLS=100
 ```
 
 Then start Lynkr:
+
+**Windows (Command Prompt):**
+```cmd
+set NODE_ENV=production
+lynkr start
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:NODE_ENV="production"
+lynkr start
+```
+
+**Linux/macOS:**
 ```bash
+export NODE_ENV=production
 lynkr start
 ```
 
 ### 3. Connect Your Tool
 
 **Claude Code**
+
+**Windows (Command Prompt):**
+```cmd
+set ANTHROPIC_BASE_URL=http://localhost:8081
+set ANTHROPIC_API_KEY=dummy
+claude "write a hello world in python"
+```
+
+**Linux/macOS:**
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8081
 export ANTHROPIC_API_KEY=dummy
@@ -151,6 +175,80 @@ wire_api = "responses"
 ```
 
 ✅ **Done!** Your AI tool now uses your chosen provider.
+
+---
+
+## Common Startup Errors
+
+### Error: `unable to determine transport target for "pino-pretty"`
+
+**Problem:** Happens on Windows or when NODE_ENV is not set.
+
+**Solution:** Always set `NODE_ENV=production` before starting:
+
+**Windows (Command Prompt):**
+```cmd
+set NODE_ENV=production
+lynkr start
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:NODE_ENV="production"
+lynkr start
+```
+
+**Linux/macOS:**
+```bash
+export NODE_ENV=production
+lynkr start
+```
+
+Or add to your `.env` file:
+```bash
+NODE_ENV=production
+```
+
+### Warning: `Missing tier configuration: TIER_SIMPLE, TIER_MEDIUM...`
+
+**This is just a warning - you can ignore it.** Tier routing is optional.
+
+To remove the warning, add to `.env`:
+```bash
+TIER_SIMPLE=ollama:qwen2.5-coder:latest
+TIER_MEDIUM=ollama:qwen2.5-coder:latest
+TIER_COMPLEX=ollama:qwen2.5-coder:latest
+TIER_REASONING=ollama:qwen2.5-coder:latest
+```
+
+### Warning: `FALLBACK_PROVIDER='databricks' is enabled but missing credentials`
+
+**Solution:** Add to `.env`:
+```bash
+FALLBACK_ENABLED=false
+```
+
+### Error: `connect ECONNREFUSED ::1:11434` (Ollama)
+
+**Problem:** Ollama is not running.
+
+**Solution:**
+```bash
+ollama serve
+```
+
+Keep this terminal open, and start Lynkr in a new terminal.
+
+### Error: `Connection refused` or `404 Not Found`
+
+**Problem:** Lynkr is not running or wrong port.
+
+**Solution:** Check Lynkr is running on the correct port:
+```bash
+curl http://localhost:8081/
+```
+
+Should return: `{"service":"Lynkr","version":"9.x.x","status":"running"}`
 
 ---
 
