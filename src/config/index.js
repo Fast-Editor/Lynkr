@@ -547,7 +547,7 @@ const workerTaskTimeoutMs = Number.parseInt(process.env.WORKER_TASK_TIMEOUT_MS ?
 const workerOffloadThresholdBytes = Number.parseInt(process.env.WORKER_OFFLOAD_THRESHOLD_BYTES ?? "10000", 10);
 
 var config = {
-  env: process.env.NODE_ENV ?? "development",
+  env: process.env.NODE_ENV ?? "production",
   port: Number.isNaN(port) ? 8080 : port,
   databricks: {
     baseUrl: rawBaseUrl,
