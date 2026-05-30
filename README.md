@@ -449,8 +449,9 @@ LOAD_SHEDDING_ENABLED=true
 | **"Route not found: HEAD /"** | Ignore - harmless health check from Claude Code |
 | **"Hallucinated tool calls"** | Normal - Lynkr automatically filters invalid tools |
 | **"Safe Command DSL blocked"** | Add `POLICY_SAFE_COMMANDS_ENABLED=false` to `.env` |
+| **"spawn graphify ENOENT"** | Install graphify: `npm install -g @safishamsi/graphify` or set `CODE_GRAPH_ENABLED=false` |
 | **Slow first request (20+ sec)** | Ollama loading model into memory. Add `OLLAMA_KEEP_ALIVE=30m` in Ollama config |
-| **No response after N turns** | Increase limits: `POLICY_MAX_STEPS=50` and `POLICY_MAX_TOOL_CALLS=100` |
+| **No response after N turns** | Remove `POLICY_MAX_STEPS` and `POLICY_MAX_TOOL_CALLS` from `.env` (unlimited by default in v9.3.0+) |
 
 ---
 
@@ -481,6 +482,35 @@ LOAD_SHEDDING_HEAP_THRESHOLD=0.85
 ```bash
 curl -X POST http://localhost:8081/v1/admin/reload
 ```
+
+### Code Intelligence (Optional - Graphify)
+
+**Graphify** provides AST-based code analysis for smarter routing decisions.
+
+**Installation:**
+```bash
+# Option 1: npm (if available)
+npm install -g @safishamsi/graphify
+
+# Option 2: Build from source (Rust required)
+git clone https://github.com/safishamsi/graphify
+cd graphify
+cargo build --release
+sudo cp target/release/graphify /usr/local/bin/
+```
+
+**Enable in `.env`:**
+```bash
+CODE_GRAPH_ENABLED=true
+CODE_GRAPH_WORKSPACE=/path/to/your/project  # Optional, defaults to cwd
+```
+
+**Features:**
+- AST-based complexity scoring
+- Structural code analysis (19 languages supported)
+- Enhanced routing decisions based on code structure
+
+**Note:** Graphify is completely optional. If not installed, Lynkr falls back to simpler complexity analysis.
 
 ---
 
