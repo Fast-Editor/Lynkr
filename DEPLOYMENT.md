@@ -21,7 +21,7 @@ The fastest way to deploy Lynkr in production:
 
 ```bash
 # 1. Clone and configure
-git clone https://github.com/vishalveerareddy123/Lynkr.git
+git clone https://github.com/Fast-Editor/Lynkr.git
 cd Lynkr
 cp .env.example .env
 # Edit .env with your credentials
@@ -93,7 +93,7 @@ For production, update `docker-compose.yml`:
 ```yaml
 services:
   lynkr:
-    image: ghcr.io/vishalveerareddy123/lynkr:latest
+    image: ghcr.io/fast-editor/lynkr:latest
     container_name: lynkr-prod
     restart: always
     ports:
@@ -256,7 +256,7 @@ spec:
     spec:
       containers:
       - name: lynkr
-        image: ghcr.io/vishalveerareddy123/lynkr:latest
+        image: ghcr.io/fast-editor/lynkr:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
@@ -482,7 +482,7 @@ For deployment on Linux VMs without container orchestration.
 ```bash
 # Clone repository
 cd /opt
-sudo git clone https://github.com/vishalveerareddy123/Lynkr.git
+sudo git clone https://github.com/Fast-Editor/Lynkr.git
 cd Lynkr
 
 # Install dependencies
@@ -956,7 +956,7 @@ kubectl logs -f deployment/lynkr -n lynkr --tail=100
 
 ```bash
 # Kubernetes
-kubectl set image deployment/lynkr lynkr=ghcr.io/vishalveerareddy123/lynkr:v2.0.0 -n lynkr
+kubectl set image deployment/lynkr lynkr=ghcr.io/fast-editor/lynkr:v2.0.0 -n lynkr
 kubectl rollout status deployment/lynkr -n lynkr
 
 # Rollback if needed
@@ -989,7 +989,7 @@ sqlite3 /app/data/sessions.db 'ANALYZE;'
 
 For deployment issues:
 
-1. Check the [GitHub Issues](https://github.com/vishalveerareddy123/Lynkr/issues)
+1. Check the [GitHub Issues](https://github.com/Fast-Editor/Lynkr/issues)
 2. Review [README.md](README.md) for configuration details
 3. Join the community discussions
 4. Contact support for enterprise deployments

@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://vishalveerareddy123.github.io/Lynkr/sitemap.xml
+Sitemap: https://fast-editor.github.io/Lynkr/sitemap.xml

@@ -91,7 +91,7 @@ lynkr start
 
 **Option 2: Homebrew (macOS)**
 ```bash
-brew tap vishalveerareddy123/lynkr
+brew tap fast-editor/lynkr
 brew install lynkr
 lynkr start
 ```

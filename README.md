@@ -6,7 +6,7 @@
 [![Tests](https://img.shields.io/badge/tests-699%20passing-brightgreen)](https://github.com/Fast-Editor/Lynkr)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-20%2B-green)](https://nodejs.org)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vishalveerareddy123/Lynkr)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Fast-Editor/Lynkr)
 
 <table>
 <tr>
@@ -598,7 +598,7 @@ curl -fsSL https://raw.githubusercontent.com/Fast-Editor/Lynkr/main/install.sh |
 
 **Homebrew**
 ```bash
-brew tap vishalveerareddy123/lynkr
+brew tap fast-editor/lynkr
 brew install lynkr
 ```
 
@@ -670,7 +670,7 @@ With tier routing + token optimization: **additional 60-80% savings** on cloud p
 - [GitHub Discussions](https://github.com/Fast-Editor/Lynkr/discussions) — Ask questions
 - [Report Issues](https://github.com/Fast-Editor/Lynkr/issues) — Bug reports
 - [NPM Package](https://www.npmjs.com/package/lynkr) — Official releases
-- [DeepWiki](https://deepwiki.com/vishalveerareddy123/Lynkr) — AI-powered docs
+- [DeepWiki](https://deepwiki.com/Fast-Editor/Lynkr) — AI-powered docs
 
 ---
 

@@ -161,7 +161,7 @@ wire_api = "responses"
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew tap vishalveerareddy123/lynkr
+brew tap fast-editor/lynkr
 brew install lynkr
 lynkr start
 ```

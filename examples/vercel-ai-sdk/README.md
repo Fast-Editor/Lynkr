@@ -1,6 +1,6 @@
 # Lynkr + Vercel AI SDK Example
 
-Use [Lynkr](https://github.com/vishalveerareddy123/Lynkr) as the backend for any Vercel AI SDK app.
+Use [Lynkr](https://github.com/Fast-Editor/Lynkr) as the backend for any Vercel AI SDK app.
 
 ## Setup
 
