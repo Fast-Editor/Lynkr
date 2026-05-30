@@ -12,7 +12,10 @@ const config = require('../config');
 // Load tier config
 const TIER_CONFIG_PATH = path.join(__dirname, '../../config/model-tiers.json');
 
-// Tier definitions with complexity ranges
+// Phase 1.4: calibrated thresholds (written by scripts/calibrate-thresholds.js)
+const CALIBRATED_PATH = path.join(__dirname, '../../data/calibrated-thresholds.json');
+
+// Tier definitions with complexity ranges (defaults; may be overridden by calibration)
 const TIER_DEFINITIONS = {
   SIMPLE: {
     description: 'Greetings, simple Q&A, confirmations',
@@ -41,7 +44,10 @@ class ModelTierSelector {
     this.tierConfig = null;
     this.localProviders = {};
     this.providerAliases = {};
+    /** Per-tier ranges, possibly overridden by calibration. */
+    this.ranges = null;
     this._loadConfig();
+    this._loadCalibrated();
   }
 
   /**
@@ -63,6 +69,40 @@ class ModelTierSelector {
       logger.warn({ err: err.message }, '[ModelTiers] Config load failed, using defaults');
       this._loadDefaults();
     }
+  }
+
+  /**
+   * Phase 1.4: load calibrated tier thresholds if the nightly job has produced them.
+   * Falls back silently to TIER_DEFINITIONS when absent or malformed.
+   */
+  _loadCalibrated() {
+    this.ranges = this._defaultRanges();
+    try {
+      if (!fs.existsSync(CALIBRATED_PATH)) return;
+      const data = JSON.parse(fs.readFileSync(CALIBRATED_PATH, 'utf8'));
+      if (!data?.ranges) return;
+      const calibrated = {};
+      for (const tier of Object.keys(TIER_DEFINITIONS)) {
+        const r = data.ranges[tier];
+        if (Array.isArray(r) && r.length === 2 && r[0] <= r[1]) {
+          calibrated[tier] = r;
+        } else {
+          calibrated[tier] = TIER_DEFINITIONS[tier].range;
+        }
+      }
+      this.ranges = calibrated;
+      logger.info({ ranges: this.ranges, calibratedAt: data.calibratedAt }, '[ModelTiers] Using calibrated thresholds');
+    } catch (err) {
+      logger.debug({ err: err.message }, '[ModelTiers] Calibrated thresholds load failed; using defaults');
+    }
+  }
+
+  _defaultRanges() {
+    const ranges = {};
+    for (const [tier, def] of Object.entries(TIER_DEFINITIONS)) {
+      ranges[tier] = def.range.slice();
+    }
+    return ranges;
   }
 
   /**
@@ -92,20 +132,73 @@ class ModelTierSelector {
   }
 
   /**
-   * Get tier from complexity score
+   * Get tier from complexity score.
+   * Phase 1.4: honors calibrated ranges when present.
    * @param {number} complexityScore - Score from 0-100
    * @returns {string} Tier name (SIMPLE, MEDIUM, COMPLEX, REASONING)
    */
   getTier(complexityScore) {
     const score = Math.max(0, Math.min(100, complexityScore || 0));
+    const ranges = this.ranges || this._defaultRanges();
+    for (const tier of Object.keys(TIER_DEFINITIONS)) {
+      const [lo, hi] = ranges[tier];
+      if (score >= lo && score <= hi) return tier;
+    }
+    return score > 75 ? 'REASONING' : 'SIMPLE';
+  }
 
-    for (const [tier, def] of Object.entries(TIER_DEFINITIONS)) {
-      if (score >= def.range[0] && score <= def.range[1]) {
-        return tier;
+  /**
+   * Phase 1.3: find a model with at least `minContext` context window.
+   * Returns null when no qualifying model is available.
+   */
+  findContextCapable(minContext, preferredTier = null) {
+    const { getModelRegistrySync } = require('./model-registry');
+    const registry = getModelRegistrySync();
+    const tierOrder = preferredTier
+      ? [preferredTier, 'REASONING', 'COMPLEX', 'MEDIUM', 'SIMPLE']
+      : ['REASONING', 'COMPLEX', 'MEDIUM', 'SIMPLE'];
+    const seen = new Set();
+    for (const tier of tierOrder) {
+      if (seen.has(tier)) continue;
+      seen.add(tier);
+      const tierConfig = this.tierConfig[tier];
+      if (!tierConfig?.preferred) continue;
+      for (const [provider, models] of Object.entries(tierConfig.preferred)) {
+        for (const model of models) {
+          const cost = registry.getCost(model);
+          if (cost?.context && cost.context >= minContext) {
+            return { provider, model, tier, context: cost.context };
+          }
+        }
       }
     }
+    return null;
+  }
 
-    return score > 75 ? 'REASONING' : 'SIMPLE';
+  /**
+   * Find a vision-capable model at or above `preferredTier`.
+   * Walks tier order from preferred upward; returns null when none available.
+   */
+  findVisionCapable(preferredTier = null) {
+    const { getModelRegistrySync } = require('./model-registry');
+    const registry = getModelRegistrySync();
+    const tierOrder = preferredTier
+      ? [preferredTier, 'COMPLEX', 'REASONING', 'MEDIUM', 'SIMPLE']
+      : ['COMPLEX', 'REASONING', 'MEDIUM', 'SIMPLE'];
+    const seen = new Set();
+    for (const t of tierOrder) {
+      if (seen.has(t)) continue;
+      seen.add(t);
+      const tierConfig = this.tierConfig[t];
+      if (!tierConfig?.preferred) continue;
+      for (const [provider, models] of Object.entries(tierConfig.preferred)) {
+        for (const model of models) {
+          const info = registry.getCost(model);
+          if (info?.vision) return { provider, model, tier: t };
+        }
+      }
+    }
+    return null;
   }
 
   /**

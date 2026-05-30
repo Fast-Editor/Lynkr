@@ -1,6 +1,8 @@
 .DS_Store
 .git
 .claude/
+.claw/
+.deepsec/
 .lynkr/
 data/
 tmp/

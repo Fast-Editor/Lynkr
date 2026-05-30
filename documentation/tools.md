@@ -11,7 +11,109 @@ Lynkr supports two tool execution modes:
 - **Server Mode (default)**: Tools execute on Lynkr server
 - **Client Mode (passthrough)**: Tools execute on client (Claude Code CLI/Cursor)
 
+For MCP integrations, Lynkr offers **MCP Code Mode** — a token optimization that replaces 100+ MCP tool schemas with 4 meta-tools, reducing tool overhead by 96%.
+
 This enables flexible deployment scenarios: centralized tooling, security policies, or client-side file access.
+
+---
+
+## MCP Code Mode (Token Optimization)
+
+**Problem:** MCP servers can expose 100+ tools. Sending all tool schemas on every request consumes ~17,500 tokens.
+
+**Solution:** MCP Code Mode replaces individual tool schemas with 4 meta-tools that enable lazy tool discovery.
+
+### How It Works
+
+Instead of injecting all MCP tool schemas into every request, Lynkr sends only 4 meta-tools:
+
+```javascript
+mcp_list_tools    // Discover available tools (compact listing)
+mcp_tool_info     // Load full schema for ONE specific tool
+mcp_tool_docs     // Get usage examples + parameter details
+mcp_execute       // Execute a tool by name with JSON args
+```
+
+**Workflow example:**
+```json
+// Turn 1: Discover tools
+{
+  "name": "mcp_list_tools",
+  "input": { "server_id": "github" }
+}
+// → Returns: { total_tools: 47, servers: { github: [{ name: "create_issue", description: "..." }, ...] } }
+
+// Turn 2: Get schema for the tool you need
+{
+  "name": "mcp_tool_info",
+  "input": { "server_id": "github", "tool_name": "create_issue" }
+}
+// → Returns: { inputSchema: { title: { type: "string", ... }, body: { ... } } }
+
+// Turn 3: Execute
+{
+  "name": "mcp_execute",
+  "input": {
+    "server_id": "github",
+    "tool_name": "create_issue",
+    "arguments": { "title": "Bug fix", "body": "..." }
+  }
+}
+```
+
+### Token Savings
+
+| Setup | Tool Tokens | Savings |
+|-------|------------|---------|
+| **Without Code Mode** | 100 tools × 175 tokens = **17,500 tokens** | — |
+| **With Code Mode** | 4 meta-tools × 175 tokens = **700 tokens** | **96%** (16,800 tokens saved) |
+
+### Trade-Offs
+
+**Pros:**
+- ✅ Massive token reduction (96%)
+- ✅ Scales to unlimited MCP tools without context bloat
+- ✅ Works with all providers (provider-agnostic)
+- ✅ Automatic caching of tool lists (60s TTL)
+
+**Cons:**
+- ❌ Requires 3 sequential tool calls instead of 1 direct call (adds ~2-3s latency)
+- ❌ Model must "discover" tools on first use (not ideal for one-shot requests)
+- ❌ No schema validation at request time (happens at execution time)
+
+### When to Use Code Mode
+
+**Use Code Mode when:**
+- You have 50+ MCP tools registered
+- Long conversations with repeated tool use (discovery is cached)
+- Context window pressure is a concern
+- Cost optimization is critical
+
+**Skip Code Mode when:**
+- You have <20 MCP tools (overhead not worth it)
+- One-shot requests (discovery latency kills performance)
+- Tools are rarely used (schema overhead is negligible)
+
+### Configuration
+
+```bash
+# Enable MCP Code Mode
+CODE_MODE_ENABLED=true
+
+# Tool list cache TTL in milliseconds (default: 60000 = 1 minute)
+CODE_MODE_CACHE_TTL=60000
+```
+
+**Integration with Smart Tool Selection:**
+- Code Mode's 4 meta-tools are **always included** when enabled
+- Smart Tool Selection still filters other tools normally
+- Total overhead: 700 tokens (Code Mode) + filtered tools
+
+**Integration with Headroom:**
+- Code Mode runs **before** Headroom compression
+- Headroom receives the 4 meta-tools (already minimal)
+- Headroom can further compress tool descriptions if needed
+- Compound savings: 96% (Code Mode) + 47-92% (Headroom on messages)
 
 ---
 

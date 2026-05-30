@@ -395,24 +395,16 @@ function extractContent(payload) {
 }
 
 /**
- * Estimate token count (rough approximation)
+ * Estimate token count.
+ *
+ * Phase 1.1: delegates to the tiktoken-backed tokenizer (graceful fallback to
+ * chars/4 if js-tiktoken is unavailable).
  */
+const { countPayloadTokens } = require('./tokenizer');
+
 function estimateTokens(payload) {
   if (!payload?.messages) return 0;
-
-  let totalChars = 0;
-  for (const msg of payload.messages) {
-    if (typeof msg.content === 'string') {
-      totalChars += msg.content.length;
-    } else if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (block?.text) totalChars += block.text.length;
-      }
-    }
-  }
-
-  // Rough approximation: 4 chars per token
-  return Math.ceil(totalChars / 4);
+  return countPayloadTokens(payload, payload?.model);
 }
 
 /**

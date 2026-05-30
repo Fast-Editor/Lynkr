@@ -22,15 +22,58 @@ const {
 const { getAgenticDetector, AGENT_TYPES } = require('./agentic-detector');
 const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
 const { getCostOptimizer } = require('./cost-optimizer');
-const { analyzeRisk } = require('./risk-analyzer');
+const { analyzeRisk } = require('./risk-classifier');
+
+// Phase 3-6 routing modules
+const { getKnnRouter } = require('./knn-router');
+const { getBandit } = require('./bandit');
+const { getShadowPolicy, compareAndLog: shadowCompareAndLog } = require('./shadow-mode');
+const { chooseFastest } = require('./deadline');
+const { applyTenantOverrides } = require('./tenant-policy');
 
 // Telemetry modules
 const telemetry = require('./telemetry');
 const { scoreResponseQuality } = require('./quality-scorer');
 const { getLatencyTracker } = require('./latency-tracker');
 
+// Phase 1 modules
+const contextValidator = require('./context-validator');
+const { countPayloadTokens } = require('./tokenizer');
+
 // Local providers
 const LOCAL_PROVIDERS = ['ollama', 'llamacpp', 'lmstudio'];
+
+/**
+ * Returns true when any message content block is an image.
+ * Handles both string content and structured content arrays.
+ */
+function _payloadHasImages(payload) {
+  const messages = payload?.messages;
+  if (!Array.isArray(messages)) return false;
+  return messages.some(msg => {
+    const content = msg?.content;
+    if (!Array.isArray(content)) return false;
+    return content.some(block => block?.type === 'image' || block?.type === 'image_url');
+  });
+}
+
+/**
+ * List of providers that currently have credentials configured.
+ * Used by the Phase 1.2 cost-optimizer override to scope candidates.
+ */
+function _enabledProviders() {
+  const out = [];
+  if (config.databricks?.url && config.databricks?.apiKey) out.push('databricks');
+  if (config.azureAnthropic?.endpoint && config.azureAnthropic?.apiKey) out.push('azure-anthropic');
+  if (config.bedrock?.apiKey) out.push('bedrock');
+  if (config.openrouter?.apiKey) out.push('openrouter');
+  if (config.openai?.apiKey) out.push('openai');
+  if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) out.push('azure-openai');
+  if (config.ollama?.endpoint) out.push('ollama');
+  if (config.llamacpp?.endpoint) out.push('llamacpp');
+  if (config.lmstudio?.endpoint) out.push('lmstudio');
+  return out;
+}
 
 /**
  * Check if a provider is local
@@ -283,9 +326,11 @@ async function determineProviderSmart(payload, options = {}) {
     }
   }
 
-  // Apply routing decision based on tier config (TIER_* env vars are mandatory)
+  // Apply routing decision based on tier config (TIER_* env vars take precedence
+  // but Phase 1.2 lets the cost-optimizer pick a cheaper qualifying model when safe).
   let provider;
   let method = 'tier_config';
+  let costOptimized = false;
 
   const selector = getModelTierSelector();
   const modelSelection = selector.selectModel(tier, null);
@@ -294,8 +339,242 @@ async function determineProviderSmart(payload, options = {}) {
   selectedModel = modelSelection.model;
   logger.debug({ tier, provider, model: selectedModel }, '[Routing] Using tier config');
 
-  // TIER_* env vars are the final word — no cost optimization override.
-  // The user explicitly configured provider:model per tier; respect that.
+  // Phase 1.2 — cost-optimizer override.
+  // Only kick in when:
+  //  - feature flag enabled (default true, disable with LYNKR_COST_OPTIMIZE=false)
+  //  - risk level is not high (high-risk keeps the explicitly-configured model)
+  //  - the optimizer finds a meaningfully cheaper qualifying model
+  const costOptimizeEnabled = process.env.LYNKR_COST_OPTIMIZE !== 'false'
+    && config.routing?.costOptimize !== false;
+  if (costOptimizeEnabled && risk?.level !== 'high') {
+    try {
+      const optimizer = getCostOptimizer();
+      const availableProviders = _enabledProviders();
+      const cheapest = optimizer.findCheapestForTier(tier, availableProviders);
+      if (cheapest && cheapest.model && cheapest.model !== selectedModel) {
+        const current = optimizer.estimateCost(selectedModel, 1000);
+        const candidate = optimizer.estimateCost(cheapest.model, 1000);
+        if (candidate.totalEstimate > 0 && candidate.totalEstimate < current.totalEstimate * 0.75) {
+          logger.debug({
+            tier,
+            from: `${provider}:${selectedModel}`,
+            to: `${cheapest.provider}:${cheapest.model}`,
+            savedPerK: (current.totalEstimate - candidate.totalEstimate).toFixed(6),
+          }, '[Routing] Cost-optimizer override');
+          provider = cheapest.provider;
+          selectedModel = cheapest.model;
+          method = 'tier_config+cost_optimized';
+          costOptimized = true;
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Cost-optimize failed, keeping tier_config selection');
+    }
+  }
+
+  // Phase 1.3 — context window validation. If estimated tokens exceed the
+  // selected model's context (with response headroom), escalate to a
+  // context-capable model regardless of tier.
+  try {
+    const estimatedTokens = countPayloadTokens(payload, selectedModel);
+    const ctxResult = contextValidator.validate(selectedModel, estimatedTokens);
+    if (!ctxResult.ok) {
+      const capable = selector.findContextCapable(estimatedTokens, tier);
+      if (capable) {
+        logger.info({
+          from: `${provider}:${selectedModel}`,
+          to: `${capable.provider}:${capable.model}`,
+          required: estimatedTokens,
+          oldContext: ctxResult.context,
+          newContext: capable.context,
+        }, '[Routing] Context window escalation');
+        provider = capable.provider;
+        selectedModel = capable.model;
+        if (capable.tier) tier = capable.tier;
+        method = method + '+context_escalated';
+      } else {
+        logger.warn({
+          model: selectedModel,
+          required: estimatedTokens,
+          available: ctxResult.context,
+        }, '[Routing] No context-capable fallback — request may fail upstream');
+      }
+    }
+  } catch (err) {
+    logger.debug({ err: err.message }, '[Routing] Context validation failed, proceeding without check');
+  }
+
+  // Phase 1.4 — vision capability guard.
+  // If the payload contains image content blocks but the selected model lacks
+  // vision support, silently swap to the cheapest vision-capable model at or
+  // above the current tier. Prevents silent upstream failures.
+  if (_payloadHasImages(payload)) {
+    try {
+      const { getModelRegistrySync } = require('./model-registry');
+      const registry = getModelRegistrySync();
+      const modelInfo = registry.getCost(selectedModel);
+      if (!modelInfo?.vision) {
+        const visionModel = selector.findVisionCapable(tier);
+        if (visionModel) {
+          logger.info({
+            from: `${provider}:${selectedModel}`,
+            to: `${visionModel.provider}:${visionModel.model}`,
+            tier: visionModel.tier,
+          }, '[Routing] Vision guard — upgrading to vision-capable model');
+          provider = visionModel.provider;
+          selectedModel = visionModel.model;
+          if (visionModel.tier !== tier) tier = visionModel.tier;
+          method = method + '+vision_guard';
+        } else {
+          logger.warn({ model: selectedModel }, '[Routing] Vision guard — no vision-capable model found, request may fail');
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Vision guard check failed, proceeding');
+    }
+  }
+
+  // Phase 3.1 — kNN routing hint.
+  // If the index has enough entries, query it with the last user message.
+  // A high-confidence kNN suggestion overrides the heuristic selection.
+  let knnResult = null;
+  if (config.routing?.knnEnabled !== false) {
+    try {
+      const msgs = payload?.messages;
+      const lastMsg = Array.isArray(msgs) ? msgs[msgs.length - 1]?.content : null;
+      const queryText = typeof lastMsg === 'string' ? lastMsg
+        : Array.isArray(lastMsg) ? lastMsg.filter(b => b?.type === 'text').map(b => b.text || '').join(' ')
+        : null;
+      if (queryText) {
+        knnResult = await getKnnRouter().query(queryText);
+        if (knnResult && knnResult.confidence > 0.7 && knnResult.model && knnResult.model !== selectedModel) {
+          // High confidence — trust kNN's model recommendation directly.
+          logger.debug({
+            from: `${provider}:${selectedModel}`,
+            to: `${knnResult.provider}:${knnResult.model}`,
+            confidence: knnResult.confidence.toFixed(3),
+          }, '[Routing] kNN override');
+          provider = knnResult.provider;
+          selectedModel = knnResult.model;
+          method = method + '+knn';
+        } else if (knnResult && knnResult.confidence > 0.4 && knnResult.confidence <= 0.7) {
+          // Ambiguous signal — neighbors are split, we can't trust any single model
+          // recommendation. Err on quality: bump the current tier one step up so the
+          // request gets a more capable model rather than risking a bad answer from
+          // a model that was borderline for similar past requests.
+          const TIER_ORDER = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
+          const currentIdx = TIER_ORDER.indexOf(tier);
+          if (currentIdx >= 0 && currentIdx < TIER_ORDER.length - 1) {
+            const upgradedTier = TIER_ORDER[currentIdx + 1];
+            try {
+              const upgraded = selector.selectModel(upgradedTier, null);
+              logger.debug({
+                from: `${tier}:${provider}:${selectedModel}`,
+                to: `${upgradedTier}:${upgraded.provider}:${upgraded.model}`,
+                confidence: knnResult.confidence.toFixed(3),
+              }, '[Routing] kNN ambiguous — escalating tier for safety');
+              provider = upgraded.provider;
+              selectedModel = upgraded.model;
+              tier = upgradedTier;
+              method = method + '+knn_ambiguous_escalate';
+            } catch (err) {
+              logger.debug({ err: err.message }, '[Routing] kNN ambiguous escalation failed, keeping current tier');
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] kNN query failed, ignoring');
+    }
+  }
+
+  // Phase 4.1 — LinUCB bandit intra-tier selection.
+  // When there are two candidates (heuristic vs kNN), the bandit picks the
+  // one with the highest estimated UCB score for the current context.
+  if (config.routing?.banditEnabled !== false && knnResult && knnResult.model) {
+    try {
+      // Build candidates: current selection and kNN alternative if different
+      const allCandidates = [{ provider, model: selectedModel }];
+      if (knnResult.model !== selectedModel) {
+        allCandidates.push({ provider: knnResult.provider, model: knnResult.model });
+      }
+
+      if (allCandidates.length > 1) {
+        const bandit = getBandit();
+        const TASK_TYPES = ['code_gen', 'summarization', 'reasoning', 'factoid', 'chat', 'other'];
+        const inferredTask = (analysis.breakdown?.taskType?.reason || 'other').toLowerCase();
+        const taskIdx = Math.max(0, TASK_TYPES.findIndex(t => inferredTask.includes(t)));
+        const ctx = [
+          (analysis.score || 0) / 100,
+          Math.log(Math.max(1, analysis.breakdown?.tokenCount || 0) + 1) / 15,
+          ((payload?.tools?.length ?? 0) > 0) ? 1 : 0,
+          options.streaming ? 1 : 0,
+          risk?.level === 'high' ? 1 : risk?.level === 'medium' ? 0.5 : 0,
+          agenticResult?.isAgentic ? 1 : 0,
+          ...TASK_TYPES.map((_, i) => i === taskIdx ? 1 : 0),
+        ];
+        const picked = bandit.pick(tier, allCandidates, ctx);
+        if (picked && picked.model !== selectedModel) {
+          logger.debug({
+            from: `${provider}:${selectedModel}`,
+            to: `${picked.provider}:${picked.model}`,
+            ucb: picked.ucb?.toFixed(4),
+            explored: picked.explored,
+          }, '[Routing] Bandit override');
+          provider = picked.provider;
+          selectedModel = picked.model;
+          method = method + (picked.explored ? '+bandit_explore' : '+bandit');
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Bandit pick failed, ignoring');
+    }
+  }
+
+  // Phase 6.3 — deadline-aware fastest-model selection.
+  // Payload carries _deadlineMs injected by the orchestrator from the
+  // LYNKR-Deadline-Ms request header.
+  const deadlineMs = payload?._deadlineMs ?? null;
+  if (deadlineMs) {
+    try {
+      const fastest = chooseFastest([{ provider, model: selectedModel }], deadlineMs);
+      if (fastest && fastest.model !== selectedModel) {
+        logger.debug({
+          from: `${provider}:${selectedModel}`,
+          to: `${fastest.provider}:${fastest.model}`,
+          deadlineMs,
+        }, '[Routing] Deadline override');
+        provider = fastest.provider;
+        selectedModel = fastest.model;
+        method = method + '+deadline';
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Deadline check failed, ignoring');
+    }
+  }
+
+  // Phase 6.1 — per-tenant policy overrides.
+  // tenantPolicy comes from options (threaded from Express res.locals via
+  // orchestrator → databricks → here).
+  if (options.tenantPolicy) {
+    try {
+      const overridden = applyTenantOverrides(
+        { provider, model: selectedModel, tier, method },
+        options.tenantPolicy,
+      );
+      if (overridden && overridden.model !== selectedModel) {
+        logger.debug({
+          from: `${provider}:${selectedModel}`,
+          to: `${overridden.provider}:${overridden.model}`,
+        }, '[Routing] Tenant override');
+        provider = overridden.provider;
+        selectedModel = overridden.model;
+        method = overridden.method;
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Routing] Tenant override failed, ignoring');
+    }
+  }
 
   const decision = {
     provider,
@@ -309,9 +588,18 @@ async function determineProviderSmart(payload, options = {}) {
     analysis,
     embeddingsResult,
     agenticResult,
-    costOptimized: false,
+    costOptimized,
     risk,
+    knnResult,
   };
+
+  // Phase 4.4 — shadow-mode policy comparison (fire-and-forget).
+  const shadowFn = getShadowPolicy();
+  if (shadowFn) {
+    setImmediate(() =>
+      shadowCompareAndLog({ payload, activeDecision: decision, shadowFn }).catch(() => {})
+    );
+  }
 
   // Phase 3: Record metrics
   routingMetrics.record(decision);
@@ -418,6 +706,14 @@ module.exports = {
   getCostOptimizer,
   AGENT_TYPES,
   TIER_DEFINITIONS,
+
+  // Phase 3-6 modules
+  getKnnRouter,
+  getBandit,
+  getShadowPolicy,
+  shadowCompareAndLog,
+  chooseFastest,
+  applyTenantOverrides,
 
   // Telemetry
   telemetry,

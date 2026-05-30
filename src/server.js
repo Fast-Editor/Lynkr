@@ -9,6 +9,8 @@ const { metricsMiddleware } = require("./api/middleware/metrics");
 const { requestLoggingMiddleware } = require("./api/middleware/request-logging");
 const { errorHandlingMiddleware, notFoundHandler } = require("./api/middleware/error-handling");
 const { loadSheddingMiddleware, initializeLoadShedder } = require("./api/middleware/load-shedding");
+const { tenantMiddleware } = require("./api/middleware/tenant");
+const { budgetEnforcer } = require("./api/middleware/budget-enforcer");
 const { livenessCheck, readinessCheck } = require("./api/health");
 const { getMetricsCollector } = require("./observability/metrics");
 const { getShutdownManager } = require("./server/shutdown");
@@ -89,6 +91,13 @@ function createApp() {
   if (config.budget?.enabled !== false) {
     app.use('/v1/messages', budgetMiddleware);
   }
+
+  // Phase 6.1 — per-tenant routing policies (LYNKR-Tenant-Id header).
+  // Runs before message handling so res.locals.tenantPolicy is populated.
+  app.use('/v1/messages', tenantMiddleware);
+
+  // Phase 6.2 — hierarchical budget enforcement (LYNKR_BUDGET_ENFORCER=false to disable).
+  app.use('/v1/messages', budgetEnforcer);
 
   // Health check endpoints
   app.get("/health/live", livenessCheck);

@@ -8,6 +8,7 @@ const logger = require('../logger');
 const config = require('../config');
 const { getModelRegistry, getModelRegistrySync } = require('./model-registry');
 const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
+const { ratioFor } = require('./output-ratios');
 
 // Session cost tracking (in-memory)
 const sessionCosts = new Map(); // sessionId -> { total, requests, byModel, byProvider }
@@ -62,12 +63,14 @@ class CostOptimizer {
    * @param {number} outputTokens - Estimated output tokens (optional)
    * @returns {Object} Cost estimate
    */
-  estimateCost(model, inputTokens, outputTokens = null) {
+  estimateCost(model, inputTokens, outputTokens = null, taskType = null) {
     const registry = this._getRegistry();
     const costs = registry.getCost(model);
 
     const inputCost = (inputTokens / 1_000_000) * costs.input;
-    const estimatedOutputTokens = outputTokens || Math.min(inputTokens * 0.5, 4096);
+    // Phase 2.3: per-task-type output ratio learned from telemetry
+    const ratio = taskType ? ratioFor(taskType) : 0.5;
+    const estimatedOutputTokens = outputTokens || Math.min(inputTokens * ratio, costs.maxOutput || 4096);
     const outputCost = (estimatedOutputTokens / 1_000_000) * costs.output;
 
     return {

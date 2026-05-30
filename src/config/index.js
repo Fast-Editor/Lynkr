@@ -405,8 +405,8 @@ const tinyfishTimeoutMs = parseInt(process.env.TINYFISH_TIMEOUT_MS ?? "120000", 
 const tinyfishProxyEnabled = process.env.TINYFISH_PROXY_ENABLED === "true";
 const tinyfishProxyCountry = process.env.TINYFISH_PROXY_COUNTRY?.trim() || "US";
 
-const policyMaxSteps = Number.parseInt(process.env.POLICY_MAX_STEPS ?? "8", 10);
-const policyMaxToolCalls = Number.parseInt(process.env.POLICY_MAX_TOOL_CALLS ?? "12", 10);
+const policyMaxSteps = process.env.POLICY_MAX_STEPS ? Number.parseInt(process.env.POLICY_MAX_STEPS, 10) : null; // null = no limit
+const policyMaxToolCalls = process.env.POLICY_MAX_TOOL_CALLS ? Number.parseInt(process.env.POLICY_MAX_TOOL_CALLS, 10) : null; // null = no limit
 const policyToolLoopThreshold = Number.parseInt(process.env.POLICY_TOOL_LOOP_THRESHOLD ?? "10", 10);
 const policyDisallowedTools =
   process.env.POLICY_DISALLOWED_TOOLS?.split(",")
@@ -547,7 +547,7 @@ const workerTaskTimeoutMs = Number.parseInt(process.env.WORKER_TASK_TIMEOUT_MS ?
 const workerOffloadThresholdBytes = Number.parseInt(process.env.WORKER_OFFLOAD_THRESHOLD_BYTES ?? "10000", 10);
 
 var config = {
-  env: process.env.NODE_ENV ?? "development",
+  env: process.env.NODE_ENV ?? "production",
   port: Number.isNaN(port) ? 8080 : port,
   databricks: {
     baseUrl: rawBaseUrl,
@@ -686,8 +686,9 @@ var config = {
     proxyCountry: tinyfishProxyCountry,
   },
   policy: {
-    maxStepsPerTurn: Number.isNaN(policyMaxSteps) ? 8 : policyMaxSteps,
-    maxToolCallsPerTurn: Number.isNaN(policyMaxToolCalls) ? 12 : policyMaxToolCalls,
+    maxStepsPerTurn: policyMaxSteps, // null = no limit
+    maxToolCallsPerTurn: policyMaxToolCalls, // null = no limit
+    maxToolCallsPerRequest: policyMaxToolCalls, // null = no limit (orchestrator uses this name)
     toolLoopThreshold: Number.isNaN(policyToolLoopThreshold) ? 10 : policyToolLoopThreshold, // Max tool results before force-terminating
     disallowedTools: policyDisallowedTools,
     git: {

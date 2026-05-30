@@ -44,11 +44,18 @@ class LoadShedder {
     const memUsage = process.memoryUsage();
     const heapUsedPercent = memUsage.heapUsed / memUsage.heapTotal;
 
-    if (heapUsedPercent > this.heapThreshold) {
+    // FIX: Only trigger if BOTH percentage is high AND actual usage is significant
+    // This prevents false positives on startup when heapTotal is small but will grow
+    const heapUsedMB = memUsage.heapUsed / (1024 * 1024);
+    const minHeapThresholdMB = 500; // Only shed load if using more than 500MB
+
+    if (heapUsedPercent > this.heapThreshold && heapUsedMB > minHeapThresholdMB) {
       logger.warn(
         {
           heapUsedPercent: (heapUsedPercent * 100).toFixed(2),
+          heapUsedMB: heapUsedMB.toFixed(2),
           threshold: (this.heapThreshold * 100).toFixed(2),
+          minThresholdMB: minHeapThresholdMB,
         },
         "Load shedding: Heap usage exceeded threshold"
       );
@@ -96,6 +103,9 @@ class LoadShedder {
       activeRequests: this.activeRequests,
       totalShed: this.totalShed,
       heapUsedPercent: ((memUsage.heapUsed / memUsage.heapTotal) * 100).toFixed(2),
+      heapUsedMB: (memUsage.heapUsed / (1024 * 1024)).toFixed(2),
+      heapTotalMB: (memUsage.heapTotal / (1024 * 1024)).toFixed(2),
+      rssMB: (memUsage.rss / (1024 * 1024)).toFixed(2),
       rssPercent: ((memUsage.rss / os.totalmem()) * 100).toFixed(2),
       thresholds: {
         heapThreshold: (this.heapThreshold * 100).toFixed(2),

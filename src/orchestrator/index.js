@@ -1966,6 +1966,17 @@ IMPORTANT TOOL USAGE RULES:
     cleanPayload._workspace = headers["x-lynkr-workspace"];
   }
 
+  // Phase 6.3 — thread deadline for latency-aware routing.
+  if (headers?.["lynkr-deadline-ms"]) {
+    const dl = parseInt(headers["lynkr-deadline-ms"], 10);
+    if (!isNaN(dl) && dl > 0) cleanPayload._deadlineMs = dl;
+  }
+
+  // Phase 6.1 — thread tenant policy for per-tenant routing overrides.
+  if (options?.tenantPolicy) {
+    cleanPayload._tenantPolicy = options.tenantPolicy;
+  }
+
   // RTK-inspired tool result compression: compress large tool_results
   // before they reach the model (saves 60-90% on test/git/lint output)
   if (config.toolResultCompression?.enabled !== false) {
@@ -2594,7 +2605,7 @@ IMPORTANT TOOL USAGE RULES:
           }, "Completed parallel Task execution");
 
           // Check if we've exceeded the max tool calls limit after parallel execution
-          if (toolCallsExecuted > settings.maxToolCallsPerRequest) {
+          if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
             logger.error(
               {
                 sessionId: session?.id ?? null,
@@ -2713,7 +2724,7 @@ IMPORTANT TOOL USAGE RULES:
         toolCallsExecuted += 1;
 
         // Check if we've exceeded the max tool calls limit
-        if (toolCallsExecuted > settings.maxToolCallsPerRequest) {
+        if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
           logger.error(
             {
               sessionId: session?.id ?? null,
@@ -3487,7 +3498,7 @@ IMPORTANT TOOL USAGE RULES:
           toolCallsExecuted += 1;
 
           // Check if we've exceeded the max tool calls limit
-          if (toolCallsExecuted > settings.maxToolCallsPerRequest) {
+          if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
             logger.error(
               {
                 sessionId: session?.id ?? null,
