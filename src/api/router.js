@@ -28,6 +28,19 @@ function estimateTokenCount(messages = [], system = null, model = null) {
   return countMessagesTokens(messages, system, model);
 }
 
+// Root route - Claude Code health check
+router.head("/", (req, res) => {
+  res.status(200).end();
+});
+
+router.get("/", (req, res) => {
+  res.json({
+    service: "Lynkr",
+    version: require("../../package.json").version,
+    status: "running"
+  });
+});
+
 router.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
