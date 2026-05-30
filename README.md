@@ -27,62 +27,200 @@
 npm install -g lynkr
 ```
 
-### 2. Configure Lynkr
+### 2. Configure for Ollama (Free & Local)
 
-First run creates a `.env` file. Edit it with your provider settings.
+**Step 2a: Install and start Ollama**
 
-**Option A: Free & Local (Ollama) - Recommended for Testing**
+Download from https://ollama.com and install, then:
 
 ```bash
-# Install Ollama first: https://ollama.com
 ollama pull qwen2.5-coder:latest
+ollama serve
 ```
 
-Create/edit `.env` in your project directory:
+**Step 2b: Set environment variables**
+
+**Windows (Command Prompt):**
+```cmd
+set MODEL_PROVIDER=ollama
+set FALLBACK_ENABLED=false
+set OLLAMA_MODEL=qwen2.5-coder:latest
+set OLLAMA_ENDPOINT=http://localhost:11434
+set PORT=8081
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:MODEL_PROVIDER="ollama"
+$env:FALLBACK_ENABLED="false"
+$env:OLLAMA_MODEL="qwen2.5-coder:latest"
+$env:OLLAMA_ENDPOINT="http://localhost:11434"
+$env:PORT="8081"
+```
+
+**Linux/macOS:**
 ```bash
-# Provider
+export MODEL_PROVIDER=ollama
+export FALLBACK_ENABLED=false
+export OLLAMA_MODEL=qwen2.5-coder:latest
+export OLLAMA_ENDPOINT=http://localhost:11434
+export PORT=8081
+```
+
+**Alternative: Use a .env file (recommended for permanent config)**
+
+Create a file named `.env` in your home directory or project folder:
+
+```bash
+# Required: Provider Configuration
 MODEL_PROVIDER=ollama
 FALLBACK_ENABLED=false
 
-# Ollama Configuration
-OLLAMA_ENDPOINT=http://localhost:11434
+# Required: Ollama Settings
 OLLAMA_MODEL=qwen2.5-coder:latest
+OLLAMA_ENDPOINT=http://localhost:11434
 
-# Server
+# Required: Server
 PORT=8081
-
-# Optional: Limits (remove for unlimited)
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-
-# Disable overly strict command filtering
-POLICY_SAFE_COMMANDS_ENABLED=false
+HOST=0.0.0.0
 ```
 
-**Option B: Cloud (OpenRouter) - Recommended for Production**
+### 3. Start Lynkr
 
 ```bash
-# Get API key from https://openrouter.ai
+lynkr start
 ```
 
-Create/edit `.env`:
+You should see:
+```
+[Ollama] Server ready, model "qwen2.5-coder:latest" available
+Claude→Databricks proxy listening on http://localhost:8081
+```
+
+### 4. Connect Claude Code (or your AI tool)
+
+**Windows (Command Prompt):**
+```cmd
+set ANTHROPIC_BASE_URL=http://localhost:8081
+set ANTHROPIC_API_KEY=dummy
+claude "write hello world in python"
+```
+
+**Linux/macOS:**
 ```bash
-# Provider
+export ANTHROPIC_BASE_URL=http://localhost:8081
+export ANTHROPIC_API_KEY=dummy
+claude "write hello world in python"
+```
+
+✅ **Done!** Claude Code now uses your local Ollama model.
+
+---
+
+## Alternative Setup: Cloud Provider (OpenRouter)
+
+Get API key from https://openrouter.ai, then:
+
+**Windows (Command Prompt):**
+```cmd
+set MODEL_PROVIDER=openrouter
+set OPENROUTER_API_KEY=sk-or-v1-your-key-here
+set FALLBACK_ENABLED=false
+set PORT=8081
+lynkr start
+```
+
+**Linux/macOS:**
+```bash
+export MODEL_PROVIDER=openrouter
+export OPENROUTER_API_KEY=sk-or-v1-your-key-here
+export FALLBACK_ENABLED=false
+export PORT=8081
+lynkr start
+```
+
+**Or use .env file:**
+```bash
 MODEL_PROVIDER=openrouter
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
 FALLBACK_ENABLED=false
-
-# Server
 PORT=8081
-
-# Optional: Limits (remove for unlimited)
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-
-# Optional: Enable caching
-PROMPT_CACHE_ENABLED=true
-SEMANTIC_CACHE_ENABLED=true
 ```
+
+---
+
+## Common Startup Errors (READ THIS IF IT DOESN'T WORK!)
+
+### Error: `unable to determine transport target for "pino-pretty"`
+
+**Problem:** This error happens on Windows or when NODE_ENV is not set.
+
+**Solution:** Set NODE_ENV before starting:
+
+**Windows (Command Prompt):**
+```cmd
+set NODE_ENV=production
+lynkr start
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:NODE_ENV="production"
+lynkr start
+```
+
+**Linux/macOS:**
+```bash
+export NODE_ENV=production
+lynkr start
+```
+
+Or add to your `.env` file:
+```bash
+NODE_ENV=production
+```
+
+### Warning: `Missing tier configuration: TIER_SIMPLE, TIER_MEDIUM...`
+
+**This is just a warning - you can ignore it.** Tier routing is optional for advanced use.
+
+To remove the warning, add these to your environment or `.env`:
+
+```bash
+TIER_SIMPLE=ollama:qwen2.5-coder:latest
+TIER_MEDIUM=ollama:qwen2.5-coder:latest
+TIER_COMPLEX=ollama:qwen2.5-coder:latest
+TIER_REASONING=ollama:qwen2.5-coder:latest
+```
+
+(Use the same model for all tiers if you only have one model)
+
+### Warning: `FALLBACK_PROVIDER='databricks' is enabled but missing credentials`
+
+**Solution:** Disable fallback if you're only using one provider:
+
+```bash
+set FALLBACK_ENABLED=false  # Windows
+export FALLBACK_ENABLED=false  # Linux/macOS
+```
+
+Or add to `.env`:
+```bash
+FALLBACK_ENABLED=false
+```
+
+### Error: `Ollama connection refused`
+
+**Problem:** Ollama is not running.
+
+**Solution:**
+1. Check if Ollama is running: `ollama list`
+2. Start Ollama: `ollama serve` (or restart the Ollama app)
+3. Verify model is pulled: `ollama pull qwen2.5-coder:latest`
+
+---
+
+## Additional Provider Examples
 
 **Option C: Enterprise (AWS Bedrock)**
 
