@@ -51,7 +51,7 @@ OLLAMA_MODEL=qwen2.5-coder:latest
 # Server
 PORT=8081
 
-# Increase limits for Claude Code/Cursor
+# Optional: Limits (remove for unlimited)
 POLICY_MAX_STEPS=50
 POLICY_MAX_TOOL_CALLS=100
 
@@ -75,7 +75,7 @@ FALLBACK_ENABLED=false
 # Server
 PORT=8081
 
-# Increase limits
+# Optional: Limits (remove for unlimited)
 POLICY_MAX_STEPS=50
 POLICY_MAX_TOOL_CALLS=100
 
@@ -97,7 +97,7 @@ FALLBACK_ENABLED=false
 # Server
 PORT=8081
 
-# Increase limits
+# Optional: Limits (remove for unlimited)
 POLICY_MAX_STEPS=50
 POLICY_MAX_TOOL_CALLS=100
 ```
@@ -115,7 +115,7 @@ FALLBACK_ENABLED=false
 # Server
 PORT=8081
 
-# Increase limits
+# Optional: Limits (remove for unlimited)
 POLICY_MAX_STEPS=50
 POLICY_MAX_TOOL_CALLS=100
 ```
@@ -212,7 +212,7 @@ TIER_MEDIUM=ollama:qwen2.5:7b
 TIER_COMPLEX=ollama:deepseek-r1:14b
 TIER_REASONING=ollama:deepseek-r1:14b
 
-# Increase limits for long conversations
+# Optional: Limits (remove for unlimited) for long conversations
 POLICY_MAX_STEPS=50
 POLICY_MAX_TOOL_CALLS=100
 ```

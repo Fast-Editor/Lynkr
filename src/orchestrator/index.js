@@ -2605,7 +2605,7 @@ IMPORTANT TOOL USAGE RULES:
           }, "Completed parallel Task execution");
 
           // Check if we've exceeded the max tool calls limit after parallel execution
-          if (toolCallsExecuted > settings.maxToolCallsPerRequest) {
+          if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
             logger.error(
               {
                 sessionId: session?.id ?? null,
@@ -2724,7 +2724,7 @@ IMPORTANT TOOL USAGE RULES:
         toolCallsExecuted += 1;
 
         // Check if we've exceeded the max tool calls limit
-        if (toolCallsExecuted > settings.maxToolCallsPerRequest) {
+        if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
           logger.error(
             {
               sessionId: session?.id ?? null,
@@ -3498,7 +3498,7 @@ IMPORTANT TOOL USAGE RULES:
           toolCallsExecuted += 1;
 
           // Check if we've exceeded the max tool calls limit
-          if (toolCallsExecuted > settings.maxToolCallsPerRequest) {
+          if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
             logger.error(
               {
                 sessionId: session?.id ?? null,
