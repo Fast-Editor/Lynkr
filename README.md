@@ -122,21 +122,7 @@ POLICY_MAX_TOOL_CALLS=100
 
 Then start Lynkr:
 
-**Windows (Command Prompt):**
-```cmd
-set NODE_ENV=production
-lynkr start
-```
-
-**Windows (PowerShell):**
-```powershell
-$env:NODE_ENV="production"
-lynkr start
-```
-
-**Linux/macOS:**
 ```bash
-export NODE_ENV=production
 lynkr start
 ```
 
@@ -182,32 +168,14 @@ wire_api = "responses"
 
 ### Error: `unable to determine transport target for "pino-pretty"`
 
-**Problem:** Happens on Windows or when NODE_ENV is not set.
+**Problem:** You're running an older version (< 9.3.0).
 
-**Solution:** Always set `NODE_ENV=production` before starting:
-
-**Windows (Command Prompt):**
-```cmd
-set NODE_ENV=production
-lynkr start
-```
-
-**Windows (PowerShell):**
-```powershell
-$env:NODE_ENV="production"
-lynkr start
-```
-
-**Linux/macOS:**
+**Solution:** Update to the latest version:
 ```bash
-export NODE_ENV=production
-lynkr start
+npm install -g lynkr@latest
 ```
 
-Or add to your `.env` file:
-```bash
-NODE_ENV=production
-```
+If you must use an older version, set `NODE_ENV=production` before starting.
 
 ### Warning: `Missing tier configuration: TIER_SIMPLE, TIER_MEDIUM...`
 
