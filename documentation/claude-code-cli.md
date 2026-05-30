@@ -28,7 +28,7 @@ Lynkr acts as a drop-in replacement for Anthropic's backend, enabling Claude Cod
 npm install -g lynkr
 
 # Option B: Homebrew (macOS)
-brew tap vishalveerareddy123/lynkr
+brew tap fast-editor/lynkr
 brew install lynkr
 
 # Option C: Git Clone

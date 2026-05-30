@@ -241,7 +241,7 @@ docker exec -it ollama ollama pull nomic-embed-text
 docker build -t lynkr:latest .
 
 # Or pull from registry (when available)
-docker pull ghcr.io/vishalveerareddy123/lynkr:latest
+docker pull ghcr.io/fast-editor/lynkr:latest
 ```
 
 ### Run Container
@@ -583,7 +583,7 @@ spec:
     spec:
       containers:
       - name: lynkr
-        image: ghcr.io/vishalveerareddy123/lynkr:latest
+        image: ghcr.io/fast-editor/lynkr:latest
         ports:
         - containerPort: 8081
           name: http

@@ -114,7 +114,7 @@ npm run dev
 
 ```bash
 # Add the Lynkr tap
-brew tap vishalveerareddy123/lynkr
+brew tap fast-editor/lynkr
 
 # Install Lynkr
 brew install lynkr

@@ -1,7 +1,7 @@
 {
   "name": "lynkr",
   "version": "9.3.2",
-  "description": "Self-hosted Claude Code & Cursor proxy with Databricks,AWS BedRock,Azure  adapters, openrouter, Ollama,llamacpp,LM Studio, workspace tooling, and MCP integration.",
+  "description": "Self-hosted LLM gateway and tier-routing proxy for Claude Code, Cursor, and Codex. Routes across Ollama, AWS Bedrock, OpenRouter, Databricks, Azure OpenAI, llama.cpp, and LM Studio with prompt caching, MCP tools, and 60-80% cost savings.",
   "main": "index.js",
   "bin": {
     "lynkr": "bin/cli.js",
@@ -23,23 +23,45 @@
     "test:all": "npm run test:unit && npm run test:performance && npm run test:benchmark"
   },
   "keywords": [
+    "llm",
+    "llm-gateway",
+    "llm-proxy",
+    "llm-router",
+    "ai-gateway",
+    "tier-routing",
     "claude",
+    "claude-code",
     "anthropic",
-    "proxy",
+    "cursor",
+    "codex",
+    "openai",
+    "openrouter",
+    "ollama",
+    "llamacpp",
+    "lm-studio",
+    "bedrock",
+    "aws-bedrock",
+    "azure-openai",
     "databricks",
-    "azure",
-    "mcp"
+    "gemini",
+    "mcp",
+    "model-context-protocol",
+    "prompt-cache",
+    "self-hosted",
+    "litellm-alternative",
+    "portkey-alternative",
+    "copilot-alternative"
   ],
   "author": "Vishal Veera Reddy",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vishalveerareddy123/Lynkr.git"
+    "url": "git+https://github.com/Fast-Editor/Lynkr.git"
   },
   "bugs": {
-    "url": "https://github.com/vishalveerareddy123/Lynkr/issues"
+    "url": "https://github.com/Fast-Editor/Lynkr/issues"
   },
-  "homepage": "https://github.com/vishalveerareddy123/Lynkr#readme",
+  "homepage": "https://fast-editor.github.io/Lynkr/",
   "engines": {
     "node": ">=20.0.0"
   },
