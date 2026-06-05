@@ -255,10 +255,28 @@ const headroomLlmlinguaDevice = process.env.HEADROOM_LLMLINGUA_DEVICE ?? "auto";
 const headroomProvider = process.env.HEADROOM_PROVIDER ?? "anthropic";
 const headroomLogLevel = process.env.HEADROOM_LOG_LEVEL ?? "info";
 
+// Check if all 4 tiers are configured (tier-routing-only mode)
+const allTiersConfigured = !!(
+  process.env.TIER_SIMPLE?.trim() &&
+  process.env.TIER_MEDIUM?.trim() &&
+  process.env.TIER_COMPLEX?.trim() &&
+  process.env.TIER_REASONING?.trim()
+);
+
+// Tier-routing-only mode: If all 4 tiers configured and fallback disabled, skip provider requirement
+if (allTiersConfigured && !fallbackEnabled && (!rawBaseUrl || !apiKey)) {
+  // Set mock credentials for tier routing mode
+  if (!rawBaseUrl) process.env.DATABRICKS_API_BASE = "http://tier-routing-mode";
+  if (!apiKey) process.env.DATABRICKS_API_KEY = "tier-routing-mode";
+  console.log("[CONFIG] Tier routing mode enabled - all requests routed by complexity");
+  console.log("[CONFIG] Tiers: SIMPLE=%s, MEDIUM=%s, COMPLEX=%s, REASONING=%s",
+    process.env.TIER_SIMPLE, process.env.TIER_MEDIUM, process.env.TIER_COMPLEX, process.env.TIER_REASONING);
+  console.log("[CONFIG] No primary MODEL_PROVIDER required");
+}
 // Only require Databricks credentials if it's the primary provider or used as fallback
-if (modelProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
+else if (modelProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
   throw new Error("Set DATABRICKS_API_BASE and DATABRICKS_API_KEY before starting the proxy.");
-} else if (modelProvider === "ollama" && !fallbackEnabled && (!rawBaseUrl || !apiKey)) {
+} else if (!allTiersConfigured && modelProvider === "ollama" && !fallbackEnabled && (!rawBaseUrl || !apiKey)) {
   // Relaxed: Allow mock credentials for true Ollama-only mode (fallback disabled)
   if (!rawBaseUrl) process.env.DATABRICKS_API_BASE = "http://localhost:8080";
   if (!apiKey) process.env.DATABRICKS_API_KEY = "mock-key-for-ollama-only";
