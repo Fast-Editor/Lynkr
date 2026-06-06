@@ -4,7 +4,7 @@
    Accent: electric amber  Background: near-black cool
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 /* === TOKENS ================================================ */
 :root {
@@ -19,7 +19,7 @@
   --border:        oklch(0.22 0.008 250);
   --border-sub:    oklch(0.16 0.006 250);
 
-  --font-display: 'Syne', system-ui, sans-serif;
+  --font-display: 'Bricolage Grotesque', system-ui, sans-serif;
   --font-body:    'IBM Plex Sans', system-ui, sans-serif;
   --font-mono:    'IBM Plex Mono', 'Fira Code', monospace;
 
