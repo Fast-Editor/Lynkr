@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Kronaxis Router is a **production-grade Go-based LLM proxy** (9.9 MB binary, <5ms routing latency) focused on **extreme cost optimization** through intelligent routing. After deep analysis, here are the key innovations Lynkr should adopt:
+Kronaxis Router is a **production-grade Go-based LLM gateway** (9.9 MB binary, <5ms routing latency) focused on **extreme cost optimization** through intelligent routing. After deep analysis, here are the key innovations Lynkr should adopt:
 
 ---
 

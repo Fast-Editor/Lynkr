@@ -93,7 +93,7 @@ Lynkr is a self-hosted Node.js proxy (Apache-2.0) that sits between any AI codin
 
 | Tool | What it does | Why Lynkr is different |
 |---|---|---|
-| **LiteLLM** (US, BerriAI) | Generic LLM proxy with unified API | Targets backend developers calling LLM APIs directly. Doesn't auto-detect AI coding tools, doesn't translate Anthropic ↔ OpenAI tool-call formats specifically, no tier-based complexity routing. Lynkr is purpose-built for the AI-coding-tool wedge. |
+| **LiteLLM** (US, BerriAI) | Generic LLM gateway with unified API | Targets backend developers calling LLM APIs directly. Doesn't auto-detect AI coding tools, doesn't translate Anthropic ↔ OpenAI tool-call formats specifically, no tier-based complexity routing. Lynkr is purpose-built for the AI-coding-tool wedge. |
 | **Portkey** (US, paid SaaS) | LLM gateway with observability | Closed-source SaaS. Cannot be self-hosted by Indian enterprises with data-residency requirements. |
 | **OpenRouter** (US) | Unified-API marketplace for LLMs | Hosted service — every request leaves your network and gets billed in USD. Lynkr is self-hosted and runs free models locally. |
 | **Helicone, Langfuse, etc.** | LLM observability layers | Don't translate request formats; don't route between providers. |

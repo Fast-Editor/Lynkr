@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <!-- Primary Meta Tags -->
-  <title>Lynkr - Universal LLM Proxy | 12+ Providers, 60-80% Cost Savings</title>
-  <meta name="title" content="Lynkr - Universal LLM Proxy | 12+ Providers, 60-80% Cost Savings">
+  <title>Lynkr - Universal LLM Gateway | 12+ Providers, 60-80% Cost Savings</title>
+  <meta name="title" content="Lynkr - Universal LLM Gateway | 12+ Providers, 60-80% Cost Savings">
   <meta name="description" content="Self-hosted proxy server for Claude Code, Cursor, and AI coding tools. Connect to Ollama, AWS Bedrock, OpenRouter, Azure, and 12+ LLM providers with 60-80% cost reduction. 100% local option available.">
-  <meta name="keywords" content="LLM proxy, Claude Code, Cursor IDE, Ollama, AWS Bedrock, OpenRouter, AI coding assistant, self-hosted AI, token optimization, prompt caching, MCP server, local LLM, GPT-4, Claude, Gemini">
+  <meta name="keywords" content="LLM gateway, Claude Code, Cursor IDE, Ollama, AWS Bedrock, OpenRouter, AI coding assistant, self-hosted AI, token optimization, prompt caching, MCP server, local LLM, GPT-4, Claude, Gemini">
   <meta name="author" content="Vishal Veera Reddy">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://fast-editor.github.io/Lynkr/">
@@ -20,7 +20,7 @@
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://fast-editor.github.io/Lynkr/">
-  <meta property="og:title" content="Lynkr - Universal LLM Proxy | 12+ Providers, 60-80% Cost Savings">
+  <meta property="og:title" content="Lynkr - Universal LLM Gateway | 12+ Providers, 60-80% Cost Savings">
   <meta property="og:description" content="Self-hosted proxy server for Claude Code, Cursor, and AI coding tools. Connect to 12+ LLM providers with 60-80% cost reduction. Free local options with Ollama.">
   <meta property="og:image" content="https://fast-editor.github.io/Lynkr/og-image.png">
   <meta property="og:image:width" content="1200">
@@ -31,7 +31,7 @@
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:url" content="https://fast-editor.github.io/Lynkr/">
-  <meta name="twitter:title" content="Lynkr - Universal LLM Proxy | 12+ Providers, 60-80% Cost Savings">
+  <meta name="twitter:title" content="Lynkr - Universal LLM Gateway | 12+ Providers, 60-80% Cost Savings">
   <meta name="twitter:description" content="Self-hosted proxy server for Claude Code, Cursor, and AI coding tools. Connect to 12+ LLM providers with 60-80% cost reduction.">
   <meta name="twitter:image" content="https://fast-editor.github.io/Lynkr/og-image.png">
 
@@ -47,7 +47,7 @@
     "name": "Lynkr",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Cross-platform",
-    "description": "Self-hosted LLM proxy server that enables Claude Code, Cursor, and AI coding tools to work with any LLM provider with 60-80% cost reduction.",
+    "description": "Self-hosted LLM gateway server that enables Claude Code, Cursor, and AI coding tools to work with any LLM provider with 60-80% cost reduction.",
     "url": "https://github.com/Fast-Editor/Lynkr",
     "downloadUrl": "https://www.npmjs.com/package/lynkr",
     "softwareVersion": "9.3.2",
@@ -66,7 +66,7 @@
       "interactionType": "https://schema.org/LikeAction",
       "userInteractionCount": 445
     },
-    "keywords": "LLM proxy, Claude Code, Cursor, Ollama, AWS Bedrock, AI coding, self-hosted"
+    "keywords": "LLM gateway, Claude Code, Cursor, Ollama, AWS Bedrock, AI coding, self-hosted"
   }
   </script>
 
@@ -112,7 +112,7 @@
 
   <h1 class="hero-title">
     The Universal<br>
-    <span class="hero-title-gradient">LLM Proxy</span>
+    <span class="hero-title-gradient">LLM Gateway</span>
   </h1>
 
   <p class="hero-subtitle">

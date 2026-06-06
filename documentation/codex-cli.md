@@ -324,7 +324,7 @@ The actual model used depends on your Lynkr provider configuration.
          │ http://localhost:8081/v1
          ▼
 ┌─────────────────┐
-│     Lynkr       │  Universal LLM proxy
+│     Lynkr       │  Universal LLM gateway
 │   Port 8081     │
 │                 │
 │ • Format conv.  │  Converts between API formats

@@ -1,22 +1,43 @@
 # Token Optimization Guide
 
-Comprehensive guide to Lynkr's token optimization strategies that achieve 60-80% cost reduction.
+Comprehensive guide to Lynkr's token optimization strategies — benchmarked on real agentic coding workloads.
 
 ---
 
 ## Overview
 
-Lynkr reduces token usage by **60-80%** (up to **96%** with MCP Code Mode) through 7 intelligent optimization phases. At 100,000 requests/month, this translates to **$77k-$115k annual savings**.
+Lynkr reduces tokens sent to the model through multiple independent mechanisms. Benchmarked results on Claude Code / Cursor sessions:
+
+| Optimization | Measured Reduction | Scenario |
+|---|---|---|
+| **Smart tool selection** | **47–60%** | 14-tool request (read or write task) |
+| **TOON JSON compression** | **87.6%** | Large grep/file-read tool result (60-item array) |
+| **Semantic cache** | **100% on hit, 171ms** | Paraphrased repeat query |
+| MCP Code Mode | **96%** | 100+ MCP tool schemas → 4 meta-tools |
+| History compression | up to 80% | Long multi-turn sessions |
+
+At 100,000 requests/month on a tool-heavy agentic workload, this translates to **$77k–$115k annual savings**.
 
 ---
 
-## Cost Savings Breakdown
+## Benchmarked Savings Breakdown
 
-### Real-World Example
+**Measured on identical prompts, same backend provider (June 2026):**
+
+| Scenario | Tokens without Lynkr | Tokens with Lynkr | Reduction |
+|---|---|---|---|
+| 14-tool read request | 1,042 | **547** | **47%** |
+| 14-tool write request | 1,043 | **412** | **60%** |
+| JSON grep result (60 items) | 3,458 | **427** | **87.6%** |
+| Semantic cache (2nd call) | 2,857 | **0** | **100%** |
+
+---
+
+## Estimated Savings at Scale
 
 **Scenario:** 100,000 requests/month, 50k input tokens, 2k output tokens per request
 
-| Provider | Without Lynkr | With Lynkr (60% savings) | Monthly Savings | Annual Savings |
+| Provider | Without Lynkr | With Lynkr | Monthly Savings | Annual Savings |
 |----------|---------------|-------------------------|-----------------|----------------|
 | **Claude Sonnet 4.5** | $16,000 | $6,400 | **$9,600** | **$115,200** |
 | **GPT-4o** | $12,000 | $4,800 | **$7,200** | **$86,400** |
@@ -77,23 +98,22 @@ CODE_MODE_CACHE_TTL=60000
 
 ---
 
-### Phase 1: Smart Tool Selection (50-70% reduction)
+### Phase 1: Smart Tool Selection (47–60% measured reduction)
 
-**Problem:** Sending all tools to every request wastes tokens.
+**Problem:** Sending all tool schemas on every request wastes tokens. A read-only query doesn't need Write, Edit, Bash, or Git schemas.
 
-**Solution:** Intelligently filter tools based on request type.
+**Solution:** Classifies each request and strips irrelevant tool definitions before forwarding.
 
 **How it works:**
-- **Chat queries** → Only send Read tool
-- **File operations** → Send Read, Write, Edit tools
-- **Git operations** → Send git_* tools
-- **Code execution** → Send Bash tool
+- **Chat queries** → Only Read tool
+- **File operations** → Read, Write, Edit tools
+- **Git operations** → git_* tools
+- **Code execution** → Bash tool
 
-**Example:**
+**Benchmarked on 14-tool Claude Code session:**
 ```
-Original: 30 tools × 150 tokens = 4,500 tokens
-Optimized: 3 tools × 150 tokens = 450 tokens
-Savings: 90% (4,050 tokens saved)
+Read task:  1,042 tokens raw → 547 tokens after selection  (−47%)
+Write task: 1,043 tokens raw → 412 tokens after selection  (−60%)
 ```
 
 **Configuration:**

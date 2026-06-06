@@ -1,6 +1,8 @@
 # Lynkr
 
-### Run Claude Code, Cursor, and Codex on any model. One proxy, every provider.
+### The AI coding proxy that compresses tokens before they hit the model.
+
+**87.6% fewer tokens on JSON tool results. 53% fewer tokens on tool-heavy requests. 171ms semantic cache hits. Zero code changes.**
 
 [![npm version](https://img.shields.io/npm/v/lynkr.svg)](https://www.npmjs.com/package/lynkr)
 [![Tests](https://img.shields.io/badge/tests-699%20passing-brightgreen)](https://github.com/Fast-Editor/Lynkr)
@@ -10,12 +12,15 @@
 
 <table>
 <tr>
-<td align="center"><strong>12+</strong><br/>LLM Providers</td>
-<td align="center"><strong>60-80%</strong><br/>Cost Reduction</td>
-<td align="center"><strong>699</strong><br/>Tests Passing</td>
+<td align="center"><strong>87.6%</strong><br/>JSON Compression</td>
+<td align="center"><strong>53%</strong><br/>Tool Token Reduction</td>
+<td align="center"><strong>171ms</strong><br/>Semantic Cache Hits</td>
+<td align="center"><strong>13+</strong><br/>LLM Providers</td>
 <td align="center"><strong>0</strong><br/>Code Changes Required</td>
 </tr>
 </table>
+
+> Numbers from a live benchmark against LiteLLM on identical workloads. [See full report →](BENCHMARK_REPORT.md)
 
 ---
 
@@ -222,21 +227,29 @@ Should return: `{"service":"Lynkr","version":"9.x.x","status":"running"}`
 
 ## Why Lynkr?
 
-AI coding tools lock you into one provider. Lynkr breaks that lock.
+AI coding tools lock you into one provider and send every token raw. Lynkr breaks both locks.
 
 ```
 Claude Code / Cursor / Codex / Cline / Continue
                     ↓
                   Lynkr
+          ┌─────────────────────┐
+          │  Strip unused tools  │  ← 53% fewer tokens on tool calls
+          │  Compress JSON blobs │  ← 87.6% on large tool results
+          │  Semantic cache      │  ← 171ms hits, 0 tokens billed
+          │  Route by complexity │  ← cheap model for simple, cloud for hard
+          └─────────────────────┘
                     ↓
-    Ollama | Bedrock | Azure | OpenRouter | OpenAI
+    Ollama | Bedrock | Azure | Moonshot | OpenRouter | OpenAI
 ```
 
 **What you get:**
-- ✅ Use **free local models** (Ollama, llama.cpp) with Claude Code
+- ✅ **53% fewer tokens** on tool-heavy requests (Claude Code, Cursor sessions)
+- ✅ **87.6% compression** on large JSON tool results (grep, file reads, test output)
+- ✅ **Semantic cache** serves repeated queries in 171ms with 0 tokens billed
+- ✅ **Automatic tier routing** — simple questions go to cheap models, complex ones escalate
 - ✅ Route through **your company's infrastructure** (Databricks, Azure, Bedrock)
-- ✅ Cut costs **60-80%** with smart token optimization
-- ✅ **Zero code changes** - just change one environment variable
+- ✅ **Zero code changes** — just change one environment variable
 
 ---
 
@@ -637,6 +650,42 @@ npm start
 
 ---
 
+## Benchmark Results
+
+Measured on real agentic coding workloads (Claude Code / Cursor sessions) with Ollama, Moonshot, and Azure OpenAI backends. Run with `node benchmark-tier-routing.js`.
+
+### Token compression
+
+| Scenario | Tokens without Lynkr | Tokens with Lynkr | Reduction |
+|---|---|---|---|
+| 14-tool request (read task) | 1,042 | **547** | **47%** |
+| 14-tool request (write task) | 1,043 | **412** | **60%** |
+| Large JSON grep result (60 items) | 3,458 | **427** | **87.6%** |
+
+Lynkr strips irrelevant tool schemas before forwarding (smart tool selection) and binary-compresses large JSON tool results (TOON) — both happen in-process with no added latency.
+
+### Semantic cache
+
+| | Tokens billed | Response time |
+|---|---|---|
+| First call (cold) | 2,857 | 1,891ms |
+| **Second call — paraphrased, cache hit** | **0** | **171ms** |
+
+Near-identical prompts return cached responses in 171ms. Zero tokens billed on a cache hit.
+
+### Tier routing
+
+| Request | Routed to |
+|---|---|
+| "What does git stash do?" | SIMPLE → local model (free) |
+| JWT vs cookies security analysis | COMPLEX → cloud model (correct) |
+
+Lynkr scores each request on 15 dimensions (token count, code complexity, reasoning markers, risk signals, agentic patterns) and routes automatically. No caller changes needed.
+
+→ [Full benchmark report with methodology](BENCHMARK_REPORT.md)
+
+---
+
 ## Cost Comparison
 
 | Scenario | Direct Anthropic | Lynkr + Ollama | Lynkr + OpenRouter |
@@ -644,7 +693,7 @@ npm start
 | Daily coding (8h) | $10-30/day | **$0 (free)** | $2-8/day |
 | Monthly (heavy use) | $300-900 | **$0** | $60-240 |
 
-With tier routing + token optimization: **additional 60-80% savings** on cloud providers.
+With tier routing + token optimization: **additional 50-87% savings** on cloud providers depending on workload.
 
 ---
 
@@ -655,13 +704,17 @@ With tier routing + token optimization: **additional 60-80% savings** on cloud p
 | **Setup** | `npm install -g lynkr` | Python + Docker + Postgres | Account signup | Docker stack |
 | **Claude Code native** | ✅ Drop-in | ⚠️ Requires config | ❌ | ⚠️ Partial |
 | **Cursor native** | ✅ Drop-in | ⚠️ Partial | ❌ | ⚠️ Partial |
-| **Local models** | Ollama, llama.cpp, LM Studio, MLX | Ollama only | ❌ | ❌ |
-| **Tier routing** | Auto complexity-based | ❌ Manual | Cost-based only | ❌ Manual |
-| **Token optimization** | 60-80% built-in | ❌ | ❌ | Cache only |
+| **Local models** | Ollama, llama.cpp, LM Studio | Ollama only | ❌ | ❌ |
+| **Automatic tier routing** | ✅ 15-dimension scorer | ⚠️ Cost-only | ❌ | ❌ Manual metadata |
+| **TOON JSON compression** | ✅ up to 87.6% | ❌ | ❌ | ❌ |
+| **Smart tool selection** | ✅ up to 60% token reduction | ❌ | ❌ | ❌ |
+| **Semantic cache** | ✅ 171ms hits, 0 tokens | ❌ | ❌ | ✅ Prompt cache only |
+| **Long-term memory** | ✅ SQLite, per-session | ❌ | ❌ | ❌ |
+| **MCP integration** | ✅ + Code Mode (96% reduction) | ❌ | ❌ | ❌ |
 | **Self-hosted** | ✅ Node.js only | ✅ Python stack | ❌ SaaS | ✅ Docker |
 | **Dependencies** | Node.js 20+ | Python, Prisma, PostgreSQL | None | Docker, Python |
 
-**Lynkr's edge:** Purpose-built for AI coding tools. Zero-config for Claude Code, Cursor, and Codex. Installs in one command, runs anywhere Node.js runs.
+**Lynkr's edge:** Purpose-built for AI coding tools. Compresses tokens before they reach the model — not just after. Zero-config for Claude Code, Cursor, and Codex. Installs in one command.
 
 ---
 

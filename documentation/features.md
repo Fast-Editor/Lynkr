@@ -4,6 +4,21 @@ Complete guide to Lynkr's architecture, request flow, and core capabilities.
 
 ---
 
+## Benchmarked Capabilities
+
+Results from a live benchmark on real agentic coding workloads (June 2026):
+
+| Feature | Result |
+|---|---|
+| Smart tool selection | **47–60% token reduction** on tool-heavy requests |
+| TOON JSON compression | **87.6% reduction** on large JSON tool results |
+| Semantic cache hit | **171ms response, 0 tokens billed** |
+| Tier routing accuracy | Correctly escalated 4/4 test requests to the right tier |
+
+→ [Full benchmark report](../BENCHMARK_REPORT.md)
+
+---
+
 ## Architecture Overview
 
 ```
@@ -12,16 +27,15 @@ Complete guide to Lynkr's architecture, request flow, and core capabilities.
 └────────┬────────┘
          │ Anthropic/OpenAI Format
          ↓
-┌─────────────────┐
-│  Lynkr Proxy    │
-│  Port: 8081     │
-│                 │
-│ • Format Conv.  │
-│ • Token Optim.  │
-│ • Provider Route│
-│ • Tool Calling  │
-│ • Caching       │
-└────────┬────────┘
+┌──────────────────────────────┐
+│  Lynkr Proxy  (Port: 8081)   │
+│                              │
+│ • Strip unused tool schemas  │  ← 47–60% token reduction
+│ • Compress JSON tool results │  ← up to 87.6% (TOON)
+│ • Semantic cache lookup      │  ← 171ms hits, 0 tokens
+│ • Route by complexity tier   │  ← 15-dimension scorer
+│ • Format conversion          │
+└────────┬─────────────────────┘
          │
          ├──→ Databricks (Claude 4.5)
          ├──→ AWS Bedrock (100+ models)

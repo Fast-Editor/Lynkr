@@ -1,6 +1,6 @@
 # Intelligent Routing & Model Tiering
 
-Lynkr's intelligent routing system automatically selects the optimal model and provider for each request based on complexity analysis, agentic workflow detection, and cost optimization.
+Lynkr automatically routes each request to the right model based on complexity — no caller changes, no manual labels.
 
 ---
 
@@ -10,13 +10,20 @@ Lynkr's intelligent routing system automatically selects the optimal model and p
 Request → Force Patterns → Tool Thresholds → Complexity Analysis → Agentic Detection → Tier Selection → Cost Optimization → Provider
 ```
 
-The routing pipeline evaluates every incoming request through multiple stages to determine which model tier and provider should handle it. Simple requests go to cheap/local models, complex ones go to powerful cloud models.
+**Benchmarked routing accuracy (June 2026):**
+
+| Request | Lynkr routes to | Correct? |
+|---|---|---|
+| "What does git stash do?" | SIMPLE → local model | ✅ |
+| "Edit config file to set DEBUG=true" | SIMPLE → local model | ✅ |
+| "Analyse JWT vs httpOnly cookies security for banking" | COMPLEX → cloud model | ✅ |
+| "Debug race condition in async auth middleware" | COMPLEX → cloud model | ✅ |
 
 **Key benefits:**
-- 60-80% cost reduction by routing simple tasks to cheaper models
-- Better quality on complex tasks by using capable models when needed
+- Routes simple requests to cheap/local models automatically
+- Escalates complex and risk-sensitive requests to capable cloud models
 - Automatic agentic workflow detection with tier upgrades
-- Multi-source pricing for optimal cost decisions
+- 15-dimension complexity scorer — not just token count
 
 ---
 

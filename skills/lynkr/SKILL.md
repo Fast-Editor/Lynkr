@@ -2,7 +2,7 @@
 name: lynkr
 display_name: Lynkr AI Routing Proxy
 version: 8.0.1
-description: Universal LLM proxy with intelligent routing, Graphify code intelligence, Distill compression, routing telemetry, Code Mode, and 12+ provider support. 60-80% cost reduction for Claude Code, Cursor, and Codex.
+description: Universal LLM gateway with intelligent routing, Graphify code intelligence, Distill compression, routing telemetry, Code Mode, and 12+ provider support. 60-80% cost reduction for Claude Code, Cursor, and Codex.
 author: lynkr-ai
 license: MIT
 tags:
@@ -43,7 +43,7 @@ providers:
   - deepseek
 ---
 
-# Lynkr - Universal LLM Proxy
+# Lynkr - Universal LLM Gateway
 
 Lynkr routes AI coding requests to the optimal model based on task complexity, cost, and provider health. Supports 12+ providers with 60-80% cost reduction through intelligent token optimization.
 
