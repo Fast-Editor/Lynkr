@@ -454,7 +454,7 @@
         <div class="step-number">1</div>
         <div class="step-content">
           <div class="step-title">Install Lynkr</div>
-          <div class="step-description">Install globally via npm or Homebrew — your choice.</div>
+          <div class="step-description">Install globally via npm — one command, no dependencies.</div>
           <div class="code-block">
             <div class="code-header">
               <div class="code-dots">
@@ -465,11 +465,7 @@
               <span class="code-title">Terminal</span>
             </div>
             <div class="code-content">
-<pre><code><span class="code-comment"># Using npm</span>
-npm install -g lynkr
-
-<span class="code-comment"># Or using Homebrew</span>
-brew tap fast-editor/lynkr && brew install lynkr</code></pre>
+<pre><code>npm install -g lynkr</code></pre>
             </div>
           </div>
         </div>
@@ -479,7 +475,7 @@ brew tap fast-editor/lynkr && brew install lynkr</code></pre>
         <div class="step-number">2</div>
         <div class="step-content">
           <div class="step-title">Configure Your Provider</div>
-          <div class="step-description">Set your preferred LLM provider using environment variables.</div>
+          <div class="step-description">Pick a provider and optional tier routing — simple questions go to cheap models, complex ones escalate automatically.</div>
           <div class="code-block">
             <div class="code-header">
               <div class="code-dots">
@@ -487,11 +483,12 @@ brew tap fast-editor/lynkr && brew install lynkr</code></pre>
                 <span class="code-dot yellow"></span>
                 <span class="code-dot green"></span>
               </div>
-              <span class="code-title">Local with Ollama (FREE)</span>
+              <span class="code-title">Free — Local with Ollama</span>
             </div>
             <div class="code-content">
-<pre><code><span class="code-keyword">export</span> <span class="code-variable">MODEL_PROVIDER</span>=<span class="code-string">ollama</span>
-<span class="code-keyword">export</span> <span class="code-variable">OLLAMA_MODEL</span>=<span class="code-string">qwen2.5-coder:latest</span></code></pre>
+<pre><code><span class="code-variable">MODEL_PROVIDER</span>=<span class="code-string">ollama</span>
+<span class="code-variable">OLLAMA_ENDPOINT</span>=<span class="code-string">http://localhost:11434</span>
+<span class="code-variable">OLLAMA_MODEL</span>=<span class="code-string">qwen2.5-coder:latest</span></code></pre>
             </div>
           </div>
           <div class="code-block">
@@ -501,12 +498,31 @@ brew tap fast-editor/lynkr && brew install lynkr</code></pre>
                 <span class="code-dot yellow"></span>
                 <span class="code-dot green"></span>
               </div>
-              <span class="code-title">Cloud with AWS Bedrock</span>
+              <span class="code-title">Cloud — Azure OpenAI</span>
             </div>
             <div class="code-content">
-<pre><code><span class="code-keyword">export</span> <span class="code-variable">MODEL_PROVIDER</span>=<span class="code-string">bedrock</span>
-<span class="code-keyword">export</span> <span class="code-variable">AWS_BEDROCK_API_KEY</span>=<span class="code-string">your-api-key</span>
-<span class="code-keyword">export</span> <span class="code-variable">AWS_BEDROCK_MODEL_ID</span>=<span class="code-string">anthropic.claude-3-5-sonnet-20241022-v2:0</span></code></pre>
+<pre><code><span class="code-variable">MODEL_PROVIDER</span>=<span class="code-string">azure-openai</span>
+<span class="code-variable">AZURE_OPENAI_ENDPOINT</span>=<span class="code-string">https://your-resource.openai.azure.com</span>
+<span class="code-variable">AZURE_OPENAI_API_KEY</span>=<span class="code-string">your-key</span>
+<span class="code-variable">AZURE_OPENAI_DEPLOYMENT</span>=<span class="code-string">gpt-4o</span></code></pre>
+            </div>
+          </div>
+          <div class="code-block">
+            <div class="code-header">
+              <div class="code-dots">
+                <span class="code-dot red"></span>
+                <span class="code-dot yellow"></span>
+                <span class="code-dot green"></span>
+              </div>
+              <span class="code-title">Tier Routing — Local → Cloud by complexity</span>
+            </div>
+            <div class="code-content">
+<pre><code><span class="code-comment"># Simple & medium → free local model</span>
+<span class="code-variable">TIER_SIMPLE</span>=<span class="code-string">ollama:qwen2.5-coder:7b</span>
+<span class="code-variable">TIER_MEDIUM</span>=<span class="code-string">ollama:qwen2.5-coder:7b</span>
+<span class="code-comment"># Complex & reasoning → cloud model</span>
+<span class="code-variable">TIER_COMPLEX</span>=<span class="code-string">azure-openai:gpt-4o</span>
+<span class="code-variable">TIER_REASONING</span>=<span class="code-string">azure-openai:gpt-4o</span></code></pre>
             </div>
           </div>
         </div>
