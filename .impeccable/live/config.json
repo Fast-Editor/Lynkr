@@ -1,0 +1,8 @@
+{
+  "files": ["docs/**/*.html"],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true,
+  "framework": "multi-page-static",
+  "devServer": null
+}
