@@ -18,16 +18,21 @@ function normaliseSettings(settings = {}) {
 function resolveEncodeFn(overrideEncode) {
   if (typeof overrideEncode === "function") return overrideEncode;
   if (cachedEncode !== undefined) return cachedEncode;
-  try {
-    const toon = require("@toon-format/toon");
-    cachedEncode = typeof toon?.encode === "function" ? toon.encode : null;
-    cachedLoadError = cachedEncode ? null : new Error("Missing encode() export from @toon-format/toon");
-  } catch (err) {
-    cachedEncode = null;
-    cachedLoadError = err;
-  }
-  return cachedEncode;
+  // cachedEncode is populated asynchronously at module load via dynamic import below.
+  // Return null here — the warn-once log will fire on first request if still loading.
+  return null;
 }
+
+// @toon-format/toon is ESM-only; dynamic import() is available in CommonJS modules.
+// Pre-warm at startup so encode is ready before the first request arrives.
+import("@toon-format/toon").then((mod) => {
+  const fn = mod?.encode ?? mod?.default?.encode ?? null;
+  cachedEncode = typeof fn === "function" ? fn : null;
+  cachedLoadError = cachedEncode ? null : new Error("Missing encode() export from @toon-format/toon");
+}).catch((err) => {
+  cachedEncode = null;
+  cachedLoadError = err;
+});
 
 function looksLikeJsonObjectOrArray(text) {
   if (typeof text !== "string") return false;

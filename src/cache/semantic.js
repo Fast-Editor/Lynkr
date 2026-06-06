@@ -132,10 +132,13 @@ class SemanticCache {
 
     const hash = crypto.createHash('sha256');
 
-    // Include system prompt
+    // Include only a stable prefix of the system prompt (first 200 chars of static
+    // instructions). Lynkr appends dynamic memory/context after the static prefix —
+    // hashing the full content causes cache misses between near-identical requests
+    // when memory retrieval returns slightly different results.
     const systemMsg = messages.find(m => m.role === 'system');
     if (systemMsg && typeof systemMsg.content === 'string') {
-      hash.update(systemMsg.content);
+      hash.update(systemMsg.content.substring(0, 200));
     }
 
     // Include conversation state indicators to prevent tool loop caching

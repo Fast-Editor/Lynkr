@@ -1,0 +1,60 @@
+{
+  "_comment": "Portkey Gateway Config — multi-provider conditional routing",
+  "_note": "Portkey has NO automatic complexity detection. This config uses max_tokens as a proxy for complexity. For real tier routing pass x-portkey-metadata: { 'tier': 'simple|medium|complex|reasoning' } from your client.",
+
+  "strategy": {
+    "mode": "conditional"
+  },
+
+  "conditions": [
+    {
+      "_comment": "SIMPLE — short requests (max_tokens <= 256) → Ollama",
+      "condition": {
+        "query.max_tokens": { "$lte": 256 }
+      },
+      "target": {
+        "provider": "ollama",
+        "customHost": "http://localhost:11434",
+        "override_params": {
+          "model": "qwen2.5-coder:7b"
+        }
+      }
+    },
+    {
+      "_comment": "MEDIUM — metadata tier=medium → Moonshot",
+      "condition": {
+        "metadata.tier": { "$eq": "medium" }
+      },
+      "target": {
+        "provider": "openai",
+        "apiKey": "{{MOONSHOT_API_KEY}}",
+        "baseURL": "https://api.moonshot.ai/v1",
+        "override_params": {
+          "model": "moonshot-v1-8k"
+        }
+      }
+    },
+    {
+      "_comment": "REASONING — metadata tier=reasoning → Azure OpenAI o3-mini",
+      "condition": {
+        "metadata.tier": { "$eq": "reasoning" }
+      },
+      "target": {
+        "provider": "azure-openai",
+        "apiKey": "{{AZURE_OPENAI_API_KEY}}",
+        "resourceName": "YOUR-RESOURCE",
+        "deploymentId": "o3-mini",
+        "apiVersion": "2024-12-01-preview"
+      }
+    }
+  ],
+
+  "default": {
+    "_comment": "COMPLEX — everything else → Azure OpenAI GPT-4o",
+    "provider": "azure-openai",
+    "apiKey": "{{AZURE_OPENAI_API_KEY}}",
+    "resourceName": "YOUR-RESOURCE",
+    "deploymentId": "gpt-4o",
+    "apiVersion": "2024-08-01-preview"
+  }
+}

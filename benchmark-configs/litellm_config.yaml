@@ -1,0 +1,86 @@
+# ─── LiteLLM Benchmark Config ─────────────────────────────────────────────────
+# Multi-provider tier routing via LiteLLM Complexity Router.
+#
+# Start: litellm --config benchmark-configs/litellm_config.yaml --port 8082
+#
+# Required env vars:
+#   AZURE_OPENAI_API_KEY
+#   AZURE_OPENAI_ENDPOINT   (https://YOUR-RESOURCE.openai.azure.com)
+#   MOONSHOT_API_KEY
+#   (Ollama needs no key — running locally on :11434)
+#
+# Tier mapping (matches Lynkr benchmark config):
+#   SIMPLE    → ollama:minimax-m2.5:cloud
+#   MEDIUM    → ollama:minimax-m2.5:cloud
+#   COMPLEX   → moonshot:moonshot-v1-auto
+#   REASONING → azure-openai:gpt-5.2-chat
+
+model_list:
+
+  # ── SIMPLE + MEDIUM → Ollama minimax-m2.5:cloud ───────────────────────────
+  # Note: the model tag is "minimax-m2.5:cloud" — the colon is part of the
+  # Ollama model name, NOT a provider separator here.
+  - model_name: smart-router
+    litellm_params:
+      model: "ollama/minimax-m2.5:cloud"
+      api_base: http://localhost:11434
+  - model_name: smart-router
+    litellm_params:
+      model: "ollama/minimax-m2.5:cloud"
+      api_base: http://localhost:11434
+
+  # ── COMPLEX → Moonshot moonshot-v1-auto (matches Lynkr TIER_COMPLEX) ────────
+  - model_name: smart-router
+    litellm_params:
+      model: openai/moonshot-v1-auto
+      api_base: https://api.moonshot.ai/v1
+      api_key: os.environ/MOONSHOT_API_KEY
+
+  # ── REASONING → Azure OpenAI gpt-5.2-chat ─────────────────────────────────
+  - model_name: smart-router
+    litellm_params:
+      model: azure/gpt-5.2-chat
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT
+      api_key: os.environ/AZURE_OPENAI_API_KEY
+      api_version: "2024-12-01-preview"
+
+  # ── Direct aliases (for targeted calls outside the benchmark) ─────────────
+  - model_name: ollama-minimax
+    litellm_params:
+      model: "ollama/minimax-m2.5:cloud"
+      api_base: http://localhost:11434
+
+  - model_name: moonshot-kimi-k2
+    litellm_params:
+      model: openai/moonshot-v1-auto
+      api_base: https://api.moonshot.ai/v1
+      api_key: os.environ/MOONSHOT_API_KEY
+
+  - model_name: azure-gpt5
+    litellm_params:
+      model: azure/gpt-5.2-chat
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT
+      api_key: os.environ/AZURE_OPENAI_API_KEY
+      api_version: "2024-12-01-preview"
+
+router_settings:
+  routing_strategy: cost-based-routing
+  # Fallback: if smart-router fails on one deployment, try the next
+  fallbacks:
+    - smart-router:
+        - ollama-minimax
+        - moonshot-kimi-k2
+        - azure-gpt5
+  num_retries: 2
+  timeout: 90
+
+litellm_settings:
+  drop_params: true
+  use_responses_api: false
+  return_response_headers: true
+  success_callback: []
+  failure_callback: []
+
+general_settings:
+  master_key: sk-1234        # change this
+  port: 8082
