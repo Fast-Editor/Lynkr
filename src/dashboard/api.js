@@ -112,59 +112,69 @@ function overview(req, res) {
 }
 
 function usage(req, res) {
-  const window   = req.query.window   || '7d';
-  const provider = req.query.provider || undefined;
-  const model    = req.query.model    || undefined;
+  try {
+    const window   = req.query.window   || '7d';
+    const provider = req.query.provider || undefined;
+    const model    = req.query.model    || undefined;
 
-  const data = getUsage({ window, provider, model });
+    const data = getUsage({ window, provider, model });
 
-  // Add daily breakdown for chart (last 7 or 30 days depending on window)
-  const days = window === '1d' ? 1 : window === '30d' ? 30 : 7;
-  const since = window === 'all' ? 0 : Date.now() - days * 86400000;
-  const rawRows = since > 0
-    ? telemetry.query({ since, limit: 50000 })
-    : telemetry.query({ limit: 50000 });
+    const days = window === '1d' ? 1 : window === '30d' ? 30 : 7;
+    const since = window === 'all' ? 0 : Date.now() - days * 86400000;
+    const rawRows = since > 0
+      ? telemetry.query({ since, limit: 50000 })
+      : telemetry.query({ limit: 50000 });
 
-  data.daily = dailyBreakdown(rawRows, Math.min(days, 30));
+    data.daily = dailyBreakdown(rawRows, Math.min(days, 30));
 
-  res.json(data);
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: 'usage_api_error', detail: e.message });
+  }
 }
 
 function routing(req, res) {
-  const win      = findActiveWindow();
-  const { since } = win;
+  try {
+    const win      = findActiveWindow();
+    const { since } = win;
 
-  const accuracy  = telemetry.getRoutingAccuracy({ since });
-  const stats     = telemetry.getStats({ since });
-  const cbStates  = getCircuitBreakerStates();
+    const accuracy  = telemetry.getRoutingAccuracy({ since });
+    const stats     = telemetry.getStats({ since });
+    const cbStates  = getCircuitBreakerStates();
 
-  // Derive providers from actual DB rows — never miss a provider not in config
-  const dbRows = telemetry.query({ limit: 100000, since });
-  const dbProviders = [...new Set(
-    dbRows.map(r => r.provider).filter(p => p && !TEST_PROVIDER_RE.test(p))
-  )];
+    const dbRows = telemetry.query({ limit: 100000, since });
+    const dbProviders = [...new Set(
+      dbRows.map(r => r.provider).filter(p => p && !TEST_PROVIDER_RE.test(p))
+    )];
 
-  const providerStats = {};
-  for (const p of dbProviders) {
-    const s = telemetry.getProviderStats(p, { since });
-    if (s) providerStats[p] = s;
+    const providerStats = {};
+    for (const p of dbProviders) {
+      const s = telemetry.getProviderStats(p, { since });
+      if (s) providerStats[p] = s;
+    }
+
+    res.json({ tierDefinitions: TIER_DEFINITIONS, accuracy, stats, providerStats, circuitBreakers: cbStates, window: win.label });
+  } catch (e) {
+    res.status(500).json({ error: 'routing_api_error', detail: e.message });
   }
-
-  res.json({ tierDefinitions: TIER_DEFINITIONS, accuracy, stats, providerStats, circuitBreakers: cbStates, window: win.label });
 }
 
 function logs(req, res) {
-  const limit   = Math.min(parseInt(req.query.limit || '100', 10), 500);
-  const filters = { limit };
+  try {
+    const limit   = Math.min(parseInt(req.query.limit || '100', 10), 500);
+    const filters = { limit };
 
-  if (req.query.provider) filters.provider = req.query.provider;
-  if (req.query.tier)     filters.tier     = req.query.tier;
-  if (req.query.since)    filters.since    = parseInt(req.query.since, 10);
+    if (req.query.provider) filters.provider = req.query.provider;
+    if (req.query.tier)     filters.tier     = req.query.tier;
+    if (req.query.since)    filters.since    = parseInt(req.query.since, 10);
 
-  let rows = telemetry.query(filters);
-  if (req.query.error === 'true') rows = rows.filter(r => r.error_type);
+    let rows = telemetry.query(filters);
+    if (req.query.error === 'true') rows = rows.filter(r => r.error_type);
 
-  res.json(rows);
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: 'logs_api_error', detail: e.message });
+  }
 }
 
 module.exports = { overview, usage, routing, logs };
