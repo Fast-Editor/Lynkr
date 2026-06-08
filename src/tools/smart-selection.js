@@ -1,347 +1,170 @@
 /**
- * Smart Tool Selection Module
+ * Smart Tool Selection — Conservative Stripping
  *
- * Intelligently selects relevant tools based on request type classification.
- * Reduces tool token overhead by 50-70% for non-coding queries.
+ * Strategy: instead of predicting which tools ARE needed (brittle regex),
+ * only strip groups we are CERTAIN are irrelevant based on clear absence
+ * of intent signals.
  *
- * @module tools/smart-selection
+ * Rules:
+ *   1. Greeting → strip everything
+ *   2. No write intent → strip Write / Edit / NotebookEdit
+ *   3. No execution intent → strip Bash / KillShell
+ *   4. No web intent → strip WebSearch / WebFetch
+ *
+ * File ops (Read, Grep, Glob) are NEVER stripped — they are the most
+ * broadly useful and the most commonly needed unexpectedly.
  */
 
 const logger = require('../logger');
 
-// Strip system-reminder blocks injected by the CLI before classification
 const SYSTEM_REMINDER_PATTERN = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
-// Pre-compiled regex patterns for performance (avoid recompiling on every request)
+// Clear greeting — strip all tools
 const GREETING_PATTERN = /^(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings|sup|yo)[\s\.\!\?]*$/i;
-const QUESTION_PATTERN = /^(what is|what's|how does|when|where|why|explain|define|tell me about|can you explain)/i;
-const TECHNICAL_KEYWORDS = /code|function|class|file|module|import|export|async|await|promise|callback|api|database|server|client|component|method|variable|array|object|string|number/i;
-const EXPLANATION_PATTERN = /explain|describe|summarize|what does|how does|tell me about|give me an overview|clarify|elaborate/i;
-const WEB_PATTERN = /search online|search the web|search google|lookup|find info|google|website|url|link|online|internet|browse/i;
-const READ_PATTERN = /read|show|display|view|cat|check|inspect|look at|see|examine|review|print|output|find|locate|where is|which file|list files|what file|open/i;
-const WRITE_PATTERN = /write|create|add|update|modify|change|fix|delete|remove|insert|append|replace|save|put|make|generate|produce/i;
-const EDIT_PATTERN = /edit|refactor|rename|move|reorganize|restructure|rewrite/i;
-const EXECUTION_PATTERN = /run|execute|test|compile|build|deploy|start|install|launch|boot|fire up|npm|git|python|node|docker|bash|sh|cmd/i;
-const COMPLEX_PATTERN = /implement|build|create|develop|design|architect|plan|strategy|approach|help with|work on|improve|optimize|enhance|refactor|migrate/i;
+const TECHNICAL_KEYWORDS = /code|function|class|file|module|import|export|async|await|promise|api|database|server|component|variable|array|object|\.[a-z]{1,5}\b|npm|git|docker|python|node|bash|run|install/i;
 
-/**
- * Tool selection map: request type → relevant tools
- */
+// Intent signals — absence means we strip that group
+const WRITE_INTENT   = /write|create\b|add to|update|modify|change|fix|delete|remove|insert|append|replace|save|edit|refactor|rename|move|reorganize|rewrite|implement|generate|produce|scaffold/i;
+const EXECUTE_INTENT = /run|execute|test|compile|build|deploy|start|install|launch|boot|npm|yarn|pnpm|git|python|node|docker|bash|sh\b|cmd|script|make|cargo|go run/i;
+const WEB_INTENT     = /search online|search the web|search google|look up online|browse|website|https?:\/\//i;
+
+// Tools always kept (file search is never useless)
+const ALWAYS_KEEP = new Set([
+  'Read', 'Grep', 'Glob',
+  'Task', 'TaskOutput', 'TodoWrite', 'TodoRead',
+  'AskUserQuestion', 'Skill',
+  'EnterPlanMode', 'ExitPlanMode',
+]);
+
+// Conditional strips: group → intent pattern that must be present to keep it
+const CONDITIONAL_GROUPS = [
+  { names: ['Write', 'Edit', 'NotebookEdit'],  intent: WRITE_INTENT   },
+  { names: ['Bash', 'KillShell'],              intent: EXECUTE_INTENT },
+  { names: ['WebSearch', 'WebFetch'],          intent: WEB_INTENT     },
+];
+
+// Legacy map kept for telemetry label compatibility
 const TOOL_SELECTION_MAP = {
-  conversational: [],  // No tools needed for greetings
-  simple_qa: [],       // No tools needed for simple questions
-
-  research: [
-    'Read', 'Grep', 'Glob',           // File search
-    'WebSearch', 'WebFetch'           // Web research
-  ],
-
-  file_reading: [
-    'Read', 'Grep', 'Glob'            // Read-only tools
-  ],
-
-  file_modification: [
-    'Read', 'Write', 'Edit',          // Full I/O
-    'Grep', 'Glob', 'Bash'            // Support tools
-  ],
-
-  code_execution: [
-    'Read', 'Write', 'Edit',          // File operations
-    'Bash', 'Grep', 'Glob'            // Execution + search
-  ],
-
-  coding: [
-    'Read', 'Write', 'Edit',          // Core file ops
-    'Bash', 'Grep', 'Glob'            // Support tools
-  ],
-
-  complex_task: [
-    'Read', 'Write', 'Edit',          // Tier 1
-    'Bash', 'Grep', 'Glob',           // Tier 1
-    'WebSearch', 'WebFetch',          // Tier 2
-    'Task', 'TodoWrite', 'AskUserQuestion'  // Tier 3+4
-  ]
+  conversational:    [],
+  simple_qa:         [],
+  file_reading:      ['Read', 'Grep', 'Glob'],
+  file_modification: ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'],
+  code_execution:    ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
+  coding:            ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
+  research:          ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'],
+  complex_task:      ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Task', 'TodoWrite', 'AskUserQuestion'],
 };
 
-/**
- * Extract content from last user message
- */
-function getLastUserMessage(payload) {
-  if (!Array.isArray(payload.messages) || payload.messages.length === 0) {
-    return null;
-  }
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-  // Find last user message
+function getLastUserContent(payload) {
+  if (!Array.isArray(payload.messages)) return '';
   for (let i = payload.messages.length - 1; i >= 0; i--) {
     const msg = payload.messages[i];
-    if (msg?.role === 'user') {
-      return msg;
+    if (msg?.role !== 'user') continue;
+    let text = '';
+    if (typeof msg.content === 'string') {
+      text = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      text = msg.content.filter(b => b?.type === 'text').map(b => b.text || '').join(' ');
     }
+    return text.replace(SYSTEM_REMINDER_PATTERN, '').trim();
   }
-
-  return null;
-}
-
-/**
- * Extract text content from message (handles string or array format)
- */
-function extractContent(message) {
-  if (!message) return '';
-
-  if (typeof message.content === 'string') {
-    return message.content;
-  }
-
-  if (Array.isArray(message.content)) {
-    return message.content
-      .filter(block => block?.type === 'text')
-      .map(block => block.text || '')
-      .join(' ');
-  }
-
   return '';
 }
 
-/**
- * Check if content matches greeting patterns
- */
 function isGreeting(content) {
-  return GREETING_PATTERN.test(content.trim());
+  const t = content.trim();
+  return GREETING_PATTERN.test(t) || (t.length < 20 && !TECHNICAL_KEYWORDS.test(t));
 }
 
-/**
- * Check if content is short and non-technical
- */
-function isShortNonTechnical(content) {
-  const trimmed = content.trim();
-  return trimmed.length < 20 && !TECHNICAL_KEYWORDS.test(trimmed);
-}
+// ─── Classifier (conservative) ───────────────────────────────────────────────
 
 /**
- * Check if content is a simple question
- */
-function isSimpleQuestion(content) {
-  return QUESTION_PATTERN.test(content.trim());
-}
-
-/**
- * Check for technical keywords
- */
-function hasTechnicalKeywords(content) {
-  return TECHNICAL_KEYWORDS.test(content);
-}
-
-/**
- * Check for explanation/research keywords
- */
-function hasExplanationKeywords(content) {
-  return EXPLANATION_PATTERN.test(content);
-}
-
-/**
- * Check for web/search keywords
- */
-function hasWebKeywords(content) {
-  return WEB_PATTERN.test(content);
-}
-
-/**
- * Check for file reading keywords
- */
-function hasReadKeywords(content) {
-  return READ_PATTERN.test(content);
-}
-
-/**
- * Check for file writing/modification keywords
- */
-function hasWriteKeywords(content) {
-  return WRITE_PATTERN.test(content);
-}
-
-/**
- * Check for edit/refactor keywords
- */
-function hasEditKeywords(content) {
-  return EDIT_PATTERN.test(content);
-}
-
-/**
- * Check for execution/testing keywords
- */
-function hasExecutionKeywords(content) {
-  return EXECUTION_PATTERN.test(content);
-}
-
-/**
- * Check for complex task keywords
- */
-function hasComplexKeywords(content) {
-  return COMPLEX_PATTERN.test(content);
-}
-
-/**
- * Classify request type based on content analysis
- *
- * @param {Object} payload - Request payload with messages
- * @returns {Object} Classification result { type, confidence, keywords }
+ * Classify request and compute which tool groups to strip.
+ * Returns a classification object for logging/telemetry compatibility.
  */
 function classifyRequestType(payload) {
-  const lastMessage = getLastUserMessage(payload);
+  const content = getLastUserContent(payload);
+  const lower   = content.toLowerCase();
+  const msgCount = payload.messages?.length ?? 0;
 
-  if (!lastMessage) {
-    return { type: 'coding', confidence: 0.5, keywords: [] };
+  // Greeting → strip everything
+  if (isGreeting(lower)) {
+    return { type: 'conversational', confidence: 1.0, keywords: ['greeting'], _stripped: ['Write', 'Edit', 'NotebookEdit', 'Bash', 'KillShell', 'WebSearch', 'WebFetch'] };
   }
 
-  const rawContent = extractContent(lastMessage);
-  // Strip <system-reminder> blocks before classification to prevent
-  // CLI-injected keywords (search, explain, documentation) from polluting results
-  const content = rawContent.replace(SYSTEM_REMINDER_PATTERN, '').trim();
-  const contentLower = content.toLowerCase();
-  const messageCount = payload.messages?.length ?? 0;
-
-  // 1. Conversational (no tools)
-  if (isGreeting(contentLower)) {
-    return { type: 'conversational', confidence: 1.0, keywords: ['greeting'] };
+  const stripped = [];
+  for (const { names, intent } of CONDITIONAL_GROUPS) {
+    if (!intent.test(lower)) stripped.push(...names);
   }
 
-  if (isShortNonTechnical(contentLower)) {
-    return { type: 'conversational', confidence: 0.8, keywords: ['short', 'non-technical'] };
-  }
+  // Derive a label for telemetry
+  const hasWrite = WRITE_INTENT.test(lower);
+  const hasExec  = EXECUTE_INTENT.test(lower);
+  const hasWeb   = WEB_INTENT.test(lower);
 
-  // 2. Simple Q&A (no tools)
-  if (isSimpleQuestion(contentLower) && !hasTechnicalKeywords(contentLower)) {
-    return { type: 'simple_qa', confidence: 0.9, keywords: ['question', 'non-technical'] };
-  }
+  const type = hasWrite || hasExec ? 'file_modification'
+    : hasWeb   ? 'research'
+    : msgCount > 10 ? 'complex_task'
+    : 'file_reading';
 
-  // 3. Research/Explanation (minimal tools)
-  if (hasExplanationKeywords(contentLower)) {
-    return { type: 'research', confidence: 0.85, keywords: ['explanation'] };
-  }
-
-  if (hasWebKeywords(contentLower)) {
-    return { type: 'research', confidence: 0.9, keywords: ['web', 'search'] };
-  }
-
-  // 4. File reading (read-only tools)
-  if (hasReadKeywords(contentLower) && !hasWriteKeywords(contentLower)) {
-    return { type: 'file_reading', confidence: 0.8, keywords: ['read'] };
-  }
-
-  // 5. File modification (full I/O tools)
-  if (hasWriteKeywords(contentLower) || hasEditKeywords(contentLower)) {
-    return { type: 'file_modification', confidence: 0.85, keywords: ['write', 'edit'] };
-  }
-
-  // 6. Execution/Testing (execution tools)
-  if (hasExecutionKeywords(contentLower)) {
-    return { type: 'code_execution', confidence: 0.8, keywords: ['execution'] };
-  }
-
-  // 7. Complex task (all tools)
-  if (hasComplexKeywords(contentLower)) {
-    return { type: 'complex_task', confidence: 0.75, keywords: ['complex'] };
-  }
-
-  // Long conversations likely need more tools
-  if (messageCount > 10) {
-    return { type: 'complex_task', confidence: 0.7, keywords: ['long_conversation'] };
-  }
-
-  // Default: coding (core tools)
-  return { type: 'coding', confidence: 0.6, keywords: ['default'] };
+  return { type, confidence: 0.9, keywords: ['conservative'], _stripped: stripped };
 }
 
-/**
- * Estimate token count for tools (rough approximation)
- */
+// ─── Tool filter ─────────────────────────────────────────────────────────────
+
 function estimateToolTokens(tools) {
   if (!Array.isArray(tools)) return 0;
-
-  // Average: ~175 tokens per tool (based on STANDARD_TOOLS analysis)
   return tools.length * 175;
 }
 
 /**
- * Select relevant tools based on classification
- *
- * @param {Array} tools - Available tools
- * @param {Object} classification - Classification result from classifyRequestType
- * @param {Object} options - Selection options (provider, tokenBudget, config)
- * @returns {Array} Filtered list of relevant tools
+ * Apply conservative stripping to the tool list.
  */
 function selectToolsSmartly(tools, classification, options = {}) {
-  if (!Array.isArray(tools) || tools.length === 0) {
-    return tools;
+  if (!Array.isArray(tools) || tools.length === 0) return tools;
+
+  const { provider = 'databricks' } = options;
+  const strippedNames = new Set(classification._stripped ?? []);
+
+  // Greeting: strip everything
+  if (classification.type === 'conversational') {
+    return [];
   }
 
-  const { provider = 'databricks', tokenBudget = 2500, config = {} } = options;
-  const requestType = classification.type || 'coding';
+  // Strip only the flagged groups; always keep ALWAYS_KEEP tools
+  let selected = tools.filter(tool => {
+    const name = String(tool.name || '');
+    if (ALWAYS_KEEP.has(name)) return true;
+    return !strippedNames.has(name);
+  });
 
-  // Get relevant tool names for this request type
-  const relevantToolNames = TOOL_SELECTION_MAP[requestType] || TOOL_SELECTION_MAP.coding;
-  const relevantLower = new Set(relevantToolNames.map(n => n.toLowerCase()));
+  // Safety: if we somehow stripped everything, return full list
+  if (selected.length === 0) return tools;
 
-  // Filter to relevant tools only (case-insensitive match so external clients
-  // using lowercase names like Pi's `bash`/`read` aren't filtered out)
-  let selectedTools = tools.filter(tool => relevantLower.has(String(tool.name || '').toLowerCase()));
-
-  // If nothing matched, the caller is using a tool ecosystem we don't recognize
-  // (e.g. Pi's read/write/edit/bash). Pass tools through untouched rather than
-  // deleting them — otherwise the LLM gets no schema and hallucinates defaults.
-  if (selectedTools.length === 0) {
-    return tools;
-  }
-
-  // Mode-specific adjustments
-  if (config.mode === 'aggressive') {
-    // Aggressive: Further reduce tools for ambiguous cases
-    if (classification.confidence < 0.7 && selectedTools.length > 4) {
-      selectedTools = selectedTools.slice(0, 4);
-    }
-  } else if (config.mode === 'conservative') {
-    // Conservative: Include one extra tier of tools for safety
-    if (requestType === 'file_reading' && !relevantToolNames.includes('Bash')) {
-      const bashTool = tools.find(t => t.name === 'Bash');
-      if (bashTool) selectedTools.push(bashTool);
-    }
-  }
-
-  // Provider-specific limits
-  if (provider === 'ollama' && selectedTools.length > 8) {
-    selectedTools = selectedTools.slice(0, 8);
-  }
-
-  // Token budget enforcement
-  const estimatedTokens = estimateToolTokens(selectedTools);
-  if (estimatedTokens > tokenBudget) {
-    const targetCount = Math.floor(tokenBudget / 175);
-    selectedTools = selectedTools.slice(0, Math.max(targetCount, 0));
-  }
-
-  // Minimal mode override (if configured)
-  if (config.minimalMode) {
-    const minimalTools = ['Read', 'Write', 'Edit', 'Bash'];
-    selectedTools = selectedTools.filter(t => minimalTools.includes(t.name));
-  }
-
-  // Code Mode: always include the 4 meta-tools (only ~700 tokens total)
+  // Code Mode meta-tools always included
   const codeConfig = require('../config');
   if (codeConfig.mcp?.codeMode?.enabled) {
     const codeModeNames = new Set(['mcp_list_tools', 'mcp_tool_info', 'mcp_tool_docs', 'mcp_execute']);
     for (const tool of tools) {
-      if (codeModeNames.has(tool.name) && !selectedTools.some(t => t.name === tool.name)) {
-        selectedTools.push(tool);
+      if (codeModeNames.has(tool.name) && !selected.some(t => t.name === tool.name)) {
+        selected.push(tool);
       }
     }
   }
 
-  return selectedTools;
+  // Ollama has a smaller context — cap at 10 tools
+  if (provider === 'ollama' && selected.length > 10) {
+    selected = selected.slice(0, 10);
+  }
+
+  return selected;
 }
 
 module.exports = {
   classifyRequestType,
   selectToolsSmartly,
   estimateToolTokens,
-  TOOL_SELECTION_MAP
+  TOOL_SELECTION_MAP,
 };
