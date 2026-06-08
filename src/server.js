@@ -68,10 +68,19 @@ if (LAZY_TOOLS_ENABLED) {
 function createApp() {
   const app = express();
   const path = require('path');
+  const fs   = require('fs');
 
   // Dashboard — registered first so it is never shadowed by the main router
   const DASHBOARD_HTML = path.resolve(__dirname, '../public/dashboard.html');
-  app.get('/dashboard', (_req, res) => res.sendFile(DASHBOARD_HTML));
+  app.get('/dashboard', (_req, res) => {
+    try {
+      const html = fs.readFileSync(DASHBOARD_HTML, 'utf8');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    } catch (e) {
+      res.status(500).json({ error: 'dashboard_read_failed', path: DASHBOARD_HTML, detail: e.message });
+    }
+  });
   app.get('/dashboard/api/overview', require('./dashboard/api').overview);
   app.get('/dashboard/api/usage',    require('./dashboard/api').usage);
   app.get('/dashboard/api/routing',  require('./dashboard/api').routing);
