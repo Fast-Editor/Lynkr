@@ -764,6 +764,17 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           const parsed = JSON.parse(text);
           if (parsed && typeof parsed === 'object' && parsed.type === 'message') {
             parsed.lynkr_interaction = interaction;
+            // Inject a visible text block into content so Claude Code renders it.
+            if (Array.isArray(parsed.content)) {
+              const lines = [
+                `╭─ Lynkr ${'─'.repeat(40)}`,
+                `│  Tier    ${interaction.tier ?? '—'} → ${interaction.model ?? '—'} (${interaction.provider ?? '—'})`,
+                `│  Score   ${interaction.complexity_score ?? '—'}/100 · Risk: ${interaction.risk ?? '—'} · Savings: ~${interaction.estimated_savings_percent ?? 0}%`,
+                `│  Route   ${interaction.mode ?? '—'} — ${interaction.headline ?? ''}`,
+                `╰${'─'.repeat(46)}`,
+              ];
+              parsed.content.unshift({ type: 'text', text: lines.join('\n') });
+            }
             finalBody = JSON.stringify(parsed);
           }
         }
