@@ -67,6 +67,15 @@ if (LAZY_TOOLS_ENABLED) {
 
 function createApp() {
   const app = express();
+  const path = require('path');
+
+  // Dashboard — registered first so it is never shadowed by the main router
+  const DASHBOARD_HTML = path.resolve(__dirname, '../public/dashboard.html');
+  app.get('/dashboard', (_req, res) => res.sendFile(DASHBOARD_HTML));
+  app.get('/dashboard/api/overview', require('./dashboard/api').overview);
+  app.get('/dashboard/api/usage',    require('./dashboard/api').usage);
+  app.get('/dashboard/api/routing',  require('./dashboard/api').routing);
+  app.get('/dashboard/api/logs',     require('./dashboard/api').logs);
 
   // Initialize load shedder (log configuration)
   initializeLoadShedder();
