@@ -1,6 +1,6 @@
 {
   "name": "lynkr",
-  "version": "9.4.2",
+  "version": "9.4.3",
   "description": "Self-hosted LLM gateway and tier-routing proxy for Claude Code, Cursor, and Codex. Routes across Ollama, AWS Bedrock, OpenRouter, Databricks, Azure OpenAI, llama.cpp, and LM Studio with prompt caching, MCP tools, and 60-80% cost savings.",
   "main": "index.js",
   "bin": {
