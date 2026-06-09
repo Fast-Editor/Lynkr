@@ -138,7 +138,46 @@ function getBestLocalProvider() {
  * @param {Object} options - Routing options
  * @returns {Object} Routing decision with provider and metadata
  */
+const sessionAffinity = require('./session-affinity');
+
+/**
+ * Provider routing with session affinity.
+ *
+ * When a conversation already carries tool history, reuse the provider the
+ * session first routed to so tool-call IDs don't break across providers.
+ * Fresh turns route normally and refresh the session's pinned provider.
+ */
 async function determineProviderSmart(payload, options = {}) {
+  const sessionId = payload?._sessionId || null;
+
+  // Enforce affinity only for in-flight tool exchanges — the turns that 400
+  // if the provider changes. Fresh turns keep full per-turn tier routing.
+  if (sessionId && !options.forceProvider && sessionAffinity.payloadHasToolHistory(payload)) {
+    const pinned = sessionAffinity.getPinned(sessionId);
+    if (pinned) {
+      logger.debug({ sessionId, provider: pinned.provider, tier: pinned.tier },
+        '[Routing] Session affinity — reusing provider for tool-bearing turn');
+      return {
+        provider: pinned.provider,
+        model: pinned.model,
+        tier: pinned.tier,
+        method: 'session_affinity',
+        reason: 'tool_history_provider_pin',
+      };
+    }
+  }
+
+  const decision = await _determineProviderSmartInner(payload, options);
+
+  // Remember the chosen provider so later tool-bearing turns stay consistent.
+  if (sessionId && decision?.provider && !options.forceProvider) {
+    sessionAffinity.setPinned(sessionId, decision);
+  }
+
+  return decision;
+}
+
+async function _determineProviderSmartInner(payload, options = {}) {
   const primaryProvider = config.modelProvider?.type ?? 'databricks';
 
   // Risk analysis runs orthogonally to complexity. We compute it once
