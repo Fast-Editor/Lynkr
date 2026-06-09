@@ -244,6 +244,7 @@ const App = {
     const t = d.today;
     const s = d.stats;
 
+    const tierLabel = t => t === 'default' ? 'default' : String(t).toLowerCase();
     const providerCards = d.providers.length === 0
       ? `<p class="text-slate-500 text-sm">No providers configured</p>`
       : d.providers.map(p => `
@@ -251,8 +252,19 @@ const App = {
           <div class="flex items-center gap-2">
             <span class="status-dot ${providerDot(p.type)}"></span>
             <span class="text-sm font-medium text-slate-200">${p.name}</span>
+            ${(p.tiers || []).map(t => `<span class="badge bg-slate-600/60 text-slate-300">${tierLabel(t)}</span>`).join('')}
           </div>
           <span class="text-xs ${p.type === 'local' ? 'text-green-400' : 'text-blue-400'}">${p.type}</span>
+        </div>`).join('');
+
+    const providerWarnings = (d.providerWarnings || []).map(w => `
+        <div class="flex items-center justify-between bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3">
+          <div class="flex items-center gap-2">
+            <span class="text-amber-400 text-sm">⚠</span>
+            <span class="text-sm font-medium text-amber-200">${w.name}</span>
+            ${(w.tiers || []).map(t => `<span class="badge bg-amber-500/20 text-amber-300">${tierLabel(t)}</span>`).join('')}
+          </div>
+          <span class="text-xs text-amber-400">no credentials</span>
         </div>`).join('');
 
     const recentRows = (d.recentRequests || []).map(r => `
@@ -279,7 +291,7 @@ const App = {
         <!-- Providers -->
         ${card(`
           <h3 class="text-sm font-semibold text-slate-300 mb-3">Configured Providers</h3>
-          <div class="flex flex-col gap-2">${providerCards}</div>
+          <div class="flex flex-col gap-2">${providerCards}${providerWarnings}</div>
         `)}
 
         <!-- 24h Stats -->
