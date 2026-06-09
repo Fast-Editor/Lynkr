@@ -2044,12 +2044,23 @@ async function invokeCodex(body) {
  * Registry returns per-1M-token prices ({ input, output }); returns null when
  * pricing is unknown so we don't record misleading zeros.
  */
+const _unknownCostWarned = new Set();
 function computeCostUsd(model, inputTokens, outputTokens) {
   try {
     const { getModelRegistrySync } = require("../routing/model-registry");
     const reg = getModelRegistrySync && getModelRegistrySync();
     const cost = reg?.getCost?.(model);
-    if (!cost || (cost.input == null && cost.output == null)) return null;
+    if (!cost) return null;
+    // Unknown model → record null (not a fabricated default), warn once so the
+    // gap is visible and can be fixed via MODEL_PRICE_OVERRIDES.
+    if (cost.unknown) {
+      if (model && !_unknownCostWarned.has(model)) {
+        _unknownCostWarned.add(model);
+        logger.warn({ model }, "[Cost] No pricing for model — recording cost_usd=null. Set MODEL_PRICE_OVERRIDES to fix.");
+      }
+      return null;
+    }
+    if (cost.input == null && cost.output == null) return null;
     const inUsd = ((inputTokens || 0) / 1e6) * (cost.input || 0);
     const outUsd = ((outputTokens || 0) / 1e6) * (cost.output || 0);
     return Number((inUsd + outUsd).toFixed(6));

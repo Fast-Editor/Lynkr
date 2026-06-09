@@ -54,8 +54,40 @@ const DATABRICKS_FALLBACK = {
   'databricks-bge-large-en': { input: 0.02, output: 0, context: 512 },
 };
 
-// Default cost for unknown models
+// Default cost for unknown models. Returned with `unknown: true` so callers can
+// distinguish a real price from a fabricated guess.
 const DEFAULT_COST = { input: 1.0, output: 3.0, context: 128000 };
+
+// Curated name aliases (exact, one-directional). Maps a name a caller might use
+// to the canonical key likely present in the pricing data. Misses are harmless
+// (resolution simply continues down the ladder).
+const MODEL_ALIASES = {
+  'claude-sonnet-4-5': 'claude-sonnet-4-5-20250929',
+  'claude-opus-4-1': 'claude-opus-4-1-20250805',
+  'claude-3-5-sonnet': 'claude-3-5-sonnet-20241022',
+};
+
+/**
+ * Parse MODEL_PRICE_OVERRIDES env (JSON object of
+ * { "<model>": { "input": <usd/1M>, "output": <usd/1M>, "context"?: N } }).
+ * Lets operators pin correct prices for models the registry doesn't know.
+ */
+function _loadOverrides() {
+  const out = new Map();
+  const raw = process.env.MODEL_PRICE_OVERRIDES;
+  if (!raw) return out;
+  try {
+    const parsed = JSON.parse(raw);
+    for (const [name, info] of Object.entries(parsed)) {
+      if (info && typeof info.input === 'number' && typeof info.output === 'number') {
+        out.set(name.toLowerCase(), { context: 128000, ...info });
+      }
+    }
+  } catch (err) {
+    logger.warn({ err: err.message }, '[ModelRegistry] Failed to parse MODEL_PRICE_OVERRIDES');
+  }
+  return out;
+}
 
 class ModelRegistry {
   constructor() {
@@ -64,6 +96,7 @@ class ModelRegistry {
     this.loaded = false;
     this.lastFetch = 0;
     this.modelIndex = new Map();
+    this.overrides = _loadOverrides();
   }
 
   /**
@@ -255,40 +288,70 @@ class ModelRegistry {
    * @returns {Object} Cost info { input, output, context, ... }
    */
   getCost(modelName) {
-    if (!modelName) return { ...DEFAULT_COST, source: 'default' };
+    if (!modelName) return { ...DEFAULT_COST, source: 'default', unknown: true };
 
-    const normalizedName = modelName.toLowerCase();
+    const name = String(modelName).toLowerCase().trim();
+    const hit = this._resolveCost(name);
+    if (hit) return hit;
 
-    // Direct lookup
-    if (this.modelIndex.has(normalizedName)) {
-      return this.modelIndex.get(normalizedName);
+    // Nothing matched — report unknown rather than silently fabricating a price.
+    logger.debug({ model: modelName }, '[ModelRegistry] Model not found — cost unknown');
+    return { ...DEFAULT_COST, source: 'default', unknown: true };
+  }
+
+  /**
+   * Deterministic price resolution. Each step is exact (no bidirectional
+   * substring matching), and the only loose step (longest-prefix) is
+   * one-directional and length-bounded, so unrelated names can't false-match.
+   * Returns a cost object with a `resolution` tag, or null if nothing matched.
+   * @param {string} name - already lowercased/trimmed
+   */
+  _resolveCost(name) {
+    const tag = (value, resolution, matchedAs) => ({
+      ...value,
+      resolution,
+      ...(matchedAs && matchedAs !== name ? { matchedAs } : {}),
+    });
+
+    // 1. Operator overrides (exact) — ground truth.
+    if (this.overrides.has(name)) return tag({ ...this.overrides.get(name), source: 'override' }, 'override');
+
+    // 2. Exact registry hit.
+    if (this.modelIndex.has(name)) return tag(this.modelIndex.get(name), 'exact');
+
+    // 3. Provider-prefix strip (exact).
+    const stripped = [
+      name.replace(/^databricks-/, ''),
+      name.replace(/^azure\//, ''),
+      name.replace(/^bedrock\//, ''),
+      name.replace(/^anthropic\./, ''),
+      name.replace(/^openai\//, ''),
+      name.includes('/') ? name.split('/').pop() : null,
+    ].filter((v) => v && v !== name);
+    for (const v of stripped) {
+      if (this.overrides.has(v)) return tag({ ...this.overrides.get(v), source: 'override' }, 'prefix-strip', v);
+      if (this.modelIndex.has(v)) return tag(this.modelIndex.get(v), 'prefix-strip', v);
     }
 
-    // Try common variations
-    const variations = [
-      normalizedName,
-      normalizedName.replace('databricks-', ''),
-      normalizedName.replace('azure/', ''),
-      normalizedName.replace('bedrock/', ''),
-      normalizedName.replace('anthropic.', ''),
-      normalizedName.split('/').pop(),
-    ];
+    // 4. Curated alias (exact).
+    const alias = MODEL_ALIASES[name];
+    if (alias && this.modelIndex.has(alias)) return tag(this.modelIndex.get(alias), 'alias', alias);
 
-    for (const variant of variations) {
-      if (this.modelIndex.has(variant)) {
-        return this.modelIndex.get(variant);
-      }
-    }
+    // 5. Date/version-suffix normalization (e.g. -20250929, -2025-09-29, -v2).
+    const dateless = name.replace(/[-@](\d{8}|\d{4}-\d{2}-\d{2}|v\d+)$/, '');
+    if (dateless !== name && this.modelIndex.has(dateless)) return tag(this.modelIndex.get(dateless), 'date-normalize', dateless);
 
-    // Fuzzy match for partial names
+    // 6. Longest registry key that is a prefix of the requested name. Bounded so
+    //    short keys can't grab unrelated names (e.g. "gpt-5.2-chat-2026" → "gpt-5.2-chat").
+    let best = null;
     for (const [key, value] of this.modelIndex.entries()) {
-      if (key.includes(normalizedName) || normalizedName.includes(key)) {
-        return value;
+      if (key.length >= 6 && name.startsWith(key) && (!best || key.length > best.key.length)) {
+        best = { key, value };
       }
     }
+    if (best) return tag(best.value, 'longest-prefix', best.key);
 
-    logger.debug({ model: modelName }, '[ModelRegistry] Model not found, using default');
-    return { ...DEFAULT_COST, source: 'default' };
+    return null;
   }
 
   /**
