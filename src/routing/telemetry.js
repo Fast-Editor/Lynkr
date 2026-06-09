@@ -94,7 +94,9 @@ function init() {
         circuit_breaker_state TEXT,
         quality_score   REAL,
         tokens_per_second REAL,
-        cost_efficiency REAL
+        cost_efficiency REAL,
+        request_text    TEXT,
+        response_text   TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_telemetry_provider
@@ -109,6 +111,15 @@ function init() {
       CREATE INDEX IF NOT EXISTS idx_telemetry_session_id
         ON routing_telemetry(session_id, timestamp);
     `);
+
+    // Migration: add columns to pre-existing tables (CREATE TABLE IF NOT EXISTS
+    // won't add them to a DB created before these columns existed).
+    const existingCols = new Set(db.prepare("PRAGMA table_info(routing_telemetry)").all().map((c) => c.name));
+    for (const col of ["request_text", "response_text"]) {
+      if (!existingCols.has(col)) {
+        db.exec(`ALTER TABLE routing_telemetry ADD COLUMN ${col} TEXT`);
+      }
+    }
 
     logger.info({ dbPath }, "Routing telemetry database initialised");
     return true;
@@ -163,14 +174,14 @@ function record(data) {
           provider, model, routing_method, was_fallback, output_tokens,
           latency_ms, status_code, error_type, cost_usd, tool_calls_made,
           retry_count, circuit_breaker_state, quality_score, tokens_per_second,
-          cost_efficiency
+          cost_efficiency, request_text, response_text
         ) VALUES (
           @request_id, @session_id, @timestamp, @complexity_score, @tier,
           @agentic_type, @tool_count, @input_tokens, @message_count, @request_type,
           @provider, @model, @routing_method, @was_fallback, @output_tokens,
           @latency_ms, @status_code, @error_type, @cost_usd, @tool_calls_made,
           @retry_count, @circuit_breaker_state, @quality_score, @tokens_per_second,
-          @cost_efficiency
+          @cost_efficiency, @request_text, @response_text
         )`
       );
       if (!insert) return;
@@ -201,6 +212,8 @@ function record(data) {
         quality_score: data.quality_score ?? null,
         tokens_per_second: data.tokens_per_second ?? null,
         cost_efficiency: data.cost_efficiency ?? null,
+        request_text: data.request_text ?? null,
+        response_text: data.response_text ?? null,
       });
     } catch (err) {
       logger.debug({ err: err.message }, "Telemetry record failed");
