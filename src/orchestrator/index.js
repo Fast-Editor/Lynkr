@@ -18,6 +18,7 @@ const { createAuditLogger } = require("../logger/audit-logger");
 const { getResolvedIp, runWithDnsContext } = require("../clients/dns-logger");
 const { getShuttingDown } = require("../api/health");
 const { tryPreflight, buildSatisfiedResponse: buildPreflightResponse } = require("./preflight");
+const { detectBypass, buildBypassResponse } = require("./bypass");
 const crypto = require("crypto");
 const { asyncClone, asyncTransform, getPoolStats } = require("../workers/helpers");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
@@ -1362,8 +1363,12 @@ function sanitizePayload(payload) {
     delete clean.tool_choice;
   }
 
-  // Smart tool selection (universal, applies to all providers)
-  if (config.smartToolSelection?.enabled && Array.isArray(clean.tools) && clean.tools.length > 0) {
+  // Smart tool selection (server mode only). In client/passthrough mode the
+  // client (e.g. Claude Code) owns tool execution, so stripping its tools would
+  // make the model emit calls for tools we removed — they then get dropped as
+  // "hallucinated" and the session makes no progress. Pass tools through intact.
+  const inClientMode = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
+  if (!inClientMode && config.smartToolSelection?.enabled && Array.isArray(clean.tools) && clean.tools.length > 0) {
     const classification = classifyRequestType(clean);
     const selectedTools = selectToolsSmartly(clean.tools, classification, {
       provider: providerType,
@@ -1977,12 +1982,30 @@ IMPORTANT TOOL USAGE RULES:
     cleanPayload._tenantPolicy = options.tenantPolicy;
   }
 
+  // Thread session id for provider affinity — keeps a tool-bearing
+  // conversation on one provider so tool_call_id linkage doesn't break.
+  if (session?.id) {
+    cleanPayload._sessionId = session.id;
+  }
+
   // RTK-inspired tool result compression: compress large tool_results
   // before they reach the model (saves 60-90% on test/git/lint output)
   if (config.toolResultCompression?.enabled !== false) {
     const { compressToolResults } = require("../context/tool-result-compressor");
     const tier = cleanPayload._routingTier || "MEDIUM";
     compressToolResults(cleanPayload.messages, { tier });
+  }
+
+  // MCP-aware tool dedup: drop built-in tools superseded by present MCP tools
+  // (e.g. WebSearch/WebFetch when Exa/Tavily MCP is available). Always on.
+  const { applyToolDedup } = require("../context/tool-dedup");
+  applyToolDedup(cleanPayload);
+
+  // Caveman terse-output injection (opt-in): nudge the model toward shorter
+  // responses to reduce output tokens.
+  if (config.caveman?.enabled === true) {
+    const { injectCaveman } = require("../context/caveman");
+    cleanPayload.system = injectCaveman(cleanPayload.system);
   }
 
   if (agentTimer) agentTimer.mark("preInvokeModel");
@@ -3733,6 +3756,14 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
       durationMs: 0,
       terminationReason: "suggestion_mode_skip",
     };
+  }
+
+  // === REQUEST BYPASS ===
+  // Claude CLI housekeeping (Warmup pings, topic/title extraction) doesn't
+  // need a model call — return a canned response and skip the provider.
+  const bypass = detectBypass({ payload, headers });
+  if (bypass) {
+    return buildBypassResponse(bypass, requestedModel);
   }
 
   // === PREFLIGHT CHECK ===
