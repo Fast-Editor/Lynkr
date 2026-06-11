@@ -545,6 +545,28 @@ TOOL_INJECTION_ENABLED=false
 CODE_MODE_ENABLED=true
 ```
 
+Always-on (no config): **smart tool selection** (server mode), **RTK tool-result
+compression** (test/git/grep/lint/build/JSON output), **MCP tool dedup** (drops
+built-in WebSearch/WebFetch when an Exa/Tavily MCP tool is present), and
+**request bypass** (Claude CLI Warmup / title-extraction calls are answered
+locally, never hitting a provider).
+
+Optional **terse-output mode** to cut *output* tokens:
+```bash
+CAVEMAN_ENABLED=true        # off by default — nudges the model to be concise
+CAVEMAN_LEVEL=lite          # lite | full | ultra
+```
+
+### Cost tracking & model pricing
+Per-request cost is computed from a model-pricing registry (LiteLLM → models.dev,
+cached 24h) and recorded in telemetry. Models the registry doesn't know record
+`cost_usd=null` (logged once) rather than a fabricated price. Pin prices for
+unknown models:
+```bash
+# Per-1M-token USD prices, JSON keyed by model name
+MODEL_PRICE_OVERRIDES={"my-model":{"input":0.5,"output":1.5}}
+```
+
 ### Memory System (Titans-inspired)
 ```bash
 MEMORY_ENABLED=true
@@ -652,35 +674,45 @@ npm start
 
 ## Benchmark Results
 
-Measured on real agentic coding workloads (Claude Code / Cursor sessions) with Ollama, Moonshot, and Azure OpenAI backends. Run with `node benchmark-tier-routing.js`.
+Head-to-head against **LiteLLM** on the **same backends** (Ollama `minimax-m2.5`, Moonshot, Azure OpenAI), 9 scenarios across 4 feature categories. Apples-to-apples comparison is Lynkr vs LiteLLM **billed tokens on the same scenario**. Run with `node benchmark-tier-routing.js`.
 
-### Token compression
+> _Run: June 5, 2026 · Lynkr v9.3.2 · LiteLLM v1.87.1 · macOS, Apple Silicon._
 
-| Scenario | Tokens without Lynkr | Tokens with Lynkr | Reduction |
+### Token reduction (vs LiteLLM, same model & prompt)
+
+| Mechanism | Lynkr | LiteLLM | Result |
 |---|---|---|---|
-| 14-tool request (read task) | 1,042 | **547** | **47%** |
-| 14-tool request (write task) | 1,043 | **412** | **60%** |
-| Large JSON grep result (60 items) | 3,458 | **427** | **87.6%** |
+| Smart tool selection (14 tools) | **959** tokens · $0.0044 | 2,085 tokens · $0.0091 | **53% fewer tokens, 52% cheaper** |
+| TOON compression (60-item grep JSON) | **427** tokens · $0.009 | 3,458 tokens · $0.018 | **87.6% fewer tokens, 50% cheaper** |
 
-Lynkr strips irrelevant tool schemas before forwarding (smart tool selection) and binary-compresses large JSON tool results (TOON) — both happen in-process with no added latency.
+Lynkr strips irrelevant tool schemas (smart tool selection) and binary-compresses large JSON tool results (TOON) — both in-process, no added latency.
 
 ### Semantic cache
 
 | | Tokens billed | Response time |
 |---|---|---|
 | First call (cold) | 2,857 | 1,891ms |
-| **Second call — paraphrased, cache hit** | **0** | **171ms** |
+| **Second call — paraphrased, cache hit** | **0** (served from cache) | **171ms (11× faster)** |
 
-Near-identical prompts return cached responses in 171ms. Zero tokens billed on a cache hit.
+Near-identical prompts return cached responses in 171ms. Zero model tokens billed on a cache hit.
 
 ### Tier routing
 
-| Request | Routed to |
-|---|---|
-| "What does git stash do?" | SIMPLE → local model (free) |
-| JWT vs cookies security analysis | COMPLEX → cloud model (correct) |
+| Request | Lynkr routes to | LiteLLM routes to |
+|---|---|---|
+| "What does git stash do?" | `minimax-m2.5` (local, free) | Ollama (local) |
+| JWT vs cookies security analysis | `moonshot` (cloud — correct) | **Ollama (local — wrong call)** |
 
-Lynkr scores each request on 15 dimensions (token count, code complexity, reasoning markers, risk signals, agentic patterns) and routes automatically. No caller changes needed.
+Lynkr scores each request on 15 dimensions (token count, code complexity, reasoning markers, risk signals, agentic patterns) and escalates automatically. LiteLLM's `cost-based-routing` sends everything to the cheapest model regardless of complexity.
+
+### Cost projection (100,000 requests/month, same backend)
+
+| | Monthly cost | vs LiteLLM |
+|---|---|---|
+| LiteLLM | ~$818 | baseline |
+| **Lynkr** | **~$409** | **~50% cheaper** |
+
+_Based on a tool-heavy agentic session (TOON scenario). On equal footing — same provider, same model — Lynkr is cheaper due to token optimization._
 
 → [Full benchmark report with methodology](BENCHMARK_REPORT.md)
 

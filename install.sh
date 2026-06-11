@@ -108,8 +108,24 @@ clone_or_update() {
 install_dependencies() {
     print_info "Installing dependencies..."
     cd "$INSTALL_DIR"
-    npm install --production
+    # --omit=dev keeps optionalDependencies (better-sqlite3, hnswlib-node,
+    # tree-sitter) which back telemetry, the memory store and routing ML.
+    # The postinstall hook (scripts/check-native.js) verifies the native ABI
+    # and rebuilds if Node was upgraded — best-effort, never fails the install.
+    npm install --omit=dev
     print_success "Dependencies installed"
+
+    # Native optional modules need a C/C++ toolchain only if no prebuilt binary
+    # is available for this platform. They degrade gracefully if absent.
+    if ! node -e "const D=require('better-sqlite3'); new D(':memory:').close()" >/dev/null 2>&1; then
+        print_warning "Native module 'better-sqlite3' is not loadable."
+        echo "     Telemetry, the memory store and sessions need it. To enable:"
+        echo "       - Ensure a build toolchain is present (Xcode CLT on macOS, build-essential + python3 on Linux), then:"
+        echo "       - ${BLUE}cd $INSTALL_DIR && npm run rebuild-native${NC}"
+        echo "     Lynkr still runs without it (those features stay disabled)."
+    else
+        print_success "Native modules OK (telemetry, memory, sessions enabled)"
+    fi
 }
 
 # Create default .env file
@@ -131,7 +147,7 @@ create_env_file() {
 MODEL_PROVIDER=ollama
 
 # Server Configuration
-PORT=8080
+PORT=8081
 
 # Ollama Configuration (default for local development)
 OLLAMA_MODEL=qwen2.5-coder:7b
@@ -161,7 +177,7 @@ EOF
         print_info "📝 Configuration ready! Key settings:"
         echo "     • Default provider: Ollama (local, offline)"
         echo "     • Memory system: Enabled (learns from conversations)"
-        echo "     • Port: 8080"
+        echo "     • Port: 8081"
         echo ""
         print_warning "To use cloud providers (Databricks/OpenAI/Azure):"
         echo "     Edit: ${BLUE}nano $INSTALL_DIR/.env${NC}"
@@ -220,7 +236,7 @@ print_next_steps() {
     echo "     ${BLUE}lynkr${NC}"
     echo ""
     echo "  3. Configure Claude Code CLI:"
-    echo "     ${BLUE}export ANTHROPIC_BASE_URL=http://localhost:8080${NC}"
+    echo "     ${BLUE}export ANTHROPIC_BASE_URL=http://localhost:8081${NC}"
     echo "     ${BLUE}claude${NC}"
     echo ""
     echo "  ${YELLOW}Option B: Use Cloud Providers (Databricks/OpenAI/Azure)${NC}"
@@ -238,7 +254,7 @@ print_next_steps() {
     echo "     ${BLUE}lynkr${NC}"
     echo ""
     echo "  3. Configure Claude Code CLI:"
-    echo "     ${BLUE}export ANTHROPIC_BASE_URL=http://localhost:8080${NC}"
+    echo "     ${BLUE}export ANTHROPIC_BASE_URL=http://localhost:8081${NC}"
     echo "     ${BLUE}export ANTHROPIC_API_KEY=any-non-empty-value${NC}  ${GREEN}← Placeholder${NC}"
     echo "     ${BLUE}claude${NC}"
     echo ""

@@ -13,13 +13,18 @@ const { extractContent } = require('./complexity-analyzer');
 // Substring keywords found in file paths or instruction text.
 // Matched case-insensitively as raw substrings, so "auth" hits
 // "src/auth/login.ts" and "authentication".
+// NOTE: keywords are matched as case-insensitive *substrings* against file
+// paths, so overly generic terms cause false positives. 'session' and 'token'
+// were removed because they match benign paths (src/sessions/*, tokenizer.js,
+// token-budget.js) and were force-escalating ordinary requests to COMPLEX —
+// real secrets/credentials are still covered by the keywords below.
 const PROTECTED_PATH_KEYWORDS = [
-  'auth', 'oauth', 'jwt', 'session', 'security', 'permission', 'rbac',
+  'auth', 'oauth', 'jwt', 'security', 'permission', 'rbac',
   'payment', 'payments', 'billing', 'invoice', 'subscription',
   'migration', 'migrations', 'schema',
   'infra', 'terraform', 'kustomize', 'helm', 'kubernetes',
   '.github/workflows', '.env', 'secret', 'credential',
-  'api-key', 'api_key', 'apikey', 'token',
+  'api-key', 'api_key', 'apikey',
   'webhook', 'admin',
 ];
 

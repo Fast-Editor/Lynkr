@@ -208,6 +208,11 @@ const tokenBudgetWarning = Number.parseInt(process.env.TOKEN_BUDGET_WARNING ?? "
 const tokenBudgetMax = Number.parseInt(process.env.TOKEN_BUDGET_MAX ?? "180000", 10);
 const tokenBudgetEnforcement = process.env.TOKEN_BUDGET_ENFORCEMENT !== "false"; // default true
 
+// Caveman terse-output injection (opt-in, off by default)
+const cavemanEnabled = process.env.CAVEMAN_ENABLED === "true";
+const cavemanLevel = (process.env.CAVEMAN_LEVEL ?? "lite").toLowerCase();
+
+
 // TOON payload compression (opt-in)
 const toonEnabled = process.env.TOON_ENABLED === "true"; // default false
 const toonMinBytes = Number.parseInt(process.env.TOON_MIN_BYTES ?? "4096", 10);
@@ -640,6 +645,10 @@ var config = {
   toolExecutionMode,
   toolResultCompression: {
     enabled: true,
+  },
+  caveman: {
+    enabled: cavemanEnabled,
+    level: cavemanLevel,
   },
   server: {
     jsonLimit: process.env.REQUEST_JSON_LIMIT ?? "1gb",

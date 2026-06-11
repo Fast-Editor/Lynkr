@@ -5,24 +5,74 @@ const metrics = require('../metrics');
 const { getMetricsCollector } = require('../observability/metrics');
 const { TIER_DEFINITIONS } = require('../routing/model-tiers');
 
-function getConfiguredProviders() {
+// Per-provider type + whether its credentials/endpoint are actually present.
+function providerMeta() {
   const c = config;
-  const providers = [];
-  const add = (name, type, ok) => ok && providers.push({ name, type });
+  return {
+    databricks:        { type: 'cloud', configured: !!(c.databricks?.url && c.databricks?.apiKey) },
+    'azure-anthropic': { type: 'cloud', configured: !!(c.azureAnthropic?.endpoint && c.azureAnthropic?.apiKey) },
+    bedrock:           { type: 'cloud', configured: !!c.bedrock?.apiKey },
+    openrouter:        { type: 'cloud', configured: !!c.openrouter?.apiKey },
+    openai:            { type: 'cloud', configured: !!c.openai?.apiKey },
+    'azure-openai':    { type: 'cloud', configured: !!(c.azureOpenAI?.endpoint && c.azureOpenAI?.apiKey) },
+    vertex:            { type: 'cloud', configured: !!c.vertex?.projectId },
+    moonshot:          { type: 'cloud', configured: !!c.moonshot?.apiKey },
+    ollama:            { type: 'local', configured: !!c.ollama?.endpoint },
+    llamacpp:          { type: 'local', configured: !!c.llamacpp?.endpoint },
+    lmstudio:          { type: 'local', configured: !!c.lmstudio?.endpoint },
+  };
+}
 
-  add('databricks',     'cloud', c.databricks?.url && c.databricks?.apiKey);
-  add('azure-anthropic','cloud', c.azureAnthropic?.endpoint && c.azureAnthropic?.apiKey);
-  add('bedrock',        'cloud', c.bedrock?.apiKey);
-  add('openrouter',     'cloud', c.openrouter?.apiKey);
-  add('openai',         'cloud', c.openai?.apiKey);
-  add('azure-openai',   'cloud', c.azureOpenAI?.endpoint && c.azureOpenAI?.apiKey);
-  add('vertex',         'cloud', c.vertex?.projectId);
-  add('moonshot',       'cloud', c.moonshot?.apiKey);
-  add('ollama',         'local', c.ollama?.endpoint);
-  add('llamacpp',       'local', c.llamacpp?.endpoint);
-  add('lmstudio',       'local', c.lmstudio?.endpoint);
+// Providers the active routing config actually points at: the provider prefix
+// of each TIER_* value (format `provider:model[:variant]`) plus the base
+// MODEL_PROVIDER. Returns Map<providerName, tierLabels[]>.
+function getReferencedProviders() {
+  const refs = new Map();
+  const note = (provider, label) => {
+    const key = String(provider || '').trim().toLowerCase();
+    if (!key) return;
+    if (!refs.has(key)) refs.set(key, []);
+    if (label && !refs.get(key).includes(label)) refs.get(key).push(label);
+  };
 
-  return providers;
+  const tiers = config.modelTiers || {};
+  for (const [tier, val] of Object.entries(tiers)) {
+    if (typeof val === 'string' && val.trim()) {
+      note(val.split(':')[0], tier);
+    }
+  }
+  note(config.modelProvider?.type, 'default');
+
+  return refs;
+}
+
+// Providers used by the routing config that have credentials/endpoints set.
+// Unknown providers (no metadata) are included optimistically since we can't
+// verify their credentials.
+function getConfiguredProviders() {
+  const meta = providerMeta();
+  const out = [];
+  for (const [name, tiers] of getReferencedProviders()) {
+    const m = meta[name];
+    if (!m || m.configured) {
+      out.push({ name, type: m?.type || 'cloud', tiers });
+    }
+  }
+  return out;
+}
+
+// Tiers pointing at a known provider whose credentials/endpoint are missing —
+// surfaced as a warning so a misconfigured tier is visible.
+function getProviderWarnings() {
+  const meta = providerMeta();
+  const out = [];
+  for (const [name, tiers] of getReferencedProviders()) {
+    const m = meta[name];
+    if (m && !m.configured) {
+      out.push({ name, type: m.type, tiers });
+    }
+  }
+  return out;
 }
 
 // Noise provider names injected by unit tests — filter them out of UI
@@ -92,7 +142,8 @@ function overview(req, res) {
     port:          config.port,
     version:       process.env.npm_package_version || '9.0.2',
     modelProvider: config.modelProvider?.type || 'unknown',
-    providers:     getConfiguredProviders(),
+    providers:        getConfiguredProviders(),
+    providerWarnings: getProviderWarnings(),
     statsWindow:   win.label,
     metrics: {
       requestsTotal:    snap.requestsTotal,

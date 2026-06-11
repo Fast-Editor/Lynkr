@@ -176,6 +176,21 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
     }
   }
 
+  // Kimi/Moonshot (and some OpenAI-compatible APIs) reject a message whose
+  // content is an empty string with "Invalid request: tokenization failed".
+  // This happens when a turn had only non-text blocks (thinking / image /
+  // stripped content) and flattened to "". Replace empty/whitespace-only
+  // content with a single space — but never touch an assistant message that
+  // carries tool_calls, where content: null is intentional and required.
+  for (const m of converted) {
+    if (m.role === 'tool') continue;
+    const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+    if (hasToolCalls) continue;
+    if (typeof m.content !== 'string' || m.content.trim() === '') {
+      m.content = ' ';
+    }
+  }
+
   // Log the converted messages for debugging
   logger.debug({
     inputCount: anthropicMessages.length,

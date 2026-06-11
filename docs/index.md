@@ -50,7 +50,7 @@
     "description": "Self-hosted LLM gateway server that enables Claude Code, Cursor, and AI coding tools to work with any LLM provider with 60-80% cost reduction.",
     "url": "https://github.com/Fast-Editor/Lynkr",
     "downloadUrl": "https://www.npmjs.com/package/lynkr",
-    "softwareVersion": "9.3.2",
+    "softwareVersion": "9.4.6",
     "author": {
       "@type": "Person",
       "name": "Vishal Veera Reddy",
@@ -107,7 +107,7 @@
 <section class="hero">
   <div class="hero-badge">
     <span class="hero-badge-dot"></span>
-    <span>v9.3.2 — Production Ready</span>
+    <span>v9.4.6 — Production Ready</span>
   </div>
 
   <h1 class="hero-title">

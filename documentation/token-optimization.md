@@ -12,6 +12,7 @@ Lynkr reduces tokens sent to the model through multiple independent mechanisms. 
 |---|---|---|
 | **Smart tool selection** | **47–60%** | 14-tool request (read or write task) |
 | **TOON JSON compression** | **87.6%** | Large grep/file-read tool result (60-item array) |
+| **Tool-result compression (RTK)** | up to **87.6%** | grep/test/git/lint/build/log/JSON tool output |
 | **Semantic cache** | **100% on hit, 171ms** | Paraphrased repeat query |
 | MCP Code Mode | **96%** | 100+ MCP tool schemas → 4 meta-tools |
 | History compression | up to 80% | Long multi-turn sessions |
@@ -45,7 +46,7 @@ At 100,000 requests/month on a tool-heavy agentic workload, this translates to *
 
 ---
 
-## 7 Optimization Phases
+## Optimization Phases
 
 ### Phase 0: MCP Code Mode (96% reduction for MCP tools)
 
@@ -283,6 +284,58 @@ HISTORY_SUMMARIZE_OLDER=true         # Summarize older turns (default: true)
 
 ---
 
+### Phase 7: Tool-Result Compression (up to 87.6% on tool output)
+
+**Problem:** Tool results dominate agentic token usage. A single `grep`, test run, `git diff`, or JSON API response can be thousands of tokens — most of it boilerplate the model doesn't need to reason over.
+
+Lynkr compresses `tool_result` blocks **in-process before forwarding** (no added latency), via two complementary mechanisms.
+
+#### 7a. RTK pattern compression
+
+Detects the *shape* of a tool result and rewrites it to a compact, information-preserving summary. Each detector only fires when it recognizes the format; unrecognized text passes through unchanged.
+
+| Detector | What it compresses | Example outcome |
+|----------|--------------------|-----------------|
+| `test_output` | jest/vitest/pytest/cargo/go test logs | Keep the summary line + failures, drop passing-test noise |
+| `git_diff` | `git diff` | Per-file `+adds/-dels` with capped change lines |
+| `git_status` | `git status` | Branch + staged/modified/untracked lists |
+| `git_log` | `git log` | One line per commit (`<sha7> <subject> (author, date)`) |
+| `lint_output` | eslint/tsc/ruff/clippy/biome | Counts grouped by rule, not every occurrence |
+| `build_output` | npm/cargo/webpack | Errors + capped warnings + success line |
+| `container_output` | docker/kubectl tables | Header + first N rows + “+M more” |
+| `json_response` | large JSON objects | Structural skeleton (search/fetch results preserved) |
+| `grep_output` | `grep`/`rg` (`file:line:content`) | Grouped by file, capped at 10 matches/file |
+| `directory_listing` | `ls`/`find`/`tree` | Grouped by directory with counts |
+| `large_file` | long source files | Imports + signatures skeleton |
+| `dedup_log` | repetitive logs | Collapses consecutive duplicate lines |
+| `smart_truncate` | very long unmatched output | Keeps head + tail, drops the middle |
+
+**Tier-aware thresholds** — compression only kicks in above a size that scales with the routing tier, so cheap models get aggressive compression and reasoning models get the full picture:
+
+| Tier | Compress if result exceeds |
+|------|----------------------------|
+| SIMPLE | 300 chars |
+| MEDIUM | 800 chars |
+| COMPLEX | 2,000 chars |
+| REASONING | never |
+
+**Lossless recovery (tee):** the full original is stashed for 5 minutes and a pointer (`[full: tee_…]`) is appended to the compressed result. The model — or you — can fetch the original via `GET /tee/:id` if the detail is actually needed.
+
+Always on (no configuration). Metrics: `GET /metrics/tool-compression`.
+
+#### 7b. TOON compression (binary JSON encoding)
+
+For large JSON tool results (arrays of objects, API payloads), TOON re-encodes the structure into a far denser representation than pretty-printed JSON — **87.6% reduction** on a 60-item grep array in benchmarks. Plain text and small payloads are left untouched.
+
+```bash
+TOON_ENABLED=true        # opt-in (default: false)
+TOON_MIN_BYTES=4096      # only compress payloads larger than this
+TOON_FAIL_OPEN=true      # on any encode error, forward the original (default: true)
+TOON_LOG_STATS=true      # log per-call compression stats
+```
+
+---
+
 ### Phase 8: Headroom Context Compression (Optional, 47-92% reduction)
 
 **Problem:** Even with all other optimizations, large requests can still exceed context limits.
@@ -308,7 +361,7 @@ HEADROOM_ENABLED=true
 
 ## Combined Savings
 
-When all 8 phases work together:
+When all phases work together:
 
 **Example Request Flow:**
 

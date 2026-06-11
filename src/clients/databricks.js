@@ -1506,10 +1506,16 @@ async function invokeMoonshot(body) {
     "claude-haiku-4-5-20251001": "kimi-k2-turbo-preview",
     "claude-haiku-4-5": "kimi-k2-turbo-preview",
     "claude-3-haiku": "kimi-k2-turbo-preview",
+    // moonshot-v1-auto 400s with "tokenization failed" (its server-side auto
+    // context-size pass fails on large tool-bearing payloads). Remap to a
+    // fixed model that's broadly available on api.moonshot.ai.
+    "moonshot-v1-auto": "moonshot-v1-128k",
   };
 
   const requestedModel = body._tierModel || body.model || config.moonshot.model;
-  const mappedModel = modelMap[requestedModel] || config.moonshot.model || "kimi-k2-turbo-preview";
+  let mappedModel = modelMap[requestedModel] || config.moonshot.model || "kimi-k2-turbo-preview";
+  // Guard against the deprecated auto model arriving via config too.
+  if (mappedModel === "moonshot-v1-auto") mappedModel = "moonshot-v1-128k";
 
   // Convert messages using existing utility
   const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
@@ -1522,12 +1528,18 @@ async function invokeMoonshot(body) {
     messages.unshift({ role: "system", content: systemContent });
   }
 
+  // kimi-k2.x (k2.5 / k2.6 …) are thinking models that only accept
+  // temperature: 1 — any other value 400s with "invalid temperature".
+  const isKimiThinking = /^kimi-k2/i.test(mappedModel);
+
   const moonshotBody = {
     model: mappedModel,
     messages,
     max_tokens: body.max_tokens || 16384,
-    temperature: body.temperature ?? 0.7,
-    top_p: body.top_p ?? 1.0,
+    // kimi-k2.x thinking models pin sampling params: temperature must be 1
+    // and top_p must be 0.95 — any other value 400s.
+    temperature: isKimiThinking ? 1 : (body.temperature ?? 0.7),
+    top_p: isKimiThinking ? 0.95 : (body.top_p ?? 1.0),
     stream: false,  // Force non-streaming - OpenAI SSE to Anthropic SSE conversion not implemented
   };
 
@@ -2027,6 +2039,65 @@ async function invokeCodex(body) {
   };
 }
 
+/**
+ * Compute request cost in USD from model pricing × token usage.
+ * Registry returns per-1M-token prices ({ input, output }); returns null when
+ * pricing is unknown so we don't record misleading zeros.
+ */
+const _unknownCostWarned = new Set();
+function computeCostUsd(model, inputTokens, outputTokens) {
+  try {
+    const { getModelRegistrySync } = require("../routing/model-registry");
+    const reg = getModelRegistrySync && getModelRegistrySync();
+    const cost = reg?.getCost?.(model);
+    if (!cost) return null;
+    // Unknown model → record null (not a fabricated default), warn once so the
+    // gap is visible and can be fixed via MODEL_PRICE_OVERRIDES.
+    if (cost.unknown) {
+      if (model && !_unknownCostWarned.has(model)) {
+        _unknownCostWarned.add(model);
+        logger.warn({ model }, "[Cost] No pricing for model — recording cost_usd=null. Set MODEL_PRICE_OVERRIDES to fix.");
+      }
+      return null;
+    }
+    if (cost.input == null && cost.output == null) return null;
+    const inUsd = ((inputTokens || 0) / 1e6) * (cost.input || 0);
+    const outUsd = ((outputTokens || 0) / 1e6) * (cost.output || 0);
+    return Number((inUsd + outUsd).toFixed(6));
+  } catch {
+    return null;
+  }
+}
+
+// Telemetry prompt/response text is always captured (truncated) to build the
+// routing ML training corpus. Stored locally in .lynkr/telemetry.db only.
+const TELEMETRY_TEXT_MAXLEN = 2000;
+
+/** Flatten the latest user message to plain text (for telemetry capture). */
+function captureRequestText(body) {
+  const messages = body?.messages;
+  if (!Array.isArray(messages)) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== "user") continue;
+    let text = "";
+    if (typeof m.content === "string") text = m.content;
+    else if (Array.isArray(m.content)) {
+      text = m.content.filter((b) => b?.type === "text").map((b) => b.text || "").join(" ");
+    }
+    if (text) return text.slice(0, TELEMETRY_TEXT_MAXLEN);
+  }
+  return null;
+}
+
+/** Flatten an Anthropic response's text blocks to plain text (for telemetry). */
+function captureResponseText(resultJson) {
+  const content = resultJson?.content;
+  if (!Array.isArray(content)) return null;
+  const text = content.filter((b) => b?.type === "text").map((b) => b.text || "").join(" ");
+  return text ? text.slice(0, TELEMETRY_TEXT_MAXLEN) : null;
+}
+
 async function invokeModel(body, options = {}) {
   const { determineProviderSmart, isFallbackEnabled, getFallbackProvider } = require("./routing");
   const metricsCollector = getMetricsCollector();
@@ -2233,6 +2304,9 @@ async function invokeModel(body, options = {}) {
       circuit_breaker_state: breaker.state,
       quality_score: qualityScore,
       tokens_per_second: outputTokens && latency > 0 ? outputTokens / (latency / 1000) : null,
+      cost_usd: computeCostUsd(routingDecision.model || body._tierModel, inputTokens, outputTokens),
+      request_text: captureRequestText(body),
+      response_text: captureResponseText(result.json),
     });
 
     // Return result with provider info and routing decision for headers
@@ -2394,6 +2468,9 @@ async function invokeModel(body, options = {}) {
           { status_code: 200, output_tokens: fbOutputTokens, tool_calls_made: fbToolCalls, was_fallback: true, retry_count: 0, latency_ms: Date.now() - startTime }
         ),
         tokens_per_second: fbOutputTokens && fallbackLatency > 0 ? fbOutputTokens / (fallbackLatency / 1000) : null,
+        cost_usd: computeCostUsd(routingDecision.model || body._tierModel, fbInputTokens, fbOutputTokens),
+        request_text: captureRequestText(body),
+        response_text: captureResponseText(fallbackResult.json),
       });
 
       // Return result with actual provider used (fallback provider) and routing decision

@@ -455,6 +455,107 @@ function compressContainerOutput(text) {
   return `${header}\n${dataLines.slice(0, 10).join("\n")}\n... +${dataLines.length - 10} more (${dataLines.length} total)`;
 }
 
+// 11. Grep / ripgrep output ("file:lineno:content"), per-file match cap.
+// Ported from 9router RTK grep filter (rtk/src/cmds/system/pipe_cmd.rs).
+const GREP_PER_FILE_MAX = 10;
+function compressGrep(text) {
+  const byFile = new Map();
+  let total = 0;
+
+  for (const line of text.split("\n")) {
+    // splitn(3, ':') — only split on the first two colons.
+    const first = line.indexOf(":");
+    if (first === -1) continue;
+    const second = line.indexOf(":", first + 1);
+    if (second === -1) continue;
+    const file = line.slice(0, first);
+    const lineNumStr = line.slice(first + 1, second);
+    const content = line.slice(second + 1);
+    if (!/^\d+$/.test(lineNumStr)) continue;
+    total++;
+    if (!byFile.has(file)) byFile.set(file, []);
+    byFile.get(file).push([lineNumStr, content]);
+  }
+
+  // Require a meaningful number of matches so we don't mangle prose that
+  // happens to contain a "word:123:..." line.
+  if (total < 5) return null;
+
+  const files = Array.from(byFile.keys()).sort();
+  let out = `${total} matches in ${files.length}F:\n\n`;
+  for (const file of files) {
+    const matches = byFile.get(file);
+    out += `[file] ${file} (${matches.length}):\n`;
+    for (const [lineNum, content] of matches.slice(0, GREP_PER_FILE_MAX)) {
+      out += `  ${lineNum.padStart(4)}: ${content.trim()}\n`;
+    }
+    if (matches.length > GREP_PER_FILE_MAX) {
+      out += `  +${matches.length - GREP_PER_FILE_MAX}\n`;
+    }
+    out += "\n";
+  }
+  return out;
+}
+
+// 12. Generic log de-duplication: collapse consecutive duplicate lines and
+// runs of blank lines, with a hard line cap. Ported from 9router RTK dedupLog.
+const DEDUP_LINE_MAX = 2000;
+function compressDedupLog(text) {
+  const lines = text.split("\n");
+  const out = [];
+  let prev = null;
+  let runCount = 0;
+  let blankStreak = 0;
+
+  const flushRun = () => {
+    if (prev !== null && runCount > 1) {
+      out.push(`  ... (${runCount - 1} duplicate lines)`);
+    }
+  };
+
+  for (const line of lines) {
+    if (line.trim() === "") {
+      if (blankStreak < 1) out.push(line);
+      blankStreak += 1;
+      flushRun();
+      prev = null;
+      runCount = 0;
+      continue;
+    }
+    blankStreak = 0;
+    if (line === prev) {
+      runCount += 1;
+      continue;
+    }
+    flushRun();
+    out.push(line);
+    prev = line;
+    runCount = 1;
+    if (out.length >= DEDUP_LINE_MAX) {
+      out.push(`... (truncated at ${DEDUP_LINE_MAX} lines)`);
+      return out.join("\n");
+    }
+  }
+  flushRun();
+  return out.join("\n");
+}
+
+// 13. Last-resort generic truncation: keep head + tail lines, drop the middle.
+// Only kicks in for very long output no specific compressor matched.
+// Ported from 9router RTK smartTruncate.
+const SMART_TRUNCATE_HEAD = 120;
+const SMART_TRUNCATE_TAIL = 60;
+const SMART_TRUNCATE_MIN_LINES = 250;
+function compressSmartTruncate(text) {
+  const lines = text.split("\n");
+  if (lines.length < SMART_TRUNCATE_MIN_LINES) return null;
+
+  const head = lines.slice(0, SMART_TRUNCATE_HEAD);
+  const tail = lines.slice(lines.length - SMART_TRUNCATE_TAIL);
+  const cut = lines.length - head.length - tail.length;
+  return [...head, `... +${cut} lines truncated`, ...tail].join("\n");
+}
+
 // ── Compression Pipeline ─────────────────────────────────────────────
 
 const COMPRESSORS = [
@@ -466,8 +567,13 @@ const COMPRESSORS = [
   { name: "build_output", fn: compressBuildOutput },
   { name: "container_output", fn: compressContainerOutput },
   { name: "json_response", fn: compressJSON },
+  { name: "grep_output", fn: compressGrep },
   { name: "directory_listing", fn: compressDirectoryListing },
   { name: "large_file", fn: compressLargeFile },
+  // Generic fallbacks last: dedup exact-duplicate spam, then hard head/tail
+  // truncation only if nothing more specific applied.
+  { name: "dedup_log", fn: compressDedupLog },
+  { name: "smart_truncate", fn: compressSmartTruncate },
 ];
 
 // Compression levels tied to routing tiers
