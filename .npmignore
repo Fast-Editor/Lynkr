@@ -76,3 +76,6 @@ scripts/export-routellm-bert.py
 CITATIONS.bib
 monitor-agents.sh
 src/db/database.sqlite
+.venv/
+.impeccable/
+path/
