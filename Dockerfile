@@ -9,12 +9,12 @@ WORKDIR /app
 ENV CXXFLAGS="-std=gnu++20"
 RUN apk add --no-cache python3 make g++ git bash
 
-# Layer cache: dependencies first, source second
+# Layer cache: install prod deps before copying source so this layer
+# is reused on source-only changes
 COPY package.json package-lock.json ./
-RUN npm ci && npm cache clean --force && rm -rf /root/.npm /tmp/*
+RUN npm ci --omit=dev && npm cache clean --force && rm -rf /root/.npm /tmp/*
 
 COPY . .
-RUN npm ci --omit=dev
 
 ############################
 # Runtime stage
@@ -23,7 +23,7 @@ FROM node:24-alpine AS runtime
 
 ARG VCS_REF
 ARG BUILD_DATE
-ARG VERSION=9.3.2
+ARG VERSION=9.5.0
 
 LABEL org.opencontainers.image.title="Lynkr" \
       org.opencontainers.image.description="Universal LLM proxy for Claude Code, Cursor, and AI coding tools" \
@@ -33,7 +33,7 @@ LABEL org.opencontainers.image.title="Lynkr" \
       org.opencontainers.image.source="https://github.com/Fast-Editor/Lynkr" \
       org.opencontainers.image.url="https://vishalveerareddy123.github.io/Lynkr/" \
       org.opencontainers.image.vendor="Lynkr" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="Apache-2.0"
 
 WORKDIR /app
 
