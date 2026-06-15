@@ -1,4 +1,5 @@
 const logger = require("../logger");
+const { repairToolCallIds } = require("./tool-call-repair");
 
 /**
  * Convert Anthropic tool format to OpenAI/OpenRouter format
@@ -146,35 +147,11 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
     }
   }
 
-  // Fix tool_call_id mismatches: ensure every tool message's tool_call_id
-  // matches the id in the preceding assistant's tool_calls array.
-  // IDs can drift when multiple conversion layers (Anthropic↔OpenAI) each
-  // generate their own IDs.
-  for (let i = 0; i < converted.length; i++) {
-    const msg = converted[i];
-    if (msg.role !== 'tool') continue;
-
-    // Find the nearest preceding assistant with tool_calls
-    for (let j = i - 1; j >= 0; j--) {
-      const prev = converted[j];
-      if (prev.role === 'user') break;
-      if (prev.role === 'assistant' && Array.isArray(prev.tool_calls) && prev.tool_calls.length > 0) {
-        if (!prev.tool_calls.some(tc => tc.id === msg.tool_call_id)) {
-          // Mismatch — pick the first unmatched tool_call id
-          const usedIds = new Set();
-          for (let k = j + 1; k < converted.length; k++) {
-            if (converted[k].role === 'tool' && k !== i) usedIds.add(converted[k].tool_call_id);
-          }
-          const available = prev.tool_calls.find(tc => !usedIds.has(tc.id));
-          if (available) {
-            logger.info({ from: msg.tool_call_id, to: available.id }, "Fixed tool_call_id mismatch");
-            msg.tool_call_id = available.id;
-          }
-        }
-        break;
-      }
-    }
-  }
+  // Repair tool_call_id linkage before handing to OpenAI-compatible providers:
+  // backfill blank assistant tool_call ids, re-link drifted/blank tool_call_ids
+  // to the nearest preceding assistant tool_call, and drop orphan tool results.
+  // Moonshot/Kimi (and others) hard-400 on any empty or unmatched tool_call_id.
+  repairToolCallIds(converted);
 
   // Kimi/Moonshot (and some OpenAI-compatible APIs) reject a message whose
   // content is an empty string with "Invalid request: tokenization failed".
