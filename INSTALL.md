@@ -163,8 +163,11 @@ wire_api = "responses"
 ```bash
 brew tap fast-editor/lynkr
 brew install lynkr
+lynkr --version
 lynkr start
 ```
+
+Upgrade later with `brew update && brew upgrade lynkr` — the formula tracks the latest [`lynkr` npm release](https://www.npmjs.com/package/lynkr) automatically.
 
 ### Docker
 

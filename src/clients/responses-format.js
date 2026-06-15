@@ -8,6 +8,7 @@
  */
 
 const logger = require("../logger");
+const { repairToolCallIds } = require("./tool-call-repair");
 
 /**
  * Map client tool names back to Lynkr tool names
@@ -202,6 +203,12 @@ function convertResponsesToChat(responsesRequest) {
 
         return cleaned;
       });
+
+    // Repair tool_call_id linkage now, before anything downstream consumes the
+    // converted array. Codex bundled-plugin (Browser/Computer-use) calls and
+    // synthetic tool outputs can arrive without a usable call_id, which
+    // otherwise flattens to a blank tool_call_id and 400s at the provider.
+    repairToolCallIds(messages);
 
     logger.info({
       originalCount: input.length,
