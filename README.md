@@ -631,11 +631,13 @@ npm install -g lynkr
 curl -fsSL https://raw.githubusercontent.com/Fast-Editor/Lynkr/main/install.sh | bash
 ```
 
-**Homebrew**
+**Homebrew** (macOS / Linux)
 ```bash
 brew tap fast-editor/lynkr
 brew install lynkr
+lynkr --version
 ```
+Upgrade later with `brew update && brew upgrade lynkr`. The formula tracks the latest [`lynkr` npm release](https://www.npmjs.com/package/lynkr) automatically.
 
 **Docker**
 ```bash
