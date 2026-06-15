@@ -128,8 +128,9 @@ lynkr start
 
 **Update Lynkr:**
 ```bash
-brew upgrade lynkr
+brew update && brew upgrade lynkr
 ```
+The formula tracks the latest [`lynkr` npm release](https://www.npmjs.com/package/lynkr) automatically.
 
 **Benefits:**
 - ✅ Native macOS/Linux package management
