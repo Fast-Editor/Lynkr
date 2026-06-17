@@ -9,6 +9,7 @@ const {
   injectAnthropicCacheBreakpoints,
   injectPromptCaching,
   needsCacheInjection,
+  modelSupportsCacheControl,
 } = require('../src/clients/prompt-cache-injection');
 
 // ── needsCacheInjection ─────────────────────────────────────────────
@@ -217,6 +218,85 @@ describe('injectPromptCaching', () => {
       messages: [{ role: 'user', content: 'hi' }],
     };
     const count = injectPromptCaching(body, 'ollama');
+    assert.equal(count, 0);
+  });
+});
+
+// ── model-capability gate ───────────────────────────────────────────
+
+describe('modelSupportsCacheControl', () => {
+  it('always supports for Anthropic-only providers', () => {
+    assert.equal(modelSupportsCacheControl({}, 'azure-anthropic'), true);
+    assert.equal(modelSupportsCacheControl({ _tierModel: 'whatever' }, 'databricks'), true);
+  });
+
+  it('fails open when no model id is present', () => {
+    assert.equal(modelSupportsCacheControl({}, 'bedrock'), true);
+    assert.equal(modelSupportsCacheControl({}, 'openrouter'), true);
+  });
+
+  it('supports Claude model ids on bedrock', () => {
+    assert.equal(
+      modelSupportsCacheControl(
+        { _tierModel: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0' },
+        'bedrock'
+      ),
+      true
+    );
+  });
+
+  it('blocks non-Claude bedrock families', () => {
+    assert.equal(modelSupportsCacheControl({ _tierModel: 'meta.llama3-70b-instruct-v1:0' }, 'bedrock'), false);
+    assert.equal(modelSupportsCacheControl({ _tierModel: 'amazon.titan-text-express-v1' }, 'bedrock'), false);
+    assert.equal(modelSupportsCacheControl({ _tierModel: 'mistral.mistral-7b-instruct-v0:2' }, 'bedrock'), false);
+    assert.equal(modelSupportsCacheControl({ _tierModel: 'cohere.command-text-v14' }, 'bedrock'), false);
+  });
+
+  it('blocks non-supporting openrouter models', () => {
+    assert.equal(modelSupportsCacheControl({ model: 'meta-llama/llama-3-70b' }, 'openrouter'), false);
+    assert.equal(modelSupportsCacheControl({ model: 'openai/gpt-4o' }, 'openrouter'), false);
+  });
+});
+
+describe('injectPromptCaching capability gate', () => {
+  it('still injects for bedrock when the model id is unknown (backward compatible)', () => {
+    const body = {
+      system: 'test',
+      messages: [{ role: 'user', content: 'hi' }],
+    };
+    const count = injectPromptCaching(body, 'bedrock');
+    assert.equal(count, 2);
+  });
+
+  it('injects for a Claude model on bedrock', () => {
+    const body = {
+      _tierModel: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      system: 'test',
+      messages: [{ role: 'user', content: 'hi' }],
+    };
+    const count = injectPromptCaching(body, 'bedrock');
+    assert.equal(count, 2);
+  });
+
+  it('skips injection for a non-Claude bedrock model and leaves body untouched', () => {
+    const body = {
+      _tierModel: 'meta.llama3-70b-instruct-v1:0',
+      system: 'test',
+      messages: [{ role: 'user', content: 'hi' }],
+    };
+    const count = injectPromptCaching(body, 'bedrock');
+    assert.equal(count, 0);
+    assert.equal(body.system, 'test'); // unchanged string, no array conversion
+    assert.equal(body.messages[0].content, 'hi');
+  });
+
+  it('skips injection for a GPT model routed via openrouter', () => {
+    const body = {
+      model: 'openai/gpt-4o',
+      system: 'test',
+      messages: [{ role: 'user', content: 'hi' }],
+    };
+    const count = injectPromptCaching(body, 'openrouter');
     assert.equal(count, 0);
   });
 });
