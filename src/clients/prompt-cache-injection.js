@@ -119,6 +119,51 @@ function needsCacheInjection(provider) {
   return EXPLICIT_CACHE_PROVIDERS.has(provider);
 }
 
+// Model families that do NOT support cache_control breakpoints. cache_control
+// is an Anthropic construct; on aggregating providers (Bedrock, OpenRouter) it
+// only applies to models that natively understand it (Claude, and Gemini via
+// proxy). Injecting markers onto these families produces request shapes the
+// upstream model rejects or silently ignores.
+const NON_CACHE_MODEL_PATTERNS = [
+  /(^|[./-])titan/i,
+  /(^|[./-])nova/i,
+  /(^|[./-])llama/i,
+  /(^|[./-])mistral/i,
+  /(^|[./-])mixtral/i,
+  /(^|[./-])cohere/i,
+  /(^|[./-])command/i, // cohere command-*
+  /(^|[./-])j2/i,      // ai21 jurassic
+  /(^|[./-])jamba/i,
+  /(^|[./-])deepseek/i,
+  /(^|[./-])qwen/i,
+  /(^|[./-])gpt/i,
+  /(^|[./-])openai/i,
+];
+
+/**
+ * Determine whether the model targeted by this request supports cache_control.
+ *
+ * Some providers in EXPLICIT_CACHE_PROVIDERS (notably bedrock and openrouter)
+ * route to many model families, only some of which understand cache_control.
+ * This guard inspects the resolved model id and blocks injection for families
+ * that are known not to support it. When the model id is absent or
+ * unrecognized, injection is allowed (fail-open) — Claude/Gemini-style ids and
+ * Anthropic-only providers fall through to true.
+ *
+ * @param {Object} body - Request body (may carry the resolved model id)
+ * @param {string} provider - Provider name
+ * @returns {boolean}
+ */
+function modelSupportsCacheControl(body, provider) {
+  // Providers that only ever route to Anthropic models always support it.
+  if (provider === 'azure-anthropic' || provider === 'databricks') return true;
+
+  const modelId = body && (body._tierModel || body.model);
+  if (!modelId || typeof modelId !== 'string') return true; // unknown → fail open
+
+  return !NON_CACHE_MODEL_PATTERNS.some(re => re.test(modelId));
+}
+
 /**
  * Inject provider-side prompt caching into the request body.
  * Call this before sending to the provider.
@@ -129,6 +174,9 @@ function needsCacheInjection(provider) {
  */
 function injectPromptCaching(body, provider) {
   if (!needsCacheInjection(provider)) return 0;
+  // Gate on model capability: a provider may support cache_control in general
+  // while the specific routed model does not.
+  if (!modelSupportsCacheControl(body, provider)) return 0;
   return injectAnthropicCacheBreakpoints(body);
 }
 
@@ -137,4 +185,5 @@ module.exports = {
   injectAnthropicCacheBreakpoints,
   injectGeminiCacheBreakpoints,
   needsCacheInjection,
+  modelSupportsCacheControl,
 };

@@ -1104,6 +1104,64 @@ async function invokeLMStudio(body) {
   return performJsonRequest(endpoint, { headers, body: lmstudioBody }, "LM Studio");
 }
 
+/**
+ * Flatten an Anthropic-style content value into a plain string for the
+ * Bedrock Converse API.
+ *
+ * Prompt-cache injection (injectPromptCaching) rewrites string `system`
+ * fields and message `content` into arrays of `{ type, text, cache_control }`
+ * blocks. The Converse API has no `cache_control` concept and expects
+ * `system: [{ text: "<string>" }]` and message content blocks shaped as
+ * `{ text: "<string>" }`. Passing the injected array through unchanged would
+ * either drop the cache markers silently or nest an array under `text`,
+ * producing a ValidationException.
+ *
+ * @param {string|Array|undefined} value - String or array of content blocks
+ * @returns {string} Concatenated plain text
+ */
+function flattenContentToText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map(block => {
+        if (typeof block === "string") return block;
+        if (block && typeof block === "object") return block.text || block.content || "";
+        return "";
+      })
+      .join("");
+  }
+  return String(value);
+}
+
+/**
+ * Normalize a request body for the Bedrock Converse API.
+ *
+ * Strips `cache_control` markers and flattens any array-shaped `system` /
+ * message `content` (left behind by prompt-cache injection) back into the
+ * plain strings the Converse API expects. Returns a shallow copy with a
+ * normalized `messages` array; the original body is not mutated.
+ *
+ * @param {Object} body - Anthropic-format request body
+ * @returns {Object} Body safe for Converse request construction
+ */
+function normalizeBodyForConverse(body) {
+  const normalized = { ...body };
+
+  if (normalized.system !== undefined) {
+    normalized.system = flattenContentToText(normalized.system);
+  }
+
+  if (Array.isArray(normalized.messages)) {
+    normalized.messages = normalized.messages.map(msg => ({
+      ...msg,
+      content: flattenContentToText(msg.content),
+    }));
+  }
+
+  return normalized;
+}
+
 async function invokeBedrock(body) {
   // 1. Validate Bearer token
   if (!config.bedrock?.apiKey) {
@@ -1130,7 +1188,10 @@ async function invokeBedrock(body) {
     }, "=== INJECTING STANDARD TOOLS (Bedrock) ===");
   }
 
-  const bedrockBody = { ...body, tools: toolsToSend };
+  // Normalize away cache_control / array shapes that prompt-cache injection
+  // may have applied: the Converse API expects plain-string system and
+  // message content, not Anthropic cache_control blocks.
+  const bedrockBody = { ...normalizeBodyForConverse(body), tools: toolsToSend };
 
   // 4. Detect model family and convert format
   const modelId = body._tierModel || config.bedrock.modelId;
@@ -2579,4 +2640,5 @@ function destroyHttpAgents() {
 module.exports = {
   invokeModel,
   destroyHttpAgents,
+  normalizeBodyForConverse,
 };
