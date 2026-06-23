@@ -697,6 +697,14 @@ function getRoutingHeaders(decision) {
     headers['X-Lynkr-Cost-Optimized'] = 'true';
   }
 
+  // Tier-aware fallback surfacing (never silent).
+  if (decision.fallback) {
+    headers['X-Lynkr-Fallback'] = 'true';
+    if (decision.fromTier) headers['X-Lynkr-Fallback-From-Tier'] = decision.fromTier;
+    if (decision.servedTier) headers['X-Lynkr-Served-Tier'] = decision.servedTier;
+    if (decision.fallbackDirection) headers['X-Lynkr-Fallback-Direction'] = decision.fallbackDirection;
+  }
+
   if (decision.risk?.level) {
     headers['X-Lynkr-Risk'] = decision.risk.level;
     const hits = Array.from(new Set([

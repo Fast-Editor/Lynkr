@@ -518,6 +518,12 @@ const agentsDefaultModel = process.env.AGENTS_DEFAULT_MODEL ?? "haiku";
 const agentsMaxSteps = Number.parseInt(process.env.AGENTS_MAX_STEPS ?? "15", 10);
 const agentsTimeout = Number.parseInt(process.env.AGENTS_TIMEOUT ?? "120000", 10);
 
+// Task decomposition configuration (opt-in; builds on the agents subsystem).
+// Single env toggle; everything else is hardcoded below.
+const taskDecompositionEnabled = process.env.TASK_DECOMPOSITION_ENABLED === "true";
+
+// Tier-aware fallback (escalate-then-demote) is always on (hardcoded).
+
 // LLM Audit logging configuration
 const auditEnabled = process.env.LLM_AUDIT_ENABLED === "true"; // default false
 const auditLogFile = process.env.LLM_AUDIT_LOG_FILE ?? path.join(process.cwd(), "logs", "llm-audit.log");
@@ -774,6 +780,23 @@ var config = {
     defaultModel: agentsDefaultModel,
     maxSteps: Number.isNaN(agentsMaxSteps) ? 15 : agentsMaxSteps,
     timeout: Number.isNaN(agentsTimeout) ? 120000 : agentsTimeout,
+  },
+  taskDecomposition: {
+    enabled: taskDecompositionEnabled, // only env-driven knob (TASK_DECOMPOSITION_ENABLED)
+    // Hardcoded defaults — tune here if needed.
+    shadow: false,
+    planModel: "sonnet",
+    synthModel: "sonnet",
+    minConfidence: 0.5,
+    gate: {
+      minComplexity: 60,
+      minTokens: 3000,
+      maxSubtasks: 6,
+      minIndependentUnits: 2,
+    },
+  },
+  tierFallback: {
+    enabled: true, // always on (hardcoded): escalate-then-demote on provider failure; floor = SIMPLE
   },
   tests: {
     defaultCommand: testDefaultCommand ? testDefaultCommand.trim() : null,

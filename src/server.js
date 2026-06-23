@@ -29,6 +29,7 @@ const { registerTaskTools } = require("./tools/tasks");
 const { registerTestTools } = require("./tools/tests");
 const { registerMcpTools } = require("./tools/mcp");
 const { registerAgentTaskTool } = require("./tools/agent-task");
+const { registerDecomposeTool } = require("./tools/decompose");
 const { initConfigWatcher, getConfigWatcher } = require("./config/watcher");
 const { initializeHeadroom, shutdownHeadroom, getHeadroomManager } = require("./headroom");
 const { getWorkerPool, isWorkerPoolReady } = require("./workers/pool");
@@ -62,6 +63,7 @@ if (LAZY_TOOLS_ENABLED) {
   registerTestTools();
   registerMcpTools();
   registerAgentTaskTool();
+  registerDecomposeTool();
   logger.info({ mode: "eager" }, "All tools loaded at startup");
 }
 

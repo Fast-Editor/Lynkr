@@ -77,6 +77,11 @@ const TOOL_CATEGORIES = {
     loader: () => require('./agent-task').registerAgentTaskTool,
     priority: 2,
   },
+  decompose: {
+    keywords: ['decompose', 'subtask', 'break down', 'break into', 'split task', 'plan and execute'],
+    loader: () => require('./decompose').registerDecomposeTool,
+    priority: 2,
+  },
   'code-mode': {
     keywords: ['mcp', 'execute', 'server', 'tool', 'code mode'],
     loader: () => require('./code-mode').registerCodeModeTools,
@@ -296,6 +301,9 @@ function loadCategoryForTool(toolName) {
     // TinyFish (web agent)
     'web_agent': 'tinyfish',
     'agent_task': 'agentTask',
+
+    // Task decomposition
+    'decomposetask': 'decompose',
   };
 
   // Direct mapping
