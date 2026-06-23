@@ -2185,6 +2185,13 @@ async function invokeModel(body, options = {}) {
   const { injectPromptCaching } = require('./prompt-cache-injection');
   injectPromptCaching(body, initialProvider);
 
+  // Always-on markdown formatting guard. Stops formatting-weak backends
+  // (Moonshot/Kimi, Ollama, etc.) from emitting mangled ASCII box-drawing
+  // "diagrams". Keyed off the routing-resolved provider/model; skipped for
+  // Claude-family backends which already format cleanly.
+  const { injectFormatGuard } = require('../context/output-format-guard');
+  injectFormatGuard(body, { provider: initialProvider, model: tierSelectedModel });
+
   // Build routing decision object for response headers
   const routingDecision = {
     provider: initialProvider,
@@ -2383,6 +2390,71 @@ async function invokeModel(body, options = {}) {
     metricsCollector.recordProviderFailure(initialProvider);
     healthTracker.recordFailure(initialProvider, err, err.status);
     getLatencyTracker().record(initialProvider, routingDecision?.model, failLatency);
+
+    // Tier-aware escalate-then-demote fallback (TIER_FALLBACK_ENABLED).
+    // On failure, try a MORE capable tier first (climb toward REASONING); only
+    // if every higher tier is unavailable do we fall downward to SIMPLE/local.
+    // Runs before the flat global fallback below and is never silent.
+    if (config.tierFallback?.enabled && !options._tierFallbackInner && routingDecision.tier) {
+      const { getFallbackChain } = require("../routing/tier-fallback");
+      const chain = getFallbackChain(routingDecision.tier);
+      for (const cand of chain) {
+        try {
+          logger.warn({
+            fromTier: routingDecision.tier,
+            fromProvider: initialProvider,
+            toTier: cand.tier,
+            toProvider: cand.provider,
+            toModel: cand.model,
+            direction: cand.direction,
+          }, "[TierFallback] Primary tier failed — attempting tier fallback");
+
+          const attempt = await invokeModel(
+            { ...body, _tierModel: cand.model },
+            {
+              forceProvider: cand.provider,
+              _tierFallbackInner: true,
+              disableFallback: true,
+              _cascadeInner: true,
+              workspace,
+              tenantPolicy,
+            }
+          );
+
+          metricsCollector.recordFallbackAttempt(initialProvider, cand.provider, "tier_fallback");
+          logger.warn({
+            servedTier: cand.tier,
+            servedProvider: cand.provider,
+            fromTier: routingDecision.tier,
+            direction: cand.direction,
+          }, "[TierFallback] Served by tier fallback");
+
+          return {
+            ...attempt,
+            actualProvider: cand.provider,
+            routingDecision: {
+              ...routingDecision,
+              provider: cand.provider,
+              model: cand.model,
+              servedTier: cand.tier,
+              fromTier: routingDecision.tier,
+              fallback: true,
+              fallbackDirection: cand.direction,
+              method: "tier_fallback",
+            },
+          };
+        } catch (innerErr) {
+          logger.warn(
+            { toProvider: cand.provider, error: innerErr.message },
+            "[TierFallback] Candidate failed, trying next"
+          );
+        }
+      }
+      logger.warn(
+        { fromTier: routingDecision.tier },
+        "[TierFallback] All tier candidates exhausted — falling through"
+      );
+    }
 
     // Check if we should fallback (any provider can fall back, not just ollama)
     const shouldFallback =
