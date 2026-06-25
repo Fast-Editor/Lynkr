@@ -8,6 +8,7 @@ const pkg = require('../package.json');
 const SUBCOMMANDS = {
   usage:      path.join(__dirname, "lynkr-usage.js"),
   trajectory: path.join(__dirname, "lynkr-trajectory.js"),
+  wrap:       path.join(__dirname, "wrap.js"),
 };
 
 const sub = process.argv[2];
@@ -30,6 +31,7 @@ ${pkg.description}
 
 Usage:
   lynkr [options]                  Start the proxy server (default)
+  lynkr wrap <target> [options]    Wrap CLI tools through Lynkr proxy
   lynkr usage [options]            Show AI spend report and tier-routing savings
   lynkr trajectory [options]       Export agent trajectories as JSONL training data
 

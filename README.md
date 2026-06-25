@@ -24,6 +24,25 @@
 
 ---
 
+## 🚀 New: Wrap Mode for Claude Pro/Max Users
+
+**Use Lynkr's routing with your Claude Pro or Max subscription — no separate API billing:**
+
+```bash
+npm install -g lynkr
+lynkr wrap claude
+```
+
+That's it! Claude Code launches with:
+- ✅ Tier routing (send simple tasks to free Ollama, complex to your subscription)
+- ✅ TOON/RTK compression
+- ✅ Semantic caching
+- ✅ **3-5x more usage from the same subscription limits**
+
+[Full wrap guide →](docs/wrap-guide.md)
+
+---
+
 ## Quick Start (2 Minutes)
 
 ### 1. Install Lynkr
