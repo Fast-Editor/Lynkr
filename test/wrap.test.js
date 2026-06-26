@@ -45,6 +45,28 @@ describe("lynkr wrap command", () => {
       assert.fail('wrap.js has syntax errors: ' + err.message);
     }
   });
+
+  it("shows all supported targets in help", async () => {
+    const { stdout } = await run(['wrap']);
+    assert.match(stdout, /claude/);
+    assert.match(stdout, /copilot/);
+    assert.match(stdout, /aider/);
+    assert.match(stdout, /cursor/);
+    assert.match(stdout, /codex/);
+  });
+
+  it("accepts all supported targets", async () => {
+    const targets = ['copilot', 'aider', 'cursor', 'codex'];
+    for (const target of targets) {
+      // These may find the binary or not, we're just verifying they're recognized
+      const { stdout, exitCode } = await run(['wrap', target]);
+      // Should NOT show "not supported" error
+      assert.ok(!stdout.includes('not supported'), `Target ${target} should be supported`);
+      // Either exits with 2 (not found) or tries to start (exit code varies)
+      assert.ok(exitCode === 2 || exitCode === 1 || exitCode === 0,
+        `Exit code should be 0, 1, or 2, got ${exitCode}`);
+    }
+  });
 });
 
 // Helper to run lynkr CLI

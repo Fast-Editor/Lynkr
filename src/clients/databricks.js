@@ -137,7 +137,7 @@ async function performJsonRequest(url, { headers = {}, body }, providerLabel) {
   });
 }
 
-async function invokeDatabricks(body) {
+async function invokeDatabricks(body, incomingHeaders = {}) {
   if (!config.databricks?.url) {
     throw new Error("Databricks configuration is missing required URL.");
   }
@@ -181,7 +181,7 @@ async function invokeDatabricks(body) {
   return performJsonRequest(config.databricks.url, { headers, body: databricksBody }, "Databricks");
 }
 
-async function invokeAzureAnthropic(body) {
+async function invokeAzureAnthropic(body, incomingHeaders = {}) {
   if (!config.azureAnthropic?.endpoint) {
     throw new Error("Azure Anthropic endpoint is not configured.");
   }
@@ -196,11 +196,25 @@ async function invokeAzureAnthropic(body) {
     }, "=== INJECTING STANDARD TOOLS (Azure Anthropic) ===");
   }
 
+  // OAuth passthrough support: Check for incoming Authorization header first
+  const incomingAuth = incomingHeaders?.authorization || incomingHeaders?.Authorization;
+
   const headers = {
     "Content-Type": "application/json",
-    "x-api-key": config.azureAnthropic.apiKey,
     "anthropic-version": config.azureAnthropic.version ?? "2023-06-01",
   };
+
+  if (incomingAuth && incomingAuth.startsWith('Bearer ')) {
+    // Use OAuth token from Claude Code (subscription mode)
+    headers["Authorization"] = incomingAuth;
+    logger.info("Using OAuth token from incoming request (subscription mode)");
+  } else if (config.azureAnthropic.apiKey) {
+    // Fall back to API key from .env
+    headers["x-api-key"] = config.azureAnthropic.apiKey;
+  } else {
+    throw new Error("Azure Anthropic requires authentication (OAuth token or API key)");
+  }
+
   return performJsonRequest(
     config.azureAnthropic.endpoint,
     { headers, body },
@@ -208,7 +222,7 @@ async function invokeAzureAnthropic(body) {
   );
 }
 
-async function invokeOllama(body) {
+async function invokeOllama(body, incomingHeaders = {}) {
   if (!config.ollama?.endpoint) {
     throw new Error("Ollama endpoint is not configured.");
   }
@@ -363,7 +377,7 @@ async function invokeOllama(body) {
   return performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
 }
 
-async function invokeOpenRouter(body) {
+async function invokeOpenRouter(body, incomingHeaders = {}) {
   if (!config.openrouter?.endpoint || !config.openrouter?.apiKey) {
     throw new Error("OpenRouter endpoint or API key is not configured.");
   }
@@ -436,7 +450,7 @@ function detectAzureFormat(url) {
 }
 
 
-async function invokeAzureOpenAI(body) {
+async function invokeAzureOpenAI(body, incomingHeaders = {}) {
   if (!config.azureOpenAI?.endpoint || !config.azureOpenAI?.apiKey) {
     throw new Error("Azure OpenAI endpoint or API key is not configured.");
   }
@@ -841,7 +855,7 @@ async function invokeAzureOpenAI(body) {
 }
 
 
-async function invokeOpenAI(body) {
+async function invokeOpenAI(body, incomingHeaders = {}) {
   if (!config.openai?.apiKey) {
     throw new Error("OpenAI API key is not configured.");
   }
@@ -922,7 +936,7 @@ async function invokeOpenAI(body) {
   return performJsonRequest(endpoint, { headers, body: openAIBody }, "OpenAI");
 }
 
-async function invokeLlamaCpp(body) {
+async function invokeLlamaCpp(body, incomingHeaders = {}) {
   if (!config.llamacpp?.endpoint) {
     throw new Error("llama.cpp endpoint is not configured.");
   }
@@ -1033,7 +1047,7 @@ async function invokeLlamaCpp(body) {
   return performJsonRequest(endpoint, { headers, body: llamacppBody }, "llama.cpp");
 }
 
-async function invokeLMStudio(body) {
+async function invokeLMStudio(body, incomingHeaders = {}) {
   if (!config.lmstudio?.endpoint) {
     throw new Error("LM Studio endpoint is not configured.");
   }
@@ -1162,7 +1176,7 @@ function normalizeBodyForConverse(body) {
   return normalized;
 }
 
-async function invokeBedrock(body) {
+async function invokeBedrock(body, incomingHeaders = {}) {
   // 1. Validate Bearer token
   if (!config.bedrock?.apiKey) {
     throw new Error(
@@ -1356,7 +1370,7 @@ async function invokeBedrock(body) {
  * Z.AI offers GLM models through an Anthropic-compatible API at ~1/7 the cost.
  * Minimal transformation needed - mostly passthrough with model mapping.
  */
-async function invokeZai(body) {
+async function invokeZai(body, incomingHeaders = {}) {
   if (!config.zai?.apiKey) {
     throw new Error("Z.AI API key is not configured. Set ZAI_API_KEY in your .env file.");
   }
@@ -1546,7 +1560,7 @@ async function invokeZai(body) {
  * Moonshot offers Kimi models through an OpenAI-compatible chat completions API.
  * Uses native system role support (unlike Z.AI which merges into user message).
  */
-async function invokeMoonshot(body) {
+async function invokeMoonshot(body, incomingHeaders = {}) {
   if (!config.moonshot?.apiKey) {
     throw new Error("Moonshot API key is not configured. Set MOONSHOT_API_KEY in your .env file.");
   }
@@ -1796,7 +1810,7 @@ function sanitizeSchemaForGemini(schema) {
  * Supports Google Gemini models through Vertex AI.
  * Converts Anthropic format to Gemini format and back.
  */
-async function invokeVertex(body) {
+async function invokeVertex(body, incomingHeaders = {}) {
   const apiKey = config.vertex?.apiKey;
 
   if (!apiKey) {
@@ -2052,7 +2066,7 @@ function convertGeminiToAnthropic(response, requestedModel) {
   };
 }
 
-async function invokeCodex(body) {
+async function invokeCodex(body, incomingHeaders = {}) {
   const { getCodexProcess } = require("./codex-process");
   const { convertAnthropicToCodexPrompt, convertCodexResponseToAnthropic } = require("./codex-utils");
 
@@ -2164,6 +2178,9 @@ async function invokeModel(body, options = {}) {
   const metricsCollector = getMetricsCollector();
   const registry = getCircuitBreakerRegistry();
   const healthTracker = getHealthTracker();
+
+  // Extract incoming headers for OAuth passthrough
+  const incomingHeaders = options.headers || {};
 
   // Determine provider via async tier routing
   // Thread workspace for code-graph integration (from X-Lynkr-Workspace header or body._workspace)
@@ -2278,31 +2295,31 @@ async function invokeModel(body, options = {}) {
     // Try initial provider with circuit breaker
     const result = await breaker.execute(async () => {
       if (initialProvider === "azure-openai") {
-        return await invokeAzureOpenAI(body);
+        return await invokeAzureOpenAI(body, incomingHeaders);
       } else if (initialProvider === "azure-anthropic") {
-        return await invokeAzureAnthropic(body);
+        return await invokeAzureAnthropic(body, incomingHeaders);
       } else if (initialProvider === "ollama") {
-        return await invokeOllama(body);
+        return await invokeOllama(body, incomingHeaders);
       } else if (initialProvider === "openrouter") {
-        return await invokeOpenRouter(body);
+        return await invokeOpenRouter(body, incomingHeaders);
       } else if (initialProvider === "openai") {
-        return await invokeOpenAI(body);
+        return await invokeOpenAI(body, incomingHeaders);
       } else if (initialProvider === "llamacpp") {
-        return await invokeLlamaCpp(body);
+        return await invokeLlamaCpp(body, incomingHeaders);
       } else if (initialProvider === "lmstudio") {
-        return await invokeLMStudio(body);
+        return await invokeLMStudio(body, incomingHeaders);
       } else if (initialProvider === "bedrock") {
-        return await invokeBedrock(body);
+        return await invokeBedrock(body, incomingHeaders);
       } else if (initialProvider === "zai") {
-        return await invokeZai(body);
+        return await invokeZai(body, incomingHeaders);
       } else if (initialProvider === "vertex") {
-        return await invokeVertex(body);
+        return await invokeVertex(body, incomingHeaders);
       } else if (initialProvider === "moonshot") {
-        return await invokeMoonshot(body);
+        return await invokeMoonshot(body, incomingHeaders);
       } else if (initialProvider === "codex") {
-        return await invokeCodex(body);
+        return await invokeCodex(body, incomingHeaders);
       }
-      return await invokeDatabricks(body);
+      return await invokeDatabricks(body, incomingHeaders);
     });
 
     // Record success metrics
@@ -2523,23 +2540,23 @@ async function invokeModel(body, options = {}) {
       // Execute fallback
       const fallbackResult = await fallbackBreaker.execute(async () => {
         if (fallbackProvider === "azure-openai") {
-          return await invokeAzureOpenAI(body);
+          return await invokeAzureOpenAI(body, incomingHeaders);
         } else if (fallbackProvider === "azure-anthropic") {
-          return await invokeAzureAnthropic(body);
+          return await invokeAzureAnthropic(body, incomingHeaders);
         } else if (fallbackProvider === "openrouter") {
-          return await invokeOpenRouter(body);
+          return await invokeOpenRouter(body, incomingHeaders);
         } else if (fallbackProvider === "openai") {
-          return await invokeOpenAI(body);
+          return await invokeOpenAI(body, incomingHeaders);
         } else if (fallbackProvider === "llamacpp") {
-          return await invokeLlamaCpp(body);
+          return await invokeLlamaCpp(body, incomingHeaders);
         } else if (fallbackProvider === "zai") {
-          return await invokeZai(body);
+          return await invokeZai(body, incomingHeaders);
         } else if (fallbackProvider === "vertex") {
-          return await invokeVertex(body);
+          return await invokeVertex(body, incomingHeaders);
         } else if (fallbackProvider === "moonshot") {
-          return await invokeMoonshot(body);
+          return await invokeMoonshot(body, incomingHeaders);
         }
-        return await invokeDatabricks(body);
+        return await invokeDatabricks(body, incomingHeaders);
       });
 
       const fallbackLatency = Date.now() - fallbackStart;

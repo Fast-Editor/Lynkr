@@ -1,6 +1,6 @@
 # Lynkr Wrap Guide
 
-`lynkr wrap claude` launches Claude Code through the Lynkr proxy, giving Pro/Max subscription users access to **tier routing**, **compression**, and **caching** without separate API billing.
+`lynkr wrap` launches AI coding tools through the Lynkr proxy, giving users access to **tier routing**, **compression**, and **caching**. For Claude Code Pro/Max subscription users, this works without separate API billing.
 
 ---
 
@@ -19,24 +19,55 @@
 
 ---
 
+## Supported Tools
+
+| Tool | Command | OAuth Support | Docs |
+|---|---|---|---|
+| **Claude Code** | `lynkr wrap claude` | ✅ Pro/Max | [claude.ai/code](https://claude.ai/code) |
+| **GitHub Copilot CLI** | `lynkr wrap copilot` | ✅ Subscription | [github.com/features/copilot](https://github.com/features/copilot) |
+| **Aider** | `lynkr wrap aider` | ❌ API key | [aider.chat](https://aider.chat) |
+| **Cursor** | `lynkr wrap cursor` | ✅ Pro | [cursor.sh](https://cursor.sh) |
+| **OpenAI Codex CLI** | `lynkr wrap codex` | ❌ API key | [openai.com](https://openai.com) |
+
+---
+
 ## Quick Start
 
-### 1. Prerequisites
+### 1. Install Your Tool
 
-Install Claude Code:
+**Claude Code:**
 ```bash
-# macOS
 brew install --cask claude-code
-
-# Or download from: https://claude.ai/code
 ```
 
-Install Lynkr:
+**Copilot CLI:**
+```bash
+npm install -g @githubnext/github-copilot-cli
+```
+
+**Aider:**
+```bash
+pip install aider-chat
+```
+
+**Cursor:**
+```bash
+# Download from cursor.sh
+brew install --cask cursor
+```
+
+**Codex:**
+```bash
+pip install openai
+```
+
+### 2. Install Lynkr
+
 ```bash
 npm install -g lynkr@latest
 ```
 
-### 2. Configure Tiers (Optional)
+### 3. Configure Tiers (Optional)
 
 Create or edit `~/.claude-code/.env` (or run `lynkr` once to generate it):
 
@@ -55,13 +86,26 @@ OLLAMA_ENDPOINT=http://localhost:11434
 
 **No `ANTHROPIC_API_KEY` needed** — your OAuth token from Claude Code is used automatically.
 
-### 3. Launch
+### 4. Launch
 
 ```bash
+# Claude Code
 lynkr wrap claude
+
+# GitHub Copilot CLI
+lynkr wrap copilot
+
+# Aider
+lynkr wrap aider
+
+# Cursor
+lynkr wrap cursor
+
+# Codex
+lynkr wrap codex
 ```
 
-That's it! Claude Code launches with Lynkr routing enabled.
+That's it! Your tool launches with Lynkr routing enabled.
 
 ---
 
@@ -119,23 +163,41 @@ Your prompt → Lynkr
 ### Basic
 
 ```bash
+# Claude Code
 lynkr wrap claude
+
+# GitHub Copilot CLI
+lynkr wrap copilot
+
+# Aider
+lynkr wrap aider
+
+# Cursor
+lynkr wrap cursor
 ```
 
 ### Custom Port
 
 ```bash
 lynkr wrap claude --port 9000
+lynkr wrap aider --port 8090
 ```
 
-### Pass Args to Claude Code
+### Pass Args to Target Tool
 
 ```bash
+# Claude Code
 lynkr wrap claude -- --help
 lynkr wrap claude -- --model claude-opus-4
+
+# Aider
+lynkr wrap aider -- --model gpt-4
+
+# Copilot
+lynkr wrap copilot -- --version
 ```
 
-Everything after `--` is forwarded to Claude Code.
+Everything after `--` is forwarded to the target tool.
 
 ---
 
@@ -188,6 +250,33 @@ Disable with:
 ```bash
 export LYNKR_WRAP_SHOW_STATS=false
 ```
+
+---
+
+## Log Control
+
+**By default, Lynkr suppresses verbose logs in wrap mode** to keep your terminal clean. Only errors are shown.
+
+### Show More Logs (Debugging)
+
+```bash
+# Show all logs (info level)
+LOG_LEVEL=info lynkr wrap claude
+
+# Show debug logs
+LOG_LEVEL=debug lynkr wrap claude
+
+# Show warnings and errors
+LOG_LEVEL=warn lynkr wrap claude
+```
+
+### Hide All Logs (Errors Only - Default)
+
+```bash
+LOG_LEVEL=error lynkr wrap claude
+```
+
+**Tip:** If you see intermixed JSON logs, it means your `.env` has `LOG_LEVEL=info`. Change it to `error` for clean output.
 
 ---
 
@@ -323,8 +412,8 @@ No OAuth needed.
 **Q: Will this slow down my responses?**
 A: No — Lynkr adds <50ms overhead (routing + compression), typically invisible. Caching can make repeat queries *faster*.
 
-**Q: Can I wrap other tools (Cursor, Codex)?**
-A: Not yet — only Claude Code in v9.7.0. Codex support planned for 9.8.0.
+**Q: Which tools are supported?**
+A: Claude Code, GitHub Copilot CLI, Aider, Cursor, and OpenAI Codex CLI. See the table at the top for details.
 
 ---
 

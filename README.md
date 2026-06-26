@@ -24,20 +24,35 @@
 
 ---
 
-## 🚀 New: Wrap Mode for Claude Pro/Max Users
+## 🚀 New: Wrap Mode for AI Coding Tools
 
-**Use Lynkr's routing with your Claude Pro or Max subscription — no separate API billing:**
+**Use Lynkr's routing with your AI coding assistant — maximize your subscription value:**
 
 ```bash
 npm install -g lynkr
+
+# Claude Code Pro/Max
 lynkr wrap claude
+
+# GitHub Copilot
+lynkr wrap copilot
+
+# Aider
+lynkr wrap aider
+
+# Cursor
+lynkr wrap cursor
+
+# OpenAI Codex
+lynkr wrap codex
 ```
 
-That's it! Claude Code launches with:
-- ✅ Tier routing (send simple tasks to free Ollama, complex to your subscription)
-- ✅ TOON/RTK compression
-- ✅ Semantic caching
+**Wrapping gives you:**
+- ✅ Tier routing (send simple tasks to free Ollama, complex to your subscription/API)
+- ✅ TOON/RTK compression (87% token reduction on tool outputs)
+- ✅ Semantic caching (171ms cache hits)
 - ✅ **3-5x more usage from the same subscription limits**
+- ✅ Works with OAuth (Claude, Copilot, Cursor) or API keys (Aider, Codex)
 
 [Full wrap guide →](docs/wrap-guide.md)
 

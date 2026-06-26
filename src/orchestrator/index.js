@@ -2011,7 +2011,7 @@ IMPORTANT TOOL USAGE RULES:
   if (agentTimer) agentTimer.mark("preInvokeModel");
   let databricksResponse;
   try {
-    databricksResponse = await invokeModel(cleanPayload);
+    databricksResponse = await invokeModel(cleanPayload, { headers });
     if (agentTimer) agentTimer.mark("invokeModel");
   } catch (modelError) {
     const isConnectionError = modelError.cause?.code === 'ECONNREFUSED'

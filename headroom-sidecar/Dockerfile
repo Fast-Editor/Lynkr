@@ -4,9 +4,11 @@
 
 FROM python:3.12-slim
 
-# Install system dependencies
+# Install system dependencies (including C++ compiler for hnswlib)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    g++ \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
