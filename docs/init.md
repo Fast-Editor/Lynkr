@@ -77,12 +77,41 @@ The wizard covers everything in `src/config/index.js` `SUPPORTED_MODEL_PROVIDERS
 | `openai` | | `OPENAI_API_KEY` |
 | `openrouter` | | `OPENROUTER_API_KEY` |
 | `databricks` | | `DATABRICKS_API_BASE`, `DATABRICKS_API_KEY` |
-| `bedrock` | | `BEDROCK_API_KEY` (or IAM credentials) |
+| `bedrock` | | `AWS_BEDROCK_API_KEY` (Bearer token; no IAM fallback). See [Bedrock setup](#bedrock-setup) below. |
 | `vertex` | | `VERTEX_API_KEY` (or Application Default Credentials) |
 | `zai` | | `ZAI_API_KEY` |
 | `moonshot` | | `MOONSHOT_API_KEY` |
 
 Local providers skip the credential prompt entirely.
+
+### Bedrock setup
+
+Bedrock differs from the other cloud providers in a few ways that trip people
+up. The wizard handles all of this if you pick `bedrock` for a tier, but the
+details are:
+
+- **Authentication is Bearer-token only.** Lynkr's Bedrock client
+  (`src/clients/databricks.js:1450`) requires `AWS_BEDROCK_API_KEY` and does
+  **not** fall back to AWS IAM / SigV4 / Application Default Credentials.
+  Generate the key at *AWS Console → Bedrock → API Keys*.
+- **Region** is picked from `AWS_BEDROCK_REGION`, falling back to `AWS_REGION`,
+  then `us-east-1`.
+- **Model IDs use the `<region>.<vendor>.<model>` format.** Use the
+  cross-region inference prefix (`us.`, `eu.`, etc.) for higher availability:
+
+  ```
+  TIER_SIMPLE=bedrock:us.anthropic.claude-haiku-4-20250514-v1:0
+  TIER_MEDIUM=bedrock:us.anthropic.claude-sonnet-4-20250514-v1:0
+  TIER_COMPLEX=bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  TIER_REASONING=bedrock:us.anthropic.claude-opus-4-1-20250915-v1:0
+  ```
+
+  Non-Anthropic Bedrock models work too with the same `bedrock:<modelId>`
+  syntax — e.g. `bedrock:meta.llama3-1-70b-instruct-v1:0`.
+- **Prompt-cache injection is auto-stripped** before dispatch. Bedrock's
+  Converse API rejects `cache_control` blocks, so `normalizeBodyForConverse`
+  (databricks.js:1477) drops them. You don't have to disable prompt caching
+  globally.
 
 ---
 

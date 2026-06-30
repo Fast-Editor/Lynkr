@@ -55,7 +55,7 @@ const PROVIDERS = {
     local: true,
     creds: [],
     extras: [
-      { key: 'LMSTUDIO_ENDPOINT', label: 'endpoint', default: 'http://localhost:1234/v1' },
+      { key: 'LMSTUDIO_ENDPOINT', label: 'endpoint', default: 'http://localhost:1234' },
     ],
     defaultModel: 'qwen2.5-coder',
   },
@@ -112,10 +112,16 @@ const PROVIDERS = {
     label: 'AWS Bedrock',
     local: false,
     creds: [
-      { key: 'BEDROCK_API_KEY', label: 'AWS Bedrock API key (or use IAM)', secret: true },
+      // Bearer token from AWS Console → Bedrock → API Keys. The Bedrock client
+      // (src/clients/databricks.js:1450) requires this key and does NOT fall
+      // back to IAM/SigV4 — common misconception worth being explicit about.
+      { key: 'AWS_BEDROCK_API_KEY', label: 'AWS Bedrock API key (Bearer token from Bedrock console)', secret: true },
     ],
-    extras: [],
-    defaultModel: 'anthropic.claude-sonnet-4-v1:0',
+    extras: [
+      { key: 'AWS_BEDROCK_REGION', label: 'AWS region', default: 'us-east-1' },
+      { key: 'AWS_BEDROCK_MODEL_ID', label: 'Default model ID', default: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0' },
+    ],
+    defaultModel: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   },
   vertex: {
     label: 'Google Vertex AI',
