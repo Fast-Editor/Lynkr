@@ -128,63 +128,17 @@ install_dependencies() {
     fi
 }
 
-# Create default .env file
+# Skip .env creation — the install script runs without a TTY when invoked via
+# `curl | bash`, so the interactive `lynkr init` wizard can't run here. We leave
+# .env unmade so the user is prompted to run `lynkr init` in their own shell
+# afterward, which produces a fully-populated config (~150 keys grouped by
+# section) instead of the old 892-line .env.example dump.
 create_env_file() {
-    if [ ! -f "$INSTALL_DIR/.env" ]; then
-        print_info "Creating .env configuration file..."
-
-        # Try to copy from .env.example (comprehensive configuration)
-        if [ -f "$INSTALL_DIR/.env.example" ]; then
-            cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
-            print_success "Created .env from .env.example (all features documented)"
-        else
-            # Fallback: create minimal .env if .env.example doesn't exist
-            cat > "$INSTALL_DIR/.env" << 'EOF'
-# Lynkr Configuration
-# For full options, see: https://github.com/Fast-Editor/Lynkr/blob/main/.env.example
-
-# Model Provider (databricks, openai, azure-openai, azure-anthropic, openrouter, ollama, llamacpp)
-MODEL_PROVIDER=ollama
-
-# Server Configuration
-PORT=8081
-
-# Ollama Configuration (default for local development)
-OLLAMA_MODEL=qwen2.5-coder:7b
-OLLAMA_ENDPOINT=http://localhost:11434
-
-# Tier-based routing (uncomment and configure to enable)
-# TIER_SIMPLE=ollama:qwen2.5-coder:7b
-# TIER_MEDIUM=ollama:qwen2.5-coder:7b
-# TIER_COMPLEX=ollama:qwen2.5-coder:7b
-# TIER_REASONING=ollama:qwen2.5-coder:7b
-
-# Long-Term Memory System (Titans-Inspired) - Enabled by default
-MEMORY_ENABLED=true
-MEMORY_RETRIEVAL_LIMIT=5
-MEMORY_SURPRISE_THRESHOLD=0.3
-
-# Uncomment and configure your preferred cloud provider:
-# OPENAI_API_KEY=sk-your-key
-# OPENROUTER_API_KEY=your-key
-# DATABRICKS_API_KEY=your-key
-# DATABRICKS_API_BASE=https://your-workspace.databricks.com
-EOF
-            print_success "Created basic .env file"
-        fi
-
-        echo ""
-        print_info "📝 Configuration ready! Key settings:"
-        echo "     • Default provider: Ollama (local, offline)"
-        echo "     • Memory system: Enabled (learns from conversations)"
-        echo "     • Port: 8081"
-        echo ""
-        print_warning "To use cloud providers (Databricks/OpenAI/Azure):"
-        echo "     Edit: ${BLUE}nano $INSTALL_DIR/.env${NC}"
-        echo "     Add your API keys and change MODEL_PROVIDER"
-    else
+    if [ -f "$INSTALL_DIR/.env" ]; then
         print_warning ".env file already exists, skipping"
+        return
     fi
+    print_info "Skipping .env creation — run ${BLUE}lynkr init${NC} after install for an interactive setup."
 }
 
 # Create symlink for global access
@@ -224,44 +178,35 @@ print_next_steps() {
     print_success "Lynkr installed successfully!"
     echo "=============================="
     echo ""
-    echo "🚀 Quick Start Guide:"
+    echo "🚀 Quick Start:"
     echo ""
-    echo "  ${GREEN}Option A: Use Ollama (Free, Local, Offline)${NC}"
-    echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  1. Run the setup wizard:"
+    echo "     ${BLUE}lynkr init${NC}  ${GREEN}← interactive config (4 prompts, ~30 sec)${NC}"
     echo ""
-    echo "  1. Install Ollama (if not already installed):"
-    echo "     ${BLUE}lynkr-setup${NC}  ${GREEN}← Automatic Ollama installer${NC}"
-    echo ""
-    echo "  2. Start Lynkr:"
-    echo "     ${BLUE}lynkr${NC}"
-    echo ""
-    echo "  3. Configure Claude Code CLI:"
-    echo "     ${BLUE}export ANTHROPIC_BASE_URL=http://localhost:8081${NC}"
-    echo "     ${BLUE}claude${NC}"
-    echo ""
-    echo "  ${YELLOW}Option B: Use Cloud Providers (Databricks/OpenAI/Azure)${NC}"
-    echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo "  1. Edit configuration file:"
-    echo "     ${BLUE}nano $INSTALL_DIR/.env${NC}"
-    echo ""
-    echo "     Update these lines:"
-    echo "     ${BLUE}MODEL_PROVIDER=databricks${NC}  ${GREEN}← Change from 'ollama'${NC}"
-    echo "     ${BLUE}DATABRICKS_API_KEY=dapi_xxxxx${NC}  ${GREEN}← Add your key${NC}"
-    echo "     ${BLUE}DATABRICKS_API_BASE=https://your-workspace.databricks.com${NC}"
+    echo "     The wizard asks for your usage mode (Claude Pro/Max via wrap, or direct"
+    echo "     API), tier picks across 12 supported providers, credentials for what you"
+    echo "     chose, and a few routing knobs. It writes a fully-populated .env with"
+    echo "     production defaults for everything else (caching, compression, policy"
+    echo "     budgets, MCP sandbox, agents, rate limiting)."
     echo ""
     echo "  2. Start Lynkr:"
-    echo "     ${BLUE}lynkr${NC}"
+    echo "     ${BLUE}lynkr${NC}                ${GREEN}← run as a proxy server${NC}"
+    echo "     ${BLUE}lynkr wrap claude${NC}    ${GREEN}← OR launch a wrapped AI tool${NC}"
     echo ""
-    echo "  3. Configure Claude Code CLI:"
+    echo "  3. Point your tool at Lynkr:"
     echo "     ${BLUE}export ANTHROPIC_BASE_URL=http://localhost:8081${NC}"
-    echo "     ${BLUE}export ANTHROPIC_API_KEY=any-non-empty-value${NC}  ${GREEN}← Placeholder${NC}"
+    echo "     ${BLUE}export ANTHROPIC_API_KEY=any-non-empty-value${NC}"
     echo "     ${BLUE}claude${NC}"
+    echo ""
+    echo "  ${YELLOW}Manual configuration (alternative)${NC}"
+    echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "     Copy ${BLUE}.env.example${NC} to ${BLUE}.env${NC} and edit by hand if you prefer."
+    echo "     The 892-line template documents every available knob."
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo "💡 ${YELLOW}Tip:${NC} Memory system is enabled by default"
-    echo "   Lynkr remembers preferences and project context across sessions"
+    echo "💡 ${YELLOW}Tip:${NC} Memory system, prompt caching, and TOON compression are all on"
+    echo "   by default. The wizard's defaults match a production-grade Lynkr setup."
     echo ""
     echo "📚 Documentation: ${BLUE}https://github.com/Fast-Editor/Lynkr${NC}"
     echo "💬 Discord: ${BLUE}https://discord.gg/qF7DDxrX${NC}"

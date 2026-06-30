@@ -184,8 +184,10 @@ const BASELINE_ENV = {
 
   // ── Tool execution ────────────────────────────────────────────────────
   TOOL_EXECUTION_MODE: 'client',
+  TOOL_INJECTION_ENABLED: 'false',
   SMART_TOOL_SELECTION_MODE: 'disabled',
   SMART_TOOL_SELECTION_TOKEN_BUDGET: '2500',
+  CODE_MODE_ENABLED: 'true',
 
   // ── Caching ───────────────────────────────────────────────────────────
   PROMPT_CACHE_ENABLED: 'true',
@@ -234,6 +236,7 @@ const BASELINE_ENV = {
   MEMORY_FORMAT: 'compact',
   MEMORY_DEDUP_ENABLED: 'true',
   MEMORY_DEDUP_LOOKBACK: '5',
+  MEMORY_TTL: '3600000',
   TOKEN_TRACKING_ENABLED: 'true',
   TOOL_TRUNCATION_ENABLED: 'true',
 
@@ -246,7 +249,7 @@ const BASELINE_ENV = {
   TOKEN_BUDGET_WARNING: '100000',
   TOKEN_BUDGET_MAX: '180000',
   TOKEN_BUDGET_ENFORCEMENT: 'true',
-  CAVEMAN_ENABLED: 'true',
+  CAVEMAN_ENABLED: 'false',
   CAVEMAN_LEVEL: 'full',
   MARKDOWN_RENDER_ANSI: 'false',
 
@@ -278,7 +281,8 @@ const BASELINE_ENV = {
   // ── Hot reload + load shedding ────────────────────────────────────────
   HOT_RELOAD_ENABLED: 'true',
   HOT_RELOAD_DEBOUNCE_MS: '1000',
-  LOAD_SHEDDING_HEAP_THRESHOLD: '0.99',
+  LOAD_SHEDDING_ENABLED: 'true',
+  LOAD_SHEDDING_HEAP_THRESHOLD: '0.85',
   LOAD_SHEDDING_MEMORY_THRESHOLD: '0.95',
 
   // ── Per-provider extras (secrets stay empty; wizard or user fills in) ─
@@ -553,7 +557,7 @@ function buildEnvContent(env, isWrap, tierConfig) {
   // Group output by section in the order it appears in the generated file.
   // Mirrors the layout of the .env.example reference doc.
   const SERVER_KEYS = new Set(['PORT', 'NODE_ENV', 'REQUEST_JSON_LIMIT', 'SESSION_DB_PATH', 'WORKSPACE_ROOT', 'ENABLE_TOOL_SEARCH']);
-  const TOOL_EXEC_KEYS = new Set(['TOOL_EXECUTION_MODE', 'SMART_TOOL_SELECTION_MODE', 'SMART_TOOL_SELECTION_TOKEN_BUDGET']);
+  const TOOL_EXEC_KEYS = new Set(['TOOL_EXECUTION_MODE', 'TOOL_INJECTION_ENABLED', 'SMART_TOOL_SELECTION_MODE', 'SMART_TOOL_SELECTION_TOKEN_BUDGET', 'CODE_MODE_ENABLED']);
   const CACHE_KEYS = new Set([
     'PROMPT_CACHE_ENABLED', 'PROMPT_CACHE_MAX_ENTRIES', 'PROMPT_CACHE_TTL_MS',
     'SEMANTIC_CACHE_ENABLED', 'SEMANTIC_CACHE_THRESHOLD', 'SEMANTIC_CACHE_MAX_ENTRIES', 'SEMANTIC_CACHE_TTL_MS',
