@@ -51,7 +51,7 @@ async function _readTelemetry(days) {
     return db
       .prepare(
         `SELECT request_text AS query, provider, model, quality_score AS quality,
-                cost, total_latency_ms AS latency, tier
+                cost_usd AS cost, latency_ms AS latency, tier
            FROM routing_telemetry
           WHERE timestamp >= ?
             AND quality_score IS NOT NULL

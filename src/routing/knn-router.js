@@ -29,7 +29,10 @@ const META_FILE = path.join(INDEX_DIR, 'meta.json');
 const MAX_ELEMENTS = 50000;
 const DIM = 768; // nomic-embed-text default
 const K = 10;
-const MIN_INDEX_SIZE = 1000;
+// Default 1000 is a safety floor for quality; override via env when you
+// want to activate kNN with less data (e.g. bootstrapping from your own
+// telemetry before reaching 1k entries).
+const MIN_INDEX_SIZE = Number.parseInt(process.env.LYNKR_KNN_MIN_INDEX_SIZE, 10) || 1000;
 
 let _hnsw = null;
 let _hnswLoaded = false;
@@ -72,7 +75,11 @@ class KnnRouter {
       this.meta = metaData.entries || [];
       this.size = this.meta.length;
       this.index = new hnsw.HierarchicalNSW('cosine', this.dim);
-      this.index.readIndexSync(INDEX_FILE, MAX_ELEMENTS);
+      // hnswlib-node v3 API: readIndexSync(filename, allowReplaceDeleted=false).
+      // (Earlier Lynkr code passed MAX_ELEMENTS here — wrong type, threw on load.)
+      this.index.readIndexSync(INDEX_FILE, false);
+      // resize if needed so we can keep adding up to MAX_ELEMENTS
+      try { this.index.resizeIndex(MAX_ELEMENTS); } catch (_) {}
       this.ready = true;
       logger.info({ size: this.size, dim: this.dim }, '[KnnRouter] Index loaded');
       return true;

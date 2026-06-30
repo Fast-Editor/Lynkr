@@ -965,22 +965,48 @@ function stripThinkingBlocks(text) {
 /**
  * Convert legacy Ollama /api/chat response to Anthropic Messages format.
  * Used when Ollama < v0.14.0 (no native Anthropic endpoint).
+ *
+ * Critical for MiniMax M2/M2.5 (and other interleaved-thinking models):
+ * preserve <think>...</think> from message.content AND Ollama's native
+ * message.thinking field as Anthropic thinking blocks. Dropping them breaks
+ * the model's long-horizon agent loop — vendor-quantified at Tau^2 -35.9%,
+ * BrowseComp -40.1% (https://www.minimax.io/news/why-is-interleaved-thinking-important-for-m2).
  */
 function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
   const message = ollamaResponse?.message ?? {};
-  const rawContent = message.content || "";
+  const rawContent = typeof message.content === "string" ? message.content : "";
+  const nativeThinking = typeof message.thinking === "string" ? message.thinking : "";
   const toolCalls = message.tool_calls || [];
+
+  // Extract <think>...</think> blocks from content (concatenate if multiple).
+  // What remains becomes the text body.
+  const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
+  const thinkMatches = [];
+  let textBody = rawContent;
+  let m;
+  while ((m = thinkRegex.exec(rawContent)) !== null) {
+    thinkMatches.push(m[1]);
+  }
+  textBody = textBody.replace(thinkRegex, "").trim();
+
+  const combinedThinking = [nativeThinking, ...thinkMatches]
+    .map(s => (s || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
 
   const contentItems = [];
 
-  if (typeof rawContent === "string" && rawContent.trim()) {
-    const cleanedContent = stripThinkingBlocks(rawContent);
-    if (cleanedContent) {
-      contentItems.push({ type: "text", text: cleanedContent });
-    }
+  // 1. Thinking block FIRST (Mini-Agent reference order: thinking → text → tool_use)
+  if (combinedThinking) {
+    contentItems.push({ type: "thinking", thinking: combinedThinking });
   }
 
-  // Convert tool calls from OpenAI function-calling format to Anthropic tool_use
+  // 2. Text body (after <think> tags removed)
+  if (textBody) {
+    contentItems.push({ type: "text", text: textBody });
+  }
+
+  // 3. Tool calls converted to Anthropic tool_use
   if (Array.isArray(toolCalls) && toolCalls.length > 0) {
     for (const toolCall of toolCalls) {
       const func = toolCall.function || {};
@@ -1008,6 +1034,9 @@ function ollamaToAnthropicResponse(ollamaResponse, requestedModel) {
   const inputTokens = ollamaResponse.prompt_eval_count ?? 0;
   const outputTokens = ollamaResponse.eval_count ?? 0;
 
+  // stop_reason derived from tool_calls presence, NOT done_reason.
+  // Ollama emits done_reason="stop" even when tool_calls are present
+  // (ollama/ollama#12557) — naive mapping would falsely halt Claude Code's loop.
   return {
     id: `msg_${Date.now()}`,
     type: "message",
@@ -1104,7 +1133,16 @@ function toAnthropicResponse(openai, requestedModel, wantsThinking) {
 
 function sanitizePayload(payload) {
   const { clonePayloadSmart } = require("../utils/payload");
-  const providerType = config.modelProvider?.type ?? "databricks";
+  // Honor a forceProvider marker (set by the OAuth tier-routing path) so the
+  // tool-format / system-flatten / strip-thinking branches downstream match
+  // the actual destination provider, not the static MODEL_PROVIDER default.
+  // Without this, a TIER_SIMPLE=ollama:... user gets the "databricks" branch
+  // running normaliseTools — which wraps tools in OpenAI {type:"function",...}
+  // shape, leaving Ollama with tools named "function" and a model that
+  // (correctly) reports no real tools available.
+  const providerType = payload?._forceProvider
+    || config.modelProvider?.type
+    || "databricks";
   const willFlatten = providerType !== "azure-anthropic";
   const clean = clonePayloadSmart(payload ?? {}, { willFlatten });
   const requestedModel =
@@ -1260,55 +1298,16 @@ function sanitizePayload(payload) {
         }));
     delete clean.tool_choice;
   } else if (providerType === "ollama") {
-    // Check if model supports tools
-    const { modelNameSupportsTools } = require("../clients/ollama-utils");
-    const modelSupportsTools = modelNameSupportsTools(config.ollama?.model);
-
-    // Check if this is a simple conversational message (no tools needed)
-    const isConversational = (() => {
-      if (!Array.isArray(clean.messages) || clean.messages.length === 0) {
-        return false;
-      }
-      const lastMessage = clean.messages[clean.messages.length - 1];
-      if (lastMessage?.role !== "user") {
-        return false;
-      }
-
-      const content = typeof lastMessage.content === "string"
-        ? lastMessage.content
-        : "";
-
-      const trimmed = content.trim().toLowerCase();
-
-      // Simple greetings
-      if (/^(hi|hello|hey|good morning|good afternoon|good evening|howdy|greetings)[\s\.\!\?]*$/.test(trimmed)) {
-        return "greeting";
-      }
-
-      // Conversational phrases that don't need tools (thanks, farewells, acknowledgements)
-      if (/^(thanks|thank you|thx|ty|bye|goodbye|see you|ok|okay|cool|nice|great|awesome|sure|got it|sounds good|no worries|np|cheers)[\s\.\!\?]*$/.test(trimmed)) {
-        return "conversational";
-      }
-
-      return false;
-    })();
-
-    if (isConversational) {
-      // Strip all tools for simple conversational messages
-      delete clean.tools;
-      delete clean.tool_choice;
-      logger.debug({
-        model: config.ollama?.model,
-        reason: isConversational,
-      }, "Ollama conversational mode - tools removed");
-    } else if (modelSupportsTools && Array.isArray(clean.tools) && clean.tools.length > 0) {
-      // Keep all tools — Ollama receives them in Anthropic format (native API)
-      // or they get converted to OpenAI format in invokeOllama (legacy API)
+    // Always pass tools through to Ollama in Anthropic format when they exist.
+    // Ollama (v0.14+ native /v1/messages) accepts the Anthropic tool shape; if
+    // the underlying model doesn't actually emit tool_use blocks, the model
+    // simply responds conversationally — which is the correct fallback. Don't
+    // strip the tools array based on heuristics about user intent or a
+    // hardcoded "model supports tools" check, both of which produce
+    // tool-blind responses ("I don't have file system access") when the
+    // client (Claude Code) is clearly in an agentic session.
+    if (Array.isArray(clean.tools) && clean.tools.length > 0) {
       clean.tools = ensureAnthropicToolFormat(clean.tools);
-    } else {
-      // Remove tools for models without tool support
-      delete clean.tools;
-      delete clean.tool_choice;
     }
   } else if (providerType === "openrouter") {
     // OpenRouter supports tools - keep them as-is
@@ -1902,8 +1901,29 @@ IMPORTANT TOOL USAGE RULES:
     }, 'Estimated token usage before model call');
   }
 
-  // Apply Headroom compression if enabled
-  if (isHeadroomEnabled() && cleanPayload.messages && cleanPayload.messages.length > 0) {
+  // Apply Headroom compression if enabled.
+  //
+  // Headroom is configured for a single provider (HEADROOM_PROVIDER, default
+  // 'anthropic'). Its Tool Crusher rewrites tool results compactly, Cache
+  // Aligner restructures messages to maximize that provider's prompt-cache
+  // hit pattern, and Smart Crusher does semantic compression — all tuned for
+  // Anthropic. Sending the compressed output to a different model family
+  // (Ollama, OpenAI, etc.) yields output the receiver reads as "garbled tool
+  // result" and the agent loop stalls.
+  //
+  // Gate Headroom on providers matching HEADROOM_PROVIDER. By default that's
+  // Claude-family; an operator who switches HEADROOM_PROVIDER=openai gets the
+  // analogous gate.
+  const headroomProviderMap = {
+    'anthropic': new Set(['azure-anthropic', 'bedrock', 'vertex', 'openrouter']),
+    'openai':    new Set(['azure-openai', 'openai', 'openrouter']),
+    'google':    new Set(['vertex', 'openrouter']),
+  };
+  const headroomProvider = process.env.HEADROOM_PROVIDER || 'anthropic';
+  const headroomSafeProviders = headroomProviderMap[headroomProvider] || new Set();
+  const headroomCompatible = headroomSafeProviders.has(providerType);
+
+  if (isHeadroomEnabled() && headroomCompatible && cleanPayload.messages && cleanPayload.messages.length > 0) {
     try {
       const compressionResult = await headroomCompress(
         cleanPayload.messages,
@@ -1945,6 +1965,12 @@ IMPORTANT TOOL USAGE RULES:
     } catch (headroomErr) {
       logger.warn({ err: headroomErr, sessionId: session?.id ?? null }, 'Headroom compression failed, using original messages');
     }
+  } else if (isHeadroomEnabled() && !headroomCompatible) {
+    logger.debug({
+      providerType,
+      headroomProvider,
+      reason: 'provider_mismatch',
+    }, 'Headroom skipped — provider does not match HEADROOM_PROVIDER family');
   }
 
   // Generate correlation ID for request/response pairing
@@ -2003,15 +2029,49 @@ IMPORTANT TOOL USAGE RULES:
 
   // Caveman terse-output injection (opt-in): nudge the model toward shorter
   // responses to reduce output tokens.
-  if (config.caveman?.enabled === true) {
+  //
+  // Default safe-set is the Claude-family + capable instruction-following
+  // models. Operators can override via LYNKR_CAVEMAN_SAFE_PROVIDERS=a,b,c.
+  // (Some smaller / older models read "respond like a terse caveman" too
+  // literally and produce broken telegraphic English — keep them out of the
+  // set if you see that degradation.)
+  const DEFAULT_CAVEMAN_SAFE = [
+    'azure-anthropic',
+    'bedrock',
+    'vertex',
+    'openrouter',
+    'ollama',
+    'openai',
+    'azure-openai',
+    'moonshot',
+    'zai',
+    'databricks',
+  ];
+  const cavemanSafeEnv = process.env.LYNKR_CAVEMAN_SAFE_PROVIDERS;
+  const CAVEMAN_SAFE_PROVIDERS = new Set(
+    cavemanSafeEnv
+      ? cavemanSafeEnv.split(',').map(s => s.trim()).filter(Boolean)
+      : DEFAULT_CAVEMAN_SAFE
+  );
+  if (config.caveman?.enabled === true && CAVEMAN_SAFE_PROVIDERS.has(providerType)) {
     const { injectCaveman } = require("../context/caveman");
     cleanPayload.system = injectCaveman(cleanPayload.system);
+  } else if (config.caveman?.enabled === true) {
+    logger.debug({ providerType }, 'Caveman injection skipped (provider not in safe set)');
   }
 
   if (agentTimer) agentTimer.mark("preInvokeModel");
   let databricksResponse;
+  // Honor a body-level forceProvider marker (set by the OAuth tier-routing
+  // path in the router) so the orchestrator's internal tier router can't
+  // re-pick a different provider mid-flight.
+  const invokeOpts = { headers };
+  if (cleanPayload._forceProvider) {
+    invokeOpts.forceProvider = cleanPayload._forceProvider;
+    delete cleanPayload._forceProvider;
+  }
   try {
-    databricksResponse = await invokeModel(cleanPayload);
+    databricksResponse = await invokeModel(cleanPayload, invokeOpts);
     if (agentTimer) agentTimer.mark("invokeModel");
   } catch (modelError) {
     const isConnectionError = modelError.cause?.code === 'ECONNREFUSED'

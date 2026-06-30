@@ -1,6 +1,6 @@
 # Lynkr
 
-### The AI coding proxy that compresses tokens before they hit the model.
+### An LLM Gateway which optimises your token usage.
 
 **87.6% fewer tokens on JSON tool results. 53% fewer tokens on tool-heavy requests. 171ms semantic cache hits. Zero code changes.**
 
@@ -24,6 +24,31 @@
 
 ---
 
+## 🚀 New: Wrap Mode for AI Coding Tools
+
+**Use Lynkr's routing with your AI coding assistant — maximize your subscription value:**
+
+```bash
+npm install -g lynkr
+
+
+# Claude Code Pro/Max
+lynkr wrap claude
+
+
+```
+
+**Wrapping gives you:**
+- ✅ Tier routing (send simple tasks to free Ollama, complex to your subscription/API)
+- ✅ TOON/RTK compression (87% token reduction on tool outputs)
+- ✅ Semantic caching (171ms cache hits)
+- ✅ **3-5x more usage from the same subscription limits**
+- ✅ Works with OAuth (Claude, Copilot, Cursor) or API keys (Aider, Codex)
+
+[Full wrap guide →](docs/wrap-guide.md)
+
+---
+
 ## Quick Start (2 Minutes)
 
 ### 1. Install Lynkr
@@ -34,7 +59,23 @@ npm install -g lynkr
 
 ### 2. Configure Lynkr
 
-First run creates a `.env` file. Edit it with your provider settings.
+The fastest path is the interactive wizard:
+
+```bash
+lynkr init
+```
+
+It asks four questions — usage mode (Claude Pro/Max via wrap, or direct API keys), tier picks for SIMPLE/MEDIUM/COMPLEX/REASONING across the 12 supported providers, credentials for what you chose, and a few routing-intelligence knobs — then writes a fully-populated `.env` with sensible production defaults for everything else (caching, compression, policy budgets, MCP sandbox, agents, rate limiting).
+
+Useful flags:
+
+```bash
+lynkr init --force                # overwrite an existing .env
+```
+
+See [`docs/init.md`](docs/init.md) for the full wizard reference.
+
+If you'd rather configure by hand, the manual options below still work — copy `.env.example` to `.env` and edit it directly:
 
 **Option A: Free & Local (Ollama) - Recommended for Testing**
 
@@ -43,87 +84,6 @@ First run creates a `.env` file. Edit it with your provider settings.
 ollama pull qwen2.5-coder:latest
 ```
 
-Create/edit `.env` in your project directory:
-```bash
-# Provider
-MODEL_PROVIDER=ollama
-FALLBACK_ENABLED=false
-
-# Ollama Configuration
-OLLAMA_ENDPOINT=http://localhost:11434
-OLLAMA_MODEL=qwen2.5-coder:latest
-
-# Server
-PORT=8081
-
-# Optional: Limits (remove for unlimited)
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-
-# Disable overly strict command filtering
-POLICY_SAFE_COMMANDS_ENABLED=false
-```
-
-**Option B: Cloud (OpenRouter) - Recommended for Production**
-
-```bash
-# Get API key from https://openrouter.ai
-```
-
-Create/edit `.env`:
-```bash
-# Provider
-MODEL_PROVIDER=openrouter
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
-FALLBACK_ENABLED=false
-
-# Server
-PORT=8081
-
-# Optional: Limits (remove for unlimited)
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-
-# Optional: Enable caching
-PROMPT_CACHE_ENABLED=true
-SEMANTIC_CACHE_ENABLED=true
-```
-
-**Option C: Enterprise (AWS Bedrock)**
-
-Create/edit `.env`:
-```bash
-# Provider
-MODEL_PROVIDER=bedrock
-AWS_BEDROCK_API_KEY=your-aws-key
-AWS_BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
-FALLBACK_ENABLED=false
-
-# Server
-PORT=8081
-
-# Optional: Limits (remove for unlimited)
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-```
-
-**Option D: Enterprise (Databricks)**
-
-Create/edit `.env`:
-```bash
-# Provider
-MODEL_PROVIDER=databricks
-DATABRICKS_API_BASE=https://your-workspace.cloud.databricks.com
-DATABRICKS_API_KEY=your-token
-FALLBACK_ENABLED=false
-
-# Server
-PORT=8081
-
-# Optional: Limits (remove for unlimited)
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-```
 
 Then start Lynkr:
 
@@ -133,21 +93,6 @@ lynkr start
 
 ### 3. Connect Your Tool
 
-**Claude Code**
-
-**Windows (Command Prompt):**
-```cmd
-set ANTHROPIC_BASE_URL=http://localhost:8081
-set ANTHROPIC_API_KEY=dummy
-claude "write a hello world in python"
-```
-
-**Linux/macOS:**
-```bash
-export ANTHROPIC_BASE_URL=http://localhost:8081
-export ANTHROPIC_API_KEY=dummy
-claude "write a hello world in python"
-```
 
 **Cursor IDE**
 - Settings → Models → Override Base URL
@@ -300,225 +245,10 @@ Lynkr analyzes each request and routes it to the appropriate tier. Simple questi
 
 **Result:** 70-90% of requests use cheaper/faster models. Only hard problems hit expensive models.
 
----
-
-## Complete .env Examples
-
-### MVP: Minimal Working Setup (Ollama)
-
-Copy-paste ready configuration for immediate use:
-
-```bash
-# .env - Minimal Ollama Setup
-
-# ============================================
-# REQUIRED: Provider Configuration
-# ============================================
-MODEL_PROVIDER=ollama
-FALLBACK_ENABLED=false
-
-# ============================================
-# REQUIRED: Ollama Settings
-# ============================================
-OLLAMA_ENDPOINT=http://localhost:11434
-OLLAMA_MODEL=qwen2.5-coder:latest
-
-# ============================================
-# REQUIRED: Server Configuration
-# ============================================
-PORT=8081
-HOST=0.0.0.0
-
-# ============================================
-# REQUIRED: Claude Code/Cursor Compatibility
-# ============================================
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-POLICY_SAFE_COMMANDS_ENABLED=false
-
-# ============================================
-# OPTIONAL: Performance (Recommended)
-# ============================================
-LOG_LEVEL=warn
-LOAD_SHEDDING_ENABLED=true
-LOAD_SHEDDING_HEAP_THRESHOLD=0.85
-```
-
-**Steps:**
-1. Install Ollama: `curl -fsSL https://ollama.com/install.sh | sh`
-2. Pull model: `ollama pull qwen2.5-coder:latest`
-3. Copy above to `.env` in your project directory
-4. Run: `lynkr start`
+Tier configuration is strictly authoritative — bandit exploration is constrained to the models you've listed in `TIER_*`, and multi-turn conversations score with a recency-weighted sliding window so context isn't lost on short follow-ups. See [`docs/intent-window-routing.md`](docs/intent-window-routing.md).
 
 ---
 
-### Production: Cloud with Tier Routing (OpenRouter)
-
-Optimized for cost savings with smart routing:
-
-```bash
-# .env - Production OpenRouter Setup
-
-# ============================================
-# REQUIRED: Provider Configuration
-# ============================================
-MODEL_PROVIDER=openrouter
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
-FALLBACK_ENABLED=false
-
-# ============================================
-# REQUIRED: Server Configuration
-# ============================================
-PORT=8081
-HOST=0.0.0.0
-
-# ============================================
-# TIER ROUTING: Smart Cost Optimization
-# ============================================
-# Simple queries → Cheap/fast model
-TIER_SIMPLE=openrouter:google/gemini-flash-1.5
-
-# Normal coding → Balanced model
-TIER_MEDIUM=openrouter:anthropic/claude-3.5-sonnet
-
-# Complex refactoring → Powerful model
-TIER_COMPLEX=openrouter:anthropic/claude-opus-4
-
-# Deep reasoning → Most capable model
-TIER_REASONING=openrouter:anthropic/claude-opus-4
-
-# ============================================
-# REQUIRED: Claude Code/Cursor Compatibility
-# ============================================
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-POLICY_SAFE_COMMANDS_ENABLED=false
-
-# ============================================
-# OPTIONAL: Token Optimization (60-80% savings)
-# ============================================
-PROMPT_CACHE_ENABLED=true
-SEMANTIC_CACHE_ENABLED=true
-SEMANTIC_CACHE_THRESHOLD=0.95
-TOOL_INJECTION_ENABLED=false
-
-# ============================================
-# OPTIONAL: Performance Tuning
-# ============================================
-LOG_LEVEL=warn
-LOAD_SHEDDING_ENABLED=true
-LOAD_SHEDDING_HEAP_THRESHOLD=0.85
-```
-
-**Expected savings:** 70-90% of requests use Gemini Flash ($). Only 10-30% use Claude Opus ($$$).
-
----
-
-### Enterprise: Databricks Foundation Models
-
-For teams using Databricks Model Serving:
-
-```bash
-# .env - Enterprise Databricks Setup
-
-# ============================================
-# REQUIRED: Provider Configuration
-# ============================================
-MODEL_PROVIDER=databricks
-DATABRICKS_API_BASE=https://your-workspace.cloud.databricks.com
-DATABRICKS_API_KEY=dapi1234567890abcdef
-FALLBACK_ENABLED=false
-
-# ============================================
-# REQUIRED: Model Configuration
-# ============================================
-# Option 1: Single model (no tier routing)
-DATABRICKS_MODEL=databricks-meta-llama-3-1-405b-instruct
-
-# Option 2: Tier routing (comment out above, uncomment below)
-# TIER_SIMPLE=databricks:databricks-meta-llama-3-1-70b-instruct
-# TIER_MEDIUM=databricks:databricks-claude-sonnet-4-5
-# TIER_COMPLEX=databricks:databricks-claude-opus-4-6
-# TIER_REASONING=databricks:databricks-claude-opus-4-6
-
-# ============================================
-# REQUIRED: Server Configuration
-# ============================================
-PORT=8081
-HOST=0.0.0.0
-
-# ============================================
-# REQUIRED: Claude Code/Cursor Compatibility
-# ============================================
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-POLICY_SAFE_COMMANDS_ENABLED=false
-
-# ============================================
-# OPTIONAL: Enterprise Features
-# ============================================
-LOG_LEVEL=info
-LOAD_SHEDDING_ENABLED=true
-LOAD_SHEDDING_HEAP_THRESHOLD=0.85
-
-# Optional: Metrics for monitoring
-# PROMETHEUS_METRICS_ENABLED=true
-```
-
----
-
-### Hybrid: Local + Cloud Fallback
-
-Use free Ollama, fallback to cloud when needed:
-
-```bash
-# .env - Hybrid Setup (Advanced)
-
-# ============================================
-# PRIMARY: Local Ollama
-# ============================================
-MODEL_PROVIDER=ollama
-OLLAMA_ENDPOINT=http://localhost:11434
-OLLAMA_MODEL=qwen2.5-coder:latest
-
-# ============================================
-# FALLBACK: Cloud Provider
-# ============================================
-FALLBACK_ENABLED=true
-FALLBACK_PROVIDER=openrouter
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
-
-# ============================================
-# TIER ROUTING: Mix Local + Cloud
-# ============================================
-TIER_SIMPLE=ollama:qwen2.5:3b
-TIER_MEDIUM=ollama:qwen2.5:7b
-TIER_COMPLEX=openrouter:anthropic/claude-3.5-sonnet
-TIER_REASONING=openrouter:anthropic/claude-opus-4
-
-# ============================================
-# REQUIRED: Server Configuration
-# ============================================
-PORT=8081
-HOST=0.0.0.0
-
-# ============================================
-# REQUIRED: Claude Code/Cursor Compatibility
-# ============================================
-POLICY_MAX_STEPS=50
-POLICY_MAX_TOOL_CALLS=100
-POLICY_SAFE_COMMANDS_ENABLED=false
-
-# ============================================
-# OPTIONAL: Performance
-# ============================================
-LOG_LEVEL=warn
-LOAD_SHEDDING_ENABLED=true
-```
-
-**Best of both worlds:** 80% of requests stay local (free). Complex tasks use cloud (paid).
-
----
 
 ## Common Issues & Fixes
 

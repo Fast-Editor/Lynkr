@@ -66,6 +66,9 @@ examples/
 # Headroom sidecar (optional, installed separately)
 headroom-sidecar/
 
+# Windsurf-hub side project (separate distribution)
+windsurf-hub/
+
 # Scripts (setup.js is needed, others are optional)
 scripts/audit-log-reader.js
 scripts/compact-dictionary.js

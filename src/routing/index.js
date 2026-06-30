@@ -486,7 +486,10 @@ async function _determineProviderSmartInner(payload, options = {}) {
         : null;
       if (queryText) {
         knnResult = await getKnnRouter().query(queryText);
-        if (knnResult && knnResult.confidence > 0.7 && knnResult.model && knnResult.model !== selectedModel) {
+        // Confidence thresholds (env-configurable; defaults 0.7 high / 0.4 low):
+        const KNN_HIGH = Number.parseFloat(process.env.LYNKR_KNN_CONFIDENCE_HIGH) || 0.7;
+        const KNN_LOW  = Number.parseFloat(process.env.LYNKR_KNN_CONFIDENCE_LOW)  || 0.4;
+        if (knnResult && knnResult.confidence > KNN_HIGH && knnResult.model && knnResult.model !== selectedModel) {
           // High confidence — trust kNN's model recommendation directly.
           logger.debug({
             from: `${provider}:${selectedModel}`,
@@ -496,7 +499,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
           provider = knnResult.provider;
           selectedModel = knnResult.model;
           method = method + '+knn';
-        } else if (knnResult && knnResult.confidence > 0.4 && knnResult.confidence <= 0.7) {
+        } else if (knnResult && knnResult.confidence > KNN_LOW && knnResult.confidence <= KNN_HIGH) {
           // Ambiguous signal — neighbors are split, we can't trust any single model
           // recommendation. Err on quality: bump the current tier one step up so the
           // request gets a more capable model rather than risking a bad answer from
@@ -532,10 +535,26 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // one with the highest estimated UCB score for the current context.
   if (config.routing?.banditEnabled !== false && knnResult && knnResult.model) {
     try {
-      // Build candidates: current selection and kNN alternative if different
+      // Build candidates: current selection and kNN alternative if different.
+      //
+      // Tier-aware filter: only treat the kNN suggestion as a real candidate
+      // if it matches a (provider, model) combo configured in ANY TIER_*
+      // entry. The bandit is allowed to explore freely across the user's
+      // configured tiers (e.g. swap a SIMPLE request to the COMPLEX-tier
+      // model), but is forbidden from picking a credentialed-but-untiered
+      // model (e.g. an Azure OpenAI deployment whose endpoint is set in .env
+      // for some other use, but not referenced by any TIER_*). This keeps
+      // tier routing as the source of truth for what's eligible while
+      // preserving cross-tier bandit exploration.
       const allCandidates = [{ provider, model: selectedModel }];
       if (knnResult.model !== selectedModel) {
-        allCandidates.push({ provider: knnResult.provider, model: knnResult.model });
+        const configured = require('./model-tiers').getModelTierSelector().getAllConfiguredModels();
+        const inConfig = configured.some(
+          m => m.provider === knnResult.provider && m.model === knnResult.model
+        );
+        if (inConfig) {
+          allCandidates.push({ provider: knnResult.provider, model: knnResult.model });
+        }
       }
 
       if (allCandidates.length > 1) {
