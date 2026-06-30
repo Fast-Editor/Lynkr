@@ -68,7 +68,13 @@ npm install -g lynkr
 
 ### 2. Configure Lynkr
 
-First run creates a `.env` file. Edit it with your provider settings.
+Run the interactive wizard — it walks you through choosing your usage mode (Claude Pro/Max subscription or direct API), picks a provider + model for each tier, collects credentials once, and writes a working `.env`:
+
+```bash
+lynkr init
+```
+
+The wizard covers all 12 supported providers. To re-run on top of an existing `.env`, use `lynkr init --force`. For the manual route, copy `.env.example` to `.env` and edit by hand:
 
 **Option A: Free & Local (Ollama) - Recommended for Testing**
 

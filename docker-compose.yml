@@ -3,7 +3,7 @@ services:
   lynkr:
     build: .
     container_name: lynkr
-    image: lynkr:9.7.0
+    image: lynkr:9.7.1
     ports:
       - "8081:8081"
     extra_hosts:
@@ -337,7 +337,7 @@ services:
       retries: 3
       start_period: 40s
     labels:
-      - "com.lynkr.version=9.7.0"
+      - "com.lynkr.version=9.7.1"
       - "com.lynkr.description=Claude Code proxy with multi-provider support"
     # Uncomment to set resource limits
     # deploy:

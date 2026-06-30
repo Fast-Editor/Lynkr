@@ -23,7 +23,7 @@ FROM node:24-alpine AS runtime
 
 ARG VCS_REF
 ARG BUILD_DATE
-ARG VERSION=9.7.0
+ARG VERSION=9.7.1
 
 LABEL org.opencontainers.image.title="Lynkr" \
       org.opencontainers.image.description="Universal LLM proxy for Claude Code, Cursor, and AI coding tools" \

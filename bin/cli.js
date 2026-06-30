@@ -9,11 +9,15 @@ const SUBCOMMANDS = {
   usage:      path.join(__dirname, "lynkr-usage.js"),
   trajectory: path.join(__dirname, "lynkr-trajectory.js"),
   wrap:       path.join(__dirname, "wrap.js"),
+  init:       path.join(__dirname, "lynkr-init.js"),
 };
 
 const sub = process.argv[2];
 if (sub && Object.prototype.hasOwnProperty.call(SUBCOMMANDS, sub)) {
   process.argv.splice(2, 1); // drop the subcommand token so the script's own arg parser is happy
+  // Subcommand scripts check this to decide whether to invoke their main()
+  // when they're require()'d (vs being loaded by a test for unit-checking).
+  process.env._LYNKR_SUBCMD = sub;
   require(SUBCOMMANDS[sub]);
   return;
 }
