@@ -3,7 +3,7 @@ services:
   lynkr:
     build: .
     container_name: lynkr
-    image: lynkr:9.6.0
+    image: lynkr:9.7.0
     ports:
       - "8081:8081"
     extra_hosts:
@@ -46,6 +46,14 @@ services:
       TIER_MEDIUM: ${TIER_MEDIUM:-}
       TIER_COMPLEX: ${TIER_COMPLEX:-}
       TIER_REASONING: ${TIER_REASONING:-}
+      # Routing intelligence (see docs/intent-window-routing.md)
+      # Visible routing badge in TUI; safe to enable — content is sanitised
+      # before re-entering model context.
+      LYNKR_VISIBLE_ROUTING: ${LYNKR_VISIBLE_ROUTING:-false}
+      # Window size for multi-turn intent scoring (1 = latest-only).
+      LYNKR_INTENT_WINDOW_N: ${LYNKR_INTENT_WINDOW_N:-5}
+      # Per-turn exponential decay for window scoring.
+      LYNKR_INTENT_DECAY: ${LYNKR_INTENT_DECAY:-0.7}
 #      OLLAMA_ENDPOINT: http://ollama:11434
       OLLAMA_ENDPOINT: http://host.docker.internal:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:latest}
@@ -329,7 +337,7 @@ services:
       retries: 3
       start_period: 40s
     labels:
-      - "com.lynkr.version=9.6.0"
+      - "com.lynkr.version=9.7.0"
       - "com.lynkr.description=Claude Code proxy with multi-provider support"
     # Uncomment to set resource limits
     # deploy:
