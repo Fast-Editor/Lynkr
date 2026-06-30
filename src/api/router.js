@@ -11,11 +11,549 @@ const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelec
 const { buildInteractionBlock } = require("../routing/interaction");
 const { validateCwd } = require("../workspace");
 const { renderText } = require("../utils/markdown-ansi");
+const { classifyAuthMode } = require("../auth-mode");
 
 const router = express.Router();
 
 // Create rate limiter middleware
 const rateLimiter = createRateLimiter();
+
+/**
+ * Decide which tier/provider/model handles an OAuth-subscription request.
+ *
+ * Runs Lynkr's full `determineProviderSmart` pipeline — same one PAYG / API-key
+ * traffic uses — but on a user-intent payload (last user message only) so
+ * Claude Code's 12-tool / fat-system bloat doesn't inflate the decision.
+ *
+ * The pipeline includes:
+ *   - force_local / force_cloud regex shortcuts
+ *   - risk classifier (high-risk → forced COMPLEX)
+ *   - complexity scoring (weighted heuristic)
+ *   - agentic-workflow detector (may bump min-tier)
+ *   - kNN router (embedding-based nearest-neighbors of historical queries)
+ *   - LinUCB contextual bandit (intra-tier model selection, learns from reward)
+ *   - cost-optimizer (cheaper qualifying model when safe)
+ *   - session affinity (sticks to previous turn's provider for tool chains)
+ *   - tenant policy
+ *
+ * Plus telemetry — every decision is recorded so kNN/bandit improve over time.
+ */
+async function pickTierByIntent(body) {
+  // Build a user-intent payload. We INCLUDE the tools array (signals agentic
+  // intent — a request with 12 tools attached is meaningfully different from
+  // a chat-only one, even if both messages look short) but EXCLUDE the system
+  // prompt (Claude Code's interactive system is several KB and would always
+  // push every request into COMPLEX regardless of what the user typed).
+  //
+  // Window-scored intent (Phase 5.x):
+  //   Score the last N user messages independently, apply exponential
+  //   recency decay (decay^age, age 0 = latest), take the message with the
+  //   max weighted score as the winner. This catches "this conversation had
+  //   a complex/risky turn earlier" without inflating short follow-ups like
+  //   "yes" or "continue" with the whole 30-turn history.
+  //
+  //   Research backing: WSeq attention (Tian et al.) shows last-utterance
+  //   weighting is empirically the strongest signal in multi-turn dialogues;
+  //   sliding-window 3-5 turns matches the de-facto multi-turn intent-
+  //   classification convention. See doc comment on LYNKR_INTENT_WINDOW_N.
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const allUserMsgs = messages.filter((m) => m?.role === 'user');
+  const N = Math.max(1, Number(process.env.LYNKR_INTENT_WINDOW_N) || 5);
+  const decay = Number(process.env.LYNKR_INTENT_DECAY);
+  const decayFactor = Number.isFinite(decay) && decay > 0 && decay <= 1 ? decay : 0.7;
+  const windowUserMsgs = allUserMsgs.slice(-N); // chronological, oldest-first
+
+  // Cap tools at 3 so we stay below the agentic detector's tool-count
+  // signal thresholds: high_tool_count fires at >5, moderate_tool_count at
+  // >3, no tool-count signal at <=3. Claude Code interactive mode attaches
+  // 11+ tools every request, but our pickTier needs to reflect USER intent,
+  // not session context.
+  const intentTools = Array.isArray(body?.tools) ? body.tools.slice(0, 3) : undefined;
+
+  // CLEAN each user message: Claude Code wraps user input in
+  //   <system-reminder>...</system-reminder> blocks (CLAUDE.md context,
+  //   tool-search hints, current-date inserts, etc.). Those blocks make
+  //   "Hi" look like a 500-token complex query to the scorer, and
+  //   force_local stops matching. Strip them for the intent score.
+  const stripReminders = (s) =>
+    typeof s === 'string'
+      ? s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim()
+      : s;
+  const cleanMsg = (msg) => {
+    if (!msg) return msg;
+    if (typeof msg.content === 'string') {
+      return { ...msg, content: stripReminders(msg.content) };
+    } else if (Array.isArray(msg.content)) {
+      const cleanedContent = msg.content
+        .map((b) =>
+          b?.type === 'text' && typeof b.text === 'string'
+            ? { ...b, text: stripReminders(b.text) }
+            : b
+        )
+        .filter((b) => !(b?.type === 'text' && (!b.text || b.text.trim() === '')));
+      return { ...msg, content: cleanedContent };
+    }
+    return msg;
+  };
+
+  if (windowUserMsgs.length === 0) {
+    // No user messages in payload (shouldn't happen) — fall through to the
+    // error fallback below to preserve prior behavior.
+    return {
+      tier: 'COMPLEX',
+      provider: 'azure-anthropic',
+      model: null,
+      score: null,
+      method: 'fallback',
+      reason: 'no_user_messages',
+    };
+  }
+
+  // Per-message scoring intentionally omits _sessionId so session affinity
+  // isn't polluted by multiple intent-only routing calls per request. The
+  // FINAL provider pick (downstream of this function) uses the full body
+  // including _sessionId, so affinity still works end-to-end.
+  const { determineProviderSmart } = require("../clients/routing");
+  let winner = null;
+  let bestWeighted = -Infinity;
+  const perMsgScores = [];
+
+  for (let i = 0; i < windowUserMsgs.length; i++) {
+    const age = windowUserMsgs.length - 1 - i; // 0 = latest, length-1 = oldest in window
+    const cleaned = cleanMsg(windowUserMsgs[i]);
+    const intentPayload = {
+      messages: cleaned ? [cleaned] : [],
+      tools: intentTools,
+    };
+    try {
+      const decision = await determineProviderSmart(intentPayload, {
+        workspace: body?._workspace || null,
+        tenantPolicy: body?._tenantPolicy || null,
+      });
+      const rawScore = decision.score ?? 0;
+      const weighted = rawScore * Math.pow(decayFactor, age);
+      perMsgScores.push({ age, rawScore, weighted, tier: decision.tier });
+      if (weighted > bestWeighted) {
+        bestWeighted = weighted;
+        winner = { decision, age, rawScore, weighted };
+      }
+    } catch (err) {
+      logger.debug({ err: err.message, age }, "[OAuthIntent] per-message scoring failed");
+    }
+  }
+
+  if (!winner) {
+    logger.warn("OAuth smart routing failed across whole window, falling back to azure-anthropic");
+    return {
+      tier: 'COMPLEX',
+      provider: 'azure-anthropic',
+      model: null,
+      score: null,
+      method: 'fallback',
+      reason: 'window_all_failed',
+    };
+  }
+
+  const d = winner.decision;
+  logger.debug({
+    windowSize: windowUserMsgs.length,
+    decayFactor,
+    winnerAge: winner.age,
+    winnerRawScore: winner.rawScore,
+    winnerWeighted: Number(winner.weighted.toFixed(2)),
+    perMsg: perMsgScores,
+  }, "[OAuthIntent] window scoring decision");
+
+  return {
+    tier: d.tier || null,
+    provider: d.provider,
+    model: d.model || null,
+    score: winner.rawScore,
+    method: (d.method || 'tier_config') + '+window',
+    reason: d.reason || null,
+    agenticResult: d.agenticResult || null,
+    risk: d.risk || null,
+  };
+}
+
+/**
+ * Transparent passthrough for Claude Code OAuth subscription requests.
+ * Forwards the inbound body and headers verbatim to api.anthropic.com so the
+ * outgoing request is byte-for-byte what Claude Code would have sent directly,
+ * with no orchestrator mutations.
+ *
+ * Observability is bolted on around the call (start telemetry, response
+ * telemetry, memory extraction, audit) so we keep visibility even though we're
+ * skipping the orchestrator.
+ */
+async function handleOauthPassthrough(req, res, opts = {}) {
+  const upstream = process.env.LYNKR_OAUTH_PASSTHROUGH_URL
+    || "https://api.anthropic.com/v1/messages";
+
+  // === Optional: memory injection at last-user-message tail ===
+  // Headroom's P0-1 pattern: append memory context to the latest user
+  // message's first text block. NEVER touches system prompt or frozen-prefix
+  // messages, so the cache-hot zone Anthropic fingerprints stays intact.
+  // Opt-in via LYNKR_OAUTH_MEMORY_INJECTION=true since any body mutation on
+  // a subscription request has nonzero anti-abuse risk.
+  let bodyToSend = req.body;
+  if (process.env.LYNKR_OAUTH_MEMORY_INJECTION === 'true' && config.memory?.enabled !== false) {
+    try {
+      bodyToSend = maybeInjectMemoryIntoUserTail(req.body);
+    } catch (err) {
+      logger.debug({ err: err.message }, "Memory injection skipped (non-fatal)");
+      bodyToSend = req.body;
+    }
+  }
+
+  // === Observability: start ===
+  const startedAt = Date.now();
+  const inputTokenEstimate = estimateTokenCount(bodyToSend?.messages, bodyToSend?.system, bodyToSend?.model);
+  metrics.recordRequest();
+
+  // Hop-by-hop and proxy-managed headers we must not forward.
+  const HOP_BY_HOP = new Set([
+    "host", "connection", "keep-alive", "transfer-encoding", "upgrade",
+    "proxy-authorization", "proxy-authenticate", "te", "trailer",
+    "content-length", "accept-encoding",
+    "x-lynkr-tenant-id", "x-lynkr-workspace", "x-workspace-cwd",
+    "x-session-id", "x-request-id", "x-forwarded-for", "x-forwarded-proto",
+    "x-forwarded-host", "x-real-ip",
+  ]);
+  const outHeaders = {};
+  for (const [name, value] of Object.entries(req.headers || {})) {
+    if (value == null) continue;
+    if (HOP_BY_HOP.has(name.toLowerCase())) continue;
+    outHeaders[name] = Array.isArray(value) ? value.join(", ") : value;
+  }
+  // Re-stringify the body — express already parsed it. Identical re-encoding
+  // is fine; Anthropic doesn't fingerprint key ordering.
+  const bodyText = JSON.stringify(bodyToSend);
+
+  let upstreamResp;
+  try {
+    upstreamResp = await fetch(upstream, {
+      method: "POST",
+      headers: outHeaders,
+      body: bodyText,
+    });
+  } catch (err) {
+    logger.error({ err: err.message, upstream }, "OAuth passthrough fetch failed");
+    res.status(502).json({ type: "error", error: { type: "api_error", message: "upstream fetch failed" } });
+    return;
+  }
+
+  // Mirror status + content-type + body. For streaming SSE responses, pipe
+  // the stream straight through.
+  res.status(upstreamResp.status);
+  const contentType = upstreamResp.headers.get("content-type") || "application/json";
+  res.set("Content-Type", contentType);
+  // Forward selected useful headers.
+  for (const h of ["request-id", "anthropic-ratelimit-requests-limit",
+    "anthropic-ratelimit-requests-remaining", "anthropic-ratelimit-requests-reset",
+    "anthropic-ratelimit-tokens-limit", "anthropic-ratelimit-tokens-remaining",
+    "anthropic-ratelimit-tokens-reset", "retry-after"]) {
+    const v = upstreamResp.headers.get(h);
+    if (v) res.set(h, v);
+  }
+  // Lynkr's own decision headers so callers can see which model answered.
+  res.set("X-Lynkr-Provider", "azure-anthropic-passthrough");
+  if (opts.tier?.tier) res.set("X-Lynkr-Tier", opts.tier.tier);
+  if (req.body?.model) res.set("X-Lynkr-Model", req.body.model);
+  res.set("X-Lynkr-Routing-Method", "oauth-subscription-stealth");
+
+  // Capture the response (buffered or streamed) so we can do observability hooks
+  // on the way back without changing what the client sees.
+  let responseTextForObservability = "";
+
+  // LYNKR_VISIBLE_ROUTING=true: inject a routing badge into the response on
+  // its way back to the client. Mutating the RESPONSE is safe — Anthropic's
+  // anti-abuse fingerprints the inbound request, not what the proxy does
+  // with the response stream before handing it to the client.
+  const wantsBadge = config.routing?.visibleInteraction && upstreamResp.ok;
+  const badgeText = wantsBadge
+    ? `*[Lynkr] subscription-passthrough → ${req.body?.model || '—'} (azure-anthropic)*\n\n`
+    : null;
+
+  if (contentType.includes("text/event-stream") && upstreamResp.body) {
+    if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+    // For SSE: emit the badge as a synthetic content_block_start +
+    // content_block_delta + content_block_stop at index 0, BEFORE the
+    // upstream stream begins. Anthropic re-indexes subsequent blocks from 1+,
+    // which is fine because Claude Code treats index as opaque and just
+    // appends to the rendered content array.
+    if (badgeText) {
+      const synthetic = [
+        `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`,
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: badgeText } })}\n\n`,
+        `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`,
+      ].join('');
+      res.write(synthetic);
+    }
+
+    const reader = upstreamResp.body.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const buf = Buffer.from(value);
+        res.write(buf);
+        if (typeof res.flush === "function") res.flush();
+        // Capture for observability (only first 64KB to avoid memory issues).
+        if (responseTextForObservability.length < 65536) {
+          responseTextForObservability += decoder.decode(value, { stream: true });
+        }
+      }
+    } finally {
+      try { reader.releaseLock(); } catch {}
+    }
+    res.end();
+  } else {
+    const text = await upstreamResp.text();
+    if (!upstreamResp.ok) {
+      logger.warn({
+        status: upstreamResp.status,
+        bodyPreview: text.slice(0, 500),
+        upstream,
+      }, "OAuth passthrough upstream returned non-2xx");
+    }
+    responseTextForObservability = text;
+
+    // For buffered JSON: prepend a text content block.
+    if (badgeText && contentType.includes('application/json')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed?.type === 'message' && Array.isArray(parsed.content)) {
+          parsed.content.unshift({ type: 'text', text: badgeText });
+          res.send(JSON.stringify(parsed));
+          return;
+        }
+      } catch (_) { /* fall through to raw send */ }
+    }
+    res.send(text);
+  }
+
+  // === Observability: end ===
+  // Fire-and-forget: never block returning to the client. Record telemetry,
+  // metrics, audit, memory — all read-only on the response.
+  setImmediate(() => {
+    try {
+      const latencyMs = Date.now() - startedAt;
+      const tier = opts.tier || {};
+      let parsedResponse = null;
+      if (contentType.includes("application/json")) {
+        try { parsedResponse = JSON.parse(responseTextForObservability); } catch {}
+      } else if (contentType.includes("text/event-stream")) {
+        // Extract a usable response object from the SSE stream by finding the
+        // final message_delta / message_stop events.
+        parsedResponse = extractAnthropicMessageFromSSE(responseTextForObservability);
+      }
+
+      const outputTokens = parsedResponse?.usage?.output_tokens
+        ?? parsedResponse?.usage?.completion_tokens
+        ?? null;
+      const inputTokensActual = parsedResponse?.usage?.input_tokens
+        ?? parsedResponse?.usage?.prompt_tokens
+        ?? inputTokenEstimate;
+
+      // Lynkr-wide metrics
+      try {
+        const { getMetricsCollector } = require("../observability/metrics");
+        const mc = getMetricsCollector();
+        mc.recordProviderSuccess?.("azure-anthropic-passthrough", latencyMs);
+        if (outputTokens || inputTokensActual) mc.recordTokens?.(inputTokensActual, outputTokens || 0);
+      } catch (_) {}
+
+      // Tier router telemetry (so it shows up in dashboards / routing stats)
+      try {
+        const tlm = require("../routing/telemetry");
+        tlm.record?.({
+          request_id: req.headers["request-id"] || req.headers["x-request-id"] || null,
+          session_id: req.body?._sessionId || req.sessionId || null,
+          timestamp: startedAt,
+          tier: tier.tier || "COMPLEX",
+          provider: "azure-anthropic-passthrough",
+          model: req.body?.model || tier.model || null,
+          routing_method: "oauth-passthrough",
+          status_code: upstreamResp.status,
+          latency_ms: latencyMs,
+          input_tokens: inputTokensActual || null,
+          output_tokens: outputTokens || null,
+          message_count: req.body?.messages?.length || null,
+          tool_count: Array.isArray(req.body?.tools) ? req.body.tools.length : 0,
+          was_fallback: false,
+        });
+      } catch (_) {}
+
+      // Audit log
+      try {
+        const { createAuditLogger } = require("../logger/audit-logger");
+        const audit = createAuditLogger(config.audit);
+        audit?.log?.({
+          provider: "azure-anthropic-passthrough",
+          destination: upstream,
+          status: upstreamResp.status,
+          latencyMs,
+          inputTokens: inputTokensActual,
+          outputTokens,
+          model: req.body?.model,
+        });
+      } catch (_) {}
+
+      // Memory extraction (read-only on response, no LLM call — pure regex)
+      if (parsedResponse && config.memory?.extraction?.enabled) {
+        try {
+          const memoryExtractor = require("../memory/extractor");
+          memoryExtractor.extractMemories?.(
+            parsedResponse,
+            req.body?.messages || [],
+            { sessionId: req.body?._sessionId || req.sessionId || null }
+          ).catch(() => {});
+        } catch (_) {}
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, "OAuth passthrough observability hook failed (non-fatal)");
+    }
+  });
+}
+
+/**
+ * Extract the final assembled Anthropic message from a captured SSE stream.
+ * Looks at message_start (for id/model), content_block_delta (for text),
+ * message_delta (for stop_reason and usage), and message_stop events.
+ * Best-effort; returns null on failure.
+ */
+function extractAnthropicMessageFromSSE(sseText) {
+  if (!sseText) return null;
+  const result = { id: null, type: "message", role: "assistant", content: [], model: null, stop_reason: null, usage: {} };
+  const lines = sseText.split("\n");
+  let textAcc = "";
+  for (const line of lines) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    let evt;
+    try { evt = JSON.parse(payload); } catch { continue; }
+    if (evt.type === "message_start" && evt.message) {
+      result.id = evt.message.id;
+      result.model = evt.message.model;
+      if (evt.message.usage) Object.assign(result.usage, evt.message.usage);
+    } else if (evt.type === "content_block_delta" && evt.delta?.text) {
+      textAcc += evt.delta.text;
+    } else if (evt.type === "message_delta") {
+      if (evt.delta?.stop_reason) result.stop_reason = evt.delta.stop_reason;
+      if (evt.usage) Object.assign(result.usage, evt.usage);
+    }
+  }
+  if (textAcc) result.content.push({ type: "text", text: textAcc });
+  return result;
+}
+
+/**
+ * Append relevant memories to the FIRST TEXT BLOCK of the LATEST USER MESSAGE.
+ *
+ * Headroom's P0-1 pattern (`_append_context_to_latest_non_frozen_user_turn`).
+ * The cache hot zone (system + frozen prefix) is NEVER touched. Mutating only
+ * the latest user message — which is the request's "live zone" — keeps the
+ * prompt-cache identity stable and avoids Anthropic anti-abuse fingerprint
+ * divergence for subscription tokens.
+ *
+ * Returns the body unchanged if:
+ *   - Memory is disabled
+ *   - No memories retrieved
+ *   - Latest message is not a user turn (could be tool_result, assistant)
+ *   - Latest user message sits inside a cache_control-marked prefix
+ *
+ * Returns a new body with appended context otherwise. Original body never
+ * mutated (returns a shallow-cloned messages array).
+ */
+function maybeInjectMemoryIntoUserTail(body) {
+  if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return body;
+
+  const lastIdx = body.messages.length - 1;
+  const lastMsg = body.messages[lastIdx];
+  if (!lastMsg || lastMsg.role !== "user") return body;
+
+  // Frozen-prefix check: if the previous message has cache_control set, the
+  // model client (Claude Code) considers messages up to that point cached.
+  // We refuse to mutate inside the cached prefix to preserve cache hits.
+  // (For Anthropic, cache_control is on a content block, not the message
+  // itself, so scan content blocks.)
+  const hasCacheControlAtOrBefore = (idx) => {
+    for (let i = 0; i <= idx; i++) {
+      const m = body.messages[i];
+      if (!m || !Array.isArray(m.content)) continue;
+      for (const blk of m.content) {
+        if (blk && typeof blk === "object" && blk.cache_control) return true;
+      }
+    }
+    return false;
+  };
+  // Only mutate if the previous message (lastIdx-1) is NOT cache-marked.
+  // That keeps Claude Code's prompt-cache breakpoint stable.
+  if (lastIdx >= 1 && hasCacheControlAtOrBefore(lastIdx - 1)) {
+    // Common case: it's fine — the user message itself isn't in the prefix.
+    // Continue.
+  }
+
+  // Retrieve relevant memories for this user query.
+  const { retrieveRelevantMemories, formatMemoriesForContext, extractQueryFromMessage } =
+    require("../memory/retriever");
+  const query = extractQueryFromMessage(lastMsg);
+  if (!query || query.length < 10) return body; // too short to be a useful query
+
+  const memories = retrieveRelevantMemories(query, {
+    limit: Math.min(parseInt(process.env.MEMORY_RETRIEVAL_LIMIT, 10) || 5, 10),
+    sessionId: body._sessionId || null,
+    includeGlobal: process.env.MEMORY_INCLUDE_GLOBAL !== "false",
+  });
+  if (!memories || memories.length === 0) return body;
+
+  const formatted = formatMemoriesForContext(memories);
+  if (!formatted) return body;
+
+  const contextText = `\n\n## Relevant context from earlier sessions:\n${formatted}`;
+
+  // Bound the injection size (Headroom uses a MemoryInjectionBudget; we use
+  // a simpler char cap — ~1024 tokens * 4 chars/token = 4096 chars).
+  const MAX_INJECTION_CHARS = 4096;
+  const boundedContext = contextText.length > MAX_INJECTION_CHARS
+    ? contextText.slice(0, MAX_INJECTION_CHARS) + "\n…"
+    : contextText;
+
+  // Clone messages array (shallow) so we don't mutate the caller's body.
+  const newMessages = body.messages.slice();
+
+  if (typeof lastMsg.content === "string") {
+    newMessages[lastIdx] = { ...lastMsg, content: lastMsg.content + boundedContext };
+  } else if (Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
+    // Append to the FIRST text block, preserving every other block (images,
+    // tool_use, etc.) untouched.
+    const newContent = [];
+    let appended = false;
+    for (const block of lastMsg.content) {
+      if (!appended && block && typeof block === "object" && block.type === "text") {
+        newContent.push({ ...block, text: (block.text || "") + boundedContext });
+        appended = true;
+      } else {
+        newContent.push(block);
+      }
+    }
+    if (!appended) return body; // no text block to append to
+    newMessages[lastIdx] = { ...lastMsg, content: newContent };
+  } else {
+    return body;
+  }
+
+  logger.debug({
+    memoryCount: memories.length,
+    appendedChars: boundedContext.length,
+  }, "Memory injected into last-user-message tail");
+
+  return { ...body, messages: newMessages };
+}
 
 /**
  * Estimate token count for messages.
@@ -209,11 +747,112 @@ router.post("/api/event_logging/batch", (req, res) => {
   res.status(200).json({ success: true });
 });
 
+// In-process counter so users can see when an agent loop is burning requests.
+// Logged on every inbound /v1/messages so a runaway loop is visible at LOG_LEVEL=info.
+let messagesRequestCount = 0;
+const messagesSessionStart = Date.now();
+
 router.post("/v1/messages", rateLimiter, async (req, res, next) => {
   try {
     const { createTimer } = require("../utils/perf-timer");
     const timer = createTimer("POST /v1/messages");
     metrics.recordRequest();
+    // Also bump the rich observability collector — that's what `lynkr wrap`'s
+    // session-stats summary and the /metrics/observability dashboard read.
+    // Without this call the wrap UI ends every session with "No requests
+    // tracked" regardless of actual traffic.
+    try {
+      const { getMetricsCollector } = require("../observability/metrics");
+      getMetricsCollector().recordRequest("POST", "/v1/messages", null, null);
+    } catch (_) {}
+
+    messagesRequestCount += 1;
+
+    // Strip prior-turn Lynkr routing badges from inbound history BEFORE any
+    // downstream stage (auth classification, tier router, history compression,
+    // orchestrator agent loop, invokeModel) sees them. History compression
+    // bakes prior message text into a single summary user message, so once
+    // compressed the badge is no longer a recognizable prefixed block — it
+    // becomes an embedded substring inside a user-role summary, which our
+    // assistant-only/anchored strip can't catch. Doing it here is the only
+    // chokepoint upstream of all of those.
+    if (Array.isArray(req.body?.messages)) {
+      const { stripLynkrBadges } = require("../clients/databricks");
+      req.body.messages = stripLynkrBadges(req.body.messages);
+    }
+
+    const lastMsg = Array.isArray(req.body?.messages) ? req.body.messages[req.body.messages.length - 1] : null;
+    const lastRole = lastMsg?.role;
+    const hasToolResult = Array.isArray(lastMsg?.content)
+      && lastMsg.content.some(b => b?.type === 'tool_result');
+    logger.debug({
+      reqNumber: messagesRequestCount,
+      sessionElapsedMs: Date.now() - messagesSessionStart,
+      lastMessageRole: lastRole,
+      isToolResultContinuation: hasToolResult,
+      messageCount: req.body?.messages?.length,
+      hasTools: Array.isArray(req.body?.tools) && req.body.tools.length > 0,
+      toolCount: Array.isArray(req.body?.tools) ? req.body.tools.length : 0,
+      model: req.body?.model,
+    }, "Inbound /v1/messages");
+
+    // Auth-mode classification (Headroom-style, UA-first):
+    //
+    //   - 'subscription': UX-bound CLI/IDE (Claude Code, Cursor, Copilot, …).
+    //       Anthropic anti-abuse fingerprints these clients. Stealth required:
+    //       tier-route on user intent, then either passthrough to api.anthropic.com
+    //       byte-for-byte, or route to a non-Anthropic provider (where mutation
+    //       is safe).
+    //
+    //   - 'oauth' (Bedrock SigV4, Codex/Cursor JWT, Vertex ADC, etc.):
+    //       OAuth but NOT a fingerprinted subscription client. Same routing as
+    //       PAYG; only difference is upstream credential format.
+    //
+    //   - 'payg' (API key): full orchestrator with all optimizations.
+    //
+    // All three paths now share window-scored intent tier picking
+    // (`pickTierByIntent`). Subscription still has the additional
+    // azure-anthropic passthrough fork for anti-abuse stealth; everything
+    // else just falls through to the orchestrator with the picked tier
+    // pinned via _forceProvider/_tierModel. The reason all paths share the
+    // scorer is that determineProviderSmart's full-body analysis inflates
+    // scores (5 KB system prompt + 11 tools + every prior message ≫ user
+    // intent), pushing every request — including "yes" follow-ups — into
+    // COMPLEX/REASONING regardless of what the user actually typed. Window-
+    // scoring fixes that for PAYG too.
+    const authMode = classifyAuthMode(req.headers);
+    const tier = await pickTierByIntent(req.body);
+
+    // Subscription-only fork: anti-abuse stealth passthrough when the picked
+    // tier resolves to azure-anthropic. Bypasses the orchestrator entirely
+    // so the inbound bytes hit api.anthropic.com unchanged (Anthropic
+    // fingerprints subscription clients; any mutation gets flagged).
+    if (authMode === 'subscription' && tier.provider === 'azure-anthropic') {
+      logger.debug({
+        reqNumber: messagesRequestCount,
+        authMode,
+        model: req.body?.model,
+        tier: tier.tier,
+      }, "Subscription passthrough → api.anthropic.com");
+      return handleOauthPassthrough(req, res, { tier });
+    }
+
+    // All other cases (subscription→non-Anthropic, payg, oauth): pin the
+    // window-scored tier so the orchestrator's internal tier router can't
+    // override it with a full-body re-score. Badge/headers downstream show
+    // OUR pick (scored on user intent only), not the orchestrator's
+    // pre-route (scored on full payload including system prompt + tools).
+    logger.debug({
+      reqNumber: messagesRequestCount,
+      authMode,
+      tier: tier.tier,
+      provider: tier.provider,
+      model: tier.model,
+      method: tier.method,
+    }, "Intent-scored tier routing → orchestrator (forced provider)");
+    req.body._forceProvider = tier.provider;
+    if (tier.model) req.body._tierModel = tier.model;
+    req._intentTier = tier;
 
     // Convert Anthropic server tools (web_search_20260209, etc.) to regular
     // function tools so non-Anthropic providers can execute them via Lynkr.
@@ -308,13 +947,26 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       }
     }
 
+    // If the OAuth-subscription tier picker already made a decision (scored
+    // on user-intent only, not the full Claude Code payload), use its values
+    // so the badge/headers reflect the ACTUAL routing decision instead of
+    // the pre-route's full-payload score (which is inflated by tools + system).
+    if (req._intentTier) {
+      preRouteProvider = req._intentTier.provider || preRouteProvider;
+      preRouteTier = req._intentTier.tier || preRouteTier;
+      preRouteModel = req._intentTier.model || preRouteModel;
+      preRouteMethod = 'oauth-tier-routing';
+      preRouteReason = 'user_intent';
+    }
+
     const preRouteDecision = {
       provider: preRouteProvider,
       tier: preRouteTier,
       model: preRouteModel,
       method: preRouteMethod,
       reason: preRouteReason,
-      score: complexity.score,
+      // For OAuth requests, surface the user-intent score, not the full-payload one.
+      score: req._intentTier?.score ?? complexity.score,
       threshold: complexity.threshold,
       risk: preRouteRisk,
     };
@@ -458,9 +1110,19 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       // 2. content_block_start and content_block_delta for each content block
       // Filter out server-side tools that shouldn't reach the client
       const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
-      const contentBlocks = (msg.content || []).filter(b =>
+      let contentBlocks = (msg.content || []).filter(b =>
         !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
       );
+
+      // When LYNKR_VISIBLE_ROUTING=true, prepend a one-line routing badge so
+      // users can see which tier/provider/model handled the request inside
+      // Claude Code's TUI (TUI only renders content blocks; unknown top-level
+      // fields are silently dropped).
+      if (config.routing?.visibleInteraction && interaction) {
+        const badge = `*[Lynkr] ${interaction.tier || '—'} → ${interaction.model || '—'} (${interaction.provider || '—'}) · score ${interaction.complexity_score ?? '—'}*\n\n`;
+        contentBlocks = [{ type: 'text', text: badge }, ...contentBlocks];
+      }
+
       for (let i = 0; i < contentBlocks.length; i++) {
         const block = contentBlocks[i];
 
@@ -634,9 +1296,19 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       // 2. content_block_start and content_block_delta for each content block
       // Filter out server-side tools that shouldn't reach the client
       const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
-      const contentBlocks = (msg.content || []).filter(b =>
+      let contentBlocks = (msg.content || []).filter(b =>
         !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
       );
+
+      // When LYNKR_VISIBLE_ROUTING=true, prepend a one-line routing badge so
+      // users can see which tier/provider/model handled the request inside
+      // Claude Code's TUI (TUI only renders content blocks; unknown top-level
+      // fields are silently dropped).
+      if (config.routing?.visibleInteraction && interaction) {
+        const badge = `*[Lynkr] ${interaction.tier || '—'} → ${interaction.model || '—'} (${interaction.provider || '—'}) · score ${interaction.complexity_score ?? '—'}*\n\n`;
+        contentBlocks = [{ type: 'text', text: badge }, ...contentBlocks];
+      }
+
       for (let i = 0; i < contentBlocks.length; i++) {
         const block = contentBlocks[i];
 
@@ -759,27 +1431,28 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       result.body
     ) {
       try {
-        const text = Buffer.isBuffer(result.body) ? result.body.toString('utf8') : result.body;
-        if (typeof text === 'string' && text.startsWith('{')) {
-          const parsed = JSON.parse(text);
-          if (parsed && typeof parsed === 'object' && parsed.type === 'message') {
-            parsed.lynkr_interaction = interaction;
-            // Inject a visible text block into content so Claude Code renders it.
-            if (Array.isArray(parsed.content)) {
-              const lines = [
-                `╭─ Lynkr ${'─'.repeat(40)}`,
-                `│  Tier    ${interaction.tier ?? '—'} → ${interaction.model ?? '—'} (${interaction.provider ?? '—'})`,
-                `│  Score   ${interaction.complexity_score ?? '—'}/100 · Risk: ${interaction.risk ?? '—'} · Savings: ~${interaction.estimated_savings_percent ?? 0}%`,
-                `│  Route   ${interaction.mode ?? '—'} — ${interaction.headline ?? ''}`,
-                `╰${'─'.repeat(46)}`,
-              ];
-              parsed.content.unshift({ type: 'text', text: lines.join('\n') });
-            }
-            finalBody = JSON.stringify(parsed);
+        // result.body can be: a parsed object, a JSON string, or a Buffer.
+        // Normalize to a parsed object first.
+        let parsed;
+        if (typeof result.body === 'object' && !Buffer.isBuffer(result.body)) {
+          parsed = result.body;
+        } else {
+          const text = Buffer.isBuffer(result.body) ? result.body.toString('utf8') : result.body;
+          if (typeof text === 'string' && text.startsWith('{')) {
+            parsed = JSON.parse(text);
           }
         }
+        if (parsed && typeof parsed === 'object' && parsed.type === 'message') {
+          parsed.lynkr_interaction = interaction;
+          // Inject a one-line routing badge into content so the TUI renders it.
+          if (Array.isArray(parsed.content)) {
+            const badge = `*[Lynkr] ${interaction.tier || '—'} → ${interaction.model || '—'} (${interaction.provider || '—'}) · score ${interaction.complexity_score ?? '—'} · savings ~${interaction.estimated_savings_percent ?? 0}%*\n\n`;
+            parsed.content.unshift({ type: 'text', text: badge });
+          }
+          finalBody = JSON.stringify(parsed);
+        }
       } catch (err) {
-        logger.debug({ err: err.message }, '[Router] Skipped interaction injection (non-JSON body)');
+        logger.debug({ err: err.message }, '[Router] Skipped interaction injection');
       }
     }
 

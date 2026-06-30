@@ -259,6 +259,40 @@ class ModelTierSelector {
   }
 
   /**
+   * Return every {provider, model} combo configured for a tier.
+   * Today TIER_* parses to a single provider:model, so this returns at most
+   * one entry. Kept as an array so callers don't have to change when
+   * multi-model tier syntax is added (e.g. TIER_SIMPLE=ollama:m1,ollama:m2).
+   */
+  getModelsForTier(tier) {
+    const tierConfig = config.modelTiers?.[tier];
+    if (!tierConfig) return [];
+    const parsed = this._parseTierConfig(tierConfig);
+    return parsed ? [{ provider: parsed.provider, model: parsed.model }] : [];
+  }
+
+  /**
+   * Return the union of every {provider, model} configured across all tiers,
+   * deduped. Used by the bandit-candidate filter to constrain exploration to
+   * the user's stated tier preferences — the bandit may pick any combo the
+   * user has configured for any tier, but never a model that isn't in any
+   * TIER_* entry (even if its credentials happen to be set).
+   */
+  getAllConfiguredModels() {
+    const seen = new Set();
+    const out = [];
+    for (const tier of ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING']) {
+      for (const m of this.getModelsForTier(tier)) {
+        const key = `${m.provider}:${m.model}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(m);
+      }
+    }
+    return out;
+  }
+
+  /**
    * Parse tier config string (format: provider:model)
    * Examples: "ollama:llama3.2", "azure-openai:gpt-5.2-chat", "openai:gpt-4o"
    */

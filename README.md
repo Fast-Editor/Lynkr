@@ -334,6 +334,8 @@ Lynkr analyzes each request and routes it to the appropriate tier. Simple questi
 
 **Result:** 70-90% of requests use cheaper/faster models. Only hard problems hit expensive models.
 
+Tier configuration is strictly authoritative — bandit exploration is constrained to the models you've listed in `TIER_*`, and multi-turn conversations score with a recency-weighted sliding window so context isn't lost on short follow-ups. See [`docs/intent-window-routing.md`](docs/intent-window-routing.md).
+
 ---
 
 ## Complete .env Examples

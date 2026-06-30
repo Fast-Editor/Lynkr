@@ -177,7 +177,22 @@ function injectPromptCaching(body, provider) {
   // Gate on model capability: a provider may support cache_control in general
   // while the specific routed model does not.
   if (!modelSupportsCacheControl(body, provider)) return 0;
+  // If the client (e.g. Claude Code) already attached cache_control breakpoints,
+  // don't add more. Anthropic caps at 4 breakpoints per request and stacking ours
+  // on top has caused 400/429 errors on OAuth subscription requests.
+  if (hasExistingCacheControl(body)) return 0;
   return injectAnthropicCacheBreakpoints(body);
+}
+
+function hasExistingCacheControl(body) {
+  if (!body) return false;
+  const scan = (obj) => {
+    if (!obj || typeof obj !== 'object') return false;
+    if (Array.isArray(obj)) return obj.some(scan);
+    if (obj.cache_control) return true;
+    return Object.values(obj).some(scan);
+  };
+  return scan(body.system) || scan(body.messages) || scan(body.tools);
 }
 
 module.exports = {

@@ -51,7 +51,7 @@ const httpsAgent = new https.Agent({
   keepAliveMsecs: 30000,
 });
 
-async function performJsonRequest(url, { headers = {}, body }, providerLabel) {
+async function performJsonRequest(url, { headers = {}, body, retryableStatusesOverride }, providerLabel) {
   const agent = url.startsWith('https:') ? httpsAgent : httpAgent;
   const isStreaming = body.stream === true;
 
@@ -134,6 +134,7 @@ async function performJsonRequest(url, { headers = {}, body }, providerLabel) {
     maxRetries: config.apiRetry?.maxRetries || 3,
     initialDelay: config.apiRetry?.initialDelay || 1000,
     maxDelay: config.apiRetry?.maxDelay || 30000,
+    ...(retryableStatusesOverride ? { retryableStatuses: retryableStatusesOverride } : {}),
   });
 }
 
@@ -186,40 +187,216 @@ async function invokeAzureAnthropic(body, incomingHeaders = {}) {
     throw new Error("Azure Anthropic endpoint is not configured.");
   }
 
-  // Inject standard tools if client didn't send any (passthrough mode)
-  if (!Array.isArray(body.tools) || body.tools.length === 0) {
-    body.tools = STANDARD_TOOLS;
-    logger.debug({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOL_NAMES,
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (Azure Anthropic) ===");
+  // Copy body so we don't mutate the caller's object across agent-loop iterations.
+  const azureBody = { ...body };
+
+  // Tier routing wins over whatever model Claude Code sent.
+  if (azureBody._tierModel) {
+    azureBody.model = azureBody._tierModel;
   }
 
-  // OAuth passthrough support: Check for incoming Authorization header first
+  // Strip ALL Lynkr-internal fields (convention: leading underscore). Anthropic
+  // rejects unknown top-level keys with "Extra inputs are not permitted", and
+  // the orchestrator sprinkles fields like _requestMode, _tierModel, _workspace,
+  // _sessionId, _tenantPolicy, _suggestionModeModel onto the payload.
+  for (const key of Object.keys(azureBody)) {
+    if (key.startsWith('_')) delete azureBody[key];
+  }
+
+  // Tier routing can dispatch here even when the orchestrator formatted the
+  // payload for a different provider (the orchestrator picks format from the
+  // static MODEL_PROVIDER, not the tier-resolved provider). Normalize OpenAI-style
+  // shapes back to Anthropic format so the API doesn't reject the request.
+
+  // 1) Tools: {type:"function", function:{...}} -> {name, description, input_schema}
+  if (Array.isArray(azureBody.tools)) {
+    azureBody.tools = azureBody.tools.map((tool) => {
+      if (tool?.type === "function" && tool.function) {
+        return {
+          name: tool.function.name,
+          description: tool.function.description,
+          input_schema: tool.function.parameters ?? { type: "object", properties: {} },
+        };
+      }
+      return tool;
+    });
+  }
+
+  // Strip Lynkr's Caveman "[brevity] …" trailer from the system prompt — it
+  // changes the prompt vs. what Claude Code would send to Anthropic directly,
+  // and Anthropic's OAuth subscription anti-abuse is sensitive to that drift.
+  const stripBrevity = (s) => {
+    if (typeof s !== 'string') return s;
+    const idx = s.indexOf('[brevity]');
+    if (idx === -1) return s;
+    return s.slice(0, idx).trimEnd();
+  };
+  if (typeof azureBody.system === 'string') {
+    azureBody.system = stripBrevity(azureBody.system);
+  } else if (Array.isArray(azureBody.system)) {
+    azureBody.system = azureBody.system
+      .map((block) => block && typeof block === 'object' && typeof block.text === 'string'
+        ? { ...block, text: stripBrevity(block.text) }
+        : block)
+      .filter((block) => !(block && typeof block === 'object' && block.text === ''));
+  }
+
+  // 2) System prompt: Anthropic wants top-level `system`, not a system message.
+  //    Promote any leading role:"system" messages into the top-level field.
+  if (Array.isArray(azureBody.messages) && azureBody.messages.length > 0) {
+    const systemMessages = [];
+    while (azureBody.messages.length > 0 && azureBody.messages[0]?.role === "system") {
+      systemMessages.push(azureBody.messages.shift());
+    }
+    if (systemMessages.length > 0) {
+      const systemText = systemMessages
+        .map((m) => (typeof m.content === "string"
+          ? m.content
+          : Array.isArray(m.content)
+            ? m.content.map((b) => b?.text || "").join("\n")
+            : ""))
+        .filter(Boolean)
+        .join("\n\n");
+      // Merge with any existing top-level system (string or array).
+      if (azureBody.system) {
+        const existing = typeof azureBody.system === "string"
+          ? azureBody.system
+          : Array.isArray(azureBody.system)
+            ? azureBody.system.map((s) => s?.text || s).join("\n")
+            : "";
+        azureBody.system = existing ? `${existing}\n\n${systemText}` : systemText;
+      } else {
+        azureBody.system = systemText;
+      }
+    }
+  }
+
+  // OAuth passthrough: prefer incoming Bearer token (Claude Pro/Max subscription)
+  // over a configured API key.
   const incomingAuth = incomingHeaders?.authorization || incomingHeaders?.Authorization;
 
-  const headers = {
-    "Content-Type": "application/json",
-    "anthropic-version": config.azureAnthropic.version ?? "2023-06-01",
-  };
+  // Headers Anthropic uses to verify client identity for subscription OAuth tokens.
+  // If we strip these, Anthropic returns 429 rate_limit_error with no rate-limit
+  // headers (its terse anti-proxy response). Forward every Anthropic-relevant
+  // request header from Claude Code verbatim — anthropic-beta, anthropic-version,
+  // user-agent, x-app, x-stainless-*, etc. Strip only hop-by-hop and proxy-control
+  // headers that would confuse fetch or leak Lynkr's identity.
+  const HOP_BY_HOP = new Set([
+    'host', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade',
+    'proxy-authorization', 'proxy-authenticate', 'te', 'trailer',
+    'content-length', 'accept-encoding',
+  ]);
+  const LYNKR_INTERNAL = new Set([
+    'x-lynkr-tenant-id', 'x-lynkr-workspace', 'x-workspace-cwd',
+    'x-session-id', 'x-request-id',
+  ]);
+
+  const headers = {};
+  for (const [name, value] of Object.entries(incomingHeaders || {})) {
+    if (value == null) continue;
+    const lower = name.toLowerCase();
+    if (HOP_BY_HOP.has(lower)) continue;
+    if (LYNKR_INTERNAL.has(lower)) continue;
+    // Skip authorization here; we re-add it below with our preferred source.
+    if (lower === 'authorization') continue;
+    headers[name] = value;
+  }
+
+  // Always set these explicitly (override anything Claude Code sent that we
+  // don't want to forward verbatim).
+  headers["Content-Type"] = "application/json";
+  if (!headers["anthropic-version"] && !headers["Anthropic-Version"]) {
+    headers["anthropic-version"] = config.azureAnthropic.version ?? "2023-06-01";
+  }
 
   if (incomingAuth && incomingAuth.startsWith('Bearer ')) {
-    // Use OAuth token from Claude Code (subscription mode)
     headers["Authorization"] = incomingAuth;
-    logger.info("Using OAuth token from incoming request (subscription mode)");
+
+    // Claude Code OAuth Access Tokens (sk-ant-oat01-...) require the OAuth
+    // anthropic-beta header to be accepted by api.anthropic.com. Without it
+    // Anthropic responds 429 rate_limit_error with empty rate-limit headers
+    // and message:"Error" — its terse anti-proxy response. Ensure it's set.
+    const token = incomingAuth.slice('Bearer '.length);
+    if (token.startsWith('sk-ant-oat')) {
+      const existingBeta = headers['anthropic-beta'] || headers['Anthropic-Beta'];
+      const oauthBeta = 'oauth-2025-04-20';
+      if (!existingBeta) {
+        headers['anthropic-beta'] = oauthBeta;
+      } else if (!String(existingBeta).split(',').map(s => s.trim()).includes(oauthBeta)) {
+        headers['anthropic-beta'] = `${existingBeta},${oauthBeta}`;
+      }
+    }
   } else if (config.azureAnthropic.apiKey) {
-    // Fall back to API key from .env
     headers["x-api-key"] = config.azureAnthropic.apiKey;
   } else {
     throw new Error("Azure Anthropic requires authentication (OAuth token or API key)");
   }
 
-  return performJsonRequest(
+  logger.debug({
+    forwardedHeaderKeys: Object.keys(headers),
+    targetModel: azureBody.model,
+  }, "Azure Anthropic: header forwarding");
+
+  // Don't retry 429 for Anthropic OAuth subscription. Claude Code has its own
+  // backoff and UI — retrying here just amplifies the burst and trips Anthropic's
+  // anti-abuse, keeping us 429ed for longer. Still retry 5xx (server faults).
+  const result = await performJsonRequest(
     config.azureAnthropic.endpoint,
-    { headers, body },
+    {
+      headers,
+      body: azureBody,
+      retryableStatusesOverride: [500, 502, 503, 504],
+    },
     "Azure Anthropic",
   );
+
+  if (!result?.ok) {
+    logger.warn({
+      status: result?.status,
+      error: result?.json?.error?.message || result?.text?.substring(0, 200),
+      model: azureBody.model,
+    }, "Azure Anthropic API error");
+  }
+
+  return result;
+}
+
+/**
+ * Lift any <think>...</think> tags leaked into text content blocks into proper
+ * Anthropic thinking content blocks. No-op if the response is already clean.
+ * Operates on the response shape returned by performJsonRequest (object/string).
+ */
+function _liftLeakedThinkingBlocks(response) {
+  // performJsonRequest may wrap the JSON body — find it.
+  const payload = response?.json ?? response?.body ?? response;
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.content)) {
+    return response;
+  }
+  const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
+  const newContent = [];
+  let lifted = 0;
+  for (const block of payload.content) {
+    if (block?.type === "text" && typeof block.text === "string" && block.text.includes("<think>")) {
+      const thoughts = [];
+      let m;
+      while ((m = thinkRegex.exec(block.text)) !== null) thoughts.push(m[1].trim());
+      thinkRegex.lastIndex = 0;
+      const cleaned = block.text.replace(thinkRegex, "").trim();
+      const merged = thoughts.filter(Boolean).join("\n\n");
+      if (merged) {
+        newContent.push({ type: "thinking", thinking: merged });
+        lifted++;
+      }
+      if (cleaned) newContent.push({ type: "text", text: cleaned });
+    } else {
+      newContent.push(block);
+    }
+  }
+  if (lifted > 0) {
+    payload.content = newContent;
+    logger.debug({ lifted }, "Ollama: lifted leaked <think> tags into thinking content blocks");
+  }
+  return response;
 }
 
 async function invokeOllama(body, incomingHeaders = {}) {
@@ -310,14 +487,30 @@ async function invokeOllama(body, incomingHeaders = {}) {
       logger.debug({ keepAlive: ollamaBody.keep_alive }, "Ollama keep_alive configured");
     }
 
-    return performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
+    const response = await performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
+    // Even on the Anthropic-native path, Ollama Cloud's MiniMax M2.5 adapter
+    // sometimes leaks <think>...</think> as raw text inside content blocks
+    // instead of emitting a thinking content block (ollama/ollama#14220 was
+    // patched server-side 2026-02-13 but coverage is incomplete). Sanitize:
+    // pull leaked <think> tags out of text blocks and re-shape them as proper
+    // Anthropic thinking blocks before returning to Claude Code, otherwise
+    // Claude Code's loop sees stop_reason="end_turn" + empty text and halts.
+    return _liftLeakedThinkingBlocks(response);
   }
 
   // ---- Legacy path (Ollama < v0.14.0, /api/chat with OpenAI format) ----
   const endpoint = `${config.ollama.endpoint}/api/chat`;
   const headers = { "Content-Type": "application/json" };
 
-  // Convert Anthropic messages to Ollama format (content blocks → strings)
+  // Convert Anthropic messages to Ollama format.
+  //
+  // CRITICAL for MiniMax M2/M2.5 and other interleaved-thinking models:
+  // assistant `thinking` blocks MUST be preserved across turns (re-emitted as
+  // <think>...</think> in content) and `tool_use` blocks MUST become OpenAI
+  // tool_calls. Dropping these is the root cause of the 5-10-call stall — see
+  // https://www.minimax.io/news/why-is-interleaved-thinking-important-for-m2
+  // and HF model card: "Do not remove the <think>...</think> part, otherwise
+  // the model's performance will be negatively affected."
   const convertedMessages = [];
 
   if (body.system && typeof body.system === "string" && body.system.trim().length > 0) {
@@ -325,29 +518,98 @@ async function invokeOllama(body, incomingHeaders = {}) {
   }
 
   (body.messages || []).forEach(msg => {
-    let content = msg.content;
-    if (Array.isArray(content)) {
-      content = content
-        .filter(block => block.type === 'text')
-        .map(block => block.text || '')
-        .join('\n');
+    const content = msg.content;
+
+    // Plain string content — pass through unchanged.
+    if (typeof content === "string") {
+      convertedMessages.push({ role: msg.role, content });
+      return;
     }
-    convertedMessages.push({ role: msg.role, content: content || '' });
+
+    if (!Array.isArray(content)) {
+      convertedMessages.push({ role: msg.role, content: "" });
+      return;
+    }
+
+    // Block-array content. Separate by block type.
+    if (msg.role === "assistant") {
+      const textParts = [];
+      const toolCalls = [];
+      for (const block of content) {
+        if (!block || typeof block !== "object") continue;
+        if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
+          // Re-emit thinking as <think>...</think> so MiniMax can re-read its own reasoning.
+          textParts.push(`<think>${block.thinking}</think>`);
+        } else if (block.type === "redacted_thinking" && typeof block.data === "string") {
+          textParts.push(`<think>${block.data}</think>`);
+        } else if (block.type === "text" && typeof block.text === "string") {
+          textParts.push(block.text);
+        } else if (block.type === "tool_use") {
+          toolCalls.push({
+            id: block.id,
+            type: "function",
+            function: {
+              name: block.name,
+              arguments: typeof block.input === "string" ? block.input : JSON.stringify(block.input ?? {}),
+            },
+          });
+        }
+      }
+      const assistantMsg = { role: "assistant", content: textParts.join("\n") };
+      if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls;
+      convertedMessages.push(assistantMsg);
+      return;
+    }
+
+    // role === "user" — may contain tool_result blocks that need to become
+    // role:"tool" messages in OpenAI format (one per tool_result).
+    const userTextParts = [];
+    const toolResultMsgs = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      if (block.type === "text" && typeof block.text === "string") {
+        userTextParts.push(block.text);
+      } else if (block.type === "tool_result") {
+        let resultText = "";
+        if (typeof block.content === "string") {
+          resultText = block.content;
+        } else if (Array.isArray(block.content)) {
+          resultText = block.content
+            .map(c => (c?.type === "text" ? (c.text || "") : ""))
+            .join("\n");
+        }
+        toolResultMsgs.push({
+          role: "tool",
+          tool_call_id: block.tool_use_id,
+          content: resultText,
+        });
+      }
+    }
+    if (userTextParts.length > 0) {
+      convertedMessages.push({ role: "user", content: userTextParts.join("\n") });
+    }
+    for (const tm of toolResultMsgs) convertedMessages.push(tm);
   });
 
-  // Deduplicate consecutive messages with same role
+  // MERGE consecutive messages with same role (only user/assistant — never
+  // touch tool messages, each tool_call_id needs its own response).
+  //
+  // Previous behavior silently DROPPED the second message, which destroyed
+  // the user's prompt when Claude Code preceded it with a <system-reminder>
+  // user message — symptom: model said "I don't see a specific path".
   const deduplicated = [];
-  let lastRole = null;
   for (const msg of convertedMessages) {
-    if (msg.role === lastRole) {
+    const prev = deduplicated[deduplicated.length - 1];
+    if (prev && prev.role === msg.role && msg.role !== "tool" && !prev.tool_calls && !msg.tool_calls) {
+      const merged = [prev.content, msg.content].filter(Boolean).join("\n\n");
+      prev.content = merged;
       logger.debug({
-        skippedRole: msg.role,
-        contentPreview: msg.content.substring(0, 50)
-      }, 'Ollama: Skipping duplicate consecutive message with same role');
+        role: msg.role,
+        mergedLen: merged.length,
+      }, 'Ollama: Merged consecutive same-role messages');
       continue;
     }
     deduplicated.push(msg);
-    lastRole = msg.role;
   }
 
   const ollamaBody = {
@@ -494,10 +756,17 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
   const isGpt5 = /gpt-5/i.test(azureDeployment);
   const maxTokensKey = isGpt5 ? "max_completion_tokens" : "max_tokens";
 
+  // gpt-5 family supports much larger output budgets than 16k. The previous
+  // 16384 hard cap caused silent mid-stream truncations on long "explain this
+  // codebase" responses (Azure returns finish_reason=length → Anthropic
+  // stop_reason=max_tokens → Claude Code halts and asks the user to continue).
+  // Raise to 32768 as a sane default; respect a higher client-supplied
+  // body.max_tokens up to that ceiling.
+  const azureOpenAIMaxOutput = 32768;
   const azureBody = {
     messages,
     temperature: body.temperature ?? 0.3,
-    [maxTokensKey]: Math.min(body.max_tokens ?? 16384, 16384),
+    [maxTokensKey]: Math.min(body.max_tokens ?? azureOpenAIMaxOutput, azureOpenAIMaxOutput),
     top_p: body.top_p ?? 1.0,
     stream: false,
     model: azureDeployment
@@ -2173,6 +2442,61 @@ function captureResponseText(resultJson) {
   return text ? text.slice(0, TELEMETRY_TEXT_MAXLEN) : null;
 }
 
+// Strip prior-turn Lynkr routing badges from assistant content[]. The badge
+// is injected into the response stream as a content block (see router.js paths
+// near lines 213, 1078, 1264, 1402) so the TUI renders it. Claude Code persists
+// content[] into the session transcript and resubmits it as conversation
+// history on each subsequent request, so without this strip the badge text
+// dominates the model's view of its own prior turns — which breaks M2.5's
+// interleaved-thinking continuity (HF model card requires preserved <think>
+// blocks across turns; resubmitted badges replace them and Tau²/BrowseComp
+// scores collapse). Render-side injection stays untouched; this only sanitises
+// what we forward upstream.
+// Matches a Lynkr badge string anchored at the start, e.g.
+//   "*[Lynkr] SIMPLE → minimax-m2.5:cloud (ollama) · score 21*\n\n\n"
+// The badge format never contains an inner `*` until the closing one, so a
+// non-greedy lazy match is unnecessary — match up to (and including) the
+// closing `*` plus trailing whitespace.
+const LYNKR_BADGE_PREFIX_RE = /^\*\[Lynkr\][^*\n]*\*\s*/;
+
+function stripLynkrBadges(messages) {
+  if (!Array.isArray(messages)) return messages;
+  let mutated = false;
+  let badgeCount = 0;
+  const out = messages.map((msg) => {
+    if (msg?.role !== 'assistant') return msg;
+
+    // String content variant — assistant.content is a bare string. This is
+    // what the orchestrator's OpenAI-format response branch produces, and
+    // it's where badges actually leak in the Ollama agent loop.
+    if (typeof msg.content === 'string') {
+      if (!LYNKR_BADGE_PREFIX_RE.test(msg.content)) return msg;
+      const stripped = msg.content.replace(LYNKR_BADGE_PREFIX_RE, '');
+      mutated = true;
+      badgeCount++;
+      return { ...msg, content: stripped };
+    }
+
+    // Array content variant — Anthropic-format responses keep content as an
+    // array of blocks.
+    if (Array.isArray(msg.content)) {
+      const before = msg.content.length;
+      const filtered = msg.content.filter((b) =>
+        !(b?.type === 'text' && typeof b.text === 'string' && LYNKR_BADGE_PREFIX_RE.test(b.text))
+      );
+      if (filtered.length === before) return msg;
+      mutated = true;
+      badgeCount += before - filtered.length;
+      // Anthropic rejects empty content[]; substitute a benign placeholder for
+      // turns where the badge was the entire assistant text.
+      return { ...msg, content: filtered.length ? filtered : [{ type: 'text', text: '' }] };
+    }
+
+    return msg;
+  });
+  return mutated ? out : messages;
+}
+
 async function invokeModel(body, options = {}) {
   const { determineProviderSmart, isFallbackEnabled, getFallbackProvider } = require("./routing");
   const metricsCollector = getMetricsCollector();
@@ -2181,6 +2505,13 @@ async function invokeModel(body, options = {}) {
 
   // Extract incoming headers for OAuth passthrough
   const incomingHeaders = options.headers || {};
+
+  // Sanitise inbound history before any provider sees it. See stripLynkrBadges
+  // comment for the M2.5-collapse rationale. Safe for all providers — the badge
+  // is never legitimate prior-turn content.
+  if (Array.isArray(body?.messages)) {
+    body = { ...body, messages: stripLynkrBadges(body.messages) };
+  }
 
   // Determine provider via async tier routing
   // Thread workspace for code-graph integration (from X-Lynkr-Workspace header or body._workspace)
@@ -2728,6 +3059,7 @@ function destroyHttpAgents() {
 
 module.exports = {
   invokeModel,
+  stripLynkrBadges,
   destroyHttpAgents,
   normalizeBodyForConverse,
 };

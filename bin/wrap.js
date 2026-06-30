@@ -76,9 +76,17 @@ async function wrapClaude() {
   console.log('╰──────────────────────────────────────────────────────');
   console.log('');
 
-  // Suppress verbose Lynkr logs in wrap mode
-  if (!process.env.LOG_LEVEL || process.env.LOG_LEVEL === 'info') {
-    process.env.LOG_LEVEL = 'error';
+  // Silence Lynkr logs in wrap mode so they don't bleed into Claude Code's
+  // TUI (the child inherits our stdio). Users who need Lynkr logs can set
+  // LOG_LEVEL=info|debug explicitly, or tail data/logs/lynkr.log.
+  if (!process.env.LOG_LEVEL || process.env.LOG_LEVEL === 'info' || process.env.LOG_LEVEL === 'error' || process.env.LOG_LEVEL === 'warn') {
+    process.env.LOG_LEVEL = 'silent';
+  }
+
+  // Enable OAuth passthrough by default for wrap claude. Server reads this
+  // env before /v1/messages handlers are wired up, so set it before start().
+  if (process.env.LYNKR_OAUTH_PASSTHROUGH == null) {
+    process.env.LYNKR_OAUTH_PASSTHROUGH = 'true';
   }
 
   // 1. Check for Claude Code binary
@@ -142,16 +150,44 @@ async function wrapClaude() {
   console.log('│  • Tier routing: active');
   console.log('│  • Compression: active');
   console.log('│  • Caching: active');
+  if (claudeArgs.length > 0) {
+    console.log(`│  • Args: ${claudeArgs.join(' ')}`);
+  }
   console.log('╰──────────────────────────────────────────────────────');
   console.log('');
 
   // 4. Launch Claude Code with Lynkr as base URL
-  const child = spawn(claudePath, claudeArgs, {
+  // Force interactive mode if no args provided
+  const finalArgs = claudeArgs.length === 0 && !process.stdin.isTTY
+    ? [] // Let Claude detect TTY and start interactive
+    : claudeArgs;
+
+  // NOTE: We deliberately do NOT set ENABLE_TOOL_SEARCH=true here.
+  //
+  // When ENABLE_TOOL_SEARCH=true, Claude Code defers MCP/system tool schemas
+  // behind a single `tool_search_tool` meta-tool that requires Anthropic's
+  // server-side dispatch to resolve. That worked when we sent everything to
+  // Anthropic, but it breaks tier routing: when "Can you read this repo" gets
+  // routed to Ollama (or any non-Anthropic provider), the model only sees the
+  // search meta-tool and has no way to discover Read/Write/Bash — it responds
+  // "no file system tools available."
+  //
+  // Without this env var, Claude Code materializes the full real tool list in
+  // every request. That's more tokens on the Anthropic side (passthrough
+  // forwards them verbatim, Anthropic accepts them because the UA matches),
+  // but Ollama/Moonshot/etc. now see the actual tools and can use them.
+  //
+  // The original 400 "Input tag does not match expected tags" error this
+  // workaround was fighting is no longer reachable — subscription requests
+  // now passthrough byte-for-byte, so Anthropic accepts whatever shape
+  // Claude Code sends.
+  const child = spawn(claudePath, finalArgs, {
     env: {
       ...process.env,
       ANTHROPIC_BASE_URL: `http://localhost:${port}`,
     },
     stdio: 'inherit',
+    shell: false,
   });
 
   // Track start time for stats
