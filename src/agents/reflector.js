@@ -184,8 +184,13 @@ class Reflector {
     // Pattern 1: Recovered from errors
     if (successful) {
       const failedTools = errorEntries.map(e => e.toolName);
+      // Tools invoked *after* the last error entry are the recovery path.
+      // Use the entry's position in the transcript, not its timestamp
+      // (slicing by a ~1.7e12 timestamp always yielded []).
+      const lastErrorEntry = errorEntries[errorEntries.length - 1];
+      const lastErrorIndex = transcript.indexOf(lastErrorEntry);
       const recoveryTools = transcript
-        .slice(errorEntries[errorEntries.length - 1].timestamp)
+        .slice(lastErrorIndex + 1)
         .filter(e => e.type === "tool_call" && !e.error)
         .map(e => e.toolName);
 
@@ -248,6 +253,11 @@ class Reflector {
    * Infer task type from prompt
    */
   static _inferTaskType(prompt) {
+    // Guard against a missing/non-string prompt so reflection never throws
+    // (a throw here previously aborted all learning silently).
+    if (typeof prompt !== "string" || prompt.length === 0) {
+      return null;
+    }
     const lower = prompt.toLowerCase();
 
     const taskTypes = [

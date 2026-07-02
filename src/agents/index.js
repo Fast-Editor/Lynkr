@@ -5,7 +5,15 @@ const ParallelCoordinator = require("./parallel-coordinator");
 const agentStore = require("./store");
 
 const definitionLoader = new AgentDefinitionLoader();
-const coordinator = new ParallelCoordinator(config.agents?.maxConcurrent || 10);
+const coordinator = new ParallelCoordinator(config.agents?.maxConcurrent || 10, {
+  definitionLoader,
+});
+
+// Periodically drop learned skills that have proven unhelpful. Only when the
+// agents subsystem is active; the timer is unref'd so it never blocks exit.
+if (config.agents?.enabled) {
+  definitionLoader.startSkillPruning();
+}
 
 /**
  * Spawn and execute subagent(s)

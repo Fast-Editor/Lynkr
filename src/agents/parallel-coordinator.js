@@ -2,9 +2,9 @@ const logger = require("../logger");
 const SubagentExecutor = require("./executor");
 
 class ParallelCoordinator {
-  constructor(maxConcurrent = 10) {
+  constructor(maxConcurrent = 10, { definitionLoader = null } = {}) {
     this.maxConcurrent = maxConcurrent;
-    this.executor = new SubagentExecutor();
+    this.executor = new SubagentExecutor({ definitionLoader });
   }
 
   /**

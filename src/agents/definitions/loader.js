@@ -4,11 +4,17 @@ const yaml = require("js-yaml");
 const logger = require("../../logger");
 const Skillbook = require("../skillbook");
 
+// How often to prune low-quality learned skills. 6 hours is frequent enough to
+// keep skillbooks tidy on a long-running process but rare enough to be
+// negligible overhead. Hardcoded on purpose — not worth a config knob.
+const SKILL_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 class AgentDefinitionLoader {
   constructor() {
     this.agents = new Map();
     this.skillbooks = new Map(); // agentType → Skillbook
     this.initialized = false;
+    this.pruneTimer = null;
 
     // Initialize synchronously for compatibility
     this.loadBuiltInAgentsSync();
@@ -83,10 +89,94 @@ class AgentDefinitionLoader {
   }
 
   /**
+   * Replace an agent's skillbook with a freshly-learned instance and re-inject
+   * its skills into the (in-memory) system prompt. Called by the executor after
+   * a run persists new skills, so learning takes effect within the running
+   * process instead of only after a restart. Injection rebuilds from
+   * originalSystemPrompt, so repeated calls do not duplicate the skills block.
+   */
+  setSkillbook(agentType, skillbook) {
+    if (!agentType || !skillbook) return;
+    // Match the case-insensitive key an agent is actually stored under.
+    const key = this.agents.has(agentType)
+      ? agentType
+      : Array.from(this.agents.keys()).find(
+          k => k.toLowerCase() === String(agentType).toLowerCase()
+        );
+    if (!key) return;
+
+    this.skillbooks.set(key, skillbook);
+    this._injectSkillsIntoPrompt(key);
+  }
+
+  /**
    * Reload skillbooks and update prompts (call after learning)
    */
   async reloadSkillbooks() {
     await this._loadSkillbooksAsync();
+  }
+
+  /**
+   * Prune low-quality skills from every loaded skillbook. Skillbook.prune()
+   * only drops skills that have been tried enough times to prove they don't
+   * help (default: useCount >= 3 && confidence < 0.2), so fresh skills are
+   * never removed. Persists and re-injects only the skillbooks that changed.
+   * @returns {Promise<number>} total skills pruned across all agents
+   */
+  async pruneSkillbooks() {
+    let totalPruned = 0;
+
+    for (const [agentType, skillbook] of this.skillbooks.entries()) {
+      try {
+        const pruned = skillbook.prune();
+        if (pruned > 0) {
+          await skillbook.save();
+          this._injectSkillsIntoPrompt(agentType);
+          totalPruned += pruned;
+        }
+      } catch (error) {
+        logger.warn(
+          { agentType, error: error.message },
+          "Failed to prune skillbook"
+        );
+      }
+    }
+
+    if (totalPruned > 0) {
+      logger.info({ totalPruned }, "Pruned low-quality agent skills");
+    }
+    return totalPruned;
+  }
+
+  /**
+   * Start periodic skillbook pruning. Idempotent; a non-positive interval
+   * disables pruning. The timer is unref'd so it never keeps the process alive.
+   */
+  startSkillPruning(intervalMs = SKILL_PRUNE_INTERVAL_MS) {
+    if (this.pruneTimer) return; // already running
+    if (!Number.isInteger(intervalMs) || intervalMs <= 0) {
+      logger.debug({ intervalMs }, "Skillbook pruning disabled");
+      return;
+    }
+
+    this.pruneTimer = setInterval(() => {
+      this.pruneSkillbooks().catch((error) => {
+        logger.warn({ error: error.message }, "Skillbook pruning failed");
+      });
+    }, intervalMs);
+    this.pruneTimer.unref();
+
+    logger.info({ intervalMs }, "Skillbook pruning started");
+  }
+
+  /**
+   * Stop periodic skillbook pruning (for shutdown / tests).
+   */
+  stopSkillPruning() {
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer);
+      this.pruneTimer = null;
+    }
   }
 
   /**
