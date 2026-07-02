@@ -1111,7 +1111,13 @@ function toAnthropicResponse(openai, requestedModel, wantsThinking) {
     id: openai.id ?? `msg_${Date.now()}`,
     type: "message",
     role: "assistant",
-    model: requestedModel,
+    // Prefer the model the provider actually served with; fall back to the
+    // requested model only when the provider omits it. Mirrors the direct
+    // (non-tool) path at `databricksResponse.json.model || requestedModel`, so
+    // tool-call responses no longer report a stale/aliased client-request model.
+    model: (typeof openai?.model === "string" && openai.model.trim())
+      ? openai.model
+      : requestedModel,
     content: contentItems,
     stop_reason:
       choice?.finish_reason === "stop"
@@ -1123,8 +1129,11 @@ function toAnthropicResponse(openai, requestedModel, wantsThinking) {
             : choice?.finish_reason ?? "end_turn",
     stop_sequence: null,
     usage: {
-      input_tokens: usage.prompt_tokens ?? 0,
-      output_tokens: usage.completion_tokens ?? 0,
+      // Accept both OpenAI (prompt_tokens/completion_tokens) and
+      // already-Anthropic (input_tokens/output_tokens) usage shapes so token
+      // counts survive regardless of which provider/converter produced them.
+      input_tokens: usage.prompt_tokens ?? usage.input_tokens ?? 0,
+      output_tokens: usage.completion_tokens ?? usage.output_tokens ?? 0,
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     },
@@ -4053,6 +4062,16 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     anthropicPayload.usage.cache_read_input_tokens = promptTokens;
     anthropicPayload.usage.cache_creation_input_tokens = 0;
 
+    // Carry routing metadata on the cache-hit path too, so downstream model
+    // name resolution (OpenClaw) behaves the same as the live loop path.
+    if (cachedResponse.routingDecision) {
+      anthropicPayload._routingMeta = {
+        provider: cachedResponse.routingDecision.provider,
+        model: cachedResponse.routingDecision.model,
+        tier: cachedResponse.routingDecision.tier,
+      };
+    }
+
     appendTurnToSession(session, {
       role: "assistant",
       type: "message",
@@ -4147,4 +4166,6 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
 module.exports = {
   processMessage,
+  // Exported for unit testing of response-metadata conversion.
+  toAnthropicResponse,
 };
