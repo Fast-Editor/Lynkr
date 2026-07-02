@@ -1,5 +1,16 @@
 const assert = require("assert");
+const os = require("os");
+const path = require("path");
 const { describe, it, beforeEach, afterEach, mock } = require("node:test");
+
+// Redirect telemetry writes to an isolated temp DB before requiring the
+// telemetry module. Otherwise this suite pollutes .lynkr/telemetry.db with
+// fixtures like "stats-provider-...", which then end up in build-knn-index.js
+// output and the kNN index.
+process.env.LYNKR_TELEMETRY_DB_PATH = path.join(
+  os.tmpdir(),
+  `lynkr-telemetry-test-${process.pid}.db`
+);
 
 // ============================================================================
 // Module imports

@@ -49,12 +49,27 @@ function init() {
   }
 
   try {
-    const dbDir = path.resolve(process.cwd(), ".lynkr");
-    if (!fs.existsSync(dbDir)) {
-      fs.mkdirSync(dbDir, { recursive: true });
+    // Allow tests to redirect telemetry to an isolated DB so unit/integration
+    // runs never pollute the production .lynkr/telemetry.db that build-knn-index.js
+    // reads from. Empty string disables telemetry entirely.
+    const override = process.env.LYNKR_TELEMETRY_DB_PATH;
+    let dbPath;
+    if (override === "") {
+      logger.debug("Telemetry: LYNKR_TELEMETRY_DB_PATH is empty, telemetry disabled");
+      return false;
+    } else if (override) {
+      dbPath = path.resolve(override);
+      const overrideDir = path.dirname(dbPath);
+      if (!fs.existsSync(overrideDir)) {
+        fs.mkdirSync(overrideDir, { recursive: true });
+      }
+    } else {
+      const dbDir = path.resolve(process.cwd(), ".lynkr");
+      if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+      }
+      dbPath = path.join(dbDir, "telemetry.db");
     }
-
-    const dbPath = path.join(dbDir, "telemetry.db");
     db = new Database(dbPath, {
       verbose: process.env.DEBUG_SQL ? console.log : null,
       fileMustExist: false,
