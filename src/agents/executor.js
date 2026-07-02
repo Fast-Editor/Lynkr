@@ -10,6 +10,18 @@ const contextManager = new ContextManager();
 
 class SubagentExecutor {
   /**
+   * @param {Object} [options]
+   * @param {Object} [options.definitionLoader] - Agent definition loader. When
+   *   provided, newly-learned skills are re-injected into agent prompts live
+   *   (within the running process). Optional so the executor still works
+   *   standalone (e.g. in tests); without it, learning still persists to disk
+   *   and is picked up on the next process start.
+   */
+  constructor({ definitionLoader = null } = {}) {
+    this.definitionLoader = definitionLoader;
+  }
+
+  /**
    * Execute a single subagent
    * @param {Object} agentDef - Agent definition
    * @param {string} taskPrompt - Task to perform
@@ -403,8 +415,12 @@ class SubagentExecutor {
         return; // Nothing to learn
       }
 
-      // Load skillbook for this agent type
-      const skillbook = await Skillbook.load(context.agentName);
+      // Prefer the loader's live skillbook instance (so use-counts/confidence
+      // accumulate in one place); fall back to loading from disk when running
+      // standalone.
+      const skillbook =
+        this.definitionLoader?.getSkillbook(context.agentName) ||
+        (await Skillbook.load(context.agentName));
 
       // Add each learned pattern
       for (const pattern of patterns) {
@@ -413,6 +429,12 @@ class SubagentExecutor {
 
       // Save skillbook (persists learning)
       await skillbook.save();
+
+      // Re-inject into the agent's prompt so the next run benefits without a
+      // restart. No-op when no loader was provided.
+      if (this.definitionLoader) {
+        this.definitionLoader.setSkillbook(context.agentName, skillbook);
+      }
 
       logger.info({
         agentType: context.agentName,

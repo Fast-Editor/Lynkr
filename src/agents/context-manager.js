@@ -62,6 +62,14 @@ class ContextManager {
       allowedTools: agentDef.allowedTools,
       startTime: Date.now(),
 
+      // Original task prompt — consumed by the Reflector to infer task type.
+      taskPrompt,
+
+      // In-memory transcript mirror of the JSONL file — consumed by the
+      // Reflector for tool-usage / error-recovery analysis. The JSONL file
+      // remains the durable record; this array is the hot-path copy.
+      transcript: [],
+
       // Token tracking
       inputTokens: 0,
       outputTokens: 0,
@@ -102,7 +110,7 @@ class ContextManager {
    * Record tool execution in transcript
    */
   recordToolCall(context, toolName, input, output, error = null) {
-    this.writeTranscriptEntry(context.transcriptPath, {
+    const entry = {
       type: "tool_call",
       agentId: context.agentId,
       step: context.steps,
@@ -111,7 +119,15 @@ class ContextManager {
       output: error ? null : output,
       error: error ? error.message : null,
       timestamp: Date.now()
-    });
+    };
+
+    // Keep the in-memory transcript in sync so the Reflector (which reads
+    // context.transcript) sees tool calls without re-parsing the JSONL file.
+    if (Array.isArray(context.transcript)) {
+      context.transcript.push(entry);
+    }
+
+    this.writeTranscriptEntry(context.transcriptPath, entry);
   }
 
   /**
