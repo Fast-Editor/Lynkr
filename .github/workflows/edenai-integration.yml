@@ -1,0 +1,75 @@
+name: Eden AI Provider Tests
+
+on:
+  push:
+    paths:
+      - 'src/config/index.js'
+      - 'src/clients/databricks.js'
+      - 'src/orchestrator/index.js'
+      - 'src/api/openai-router.js'
+      - 'src/api/providers-handler.js'
+      - 'src/routing/**'
+      - 'src/clients/provider-capabilities.js'
+      - 'test/edenai-integration.test.js'
+      - '.github/workflows/edenai-integration.yml'
+  pull_request:
+    paths:
+      - 'src/config/index.js'
+      - 'src/clients/databricks.js'
+      - 'src/orchestrator/index.js'
+      - 'src/api/openai-router.js'
+      - 'src/api/providers-handler.js'
+      - 'src/routing/**'
+      - 'src/clients/provider-capabilities.js'
+      - 'test/edenai-integration.test.js'
+
+# Non-secret, safe to expose to all steps.
+env:
+  PYTHONUNBUFFERED: "1"
+  EDENAI_MODEL: openai/gpt-4o-mini
+
+jobs:
+  edenai-tests:
+    name: Eden AI provider test suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Mirror the repo's primary CI (ci.yml): pnpm + ignore-scripts is the
+      # proven, fast install recipe here (plain `npm ci` hits an npm
+      # "Exit handler never called" crash with this dependency tree).
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Install
+        run: pnpm install --no-optional --ignore-scripts --no-frozen-lockfile
+        timeout-minutes: 5
+
+      # Offline unit tests — no secret needed. Uses a dummy key.
+      - name: Unit tests (config, routing, capabilities)
+        env:
+          DATABRICKS_API_KEY: test-key
+          DATABRICKS_API_BASE: http://test.com
+        run: node --test test/edenai-integration.test.js
+
+      # Live end-to-end test against api.edenai.run.
+      # GOLDEN RULE: the secret is scoped to THIS step only — never at the
+      # workflow/job `env:` level — so a compromised third-party action in
+      # another step can't exfiltrate it. Skips automatically on fork PRs
+      # (no secret available) because the test self-skips when the key is unset.
+      - name: Live integration test (Eden AI v3)
+        env:
+          # Non-secret dummy creds so config loads (repo convention); the real
+          # secret below stays scoped to this step only.
+          DATABRICKS_API_KEY: test-key
+          DATABRICKS_API_BASE: http://test.com
+          EDENAI_LIVE: "1"
+          EDENAI_API_KEY: ${{ secrets.EDENAI_API_KEY }}
+        run: node --test test/edenai-integration.test.js

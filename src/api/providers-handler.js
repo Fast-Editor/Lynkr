@@ -124,6 +124,23 @@ function getConfiguredProviders() {
     });
   }
 
+  // Check Eden AI (OpenAI-compatible gateway, EU/GDPR)
+  if (config.edenai?.apiKey) {
+    providers.push({
+      name: "edenai",
+      type: "edenai",
+      baseUrl: "https://api.edenai.run/v3",
+      enabled: true,
+      models: [
+        { id: config.edenai.model || "openai/gpt-4o-mini", name: "Configured Model" },
+        { id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+        { id: "openai/gpt-4o", name: "GPT-4o" },
+        { id: "openai/gpt-4o-mini", name: "GPT-4o Mini" },
+        { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" }
+      ]
+    });
+  }
+
   // Check Ollama
   if (config.ollama?.endpoint) {
     providers.push({

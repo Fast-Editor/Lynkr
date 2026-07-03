@@ -98,6 +98,15 @@ const PROVIDERS = {
     extras: [],
     defaultModel: 'anthropic/claude-sonnet-4',
   },
+  edenai: {
+    label: 'Eden AI (600+ models, one key, EU/GDPR)',
+    local: false,
+    creds: [
+      { key: 'EDENAI_API_KEY', label: 'Eden AI API key', secret: true },
+    ],
+    extras: [],
+    defaultModel: 'anthropic/claude-sonnet-4-5',
+  },
   databricks: {
     label: 'Databricks Foundation Models',
     local: false,
@@ -154,7 +163,7 @@ const PROVIDERS = {
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
-  'azure-anthropic', 'azure-openai', 'openai', 'openrouter',
+  'azure-anthropic', 'azure-openai', 'openai', 'openrouter', 'edenai',
   'databricks', 'bedrock', 'vertex', 'zai', 'moonshot',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
@@ -304,6 +313,10 @@ const BASELINE_ENV = {
   OPENROUTER_EMBEDDINGS_MODEL: 'openai/text-embedding-ada-002',
   OPENROUTER_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
   OPENROUTER_MAX_TOOLS_FOR_ROUTING: '15',
+  EDENAI_API_KEY: '',
+  EDENAI_MODEL: 'openai/gpt-4o-mini',
+  EDENAI_EMBEDDINGS_MODEL: 'openai/text-embedding-ada-002',
+  EDENAI_ENDPOINT: 'https://api.edenai.run/v3/chat/completions',
   MOONSHOT_API_KEY: '',
   MOONSHOT_ENDPOINT: 'https://api.moonshot.ai/v1/chat/completions',
   MOONSHOT_MODEL: 'kimi-k2.6',

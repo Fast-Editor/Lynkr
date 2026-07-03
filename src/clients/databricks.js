@@ -704,6 +704,71 @@ async function invokeOpenRouter(body, incomingHeaders = {}) {
   return performJsonRequest(endpoint, { headers, body: openRouterBody }, "OpenRouter");
 }
 
+// Eden AI is an OpenAI-compatible gateway (provider/model naming, EU/GDPR).
+// It speaks the same wire format as OpenRouter, so this mirrors invokeOpenRouter
+// and reuses the shared Anthropic<->OpenAI converters.
+async function invokeEdenAI(body, incomingHeaders = {}) {
+  if (!config.edenai?.endpoint || !config.edenai?.apiKey) {
+    throw new Error("Eden AI endpoint or API key is not configured.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.edenai.endpoint;
+  const headers = {
+    "Authorization": `Bearer ${config.edenai.apiKey}`,
+    "Content-Type": "application/json"
+  };
+
+  // Convert messages and handle system message
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+
+  // Anthropic uses separate 'system' field, OpenAI needs it as first message
+  if (body.system) {
+    messages.unshift({
+      role: "system",
+      content: body.system
+    });
+  }
+
+  const edenAIBody = {
+    model: body._suggestionModeModel || body._tierModel || config.edenai.model,
+    messages,
+    temperature: body.temperature ?? 0.7,
+    max_tokens: body.max_tokens ?? 16384,
+    top_p: body.top_p ?? 1.0,
+    stream: body.stream ?? false
+  };
+
+  // Add tools - inject standard tools if client didn't send any (passthrough mode)
+  let toolsToSend = body.tools;
+  let toolsInjected = false;
+
+  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+    toolsToSend = STANDARD_TOOLS;
+    toolsInjected = true;
+    logger.debug({
+      injectedToolCount: STANDARD_TOOLS.length,
+      injectedToolNames: STANDARD_TOOL_NAMES,
+      reason: "Client did not send tools (passthrough mode)"
+    }, "=== INJECTING STANDARD TOOLS (Eden AI) ===");
+  }
+
+  if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
+    edenAIBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
+    logger.debug({
+      toolCount: toolsToSend.length,
+      toolNames: toolsToSend.map(t => t.name),
+      toolsInjected
+    }, "Sending tools to Eden AI");
+  }
+
+  return performJsonRequest(endpoint, { headers, body: edenAIBody }, "EdenAI");
+}
+
 function detectAzureFormat(url) {
   if (url.includes("/openai/responses")) return "responses";
   if (url.includes("/models/")) return "models";
@@ -2633,6 +2698,8 @@ async function invokeModel(body, options = {}) {
         return await invokeOllama(body, incomingHeaders);
       } else if (initialProvider === "openrouter") {
         return await invokeOpenRouter(body, incomingHeaders);
+      } else if (initialProvider === "edenai") {
+        return await invokeEdenAI(body, incomingHeaders);
       } else if (initialProvider === "openai") {
         return await invokeOpenAI(body, incomingHeaders);
       } else if (initialProvider === "llamacpp") {
@@ -2876,6 +2943,8 @@ async function invokeModel(body, options = {}) {
           return await invokeAzureAnthropic(body, incomingHeaders);
         } else if (fallbackProvider === "openrouter") {
           return await invokeOpenRouter(body, incomingHeaders);
+        } else if (fallbackProvider === "edenai") {
+          return await invokeEdenAI(body, incomingHeaders);
         } else if (fallbackProvider === "openai") {
           return await invokeOpenAI(body, incomingHeaders);
         } else if (fallbackProvider === "llamacpp") {
