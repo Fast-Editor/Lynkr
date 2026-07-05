@@ -67,6 +67,7 @@ function _enabledProviders() {
   if (config.azureAnthropic?.endpoint && config.azureAnthropic?.apiKey) out.push('azure-anthropic');
   if (config.bedrock?.apiKey) out.push('bedrock');
   if (config.openrouter?.apiKey) out.push('openrouter');
+  if (config.edenai?.apiKey) out.push('edenai');
   if (config.openai?.apiKey) out.push('openai');
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) out.push('azure-openai');
   if (config.ollama?.endpoint) out.push('ollama');
@@ -108,6 +109,7 @@ function getBestCloudProvider() {
   if (config.azureAnthropic?.endpoint && config.azureAnthropic?.apiKey) return 'azure-anthropic';
   if (config.bedrock?.apiKey) return 'bedrock';
   if (config.openrouter?.apiKey) return 'openrouter';
+  if (config.edenai?.apiKey) return 'edenai';
   if (config.openai?.apiKey) return 'openai';
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) return 'azure-openai';
 

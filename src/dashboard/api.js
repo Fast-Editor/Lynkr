@@ -13,6 +13,7 @@ function providerMeta() {
     'azure-anthropic': { type: 'cloud', configured: !!(c.azureAnthropic?.endpoint && c.azureAnthropic?.apiKey) },
     bedrock:           { type: 'cloud', configured: !!c.bedrock?.apiKey },
     openrouter:        { type: 'cloud', configured: !!c.openrouter?.apiKey },
+    edenai:            { type: 'cloud', configured: !!c.edenai?.apiKey },
     openai:            { type: 'cloud', configured: !!c.openai?.apiKey },
     'azure-openai':    { type: 'cloud', configured: !!(c.azureOpenAI?.endpoint && c.azureOpenAI?.apiKey) },
     vertex:            { type: 'cloud', configured: !!c.vertex?.projectId },

@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -96,6 +96,12 @@ const openRouterApiKey = process.env.OPENROUTER_API_KEY ?? null;
 const openRouterModel = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
 const openRouterEmbeddingsModel = process.env.OPENROUTER_EMBEDDINGS_MODEL ?? "openai/text-embedding-ada-002";
 const openRouterEndpoint = process.env.OPENROUTER_ENDPOINT ?? "https://openrouter.ai/api/v1/chat/completions";
+
+// Eden AI configuration (OpenAI-compatible v3 gateway — provider/model naming, EU/GDPR)
+const edenAIApiKey = process.env.EDENAI_API_KEY ?? null;
+const edenAIModel = process.env.EDENAI_MODEL ?? "openai/gpt-4o-mini";
+const edenAIEmbeddingsModel = process.env.EDENAI_EMBEDDINGS_MODEL ?? "openai/text-embedding-ada-002";
+const edenAIEndpoint = process.env.EDENAI_ENDPOINT ?? "https://api.edenai.run/v3/chat/completions";
 
 // Azure OpenAI configuration
 const azureOpenAIEndpoint = process.env.AZURE_OPENAI_ENDPOINT?.trim() || null;
@@ -336,7 +342,7 @@ const tiersConfigured = !!(
 if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, openai, bedrock`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, bedrock`);
   }
   let fallbackMisconfigured = false;
   if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
@@ -584,6 +590,12 @@ var config = {
     model: openRouterModel,
     embeddingsModel: openRouterEmbeddingsModel,
     endpoint: openRouterEndpoint,
+  },
+  edenai: {
+    apiKey: edenAIApiKey,
+    model: edenAIModel,
+    embeddingsModel: edenAIEmbeddingsModel,
+    endpoint: edenAIEndpoint,
   },
   azureOpenAI: {
     endpoint: azureOpenAIEndpoint,
@@ -1013,6 +1025,8 @@ function reloadConfig() {
   config.ollama.model = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:7b";
   config.openrouter.apiKey = process.env.OPENROUTER_API_KEY ?? null;
   config.openrouter.model = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
+  config.edenai.apiKey = process.env.EDENAI_API_KEY ?? null;
+  config.edenai.model = process.env.EDENAI_MODEL ?? "openai/gpt-4o-mini";
   config.azureOpenAI.apiKey = process.env.AZURE_OPENAI_API_KEY?.trim() || null;
   config.openai.apiKey = process.env.OPENAI_API_KEY?.trim() || null;
   config.bedrock.apiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null;

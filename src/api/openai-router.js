@@ -781,6 +781,21 @@ function getConfiguredProviders() {
     });
   }
 
+  // Check Eden AI (OpenAI-compatible gateway, EU/GDPR)
+  if (config.edenai?.apiKey) {
+    providers.push({
+      name: "edenai",
+      type: "edenai",
+      models: [
+        config.edenai.model || "openai/gpt-4o-mini",
+        "anthropic/claude-sonnet-4-5",
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "google/gemini-2.5-flash"
+      ]
+    });
+  }
+
   // Check Ollama
   if (config.ollama?.endpoint) {
     providers.push({
@@ -900,6 +915,9 @@ router.get("/models", (req, res) => {
         case "openrouter":
           embeddingModelId = embeddingConfig.model;
           break;
+        case "edenai":
+          embeddingModelId = embeddingConfig.model;
+          break;
         case "openai":
           embeddingModelId = embeddingConfig.model || "text-embedding-ada-002";
           break;
@@ -993,6 +1011,18 @@ function determineEmbeddingProvider(requestedModel = null) {
           endpoint: "https://openrouter.ai/api/v1/embeddings"
         };
 
+      case "edenai":
+        if (!config.edenai?.apiKey) {
+          logger.warn("EMBEDDINGS_PROVIDER=edenai but EDENAI_API_KEY not set");
+          return null;
+        }
+        return {
+          provider: "edenai",
+          model: requestedModel || config.edenai.embeddingsModel,
+          apiKey: config.edenai.apiKey,
+          endpoint: "https://api.edenai.run/v3/embeddings"
+        };
+
       case "openai":
         if (!config.openai?.apiKey) {
           logger.warn("EMBEDDINGS_PROVIDER=openai but OPENAI_API_KEY not set");
@@ -1016,6 +1046,15 @@ function determineEmbeddingProvider(requestedModel = null) {
       model: requestedModel || config.openrouter.embeddingsModel,
       apiKey: config.openrouter.apiKey,
       endpoint: "https://openrouter.ai/api/v1/embeddings"
+    };
+  }
+
+  if (chatProvider === "edenai" && config.edenai?.apiKey) {
+    return {
+      provider: "edenai",
+      model: requestedModel || config.edenai.embeddingsModel,
+      apiKey: config.edenai.apiKey,
+      endpoint: "https://api.edenai.run/v3/embeddings"
     };
   }
 
@@ -1336,6 +1375,11 @@ router.post("/embeddings", async (req, res) => {
 
         case "openrouter":
           embeddingResponse = await generateOpenRouterEmbeddings(inputs, embeddingConfig);
+          break;
+
+        case "edenai":
+          // Eden AI embeddings are OpenAI-compatible (Bearer + {model,input}).
+          embeddingResponse = await generateOpenAIEmbeddings(inputs, embeddingConfig);
           break;
 
         case "openai":

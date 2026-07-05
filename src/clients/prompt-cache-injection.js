@@ -114,6 +114,7 @@ function needsCacheInjection(provider) {
     'bedrock',
     'databricks',   // Databricks routes to Claude which supports caching
     'openrouter',   // OpenRouter forwards cache_control to underlying provider
+    'edenai',       // Eden AI forwards cache_control to underlying provider
   ]);
 
   return EXPLICIT_CACHE_PROVIDERS.has(provider);

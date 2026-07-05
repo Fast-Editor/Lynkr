@@ -13,6 +13,7 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 | **AWS Bedrock** | Cloud | 100+ (Claude, DeepSeek, Qwen, Nova, Titan, Llama, Mistral) | $-$$$ | Cloud | Easy |
 | **Databricks** | Cloud | Claude Sonnet 4.5, Opus 4.5 | $$$ | Cloud | Medium |
 | **OpenRouter** | Cloud | 100+ (GPT, Claude, Gemini, Llama, Mistral, etc.) | $-$$ | Cloud | Easy |
+| **Eden AI** | Cloud | 600+ (GPT, Claude, Gemini, Mistral, etc.) | $-$$ | Cloud (EU/GDPR) | Easy |
 | **Ollama** | Local | Unlimited (free, offline) | **FREE** | 🔒 100% Local | Easy |
 | **llama.cpp** | Local | Any GGUF model | **FREE** | 🔒 100% Local | Medium |
 | **Azure OpenAI** | Cloud | GPT-4o, GPT-5, o1, o3 | $$$ | Cloud | Medium |
@@ -384,6 +385,47 @@ OPENROUTER_MODEL=deepseek/deepseek-coder            # $0.14/$0.28 per 1M tokens
 - ✅ **Rate limit pooling** across models
 
 See [openrouter.ai/models](https://openrouter.ai/models) for complete list with pricing.
+
+---
+
+### 3b. Eden AI (600+ Models, EU/GDPR)
+
+**Best for:** EU/GDPR-compliant access to 600+ models (OpenAI, Anthropic, Google, Mistral, …) through one OpenAI-compatible key. Works with both Lynkr's OpenAI-format path and Claude Code / Cursor / Codex passthrough.
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=edenai
+EDENAI_API_KEY=your-edenai-key
+EDENAI_MODEL=anthropic/claude-sonnet-4-5
+EDENAI_ENDPOINT=https://api.edenai.run/v3/chat/completions
+```
+
+#### Getting an Eden AI API Key
+
+1. Visit [edenai.co](https://www.edenai.co) and create an account
+2. Open the dashboard → **API Keys**
+3. Create a key (a new organization is auto-created per account)
+4. Add credits (pay-as-you-go)
+
+#### Popular Models (`provider/model` naming)
+
+```env
+EDENAI_MODEL=anthropic/claude-sonnet-4-5     # Best for coding
+EDENAI_MODEL=openai/gpt-4o                    # General purpose
+EDENAI_MODEL=openai/gpt-4o-mini               # Cheap / fast (default)
+EDENAI_MODEL=google/gemini-2.5-flash          # Fast, long context
+```
+
+#### Benefits
+
+- ✅ **600+ models** through one OpenAI-compatible API
+- ✅ **EU-hosted / GDPR-compliant** option (differentiator vs US gateways)
+- ✅ **Both OpenAI- and Anthropic-compatible** endpoints (fits Claude Code passthrough)
+- ✅ **Full tool calling support**
+- ✅ **Pairs with tier routing** — cheap model for SIMPLE, frontier model for REASONING, one key
+
+See [docs.edenai.co](https://www.edenai.co/docs) for the model catalog and pricing.
 
 ---
 

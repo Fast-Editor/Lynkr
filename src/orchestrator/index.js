@@ -43,6 +43,8 @@ function getDestinationUrl(providerType) {
       return config.azureOpenAI?.endpoint ?? 'unknown';
     case 'openrouter':
       return config.openrouter?.endpoint ?? 'unknown';
+    case 'edenai':
+      return config.edenai?.endpoint ?? 'unknown';
     case 'openai':
       return 'https://api.openai.com/v1/chat/completions';
     case 'llamacpp':
@@ -1318,8 +1320,8 @@ function sanitizePayload(payload) {
     if (Array.isArray(clean.tools) && clean.tools.length > 0) {
       clean.tools = ensureAnthropicToolFormat(clean.tools);
     }
-  } else if (providerType === "openrouter") {
-    // OpenRouter supports tools - keep them as-is
+  } else if (providerType === "openrouter" || providerType === "edenai") {
+    // OpenRouter / Eden AI (OpenAI-compatible) support tools - keep them as-is.
     // Tools are already in Anthropic format and will be converted by openrouter-utils
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
       delete clean.tools;
@@ -1924,9 +1926,9 @@ IMPORTANT TOOL USAGE RULES:
   // Claude-family; an operator who switches HEADROOM_PROVIDER=openai gets the
   // analogous gate.
   const headroomProviderMap = {
-    'anthropic': new Set(['azure-anthropic', 'bedrock', 'vertex', 'openrouter']),
-    'openai':    new Set(['azure-openai', 'openai', 'openrouter']),
-    'google':    new Set(['vertex', 'openrouter']),
+    'anthropic': new Set(['azure-anthropic', 'bedrock', 'vertex', 'openrouter', 'edenai']),
+    'openai':    new Set(['azure-openai', 'openai', 'openrouter', 'edenai']),
+    'google':    new Set(['vertex', 'openrouter', 'edenai']),
   };
   const headroomProvider = process.env.HEADROOM_PROVIDER || 'anthropic';
   const headroomSafeProviders = headroomProviderMap[headroomProvider] || new Set();
@@ -2049,6 +2051,7 @@ IMPORTANT TOOL USAGE RULES:
     'bedrock',
     'vertex',
     'openrouter',
+    'edenai',
     'ollama',
     'openai',
     'azure-openai',
@@ -3107,7 +3110,7 @@ IMPORTANT TOOL USAGE RULES:
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
       }
-    } else if (actualProvider === "openrouter") {
+    } else if (actualProvider === "openrouter" || actualProvider === "edenai") {
       const { convertOpenRouterResponseToAnthropic } = require("../clients/openrouter-utils");
 
       // Validate OpenRouter response has choices array before conversion

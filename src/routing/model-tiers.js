@@ -330,6 +330,8 @@ class ModelTierSelector {
         return config.ollama?.model || null;
       case 'openrouter':
         return config.openrouter?.model || null;
+      case 'edenai':
+        return config.edenai?.model || null;
       case 'llamacpp':
         return config.llamacpp?.model || null;
       case 'lmstudio':
