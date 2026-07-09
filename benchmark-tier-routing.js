@@ -248,6 +248,102 @@ const SCENARIOS = [
       messages: [{ role: 'user', content: 'Analyse the security trade-offs of storing JWT tokens in localStorage vs httpOnly cookies for a banking application. Step by step.' }],
     }),
   },
+
+  // ── 7. Routing-correctness regressions (live incidents, 2026-07) ─────────
+  // Each of these encodes a bug found in production Claude Code sessions.
+  // route ✓/✗ flags apply to Lynkr only.
+  {
+    id: 'F1', label: 'Force-cloud trigger phrase',
+    feature: 'FORCE_CLOUD_PATTERNS → instant COMPLEX regardless of score',
+    expectTier: 'COMPLEX',
+    buildPayload: (model) => ({
+      model, max_tokens: 512,
+      messages: [{ role: 'user', content: 'Refactor the entire ingestion pipeline and give me the plan.' }],
+    }),
+  },
+  {
+    id: 'F2', label: 'Risk via protected path',
+    feature: 'Path-keyword risk → write-intent on auth file forces COMPLEX',
+    expectTier: 'COMPLEX',
+    buildPayload: (model) => ({
+      model, max_tokens: 512,
+      messages: [{ role: 'user', content: 'Fix the null check bug in src/auth/middleware.ts and update the tests.' }],
+    }),
+  },
+  {
+    id: 'RS1', label: 'Reminder-injection immunity',
+    feature: 'Risk scan must ignore harness-injected <system-reminder> text',
+    expectTier: 'SIMPLE', // "17+25" is trivial; injected credential/security words must not escalate
+    buildPayload: (model) => ({
+      model, max_tokens: 64,
+      messages: [{ role: 'user', content: '17+25\n<system-reminder>7 MCP servers need authentication. Provide credentials via /mcp. Security policy applies to production deploys.</system-reminder>' }],
+    }),
+  },
+  {
+    id: 'SR1', label: 'Suggestion-mode side request',
+    feature: 'Harness autocomplete wrapper → static SIMPLE, never scored/pinned',
+    expectTier: 'SIMPLE',
+    buildPayload: (model) => ({
+      model, max_tokens: 128,
+      tools: TOOL_DEFINITIONS.slice(0, 6),
+      messages: [
+        { role: 'user', content: 'How do I revoke a leaked credential in production?' },
+        { role: 'assistant', content: 'First, rotate the secret…' },
+        { role: 'user', content: '[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.] Look at the conversation about production credentials and security incidents, then predict their next message.' },
+      ],
+    }),
+  },
+  {
+    id: 'A1', label: 'Autonomous agentic ask',
+    feature: 'AUTONOMOUS detection → minTier REASONING via tier config',
+    expectTier: 'REASONING',
+    buildPayload: (model) => ({
+      model, max_tokens: 512,
+      tools: TOOL_DEFINITIONS,
+      messages: [{ role: 'user', content: 'Work autonomously: first run the test suite, then fix each failure one by one, rerun after every fix, and keep iterating until everything is green. Finally clean up and summarise.' }],
+    }),
+  },
+
+  // ── 8. Sticky-session pair: pin then drift-escape ─────────────────────────
+  // P1 and P2 share the SAME first user message, so Lynkr's content
+  // fingerprint maps them to one session: P1 pins SIMPLE, P2 must escape
+  // via the force-cloud phrase (deterministic, unlike raw drift scores).
+  {
+    id: 'P1', label: 'Pin – trivial opener',
+    feature: 'Fingerprint session opens → pins SIMPLE',
+    expectTier: 'SIMPLE',
+    buildPayload: (model) => ({
+      model, max_tokens: 64,
+      messages: [{ role: 'user', content: 'hey there, benchmark pin session opener' }],
+    }),
+  },
+  {
+    id: 'P2', label: 'Pin – escape on real task (same session)',
+    feature: 'WS1.5 pin escape: force phrase breaks a SIMPLE pin mid-session',
+    expectTier: 'COMPLEX',
+    buildPayload: (model) => ({
+      model, max_tokens: 512,
+      messages: [
+        { role: 'user', content: 'hey there, benchmark pin session opener' },
+        { role: 'assistant', content: 'Hi! What do you need?' },
+        { role: 'user', content: 'Now do an architecture review of the routing module.' },
+      ],
+    }),
+  },
+
+  // ── 9. Cache miss control ─────────────────────────────────────────────────
+  // SC2 proves the cache hits; this proves it does NOT over-match: a
+  // semantically different question must be a miss (live footgun: 0.87
+  // similarity matched different prompts during testing).
+  {
+    id: 'SC3', label: 'Cache – different question (must MISS)',
+    feature: 'Semantic cache false-positive guard',
+    expectNoCache: true,
+    buildPayload: (model) => ({
+      model, max_tokens: 256,
+      messages: [{ role: 'user', content: 'What are the four layers of the TCP/IP model and what does each do?' }],
+    }),
+  },
 ];
 
 // ─── JSON payload generators (TOON compresses these, plain text it ignores) ──
@@ -385,11 +481,17 @@ async function runBenchmark() {
         console.log(`  ${col(proxy.name,10)} ${skipped ? 'SKIPPED (proxy not reachable — is it running?)' : 'ERROR: ' + r.error?.slice(0,80)}`);
         continue;
       }
+      const isLynkr = proxy.name === 'Lynkr';
       const flags = [
         r.cacheHit ? 'CACHE-HIT' : null,
         r.wasFallback ? 'SERVED-VIA-FALLBACK' : null,
-        scenario.expectTier
+        // Route expectations only judge Lynkr — other proxies synthesize
+        // tier labels from cost heuristics, so comparing is meaningless.
+        isLynkr && scenario.expectTier
           ? (r.tier === scenario.expectTier ? `route ✓ ${scenario.expectTier}` : `route ✗ expected ${scenario.expectTier}, got ${r.tier}`)
+          : null,
+        isLynkr && scenario.expectNoCache
+          ? (r.cacheHit ? 'cache ✗ FALSE-POSITIVE HIT' : 'cache-miss ✓')
           : null,
       ].filter(Boolean).join(' · ');
       console.log(
@@ -409,6 +511,25 @@ async function runBenchmark() {
   }
 
   // ─── Feature-Level Summary ──────────────────────────────────────────────────
+
+  // ── Routing correctness scoreboard (Lynkr only) ──
+  console.log('\n\n━━━  ROUTING CORRECTNESS (Lynkr)  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  let routePass = 0, routeFail = 0;
+  for (const scenario of SCENARIOS) {
+    const r = results.Lynkr?.[scenario.id];
+    if (!r?.ok) continue;
+    if (scenario.expectTier) {
+      const pass = r.tier === scenario.expectTier;
+      pass ? routePass++ : routeFail++;
+      console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} expected ${scenario.expectTier}, got ${r.tier}${pass ? '' : '   ← REGRESSION'}`);
+    }
+    if (scenario.expectNoCache) {
+      const pass = !r.cacheHit;
+      pass ? routePass++ : routeFail++;
+      console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} expected cache miss${pass ? '' : '   ← cache FALSE POSITIVE'}`);
+    }
+  }
+  console.log(`\n  ${routePass} passed, ${routeFail} failed${routeFail ? '  ⚠ routing regressions detected' : ''}`);
 
   console.log('\n\n━━━  FEATURE SUMMARY  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
