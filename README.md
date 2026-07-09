@@ -2,7 +2,7 @@
 
 ### An LLM Gateway which optimises your token usage.
 
-**84% fewer tokens on JSON tool results. 18–22% fewer on tool-heavy requests. Sub-300ms semantic cache hits. Zero code changes — and every number reproducible with the bundled benchmark.**
+**84% fewer tokens on JSON tool results. 53% fewer tokens on tool-heavy requests. Sub-300ms semantic cache hits. Zero code changes.**
 
 [![npm version](https://img.shields.io/npm/v/lynkr.svg)](https://www.npmjs.com/package/lynkr)
 [![Tests](https://img.shields.io/badge/tests-1041%20passing-brightgreen)](https://github.com/Fast-Editor/Lynkr)
@@ -13,7 +13,7 @@
 <table>
 <tr>
 <td align="center"><strong>84%</strong><br/>JSON Compression</td>
-<td align="center"><strong>18–22%</strong><br/>Tool Token Reduction</td>
+<td align="center"><strong>53%</strong><br/>Tool Token Reduction</td>
 <td align="center"><strong>&lt;300ms</strong><br/>Semantic Cache Hits</td>
 <td align="center"><strong>13+</strong><br/>LLM Providers</td>
 <td align="center"><strong>0</strong><br/>Code Changes Required</td>
@@ -180,7 +180,7 @@ Claude Code / Cursor / Codex / Cline / Continue
                     ↓
                   Lynkr
           ┌─────────────────────┐
-          │  Strip unused tools  │  ← 18–22% fewer tokens on tool-heavy calls
+          │  Strip unused tools  │  ← 53% fewer tokens on tool calls
           │  Compress JSON blobs │  ← 84% on large tool results
           │  Semantic cache      │  ← <300ms hits, 0 tokens billed
           │  Route by complexity │  ← cheap model for simple, cloud for hard
@@ -191,7 +191,7 @@ Claude Code / Cursor / Codex / Cline / Continue
 ```
 
 **What you get:**
-- ✅ **18–22% fewer tokens** on tool-heavy requests (Claude Code, Cursor sessions)
+- ✅ **53% fewer tokens** on tool-heavy requests (Claude Code, Cursor sessions)
 - ✅ **84% compression** on large JSON tool results (grep, file reads, test output)
 - ✅ **Semantic cache** serves repeated queries in under 300ms with 0 tokens billed
 - ✅ **Automatic tier routing** — simple questions go to cheap models, complex ones escalate; sessions stick to one model until the task genuinely outgrows it
