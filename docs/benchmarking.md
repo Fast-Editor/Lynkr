@@ -19,10 +19,10 @@ Competitors are optional; unreachable proxies are reported as
 never counted as $0.00.
 
 ```bash
-# LiteLLM head-to-head (same free Ollama backend → fair proxy-vs-proxy)
-source ~/venvs/litellm/bin/activate
-export $(grep -E '^(MOONSHOT_API_KEY|AZURE_OPENAI_API_KEY)=' .env | xargs)
-litellm --port 8082 --config litellm-config.yaml
+# LiteLLM head-to-head: point a LiteLLM proxy at the same free Ollama
+# backend (model_name "smart-router" → ollama_chat/<your-model>) so the
+# comparison is proxy-vs-proxy, not model pricing.
+litellm --port 8082 --config your-litellm-config.yaml
 
 # Portkey (needs a real ANTHROPIC_API_KEY — OAuth tokens won't work)
 docker run -d -p 8083:8787 portkeyai/gateway

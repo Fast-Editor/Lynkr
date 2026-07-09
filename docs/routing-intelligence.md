@@ -3,9 +3,7 @@
 How Lynkr decides which model serves each request — the full pipeline as of
 July 2026, covering sticky sessions, the escape ladder, and the closed
 learning loop. For the per-message intent scorer see
-[intent-window-routing.md](intent-window-routing.md); for the
-incident-by-incident engineering ledger see
-[`PLAN-routing-hardening.md`](../PLAN-routing-hardening.md) in the repo root.
+[intent-window-routing.md](intent-window-routing.md).
 
 ## The decision pipeline
 
