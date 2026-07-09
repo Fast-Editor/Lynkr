@@ -2,25 +2,25 @@
 
 ### An LLM Gateway which optimises your token usage.
 
-**87.6% fewer tokens on JSON tool results. 53% fewer tokens on tool-heavy requests. 171ms semantic cache hits. Zero code changes.**
+**84% fewer tokens on JSON tool results. 18–22% fewer on tool-heavy requests. Sub-300ms semantic cache hits. Zero code changes — and every number reproducible with the bundled benchmark.**
 
 [![npm version](https://img.shields.io/npm/v/lynkr.svg)](https://www.npmjs.com/package/lynkr)
-[![Tests](https://img.shields.io/badge/tests-699%20passing-brightgreen)](https://github.com/Fast-Editor/Lynkr)
+[![Tests](https://img.shields.io/badge/tests-1041%20passing-brightgreen)](https://github.com/Fast-Editor/Lynkr)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-20%2B-green)](https://nodejs.org)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Fast-Editor/Lynkr)
 
 <table>
 <tr>
-<td align="center"><strong>87.6%</strong><br/>JSON Compression</td>
-<td align="center"><strong>53%</strong><br/>Tool Token Reduction</td>
-<td align="center"><strong>171ms</strong><br/>Semantic Cache Hits</td>
+<td align="center"><strong>84%</strong><br/>JSON Compression</td>
+<td align="center"><strong>18–22%</strong><br/>Tool Token Reduction</td>
+<td align="center"><strong>&lt;300ms</strong><br/>Semantic Cache Hits</td>
 <td align="center"><strong>13+</strong><br/>LLM Providers</td>
 <td align="center"><strong>0</strong><br/>Code Changes Required</td>
 </tr>
 </table>
 
-> Numbers from a live benchmark against LiteLLM on identical workloads. [See full report →](BENCHMARK_REPORT.md)
+> Numbers from the bundled benchmark against LiteLLM on identical free local backends — run it yourself: `node benchmark-tier-routing.js`. It doubles as a 17-scenario routing regression harness (currently 10/10 correctness checks). [How it works →](docs/benchmarking.md)
 
 ---
 
@@ -40,8 +40,9 @@ lynkr wrap claude
 
 **Wrapping gives you:**
 - ✅ Tier routing (send simple tasks to free Ollama, complex to your subscription/API)
-- ✅ TOON/RTK compression (87% token reduction on tool outputs)
-- ✅ Semantic caching (171ms cache hits)
+- ✅ Sticky sessions: one routing decision per conversation via content fingerprinting, with automatic escalation when the task outgrows the model
+- ✅ TOON/RTK compression (84% token reduction on large JSON tool outputs)
+- ✅ Semantic caching (sub-300ms cache hits, 0 tokens billed)
 - ✅ **3-5x more usage from the same subscription limits**
 - ✅ Works with OAuth (Claude, Copilot, Cursor) or API keys (Aider, Codex)
 
@@ -179,20 +180,22 @@ Claude Code / Cursor / Codex / Cline / Continue
                     ↓
                   Lynkr
           ┌─────────────────────┐
-          │  Strip unused tools  │  ← 53% fewer tokens on tool calls
-          │  Compress JSON blobs │  ← 87.6% on large tool results
-          │  Semantic cache      │  ← 171ms hits, 0 tokens billed
+          │  Strip unused tools  │  ← 18–22% fewer tokens on tool-heavy calls
+          │  Compress JSON blobs │  ← 84% on large tool results
+          │  Semantic cache      │  ← <300ms hits, 0 tokens billed
           │  Route by complexity │  ← cheap model for simple, cloud for hard
+          │  Learn from outcomes │  ← kNN + bandit + auto-calibration
           └─────────────────────┘
                     ↓
     Ollama | Bedrock | Azure | Moonshot | OpenRouter | OpenAI
 ```
 
 **What you get:**
-- ✅ **53% fewer tokens** on tool-heavy requests (Claude Code, Cursor sessions)
-- ✅ **87.6% compression** on large JSON tool results (grep, file reads, test output)
-- ✅ **Semantic cache** serves repeated queries in 171ms with 0 tokens billed
-- ✅ **Automatic tier routing** — simple questions go to cheap models, complex ones escalate
+- ✅ **18–22% fewer tokens** on tool-heavy requests (Claude Code, Cursor sessions)
+- ✅ **84% compression** on large JSON tool results (grep, file reads, test output)
+- ✅ **Semantic cache** serves repeated queries in under 300ms with 0 tokens billed
+- ✅ **Automatic tier routing** — simple questions go to cheap models, complex ones escalate; sessions stick to one model until the task genuinely outgrows it
+- ✅ **A closed learning loop** — every outcome trains a kNN router and bandit, and tier thresholds re-calibrate nightly from your own traffic
 - ✅ Route through **your company's infrastructure** (Databricks, Azure, Bedrock)
 - ✅ **Zero code changes** — just change one environment variable
 
@@ -245,7 +248,7 @@ Lynkr analyzes each request and routes it to the appropriate tier. Simple questi
 
 **Result:** 70-90% of requests use cheaper/faster models. Only hard problems hit expensive models.
 
-Tier configuration is strictly authoritative — bandit exploration is constrained to the models you've listed in `TIER_*`, and multi-turn conversations score with a recency-weighted sliding window so context isn't lost on short follow-ups. See [`docs/intent-window-routing.md`](docs/intent-window-routing.md).
+Tier configuration is strictly authoritative — bandit exploration is constrained to the models you've listed in `TIER_*`, and multi-turn conversations score with a recency-weighted sliding window so context isn't lost on short follow-ups. Conversations get a content-fingerprint session id (clients like Claude Code send none), the decision pins for the session, and a guarded escape ladder (risk keywords, force phrases, score drift, context overflow) re-escalates the moment a task outgrows its model. Full pipeline: [`docs/routing-intelligence.md`](docs/routing-intelligence.md) · intent scorer: [`docs/intent-window-routing.md`](docs/intent-window-routing.md) · verify any change: [`docs/benchmarking.md`](docs/benchmarking.md).
 
 ---
 
