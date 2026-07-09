@@ -29,8 +29,13 @@ const PROXIES = [
     apiKey: process.env.ANTHROPIC_API_KEY,
     defaultModel: 'claude-sonnet-4-5',
     headers: {},
+    // Decision (what the router chose) comes from headers; SERVED model
+    // (who actually answered) comes from the response body — they differ
+    // whenever tier-fallback rescued a failed upstream, and reporting the
+    // decision as if it served is how this benchmark previously showed
+    // "COMPLEX sonnet" rows that minimax actually answered.
     getTier:  (_b, h) => h['x-lynkr-tier']     ?? 'unknown',
-    getModel: (_b, h) => h['x-lynkr-model']    ?? h['x-lynkr-provider'] ?? 'unknown',
+    getModel: (b, h)  => b?.model ?? h['x-lynkr-model'] ?? h['x-lynkr-provider'] ?? 'unknown',
   },
   {
     name: 'LiteLLM',
@@ -68,11 +73,17 @@ const PROXIES = [
 // ─── Pricing per 1M tokens [input, output] USD ───────────────────────────────
 
 const PRICING = {
+  // Free / local — must match before 'default': pricing minimax at
+  // sonnet rates previously fabricated ~$0.01/request numbers.
+  'minimax':            [0.00,   0.00],
+  'ollama':             [0.00,   0.00],
+  'llama':              [0.00,   0.00],
+  'qwen':               [0.00,   0.00],
+  'kimi':               [0.60,   2.50],
   'claude-haiku-4-5':   [0.80,   4.00],
   'claude-haiku-3':     [0.25,   1.25],
-  'claude-sonnet-4-5':  [3.00,  15.00],
-  'claude-sonnet-3-5':  [3.00,  15.00],
-  'claude-opus-4':      [15.00, 75.00],
+  'claude-sonnet':      [3.00,  15.00],
+  'claude-opus':        [15.00, 75.00],
   'gpt-4o-mini':        [0.15,   0.60],
   'gpt-4o':             [2.50,  10.00],
   'o3-mini':            [1.10,   4.40],
@@ -117,6 +128,7 @@ const SCENARIOS = [
   {
     id: 'S1', label: 'Simple Q&A',
     feature: 'Tier routing → cheap model',
+    expectTier: 'SIMPLE',
     buildPayload: (model) => ({
       model, max_tokens: 256,
       messages: [{ role: 'user', content: 'What does git stash do?' }],
@@ -230,6 +242,7 @@ const SCENARIOS = [
   {
     id: 'R1', label: 'Reasoning – security analysis',
     feature: 'Tier routing → top model + risk classifier',
+    expectTier: 'COMPLEX', // risk keywords force COMPLEX
     buildPayload: (model) => ({
       model, max_tokens: 1024,
       messages: [{ role: 'user', content: 'Analyse the security trade-offs of storing JWT tokens in localStorage vs httpOnly cookies for a banking application. Step by step.' }],
@@ -305,17 +318,24 @@ async function sendRequest(proxy, scenario) {
     }
 
     const body = await res.json();
-    const billedInput  = body?.usage?.input_tokens  ?? 0;
-    const billedOutput = body?.usage?.output_tokens ?? 0;
+    const cacheHit = body?.lynkr_semantic_cache?.hit === true;
+    // On a cache hit the body echoes the CACHED usage — nothing was billed.
+    const billedInput  = cacheHit ? 0 : (body?.usage?.input_tokens  ?? 0);
+    const billedOutput = cacheHit ? 0 : (body?.usage?.output_tokens ?? 0);
     const model        = proxy.getModel(body, headers);
-    const tier         = proxy.getTier(body, headers);
+    const decidedTier  = proxy.getTier(body, headers);
+    const wasFallback  = headers['x-lynkr-fallback'] === 'true';
     const cost         = costUsd(model, billedInput, billedOutput);
-    const tokensSaved  = Math.max(0, estimatedInputTokens - billedInput);
+    // Signed delta: positive = compression saved tokens; negative = the
+    // proxy ADDED tokens (system-prompt injection etc). The old clamp to 0
+    // hid overhead and made "saved 0" ambiguous.
+    const tokenDelta   = estimatedInputTokens - billedInput;
+    const tokensSaved  = Math.max(0, tokenDelta);
     const compressionPct = estimatedInputTokens > 0
-      ? ((tokensSaved / estimatedInputTokens) * 100).toFixed(1)
+      ? ((tokenDelta / estimatedInputTokens) * 100).toFixed(1)
       : '0.0';
 
-    return { ok: true, tier, model, billedInput, billedOutput, estimatedInputTokens, tokensSaved, compressionPct, cost, latencyMs };
+    return { ok: true, tier: decidedTier, model, billedInput, billedOutput, estimatedInputTokens, tokenDelta, tokensSaved, compressionPct, cost, latencyMs, cacheHit, wasFallback };
   } catch (e) {
     return { ok: false, error: e.message, latencyMs: Date.now() - start, estimatedInputTokens };
   }
@@ -361,9 +381,17 @@ async function runBenchmark() {
     for (const proxy of PROXIES) {
       const r = results[proxy.name][scenario.id];
       if (!r.ok) {
-        console.log(`  ${col(proxy.name,10)} ERROR: ${r.error?.slice(0,80)}`);
+        const skipped = /fetch failed|ECONNREFUSED|timeout/i.test(r.error || '');
+        console.log(`  ${col(proxy.name,10)} ${skipped ? 'SKIPPED (proxy not reachable — is it running?)' : 'ERROR: ' + r.error?.slice(0,80)}`);
         continue;
       }
+      const flags = [
+        r.cacheHit ? 'CACHE-HIT' : null,
+        r.wasFallback ? 'SERVED-VIA-FALLBACK' : null,
+        scenario.expectTier
+          ? (r.tier === scenario.expectTier ? `route ✓ ${scenario.expectTier}` : `route ✗ expected ${scenario.expectTier}, got ${r.tier}`)
+          : null,
+      ].filter(Boolean).join(' · ');
       console.log(
         '  ' +
         col(proxy.name, 10) +
@@ -371,10 +399,11 @@ async function runBenchmark() {
         col(r.model, 26) +
         col(r.estimatedInputTokens, 9) +
         col(r.billedInput, 9) +
-        col(r.tokensSaved, 8) +
+        col(r.tokenDelta, 8) +
         col(r.compressionPct + '%', 11) +
         col($(r.cost), 12) +
-        `${r.latencyMs}ms`
+        `${r.latencyMs}ms` +
+        (flags ? `   [${flags}]` : '')
       );
     }
   }
@@ -413,22 +442,30 @@ async function runBenchmark() {
     const rs = Object.values(results[proxy.name]).filter(r => r?.ok);
     return {
       name: proxy.name,
+      n: rs.length,
       cost: rs.reduce((s, r) => s + r.cost, 0),
       tokensSaved: rs.reduce((s, r) => s + r.tokensSaved, 0),
       avgLatency: rs.length ? rs.reduce((s, r) => s + r.latencyMs, 0) / rs.length : 0,
     };
-  }).sort((a, b) => a.cost - b.cost);
+  }).filter(t => t.n > 0)  // proxies with zero data have no business in cost tables
+    .sort((a, b) => a.cost - b.cost);
 
+  const withData = totals.filter(t =>
+    Object.values(results[t.name]).some(r => r?.ok));
+  if (withData.length < 2) {
+    console.log('  ⚠ Only ' + (withData.map(t=>t.name).join(', ') || 'no proxies') + ' returned data — comparative claims and extrapolation are meaningless with a single proxy.');
+    console.log('    To compare: start LiteLLM on :8082 and/or Portkey gateway on :8083 (see header comment).');
+  }
   const maxCost = Math.max(...totals.map(t => t.cost), 0.000001);
-  const baseline = totals.find(t => t.name === 'Portkey')?.cost
-    ?? totals.find(t => t.cost > 0)?.cost
-    ?? maxCost;
+  const baselineProxy = [...totals].sort((a, b) => b.cost - a.cost)[0];
+  const baseline = baselineProxy?.cost ?? maxCost;
+  const baselineName = baselineProxy?.name ?? 'baseline';
 
   for (const t of totals) {
     const pct = baseline > 0 ? ((baseline - t.cost) / baseline * 100).toFixed(1) : '0.0';
     const barLen = maxCost > 0 ? Math.max(1, Math.round((t.cost / maxCost) * 30)) : 1;
     const bar = '█'.repeat(barLen);
-    console.log(`  ${t.name.padEnd(10)} ${$(t.cost).padEnd(14)} ${pct.padStart(5)}% cheaper vs baseline   avg ${Math.round(t.avgLatency)}ms   ${bar}`);
+    console.log(`  ${t.name.padEnd(10)} ${$(t.cost).padEnd(14)} ${pct.padStart(5)}% cheaper vs ${baselineName}   avg ${Math.round(t.avgLatency)}ms   ${bar}`);
   }
 
   // ─── Extrapolated: 100k requests/month ─────────────────────────────────────
@@ -440,7 +477,7 @@ async function runBenchmark() {
   for (const t of totals) {
     const monthly = t.cost * factor;
     const annualSaving = baseline > 0 ? (baseline - t.cost) * factor * 12 : 0;
-    console.log(`  ${t.name.padEnd(10)} ~$${monthly.toFixed(2).padStart(10)}/month   ~$${(annualSaving).toFixed(0).padStart(10)}/year saved vs Portkey`);
+    console.log(`  ${t.name.padEnd(10)} ~$${monthly.toFixed(2).padStart(10)}/month   ~$${(annualSaving).toFixed(0).padStart(10)}/year saved vs ${baselineName}`);
   }
 
   console.log('\nDone.\n');

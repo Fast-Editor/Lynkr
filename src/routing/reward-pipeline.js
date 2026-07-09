@@ -8,19 +8,30 @@
  *
  * Normalisation uses running min/max so we don't need to pre-compute global
  * scales.
+ *
+ * WS5.1 — state persists to data/reward-state.json so the normaliser ranges
+ * survive process restarts. Without this, the first N requests after every
+ * restart get scaled against a re-learned range and produce noisy rewards.
  */
 
+const fs = require('fs');
+const path = require('path');
 const logger = require('../logger');
 
+const STATE_PATH = path.join(__dirname, '../../data/reward-state.json');
 const DEFAULT_LAMBDA = 0.3;
 const DEFAULT_MU = 0.1;
+const SAVE_EVERY = 25;
 
 class RewardPipeline {
-  constructor({ lambda = DEFAULT_LAMBDA, mu = DEFAULT_MU } = {}) {
+  constructor({ lambda = DEFAULT_LAMBDA, mu = DEFAULT_MU, statePath = STATE_PATH } = {}) {
     this.lambda = lambda;
     this.mu = mu;
     this.costRange = { min: Infinity, max: -Infinity };
     this.latencyRange = { min: Infinity, max: -Infinity };
+    this.observations = 0;
+    this.statePath = statePath;
+    this._load();
   }
 
   observe({ cost, latency }) {
@@ -46,10 +57,65 @@ class RewardPipeline {
    */
   reward(obs) {
     this.observe(obs);
+    this.observations++;
+    // Periodic save mirrors bandit.js: cheap enough to write inline every
+    // N observations, no risk of blocking the response path since callers
+    // invoke reward() from setImmediate.
+    if (this.observations % SAVE_EVERY === 0) this._save();
     const q = typeof obs.quality === 'number' ? obs.quality : 50;
     const cn = this._normalize(obs.cost ?? 0, this.costRange);
     const ln = this._normalize(obs.latency ?? 0, this.latencyRange);
     return Math.max(0, Math.min(100, q - this.lambda * cn * 100 - this.mu * ln * 100));
+  }
+
+  _save() {
+    try {
+      fs.mkdirSync(path.dirname(this.statePath), { recursive: true });
+      fs.writeFileSync(this.statePath, JSON.stringify({
+        savedAt: Date.now(),
+        lambda: this.lambda,
+        mu: this.mu,
+        observations: this.observations,
+        // Serialise Infinity as null; _load() re-hydrates.
+        costRange: {
+          min: isFinite(this.costRange.min) ? this.costRange.min : null,
+          max: isFinite(this.costRange.max) ? this.costRange.max : null,
+        },
+        latencyRange: {
+          min: isFinite(this.latencyRange.min) ? this.latencyRange.min : null,
+          max: isFinite(this.latencyRange.max) ? this.latencyRange.max : null,
+        },
+      }, null, 0));
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Reward] State save failed');
+    }
+  }
+
+  _load() {
+    try {
+      if (!fs.existsSync(this.statePath)) return;
+      const raw = JSON.parse(fs.readFileSync(this.statePath, 'utf8'));
+      if (raw.costRange) {
+        this.costRange = {
+          min: raw.costRange.min == null ? Infinity : raw.costRange.min,
+          max: raw.costRange.max == null ? -Infinity : raw.costRange.max,
+        };
+      }
+      if (raw.latencyRange) {
+        this.latencyRange = {
+          min: raw.latencyRange.min == null ? Infinity : raw.latencyRange.min,
+          max: raw.latencyRange.max == null ? -Infinity : raw.latencyRange.max,
+        };
+      }
+      this.observations = raw.observations || 0;
+      logger.info({
+        cost: this.costRange,
+        latency: this.latencyRange,
+        observations: this.observations,
+      }, '[Reward] State loaded');
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Reward] State load failed');
+    }
   }
 }
 
@@ -59,4 +125,4 @@ function getRewardPipeline() {
   return _instance;
 }
 
-module.exports = { RewardPipeline, getRewardPipeline };
+module.exports = { RewardPipeline, getRewardPipeline, SAVE_EVERY };

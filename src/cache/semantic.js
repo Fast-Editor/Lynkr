@@ -444,6 +444,15 @@ class SemanticCache {
           cacheHits: match.entry.hits,
         }, '[SemanticCache] Cache hit');
 
+        // Tokens avoided ≈ prompt + stored response (no model call was made)
+        try {
+          const respLen = JSON.stringify(match.entry.response ?? '').length;
+          require('../routing/telemetry').recordSavings(
+            'cache_hit',
+            Math.ceil((prompt.length + respLen) / 4)
+          );
+        } catch { /* telemetry is best-effort */ }
+
         return {
           hit: true,
           response: match.entry.response,

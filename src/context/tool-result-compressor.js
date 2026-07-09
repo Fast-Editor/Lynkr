@@ -56,7 +56,11 @@ function recordMetric(pattern, originalLen, compressedLen) {
     metrics.patterns[pattern] = { count: 0, tokensSaved: 0 };
   }
   metrics.patterns[pattern].count++;
-  metrics.patterns[pattern].tokensSaved += Math.ceil((originalLen - compressedLen) / 4);
+  const saved = Math.ceil((originalLen - compressedLen) / 4);
+  metrics.patterns[pattern].tokensSaved += saved;
+  try {
+    require('../routing/telemetry').recordSavings('compression', saved);
+  } catch { /* telemetry is best-effort */ }
 }
 
 function getMetrics() {

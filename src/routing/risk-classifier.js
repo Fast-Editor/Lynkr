@@ -15,7 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const logger = require('../logger');
-const { analyzeRisk: regexAnalyzeRisk } = require('./risk-analyzer');
+const { analyzeRisk: regexAnalyzeRisk, stripSystemReminders } = require('./risk-analyzer');
 
 const MODEL_PATH = path.join(__dirname, '../../data/risk-classifier.json');
 const DECISION_THRESHOLD = 0.5;
@@ -84,7 +84,10 @@ function analyzeRisk(payload) {
   const model = _loadModel();
   if (!model) return regexResult;
 
-  // Build the text we feed to the classifier: latest user message + tool defs + system fingerprint
+  // Build the text we feed to the classifier: latest user message + system
+  // fingerprint. Harness-injected <system-reminder> blocks are stripped for
+  // the same reason as in the regex analyzer — their boilerplate contains
+  // risk keywords ("authentication", "credential") the user never typed.
   let text = '';
   if (Array.isArray(payload?.messages)) {
     for (let i = payload.messages.length - 1; i >= 0; i--) {
@@ -98,6 +101,7 @@ function analyzeRisk(payload) {
       }
     }
   }
+  text = stripSystemReminders(text);
   if (typeof payload?.system === 'string') text += ' ' + payload.system;
 
   const prob = _predict(text, model);

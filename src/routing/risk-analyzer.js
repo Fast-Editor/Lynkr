@@ -115,6 +115,25 @@ function findHits(keywords, haystack) {
 }
 
 /**
+ * Strip harness-injected <system-reminder> blocks from instruction text
+ * before risk scanning. Claude Code appends these blocks to the latest
+ * user message (CLAUDE.md contents, MCP-server auth notices, tool-search
+ * hints). Their boilerplate routinely contains words like "authentication",
+ * "credential", and "security" — live traffic showed a bare "23+45" turn
+ * force-escalated to COMPLEX on instructionHits ["credential","security"]
+ * that the user never typed. Risk must reflect what the USER is asking,
+ * not what the harness injected; genuinely risky asks live in the typed
+ * text and still fire. (The intent scorers have stripped these blocks
+ * since WS3 — this brings the risk scan in line.)
+ * @param {string} text
+ * @returns {string}
+ */
+function stripSystemReminders(text) {
+  if (typeof text !== 'string' || !text) return '';
+  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ');
+}
+
+/**
  * Analyze the risk level of a request.
  *
  * Risk is orthogonal to complexity:
@@ -131,7 +150,7 @@ function findHits(keywords, haystack) {
  *             paths: string[] }}
  */
 function analyzeRisk(payload) {
-  const instructionText = extractContent(payload) || '';
+  const instructionText = stripSystemReminders(extractContent(payload) || '');
   const lowText = instructionText.toLowerCase();
 
   const textPaths = extractPathsFromText(instructionText);
@@ -193,6 +212,7 @@ module.exports = {
   analyzeRisk,
   PROTECTED_PATH_KEYWORDS,
   HIGH_RISK_INSTRUCTION_KEYWORDS,
+  stripSystemReminders,
   // Exposed for tests
   extractPathsFromText,
   extractPathsFromToolUses,

@@ -29,10 +29,16 @@ const META_FILE = path.join(INDEX_DIR, 'meta.json');
 const MAX_ELEMENTS = 50000;
 const DIM = 768; // nomic-embed-text default
 const K = 10;
-// Default 1000 is a safety floor for quality; override via env when you
-// want to activate kNN with less data (e.g. bootstrapping from your own
-// telemetry before reaching 1k entries).
-const MIN_INDEX_SIZE = Number.parseInt(process.env.LYNKR_KNN_MIN_INDEX_SIZE, 10) || 1000;
+// WS5.2 — lowered from 1000 → 100 so kNN advises earlier. The `query()`
+// path dampens confidence by `min(1, size/1000)` when the index is small,
+// so the HIGH/LOW thresholds in `src/routing/index.js` still gate strong
+// advice properly. Override with LYNKR_KNN_MIN_INDEX_SIZE.
+const MIN_INDEX_SIZE = Number.parseInt(process.env.LYNKR_KNN_MIN_INDEX_SIZE, 10) || 100;
+// Cold-start confidence damping — under this many entries, confidence is
+// linearly damped; at DAMP_FULL_SIZE and above, damping is a no-op.
+const DAMP_FULL_SIZE = 1000;
+// Persist the index every N `add()` calls so online growth survives crashes.
+const SAVE_EVERY_N_ADDS = 50;
 
 let _hnsw = null;
 let _hnswLoaded = false;
@@ -110,6 +116,35 @@ class KnnRouter {
     this.index.addPoint(embedding, this.size);
     this.meta.push(outcome);
     this.size++;
+    // WS5.2 — persist online growth incrementally so a crash doesn't lose
+    // the learning done since the last full-index rebuild.
+    if (this.size % SAVE_EVERY_N_ADDS === 0) this.save();
+  }
+
+  /**
+   * WS5.2 — expose the embedder to callers so the routing decision can
+   * capture the query's embedding at decision time and attach it to the
+   * decision object for the feedback path to consume without paying for a
+   * second embedding call. Returns null when the embedder is unavailable
+   * or the returned vector doesn't match the index dimension.
+   *
+   * @param {string} text
+   * @returns {Promise<number[]|null>}
+   */
+  async embed(text) {
+    if (!text || typeof text !== 'string') return null;
+    const cache = getEmbeddingCache();
+    const cached = cache.get(text);
+    if (cached) return cached;
+    try {
+      const embedding = await generateEmbedding(text);
+      if (!embedding || embedding.length !== this.dim) return null;
+      cache.set(text, embedding);
+      return embedding;
+    } catch (err) {
+      logger.debug({ err: err.message }, '[KnnRouter] embed() failed');
+      return null;
+    }
   }
 
   async query(text) {
@@ -117,21 +152,8 @@ class KnnRouter {
     if (!this.ready || !this.index || this.size < MIN_INDEX_SIZE) return null;
     if (!text || typeof text !== 'string') return null;
 
-    const cache = getEmbeddingCache();
-    let embedding = cache.get(text);
-    if (!embedding) {
-      try {
-        embedding = await generateEmbedding(text);
-        if (!embedding || embedding.length !== this.dim) {
-          // Skip if dim mismatch (embedder produced different dimensions)
-          return null;
-        }
-        cache.set(text, embedding);
-      } catch (err) {
-        logger.debug({ err: err.message }, '[KnnRouter] Embedding failed, skipping');
-        return null;
-      }
-    }
+    const embedding = await this.embed(text);
+    if (!embedding) return null;
 
     let result;
     try {
@@ -166,6 +188,13 @@ class KnnRouter {
       agg.count++;
     }
 
+    // WS5.2 — cold-start damping. Below DAMP_FULL_SIZE, multiply confidence
+    // by size/DAMP_FULL_SIZE so a small index advises weakly. The upstream
+    // HIGH/LOW thresholds in index.js then naturally treat sparse advice as
+    // ambiguous rather than trusting it. At/above DAMP_FULL_SIZE the factor
+    // is 1 (no damping).
+    const dampFactor = Math.min(1, this.size / DAMP_FULL_SIZE);
+
     let best = null;
     let bestScore = -Infinity;
     for (const [model, agg] of byModel) {
@@ -182,7 +211,7 @@ class KnnRouter {
           expectedQuality: avgQ,
           expectedCost: avgC,
           expectedLatency: agg.latency / agg.weight,
-          confidence: Math.min(1, agg.weight / K),
+          confidence: Math.min(1, agg.weight / K) * dampFactor,
           neighborCount: agg.count,
         };
       }
@@ -202,12 +231,32 @@ class KnnRouter {
 }
 
 let _instance = null;
+let _beforeExitBound = false;
 function getKnnRouter() {
   if (!_instance) {
     _instance = new KnnRouter();
     _instance.load();
+    // WS5.2 — best-effort persistence on graceful exit so any online
+    // learning done since the last incremental save isn't lost. Bound once
+    // per process; the save() call itself no-ops when the index isn't
+    // ready, so this is safe even in test environments that never populate
+    // the router.
+    if (!_beforeExitBound) {
+      _beforeExitBound = true;
+      try {
+        process.on('beforeExit', () => {
+          try { _instance && _instance.save(); } catch (_) { /* best-effort */ }
+        });
+      } catch (_) { /* not a node process (e.g. worker) */ }
+    }
   }
   return _instance;
 }
 
-module.exports = { KnnRouter, getKnnRouter };
+module.exports = {
+  KnnRouter,
+  getKnnRouter,
+  MIN_INDEX_SIZE,
+  DAMP_FULL_SIZE,
+  SAVE_EVERY_N_ADDS,
+};

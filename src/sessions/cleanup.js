@@ -32,6 +32,23 @@ class SessionCleanupManager {
     } catch (error) {
       logger.error({ error }, "Session cleanup failed");
     }
+
+    // Routing-side maintenance piggybacks on the same tick — both live in
+    // .lynkr/telemetry.db, both are unbounded without a scheduled prune,
+    // and neither had a caller before this hook. WS5 auto-calibration will
+    // hang off this same manager.
+    try {
+      const telemetry = require("../routing/telemetry");
+      const affinityStore = require("../routing/affinity-store");
+      const pinTtlMs = Number(process.env.LYNKR_STICKY_TTL_MS) || 6 * 60 * 60 * 1000;
+      const telemetryDeleted = telemetry.cleanup();
+      const pinsDeleted = affinityStore.cleanup(pinTtlMs);
+      if (telemetryDeleted || pinsDeleted) {
+        logger.debug({ telemetryDeleted, pinsDeleted }, "Routing telemetry/pin cleanup completed");
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, "Routing cleanup tick failed (non-fatal)");
+    }
   }
 
   stop() {

@@ -513,8 +513,16 @@ router.get("/routing/stats", (req, res) => {
     const until = req.query.until ? Number(req.query.until) : undefined;
     const stats = telemetry.getStats({ since, until });
 
+    // Degradation counts are always available (in-memory), even when there's
+    // zero telemetry data yet — surface them regardless of the stats branch.
+    const degradation = require("../routing/degradation").getCounts();
+
     if (!stats) {
-      return res.json({ object: "routing_stats", data: null, message: "No telemetry data available" });
+      return res.json({
+        object: "routing_stats",
+        data: { degradation },
+        message: "No telemetry data available",
+      });
     }
 
     // Merge latency tracker percentiles
@@ -526,7 +534,7 @@ router.get("/routing/stats", (req, res) => {
 
     res.json({
       object: "routing_stats",
-      data: { ...stats, latencyPercentiles: latencyStats },
+      data: { ...stats, latencyPercentiles: latencyStats, degradation },
       timestamp: new Date().toISOString(),
     });
   } catch (error) {

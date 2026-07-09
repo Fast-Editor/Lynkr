@@ -224,7 +224,7 @@ async function wrapClaude() {
     // Show stats if enabled and clean exit
     if (process.env.LYNKR_WRAP_SHOW_STATS !== 'false' && code === 0) {
       try {
-        await showSessionStats();
+        await showSessionStats(port);
       } catch (err) {
         // Stats are nice-to-have, don't fail on error
       }
@@ -451,7 +451,7 @@ async function wrapGeneric(opts) {
     // Show stats if enabled and clean exit
     if (process.env.LYNKR_WRAP_SHOW_STATS !== 'false' && code === 0) {
       try {
-        await showSessionStats();
+        await showSessionStats(port);
       } catch (err) {
         // Stats are nice-to-have, don't fail on error
       }
@@ -628,19 +628,39 @@ function formatDuration(ms) {
   return `${seconds}s`;
 }
 
-async function showSessionStats() {
-  try {
-    const { getMetricsCollector } = require('../src/observability/metrics');
-    const metricsCollector = getMetricsCollector();
-    const metrics = metricsCollector.getMetrics();
-
-    // Check if we have any data
-    const hasRequests = metrics && (
-      (typeof metrics.totalRequests === 'number' && metrics.totalRequests > 0) ||
-      (typeof metrics.requestCount === 'number' && metrics.requestCount > 0)
+async function showSessionStats(port) {
+  // Read metrics from the RUNNING gateway over HTTP first — correct under
+  // cluster mode (workers hold the counters, not this process) — and fall
+  // back to the in-process collector. Field names follow getMetrics()'s
+  // snake_case output (requests_total, tokens_total, cost_usd_total):
+  // this function historically read camelCase fields that never existed,
+  // so every session ended with "No requests tracked" regardless of
+  // traffic.
+  const fetchMetrics = () => new Promise((resolve) => {
+    if (!port) return resolve(null);
+    const req = require('http').get(
+      `http://localhost:${port}/metrics/observability`,
+      (res) => {
+        let buf = '';
+        res.on('data', (c) => { buf += c; });
+        res.on('end', () => {
+          try { resolve(JSON.parse(buf)); } catch { resolve(null); }
+        });
+      }
     );
+    req.on('error', () => resolve(null));
+    req.setTimeout(1500, () => { req.destroy(); resolve(null); });
+  });
 
-    if (!hasRequests) {
+  try {
+    let metrics = await fetchMetrics();
+    if (!metrics) {
+      const { getMetricsCollector } = require('../src/observability/metrics');
+      metrics = getMetricsCollector().getMetrics();
+    }
+
+    const requestCount = Number(metrics?.requests_total) || 0;
+    if (!requestCount) {
       console.log('');
       console.log('╭─ Lynkr Session Stats ────────────────────────────────');
       console.log('│  No requests tracked (check dashboard for details)');
@@ -650,29 +670,20 @@ async function showSessionStats() {
 
     console.log('');
     console.log('╭─ Lynkr Session Stats ────────────────────────────────');
+    console.log(`│  Requests      ${requestCount} (${Number(metrics.requests_errors_total) || 0} errors)`);
 
-    const requestCount = metrics.totalRequests || metrics.requestCount || 0;
-    console.log(`│  Requests      ${requestCount}`);
-
-    if (metrics.tokensUsed || metrics.tokensSaved) {
-      const tokensUsed = metrics.tokensUsed || 0;
-      const tokensSaved = metrics.tokensSaved || 0;
-      const originalTokens = tokensUsed + tokensSaved;
-      if (originalTokens > 0) {
-        const savingsPercent = Math.round((tokensSaved / originalTokens) * 100);
-        console.log(`│  Tokens        Original: ${originalTokens.toLocaleString()}  →  Routed: ${tokensUsed.toLocaleString()}  (${savingsPercent}% saved)`);
-      }
+    const tokensIn = Number(metrics.tokens_input_total) || 0;
+    const tokensOut = Number(metrics.tokens_output_total) || 0;
+    if (tokensIn || tokensOut) {
+      console.log(`│  Tokens        in ${tokensIn.toLocaleString()} · out ${tokensOut.toLocaleString()}`);
     }
 
-    if (metrics.tierBreakdown && Object.keys(metrics.tierBreakdown).length > 0) {
-      const tiers = Object.entries(metrics.tierBreakdown)
-        .map(([tier, count]) => `${tier}: ${count}`)
-        .join('  ');
-      console.log(`│  Tier Mix      ${tiers}`);
-    }
+    const cost = Number(metrics.cost_usd_total) || 0;
+    console.log(`│  Est. cost     $${cost.toFixed(4)}`);
 
-    if (metrics.cacheHits && metrics.cacheHits > 0) {
-      console.log(`│  Cache Hits    ${metrics.cacheHits}`);
+    const p95 = metrics.latency_ms && Number(metrics.latency_ms.p95);
+    if (p95) {
+      console.log(`│  Latency p95   ${p95.toLocaleString()} ms`);
     }
 
     console.log('╰──────────────────────────────────────────────────────');

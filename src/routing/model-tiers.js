@@ -489,8 +489,22 @@ function getModelTierSelector() {
   return instance;
 }
 
+/**
+ * WS5.6 — re-read `data/calibrated-thresholds.json` into the singleton
+ * selector so an in-process calibration run takes effect immediately
+ * (no server restart required). Idempotent: safe to call repeatedly.
+ * When the file is missing or malformed, ranges fall back to defaults —
+ * same behaviour as the initial construction path.
+ */
+function reloadCalibratedThresholds() {
+  const selector = getModelTierSelector();
+  selector._loadCalibrated();
+  return selector.ranges;
+}
+
 module.exports = {
   ModelTierSelector,
   getModelTierSelector,
+  reloadCalibratedThresholds,
   TIER_DEFINITIONS,
 };

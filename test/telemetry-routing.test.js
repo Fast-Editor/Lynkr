@@ -7,9 +7,8 @@ const { describe, it, beforeEach, afterEach, mock } = require("node:test");
 // telemetry module. Otherwise this suite pollutes .lynkr/telemetry.db with
 // fixtures like "stats-provider-...", which then end up in build-knn-index.js
 // output and the kNN index.
-process.env.LYNKR_TELEMETRY_DB_PATH = path.join(
-  os.tmpdir(),
-  `lynkr-telemetry-test-${process.pid}.db`
+require("../src/routing/telemetry")._setDbPathForTests(
+  path.join(os.tmpdir(), `lynkr-telemetry-test-${process.pid}.db`)
 );
 
 // ============================================================================

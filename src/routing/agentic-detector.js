@@ -5,6 +5,7 @@
  */
 
 const logger = require('../logger');
+const clientProfiles = require('./client-profiles');
 
 // Agent type classification with tier requirements
 const AGENT_TYPES = {
@@ -91,18 +92,41 @@ class AgenticDetector {
   /**
    * Detect agentic workflow patterns
    * @param {Object} payload - Request payload with messages and tools
+   * @param {Object} [opts]
+   * @param {Object} [opts.clientProfile] - Client harness profile (WS3.1).
+   *   When present, Signals 1 & 2 score only tools BEYOND the harness's
+   *   baseline loadout — Claude Code's 11 always-attached tools shouldn't
+   *   count as "agentic intent" on their own.
    * @returns {Object} Detection result
    */
-  detect(payload) {
+  detect(payload, opts = {}) {
     const messages = payload?.messages || [];
-    const tools = payload?.tools || [];
+    const rawTools = payload?.tools || [];
     const content = this._extractContent(messages);
+    const profile = opts.clientProfile || null;
+
+    // WS3.2 — subtract known-harness baseline tools before scoring tool-based
+    // signals. Signals 3-6 (tool_result depth, patterns, message depth,
+    // length) are genuine agentic evidence and always use the full payload.
+    let toolsForScoring;
+    let scoringNote = null;
+    if (profile) {
+      toolsForScoring = clientProfiles.effectiveTools(payload, profile);
+      scoringNote = `profile:${profile.name}`;
+    } else if (clientProfiles.allToolsAreBaseline(payload) && rawTools.length >= 10) {
+      // Unknown harness that looks like Claude Code / Cursor / Codex —
+      // zero out the tool-count signals to avoid the same trap.
+      toolsForScoring = [];
+      scoringNote = 'unknown_harness_guard';
+    } else {
+      toolsForScoring = rawTools;
+    }
 
     let score = 0;
     const signals = [];
 
     // Signal 1: Tool count (many tools = likely multi-step)
-    const toolCount = tools.length;
+    const toolCount = toolsForScoring.length;
     if (toolCount > 10) {
       score += 25;
       signals.push({ signal: 'very_high_tool_count', value: toolCount, weight: 25 });
@@ -115,7 +139,7 @@ class AgenticDetector {
     }
 
     // Signal 2: Agentic tools present (Bash, Write, Edit, Task)
-    const agenticToolCount = tools.filter(t => {
+    const agenticToolCount = toolsForScoring.filter(t => {
       const name = t.name || t.function?.name || '';
       return AGENTIC_TOOLS.has(name);
     }).length;
@@ -207,6 +231,8 @@ class AgenticDetector {
       minTier: AGENT_TYPES[agentType].minTier,
       scoreBoost: AGENT_TYPES[agentType].scoreBoost,
       description: AGENT_TYPES[agentType].description,
+      clientProfile: profile?.name ?? null,
+      scoringNote,
     };
 
     if (isAgentic) {
@@ -215,7 +241,9 @@ class AgenticDetector {
         score,
         signalCount: signals.length,
         toolCount,
+        rawToolCount: rawTools.length,
         toolResultCount,
+        scoringNote,
       }, '[AgenticDetector] Agentic workflow detected');
     }
 

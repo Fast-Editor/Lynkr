@@ -17,6 +17,11 @@ test-agents-simple.js
 .claw/
 .deepsec/
 .lynkr/
+.env.backup-1782432564
+.venv/
+OAUTH_SETUP.md
+scripts/convert-routellm.py
+windsurf-hub/
 
 AGENT_TYPES_PLAN.md
 README_SEO_OPTIMIZATION_PLAN.md

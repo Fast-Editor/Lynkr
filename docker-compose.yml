@@ -54,6 +54,34 @@ services:
       LYNKR_INTENT_WINDOW_N: ${LYNKR_INTENT_WINDOW_N:-5}
       # Per-turn exponential decay for window scoring.
       LYNKR_INTENT_DECAY: ${LYNKR_INTENT_DECAY:-0.7}
+
+      # ============================================================
+      # STICKY SESSIONS (WS1)
+      # ============================================================
+      # Cache-aware session pinning. Once a session lands on a
+      # (provider, model), subsequent turns reuse the pin unless a
+      # guard (risk/context/vision) or compaction forces a re-route.
+      # Prevents cold-cache re-reads on every mid-session switch.
+      LYNKR_STICKY_SESSIONS: ${LYNKR_STICKY_SESSIONS:-true}
+      LYNKR_STICKY_TTL_MS: ${LYNKR_STICKY_TTL_MS:-21600000}
+      # Above this many prompt tokens, cold-cache re-read dominates
+      # per-token savings → pin wins even if a cheaper alt exists.
+      LYNKR_SWITCH_MAX_PROMPT_TOKENS: ${LYNKR_SWITCH_MAX_PROMPT_TOKENS:-20000}
+
+      # ============================================================
+      # LEARNING LOOP (WS5)
+      # ============================================================
+      # kNN router — advises when index has ≥ MIN_INDEX_SIZE entries;
+      # confidence is damped by min(1, size/1000) below 1 000 entries
+      # so a sparse index advises weakly rather than not at all.
+      LYNKR_KNN_MIN_INDEX_SIZE: ${LYNKR_KNN_MIN_INDEX_SIZE:-100}
+      LYNKR_KNN_CONFIDENCE_HIGH: ${LYNKR_KNN_CONFIDENCE_HIGH:-0.7}
+      LYNKR_KNN_CONFIDENCE_LOW: ${LYNKR_KNN_CONFIDENCE_LOW:-0.4}
+      # Note: auto-calibration (WS5) is hardcoded on in src/server.js — it
+      # self-gates on telemetry sample count, so there's no operator knob.
+      # Telemetry DB lives at /app/.lynkr/telemetry.db (hardcoded); the
+      # volume mount below persists it.
+
 #      OLLAMA_ENDPOINT: http://ollama:11434
       OLLAMA_ENDPOINT: http://host.docker.internal:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:latest}
@@ -324,9 +352,10 @@ services:
       # TIER_REASONING: ${TIER_REASONING:-}
 
     volumes:
-      - ./data:/app/data    # Persist SQLite databases
-      - ./logs:/app/logs    # Persist log files
-      - .:/workspace        # Mount workspace
+      - ./data:/app/data      # Bandit / reward / kNN / calibration state (WS4/WS5)
+      - ./.lynkr:/app/.lynkr  # Telemetry DB + session-pin store (WS0/WS1) — persist so learning survives container restart
+      - ./logs:/app/logs      # Server logs
+      - .:/workspace          # Mount workspace
     restart: unless-stopped
     networks:
       - lynkr-network

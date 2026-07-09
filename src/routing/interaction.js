@@ -137,6 +137,9 @@ function buildInteractionBlock(decision) {
       ...(decision.risk?.pathHits || []),
     ])),
     complexity_score: typeof decision.score === 'number' ? decision.score : null,
+    // Pin-serve turns: the score that originally created the session pin.
+    // Lets the badge show both this turn's fresh score and the pin's.
+    pin_score: typeof decision._pinScore === 'number' ? decision._pinScore : null,
     estimated_savings_percent: estimateSavingsPercent(decision.tier, decision.provider),
     next_step,
   };

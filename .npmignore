@@ -45,7 +45,7 @@ models/router/*.json
 models/router/*.bin
 models/router/*.txt
 !models/router/README.md
-
+.gitignore
 # Test files
 test/
 test-*.js

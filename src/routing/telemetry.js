@@ -32,6 +32,15 @@ let db = null;
 /** @type {boolean} */
 let initialised = false;
 
+/**
+ * Test-only escape hatches. Production code should never touch these — the
+ * DB path is hardcoded to `<cwd>/.lynkr/telemetry.db`. Tests call these
+ * before the first `record()` to isolate their state.
+ * @type {string|null}
+ */
+let _testDbPath = null;
+let _testDbDisabled = false;
+
 /** Default retention: 30 days */
 const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -49,16 +58,17 @@ function init() {
   }
 
   try {
-    // Allow tests to redirect telemetry to an isolated DB so unit/integration
-    // runs never pollute the production .lynkr/telemetry.db that build-knn-index.js
-    // reads from. Empty string disables telemetry entirely.
-    const override = process.env.LYNKR_TELEMETRY_DB_PATH;
+    // Path is hardcoded to <cwd>/.lynkr/telemetry.db in production. The
+    // pre-B `LYNKR_TELEMETRY_DB_PATH` env override was removed so operators
+    // can't accidentally divert telemetry to a stale path. Tests still need
+    // to isolate their DB — see `_setDbPathForTests` / `_disableForTests`
+    // below (module-scoped setters called before the first `record()`).
     let dbPath;
-    if (override === "") {
-      logger.debug("Telemetry: LYNKR_TELEMETRY_DB_PATH is empty, telemetry disabled");
+    if (_testDbDisabled) {
+      logger.debug("Telemetry: disabled for tests");
       return false;
-    } else if (override) {
-      dbPath = path.resolve(override);
+    } else if (_testDbPath) {
+      dbPath = path.resolve(_testDbPath);
       const overrideDir = path.dirname(dbPath);
       if (!fs.existsSync(overrideDir)) {
         fs.mkdirSync(overrideDir, { recursive: true });
@@ -111,7 +121,13 @@ function init() {
         tokens_per_second REAL,
         cost_efficiency REAL,
         request_text    TEXT,
-        response_text   TEXT
+        response_text   TEXT,
+        base_tier         TEXT,
+        escalation_source TEXT,
+        propensity        REAL,
+        candidates        TEXT,
+        pinned            INTEGER DEFAULT 0,
+        switch_reason     TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_telemetry_provider
@@ -125,14 +141,34 @@ function init() {
 
       CREATE INDEX IF NOT EXISTS idx_telemetry_session_id
         ON routing_telemetry(session_id, timestamp);
+
+      CREATE TABLE IF NOT EXISTS savings_events (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp    INTEGER NOT NULL,
+        category     TEXT NOT NULL,
+        tokens_saved INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_savings_timestamp
+        ON savings_events(timestamp);
     `);
 
     // Migration: add columns to pre-existing tables (CREATE TABLE IF NOT EXISTS
     // won't add them to a DB created before these columns existed).
     const existingCols = new Set(db.prepare("PRAGMA table_info(routing_telemetry)").all().map((c) => c.name));
-    for (const col of ["request_text", "response_text"]) {
+    const additiveCols = [
+      ["request_text", "TEXT"],
+      ["response_text", "TEXT"],
+      ["base_tier", "TEXT"],
+      ["escalation_source", "TEXT"],
+      ["propensity", "REAL"],
+      ["candidates", "TEXT"],
+      ["pinned", "INTEGER DEFAULT 0"],
+      ["switch_reason", "TEXT"],
+    ];
+    for (const [col, type] of additiveCols) {
       if (!existingCols.has(col)) {
-        db.exec(`ALTER TABLE routing_telemetry ADD COLUMN ${col} TEXT`);
+        db.exec(`ALTER TABLE routing_telemetry ADD COLUMN ${col} ${type}`);
       }
     }
 
@@ -189,17 +225,26 @@ function record(data) {
           provider, model, routing_method, was_fallback, output_tokens,
           latency_ms, status_code, error_type, cost_usd, tool_calls_made,
           retry_count, circuit_breaker_state, quality_score, tokens_per_second,
-          cost_efficiency, request_text, response_text
+          cost_efficiency, request_text, response_text,
+          base_tier, escalation_source, propensity, candidates, pinned, switch_reason
         ) VALUES (
           @request_id, @session_id, @timestamp, @complexity_score, @tier,
           @agentic_type, @tool_count, @input_tokens, @message_count, @request_type,
           @provider, @model, @routing_method, @was_fallback, @output_tokens,
           @latency_ms, @status_code, @error_type, @cost_usd, @tool_calls_made,
           @retry_count, @circuit_breaker_state, @quality_score, @tokens_per_second,
-          @cost_efficiency, @request_text, @response_text
+          @cost_efficiency, @request_text, @response_text,
+          @base_tier, @escalation_source, @propensity, @candidates, @pinned, @switch_reason
         )`
       );
       if (!insert) return;
+
+      let candidatesJson = null;
+      if (data.candidates != null) {
+        candidatesJson = typeof data.candidates === "string"
+          ? data.candidates
+          : JSON.stringify(data.candidates);
+      }
 
       insert.run({
         request_id: data.request_id ?? null,
@@ -229,6 +274,12 @@ function record(data) {
         cost_efficiency: data.cost_efficiency ?? null,
         request_text: data.request_text ?? null,
         response_text: data.response_text ?? null,
+        base_tier: data.base_tier ?? null,
+        escalation_source: data.escalation_source ?? null,
+        propensity: data.propensity ?? null,
+        candidates: candidatesJson,
+        pinned: data.pinned ? 1 : 0,
+        switch_reason: data.switch_reason ?? null,
       });
     } catch (err) {
       logger.debug({ err: err.message }, "Telemetry record failed");
@@ -467,6 +518,121 @@ function getRoutingAccuracy(timeRange = {}) {
 }
 
 /**
+ * Aggregate escalation statistics.
+ *
+ * For every row where `escalation_source` is not null, returns a per-source
+ * breakdown: request count, total cost_usd, and total input_tokens (so
+ * callers can approximate a base-tier-vs-served-tier cost delta by
+ * combining with cost-optimizer.estimateCost for the two tiers).
+ *
+ * @param {Object} [timeRange]
+ * @param {number} [timeRange.since]
+ * @param {number} [timeRange.until]
+ * @returns {Object|null} { totalRequests, totalEscalated, escalatedPct, bySource: {source: {count, costUsd, inputTokens, avgQuality}} }
+ */
+function getEscalationStats(timeRange = {}) {
+  if (!init()) return null;
+
+  const since = timeRange.since ?? Date.now() - 24 * 60 * 60 * 1000;
+  const until = timeRange.until ?? Date.now();
+
+  try {
+    const total = db
+      .prepare("SELECT COUNT(*) as cnt FROM routing_telemetry WHERE timestamp BETWEEN ? AND ?")
+      .get(since, until);
+    if (!total || total.cnt === 0) return null;
+
+    const rows = db
+      .prepare(
+        `SELECT
+           escalation_source as source,
+           COUNT(*) as cnt,
+           SUM(COALESCE(cost_usd, 0)) as cost_usd,
+           SUM(COALESCE(input_tokens, 0)) as input_tokens,
+           AVG(quality_score) as avg_quality
+         FROM routing_telemetry
+         WHERE timestamp BETWEEN ? AND ?
+           AND escalation_source IS NOT NULL
+         GROUP BY escalation_source`
+      )
+      .all(since, until);
+
+    const bySource = {};
+    let totalEscalated = 0;
+    for (const r of rows) {
+      bySource[r.source] = {
+        count: r.cnt,
+        costUsd: Math.round((r.cost_usd || 0) * 10000) / 10000,
+        inputTokens: r.input_tokens || 0,
+        avgQuality: r.avg_quality != null ? Math.round(r.avg_quality * 10) / 10 : null,
+      };
+      totalEscalated += r.cnt;
+    }
+
+    return {
+      totalRequests: total.cnt,
+      totalEscalated,
+      escalatedPct: Math.round((totalEscalated / total.cnt) * 1000) / 10,
+      bySource,
+    };
+  } catch (err) {
+    logger.debug({ err: err.message }, "Telemetry getEscalationStats failed");
+    return null;
+  }
+}
+
+/**
+ * Aggregate quality-by-tier-and-request-type — feeds the de-escalator's
+ * evidence check. Returns rows of {tier, request_type, count, avg_quality,
+ * error_rate}.
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.since] - ms epoch, defaults to 7 days ago
+ * @param {number} [opts.until] - defaults to now
+ * @param {string[]} [opts.tiers] - filter to specific tiers
+ * @returns {Array<{tier:string, request_type:string, count:number, avg_quality:number|null, error_rate:number}>|null}
+ */
+function getQualityByTierAndType(opts = {}) {
+  if (!init()) return null;
+
+  const since = opts.since ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const until = opts.until ?? Date.now();
+
+  try {
+    const tierFilter = Array.isArray(opts.tiers) && opts.tiers.length > 0
+      ? `AND tier IN (${opts.tiers.map(() => "?").join(",")})`
+      : "";
+    const params = [since, until, ...(Array.isArray(opts.tiers) ? opts.tiers : [])];
+    const rows = db
+      .prepare(
+        `SELECT
+           tier,
+           request_type,
+           COUNT(*) as count,
+           AVG(quality_score) as avg_quality,
+           SUM(CASE WHEN error_type IS NOT NULL THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as error_rate
+         FROM routing_telemetry
+         WHERE timestamp BETWEEN ? AND ?
+           AND tier IS NOT NULL
+           AND request_type IS NOT NULL
+           ${tierFilter}
+         GROUP BY tier, request_type`
+      )
+      .all(...params);
+    return rows.map((r) => ({
+      tier: r.tier,
+      request_type: r.request_type,
+      count: r.count,
+      avg_quality: r.avg_quality != null ? Math.round(r.avg_quality * 10) / 10 : null,
+      error_rate: Math.round(r.error_rate * 10000) / 10000,
+    }));
+  } catch (err) {
+    logger.debug({ err: err.message }, "Telemetry getQualityByTierAndType failed");
+    return null;
+  }
+}
+
+/**
  * Delete telemetry records older than a given threshold.
  *
  * @param {number} [olderThanMs] - Age threshold in ms. Defaults to 30 days.
@@ -527,11 +693,118 @@ function getProviderStatsCached(provider, timeRange = {}) {
   return result;
 }
 
+/**
+ * Return the shared telemetry sqlite handle (initialising if needed) so other
+ * routing subsystems can persist state alongside routing telemetry without
+ * opening a second WAL connection to the same file. Returns null when
+ * better-sqlite3 is unavailable or initialisation failed.
+ * @returns {import('better-sqlite3').Database|null}
+ */
+function getDb() {
+  if (!init()) return null;
+  return db;
+}
+
+/**
+ * Record a token-savings event (tool stripping, compression, cache hit).
+ * Fire-and-forget like record(): never blocks or throws on the request path.
+ *
+ * @param {"tool_stripping"|"compression"|"cache_hit"} category
+ * @param {number} tokensSaved - Estimated tokens avoided (must be > 0 to record)
+ */
+function recordSavings(category, tokensSaved) {
+  if (!Number.isFinite(tokensSaved) || tokensSaved <= 0) return;
+  if (!init()) return;
+
+  setImmediate(() => {
+    try {
+      const insert = stmt(
+        "insertSavings",
+        `INSERT INTO savings_events (timestamp, category, tokens_saved)
+         VALUES (@timestamp, @category, @tokens_saved)`
+      );
+      if (!insert) return;
+      insert.run({
+        timestamp: Date.now(),
+        category: String(category),
+        tokens_saved: Math.round(tokensSaved),
+      });
+    } catch (err) {
+      logger.debug({ err: err.message }, "Failed to record savings event");
+    }
+  });
+}
+
+/**
+ * Summarise savings events since a timestamp.
+ *
+ * @param {number} sinceMs - Epoch ms lower bound (0 for all time)
+ * @returns {{total: number, byCategory: Object<string, number>}}
+ */
+function getSavingsSummary(sinceMs = 0) {
+  const empty = { total: 0, byCategory: {} };
+  if (!init()) return empty;
+  try {
+    const rows = db
+      .prepare(
+        `SELECT category, SUM(tokens_saved) AS tokens
+         FROM savings_events WHERE timestamp >= ? GROUP BY category`
+      )
+      .all(sinceMs);
+    const byCategory = {};
+    let total = 0;
+    for (const row of rows) {
+      byCategory[row.category] = row.tokens || 0;
+      total += row.tokens || 0;
+    }
+    return { total, byCategory };
+  } catch (err) {
+    logger.debug({ err: err.message }, "Failed to read savings summary");
+    return empty;
+  }
+}
+
+/**
+ * Test-only helpers. Do NOT call from production code. These exist because
+ * the DB path was hardcoded (no more `LYNKR_TELEMETRY_DB_PATH` env var), so
+ * tests need an alternative way to route telemetry at an isolated file.
+ *
+ * Both helpers must be called BEFORE the first `record()` call — after
+ * that the DB handle is memoised and won't re-open. Call `_resetForTests`
+ * between tests to force re-initialisation.
+ */
+function _setDbPathForTests(p) {
+  _testDbPath = p || null;
+  _testDbDisabled = false;
+}
+function _disableForTests() {
+  _testDbDisabled = true;
+  _testDbPath = null;
+}
+function _resetForTests() {
+  if (db) {
+    try { db.close(); } catch { /* ignore */ }
+  }
+  db = null;
+  initialised = false;
+  _testDbPath = null;
+  _testDbDisabled = false;
+}
+
 module.exports = {
   record,
   query,
   getStats: getStatsCached,
   getProviderStats: getProviderStatsCached,
   getRoutingAccuracy,
+  getEscalationStats,
+  getQualityByTierAndType,
+  recordSavings,
+  getSavingsSummary,
   cleanup,
+  getDb,
+  // Test-only — do not use in production code.
+  _setDbPathForTests,
+  _disableForTests,
+  _resetForTests,
 };

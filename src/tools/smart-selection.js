@@ -122,6 +122,14 @@ function estimateToolTokens(tools) {
 /**
  * Apply conservative stripping to the tool list.
  */
+function recordStrippingSavings(before, after) {
+  if (after >= before) return;
+  try {
+    const telemetry = require('../routing/telemetry');
+    telemetry.recordSavings('tool_stripping', (before - after) * 175);
+  } catch { /* telemetry is best-effort */ }
+}
+
 function selectToolsSmartly(tools, classification, options = {}) {
   if (!Array.isArray(tools) || tools.length === 0) return tools;
 
@@ -130,6 +138,7 @@ function selectToolsSmartly(tools, classification, options = {}) {
 
   // Greeting: strip everything
   if (classification.type === 'conversational') {
+    recordStrippingSavings(tools.length, 0);
     return [];
   }
 
@@ -159,6 +168,7 @@ function selectToolsSmartly(tools, classification, options = {}) {
     selected = selected.slice(0, 10);
   }
 
+  recordStrippingSavings(tools.length, selected.length);
   return selected;
 }
 

@@ -245,10 +245,60 @@ async function start() {
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
   });
 
-  // Start session cleanup manager
+  // Start session cleanup manager. It also drives routing-side maintenance
+  // (telemetry retention + session-pin TTL) via its runCleanup tick — see
+  // src/sessions/cleanup.js.
   const { getSessionCleanupManager } = require("./sessions/cleanup");
   const sessionCleanup = getSessionCleanupManager();
   sessionCleanup.start();
+
+  // WS5.7 — auto-calibration scheduler.
+  //
+  // Recomputes `data/calibrated-thresholds.json` from live telemetry every
+  // 24 h and hot-reloads the model-tier selector so the update takes
+  // effect without a restart. First run is jittered 30–90 min into the
+  // process lifetime so a cluster of proxies won't all recalibrate at the
+  // same moment. When telemetry is sparse (<100 rows in-window), the
+  // calibration step no-ops itself via `runCalibration`'s
+  // `insufficient_samples` skip path. Unconditionally armed — the pre-B
+  // `LYNKR_AUTO_CALIBRATE` env flag was removed because the "off" state
+  // was never useful in prod (calibration is idempotent and self-gating).
+  {
+    const { runCalibration } = require('./routing/calibration');
+    const { reloadCalibratedThresholds } = require('./routing/model-tiers');
+    const degradation = require('./routing/degradation');
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const FIRST_RUN_MIN_MS = 30 * 60 * 1000;
+    const FIRST_RUN_JITTER_MS = 60 * 60 * 1000;
+    const firstDelay = FIRST_RUN_MIN_MS + Math.floor(Math.random() * FIRST_RUN_JITTER_MS);
+
+    const runOnce = () => {
+      try {
+        const result = runCalibration({ days: 7 });
+        if (result.skipped) {
+          logger.info({ reason: result.reason, count: result.count }, '[Calibration] Skipped');
+          return;
+        }
+        const before = reloadCalibratedThresholds();
+        logger.info({
+          calibratedAt: result.calibratedAt,
+          sampleCount: result.sampleCount,
+          ranges: result.ranges,
+          previousRanges: before,
+        }, '[Calibration] Ranges refreshed');
+      } catch (err) {
+        degradation.record('calibration', err);
+      }
+    };
+
+    const firstTimer = setTimeout(() => {
+      runOnce();
+      const interval = setInterval(runOnce, DAY_MS);
+      interval.unref();
+    }, firstDelay);
+    firstTimer.unref();
+    logger.info({ firstDelayMs: firstDelay, intervalMs: DAY_MS }, '[Calibration] Scheduler armed');
+  }
 
   // Setup graceful shutdown
   const shutdownManager = getShutdownManager();

@@ -15,6 +15,26 @@
 const logger = require('../logger');
 const config = require('../config');
 const codeGraph = require('../tools/code-graph');
+const clientProfiles = require('./client-profiles');
+
+/**
+ * Return the tools the user actually added beyond the client harness's
+ * baseline loadout. Same intent as the agentic detector's guard: Claude
+ * Code / Cursor / Codex all attach a fat baseline tools list to every
+ * request, and counting those inflates the complexity score for trivial
+ * turns. If no profile is attached, fall back to the raw list, but zero
+ * it out when every tool is a known-harness-baseline name AND there are
+ * enough of them to look like a harness attaching its default set
+ * (mirrors the "unknown_harness_guard" in agentic-detector.js).
+ */
+function _effectiveTools(payload) {
+  const raw = Array.isArray(payload?.tools) ? payload.tools : [];
+  if (raw.length === 0) return raw;
+  const profile = payload?._clientProfile || null;
+  if (profile) return clientProfiles.effectiveTools(payload, profile);
+  if (raw.length >= 10 && clientProfiles.allToolsAreBaseline(payload)) return [];
+  return raw;
+}
 
 // ============================================================================
 // PHASE 1: Basic Scoring Patterns
@@ -422,10 +442,14 @@ function scoreTokens(payload) {
 }
 
 /**
- * Score based on tool count (0-20 points)
+ * Score based on tool count (0-20 points). Uses the effective tool list —
+ * i.e. tools the user actually added beyond the client harness's baseline
+ * loadout — so a trivial "hi" with 11 Claude Code tools attached doesn't
+ * pick up 16 points of "heavy tools" complexity for something the user
+ * didn't ask for.
  */
 function scoreTools(payload) {
-  const toolCount = Array.isArray(payload?.tools) ? payload.tools.length : 0;
+  const toolCount = _effectiveTools(payload).length;
 
   if (toolCount === 0) return 0;    // No tools
   if (toolCount <= 3) return 4;     // Few tools - local can handle
@@ -627,21 +651,22 @@ function calculateWeightedScore(payload, content) {
   }
   dimensions.domainSpecificity = Math.min(domainScore, 100);
 
-  // 5. Tool count
-  const toolCount = payload?.tools?.length ?? 0;
+  // 5. Tool count — effective tools only (harness baseline subtracted)
+  const effTools = _effectiveTools(payload);
+  const toolCount = effTools.length;
   dimensions.toolCount = toolCount === 0 ? 0 :
     toolCount <= 3 ? 20 :
     toolCount <= 6 ? 40 :
     toolCount <= 10 ? 60 :
     toolCount <= 15 ? 80 : 100;
 
-  // 6. Tool complexity (weighted by tool types)
-  if (payload?.tools?.length > 0) {
-    const totalWeight = payload.tools.reduce((sum, t) => {
+  // 6. Tool complexity (weighted by tool types) — same effective list
+  if (effTools.length > 0) {
+    const totalWeight = effTools.reduce((sum, t) => {
       const name = t.name || t.function?.name || '';
       return sum + (TOOL_COMPLEXITY_WEIGHTS[name] || TOOL_COMPLEXITY_WEIGHTS.default);
     }, 0);
-    const avgWeight = totalWeight / payload.tools.length;
+    const avgWeight = totalWeight / effTools.length;
     dimensions.toolComplexity = avgWeight * 100;
   } else {
     dimensions.toolComplexity = 0;
@@ -831,7 +856,7 @@ async function analyzeComplexity(payload, options = {}) {
     recommendation,
     breakdown: {
       tokens: { score: tokenScore, estimated: estimateTokens(payload) },
-      tools: { score: toolScore, count: payload?.tools?.length ?? 0 },
+      tools: { score: toolScore, count: _effectiveTools(payload).length },
       taskType: taskTypeResult,
       codeComplexity: codeComplexityResult,
       reasoning: reasoningResult,

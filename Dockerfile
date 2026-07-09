@@ -44,11 +44,20 @@ COPY --from=build --chown=node:node /app/src ./src
 COPY --from=build --chown=node:node /app/config ./config
 COPY --from=build --chown=node:node /app/bin ./bin
 COPY --from=build --chown=node:node /app/scripts/setup.js ./scripts/setup.js
+# WS5.6 — calibration CLI runnable inside the container (e.g.
+# `docker exec lynkr node scripts/calibrate-thresholds.js --dry-run`).
+COPY --from=build --chown=node:node /app/scripts/calibrate-thresholds.js ./scripts/calibrate-thresholds.js
 
-# Create data directories
-RUN mkdir -p /app/data /app/logs /workspace && chown -R node:node /app/data /app/logs /workspace
+# Create data directories.
+#   /app/data     — bandit-state.json, reward-state.json, knn/,
+#                   calibrated-thresholds.json  (WS4/WS5 state)
+#   /app/.lynkr   — telemetry.db + session-pin SQLite store  (WS0/WS1)
+#   /app/logs     — server logs
+#   /workspace    — user-mounted repo the proxy operates on
+RUN mkdir -p /app/data /app/data/knn /app/.lynkr /app/logs /workspace \
+    && chown -R node:node /app/data /app/.lynkr /app/logs /workspace
 
-VOLUME ["/app/data", "/app/logs", "/workspace"]
+VOLUME ["/app/data", "/app/.lynkr", "/app/logs", "/workspace"]
 EXPOSE 8081
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
@@ -88,7 +97,18 @@ ENV NODE_ENV="production" \
     # Routing intelligence
     LYNKR_VISIBLE_ROUTING="false" \
     LYNKR_INTENT_WINDOW_N="5" \
-    LYNKR_INTENT_DECAY="0.7"
+    LYNKR_INTENT_DECAY="0.7" \
+    # WS1 — cache-aware sticky sessions
+    LYNKR_STICKY_SESSIONS="true" \
+    LYNKR_STICKY_TTL_MS="21600000" \
+    LYNKR_SWITCH_MAX_PROMPT_TOKENS="20000" \
+    # WS5 — learning loop (kNN + auto-calibration)
+    LYNKR_KNN_MIN_INDEX_SIZE="100" \
+    LYNKR_KNN_CONFIDENCE_HIGH="0.7" \
+    LYNKR_KNN_CONFIDENCE_LOW="0.4"
+    # Note: auto-calibration (WS5) and telemetry DB path (WS0) are
+    # hardcoded in the source — no env knob. Telemetry writes to
+    # /app/.lynkr/telemetry.db (persisted via VOLUME above).
 
 USER node
 

@@ -7,6 +7,7 @@ const pkg = require('../package.json');
 // don't start the proxy. Add new subcommands here, not in scattered binaries.
 const SUBCOMMANDS = {
   usage:      path.join(__dirname, "lynkr-usage.js"),
+  stats:      path.join(__dirname, "lynkr-usage.js"),
   trajectory: path.join(__dirname, "lynkr-trajectory.js"),
   wrap:       path.join(__dirname, "wrap.js"),
   init:       path.join(__dirname, "lynkr-init.js"),
@@ -37,6 +38,7 @@ Usage:
   lynkr [options]                  Start the proxy server (default)
   lynkr wrap <target> [options]    Wrap CLI tools through Lynkr proxy
   lynkr usage [options]            Show AI spend report and tier-routing savings
+  lynkr stats [options]            Shareable savings-receipt card (also: lynkr usage --card)
   lynkr trajectory [options]       Export agent trajectories as JSONL training data
 
 Options:

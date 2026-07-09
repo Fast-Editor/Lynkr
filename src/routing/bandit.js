@@ -102,11 +102,18 @@ function _inv(M) {
 }
 
 class LinUCBBandit {
-  constructor({ alpha = DEFAULT_ALPHA, lambda = DEFAULT_LAMBDA, mu = DEFAULT_MU, dim = FEATURE_DIM } = {}) {
+  constructor({
+    alpha = DEFAULT_ALPHA,
+    lambda = DEFAULT_LAMBDA,
+    mu = DEFAULT_MU,
+    dim = FEATURE_DIM,
+    explorationRate = EXPLORATION_RATE,
+  } = {}) {
     this.alpha = alpha;
     this.lambda = lambda;
     this.mu = mu;
     this.dim = dim;
+    this.explorationRate = explorationRate;
     /** arms: Map<armKey, { A: number[][], b: number[], count: number }> */
     this.arms = new Map();
     this.steps = 0;
@@ -126,10 +133,18 @@ class LinUCBBandit {
 
   /**
    * Pick an arm for a given tier and context.
+   *
+   * Returns `propensity` — the probability, under the current policy, that
+   * this specific arm was chosen. WS4 uses this for off-policy evaluation
+   * from telemetry alone: an explored pick has probability `ε/K`; an
+   * exploited pick has `1 − ε + ε/K` (the ε-branch could still have
+   * landed on it uniformly). With K=1 the ε-branch trivially chooses the
+   * only arm, so both cases collapse to 1.0.
+   *
    * @param {string} tier
    * @param {Array<{ provider: string, model: string }>} candidates — qualifying arms
    * @param {number[]} context — feature vector
-   * @returns {{ provider, model, ucb, explored }} chosen arm
+   * @returns {{ provider, model, ucb, explored, propensity }} chosen arm
    */
   pick(tier, candidates, context) {
     if (!candidates || candidates.length === 0) return null;
@@ -139,10 +154,13 @@ class LinUCBBandit {
       while (context.length < this.dim) context.push(0);
     }
 
-    // ε-greedy: 5% pure exploration
-    if (Math.random() < EXPLORATION_RATE) {
+    const K = candidates.length;
+    const eps = this.explorationRate;
+
+    // ε-greedy: EXPLORATION_RATE pure exploration
+    if (Math.random() < eps) {
       const random = candidates[Math.floor(Math.random() * candidates.length)];
-      return { ...random, ucb: null, explored: true };
+      return { ...random, ucb: null, explored: true, propensity: eps / K };
     }
 
     let best = null;
@@ -165,6 +183,7 @@ class LinUCBBandit {
         best = { ...c, ucb, explored: false };
       }
     }
+    if (best) best.propensity = (1 - eps) + eps / K;
     return best;
   }
 
@@ -243,4 +262,4 @@ function getBandit() {
   return _instance;
 }
 
-module.exports = { LinUCBBandit, getBandit, FEATURE_DIM };
+module.exports = { LinUCBBandit, getBandit, FEATURE_DIM, EXPLORATION_RATE };

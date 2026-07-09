@@ -185,3 +185,94 @@ test('high-confidence kNN where model already matches is a no-op', () => {
   assert.equal(result.method, 'tier_config');
   assert.equal(result.selectedModel, 'claude-sonnet-4-6');
 });
+
+// ─── WS2.2 leash tests ────────────────────────────────────────────────────
+//
+// The leash lives inside src/routing/index.js and consults the live
+// telemetry singleton. Re-implementing that side-effect harness inline
+// keeps these tests fast and hermetic — they cover the *decision* the
+// leash makes given the current under-provisioning signal.
+
+function applyKnnAmbiguousWithLeash({
+  knnResult,
+  tier,
+  provider,
+  selectedModel,
+  selector,
+  underProvisionedPct,
+}) {
+  let method = 'tier_config';
+  if (!knnResult) return { provider, selectedModel, tier, method };
+
+  if (knnResult.confidence > 0.7 && knnResult.model !== selectedModel) {
+    return {
+      provider: knnResult.provider,
+      selectedModel: knnResult.model,
+      tier,
+      method: method + '+knn',
+    };
+  }
+
+  if (knnResult.confidence > 0.4 && knnResult.confidence <= 0.7) {
+    const shouldEscalate = (underProvisionedPct ?? 0) >= 2;
+    if (!shouldEscalate) {
+      return { provider, selectedModel, tier, method: method + '+knn_ambiguous_kept' };
+    }
+    const currentIdx = TIER_ORDER.indexOf(tier);
+    if (currentIdx >= 0 && currentIdx < TIER_ORDER.length - 1) {
+      const upgradedTier = TIER_ORDER[currentIdx + 1];
+      try {
+        const upgraded = selector.selectModel(upgradedTier, null);
+        return {
+          provider: upgraded.provider,
+          selectedModel: upgraded.model,
+          tier: upgradedTier,
+          method: method + '+knn_ambiguous_escalate',
+        };
+      } catch (_) { /* fall through */ }
+    }
+  }
+
+  return { provider, selectedModel, tier, method };
+}
+
+test('leash holds when under-provisioning is low (<2%)', () => {
+  const selector = makeSelector({ MEDIUM: 'a:m', COMPLEX: 'a:c' });
+  const result = applyKnnAmbiguousWithLeash({
+    knnResult: { confidence: 0.55, provider: 'a', model: 'x' },
+    tier: 'MEDIUM',
+    provider: 'a',
+    selectedModel: 'm',
+    selector,
+    underProvisionedPct: 0.5,
+  });
+  assert.equal(result.tier, 'MEDIUM');
+  assert.equal(result.method, 'tier_config+knn_ambiguous_kept');
+});
+
+test('leash releases when under-provisioning is elevated (>=2%)', () => {
+  const selector = makeSelector({ MEDIUM: 'a:m', COMPLEX: 'a:c' });
+  const result = applyKnnAmbiguousWithLeash({
+    knnResult: { confidence: 0.55, provider: 'a', model: 'x' },
+    tier: 'MEDIUM',
+    provider: 'a',
+    selectedModel: 'm',
+    selector,
+    underProvisionedPct: 5,
+  });
+  assert.equal(result.tier, 'COMPLEX');
+  assert.equal(result.method, 'tier_config+knn_ambiguous_escalate');
+});
+
+test('leash boundary — exactly 2% under-provisioning escalates', () => {
+  const selector = makeSelector({ MEDIUM: 'a:m', COMPLEX: 'a:c' });
+  const result = applyKnnAmbiguousWithLeash({
+    knnResult: { confidence: 0.55, provider: 'a', model: 'x' },
+    tier: 'MEDIUM',
+    provider: 'a',
+    selectedModel: 'm',
+    selector,
+    underProvisionedPct: 2,
+  });
+  assert.equal(result.tier, 'COMPLEX');
+});

@@ -4126,7 +4126,12 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
         return {
           status: 200,
-          body: cachedBody,
+          // Spread so the marker never mutates the stored cache entry.
+          // Anthropic clients ignore unknown top-level fields; benchmarks
+          // and dashboards use this to attribute cache hits honestly —
+          // previously a hit was indistinguishable from a full-price call
+          // in the response body (usage echoed the cached values).
+          body: { ...cachedBody, lynkr_semantic_cache: { hit: true, similarity: semanticLookupResult.similarity ?? null } },
           terminationReason: "completion",
         };
       }

@@ -17,6 +17,9 @@ const { getGPTSystemPromptAddendum } = require("./gpt-utils");
 const telemetry = require("../routing/telemetry");
 const { scoreResponseQuality } = require("../routing/quality-scorer");
 const { getLatencyTracker } = require("../routing/latency-tracker");
+// WS5.4 — feedback loop. `recordOutcome` runs on setImmediate and never
+// throws; every failure is captured into the degradation registry.
+const { recordOutcome: recordFeedbackOutcome } = require("../routing/feedback");
 
 
 
@@ -51,8 +54,33 @@ const httpsAgent = new https.Agent({
   keepAliveMsecs: 30000,
 });
 
+/**
+ * Strip Lynkr's internal underscore-prefixed fields from a body about to be
+ * sent upstream. Every provider validates its request body (Anthropic and
+ * Ollama Cloud both use Pydantic and reject unknown keys with "Extra inputs
+ * are not permitted"), so any leak of _sessionId / _forceProvider / _tierModel
+ * etc. into the outbound JSON hard-fails the request.
+ *
+ * This is a defense-in-depth strip at the last-hop chokepoint. Individual
+ * invoke functions already whitelist their outbound bodies, but doing this
+ * once here means no future codepath (or spread of `{...body}` in a new
+ * provider) can regress the invariant.
+ */
+function _stripInternalFields(body) {
+  if (!body || typeof body !== 'object') return body;
+  let cleaned = null;
+  for (const key of Object.keys(body)) {
+    if (key.startsWith('_')) {
+      if (!cleaned) cleaned = { ...body };
+      delete cleaned[key];
+    }
+  }
+  return cleaned || body;
+}
+
 async function performJsonRequest(url, { headers = {}, body, retryableStatusesOverride }, providerLabel) {
   const agent = url.startsWith('https:') ? httpsAgent : httpAgent;
+  body = _stripInternalFields(body);
   const isStreaming = body.stream === true;
 
   // Streaming requests can't be retried, so handle them directly
@@ -2539,22 +2567,39 @@ function stripLynkrBadges(messages) {
       const stripped = msg.content.replace(LYNKR_BADGE_PREFIX_RE, '');
       mutated = true;
       badgeCount++;
-      return { ...msg, content: stripped };
+      // Badge-only content must not become an empty string — Anthropic
+      // rejects empty assistant content (this is the interrupted-response
+      // continuation case, where the partial text WAS just the badge).
+      return { ...msg, content: stripped.trim() ? stripped : '…' };
     }
 
     // Array content variant — Anthropic-format responses keep content as an
-    // array of blocks.
+    // array of blocks. Strip the badge PREFIX from matching blocks rather
+    // than dropping whole blocks: clients that merge text blocks on replay
+    // produce "badge + real answer" in ONE block, and dropping it would
+    // silently delete the model's actual reply from history. A block that
+    // was badge-only disappears entirely.
     if (Array.isArray(msg.content)) {
-      const before = msg.content.length;
-      const filtered = msg.content.filter((b) =>
-        !(b?.type === 'text' && typeof b.text === 'string' && LYNKR_BADGE_PREFIX_RE.test(b.text))
-      );
-      if (filtered.length === before) return msg;
+      let changed = false;
+      const rebuilt = [];
+      for (const b of msg.content) {
+        if (b?.type === 'text' && typeof b.text === 'string' && LYNKR_BADGE_PREFIX_RE.test(b.text)) {
+          changed = true;
+          badgeCount++;
+          const strippedText = b.text.replace(LYNKR_BADGE_PREFIX_RE, '');
+          if (strippedText.trim()) rebuilt.push({ ...b, text: strippedText });
+          // badge-only block → drop
+        } else {
+          rebuilt.push(b);
+        }
+      }
+      if (!changed) return msg;
       mutated = true;
-      badgeCount += before - filtered.length;
-      // Anthropic rejects empty content[]; substitute a benign placeholder for
-      // turns where the badge was the entire assistant text.
-      return { ...msg, content: filtered.length ? filtered : [{ type: 'text', text: '' }] };
+      // Anthropic rejects BOTH empty content[] and empty-string text blocks
+      // (min length 1) — the previous `text: ''` placeholder 400'd upstream
+      // on interrupted-response continuations where the partial assistant
+      // text was just the badge. Use a visible-but-benign ellipsis.
+      return { ...msg, content: rebuilt.length ? rebuilt : [{ type: 'text', text: '…' }] };
     }
 
     return msg;
@@ -2583,7 +2628,32 @@ async function invokeModel(body, options = {}) {
   const workspace = body._workspace || options.workspace || null;
   const tenantPolicy = body._tenantPolicy || options.tenantPolicy || null;
   const routingResult = options.forceProvider
-    ? { provider: options.forceProvider, model: null, method: 'forced' }
+    ? {
+        // Forced path (OAuth intent + subscription): the actual decision was
+        // made upstream in api/router.js. Reconstitute the shape from
+        // req.body so WS0 telemetry columns (tier, base_tier,
+        // escalation_source, pinned, switch_reason) survive the hop.
+        provider: options.forceProvider,
+        model: body._tierModel ?? null,
+        tier: body._tierName ?? null,
+        method: body._forcedMethod || 'forced',
+        base_tier: body._baseTier ?? null,
+        escalation_source: body._escalationSource ?? null,
+        pinned: body._pinnedRoute ? true : false,
+        switch_reason: body._switchReason ?? null,
+        // WS4 — off-policy evaluation from telemetry alone requires
+        // propensity + candidates on every row. Deterministic default is
+        // 1.0 with a single-entry candidate list matching the served pair.
+        propensity: body._propensity ?? 1.0,
+        candidates: body._candidates ?? [{ provider: options.forceProvider, model: body._tierModel ?? null }],
+        // WS5 — feedback loop. Forward the bandit context vector so
+        // bandit.update fires with the same features the arm was scored on,
+        // and the query embedding so conclusive-quality outcomes grow the
+        // kNN index without paying for a second embedding call.
+        _banditContext: body._banditContext ?? null,
+        _queryEmbedding: body._queryEmbedding ?? null,
+        _queryText: body._queryText ?? null,
+      }
     : await determineProviderSmart(body, { workspace, tenantPolicy });
   const initialProvider = routingResult.provider;
   const tierSelectedModel = routingResult.model;
@@ -2790,6 +2860,26 @@ async function invokeModel(body, options = {}) {
       cost_usd: computeCostUsd(routingDecision.model || body._tierModel, inputTokens, outputTokens),
       request_text: captureRequestText(body),
       response_text: captureResponseText(result.json),
+      base_tier: routingResult.base_tier ?? null,
+      escalation_source: routingResult.escalation_source ?? null,
+      propensity: routingResult.propensity ?? null,
+      candidates: routingResult.candidates ?? null,
+      pinned: routingResult.pinned ? 1 : 0,
+      switch_reason: routingResult.switch_reason ?? null,
+    });
+
+    // WS5.4 — feedback loop (success path).
+    recordFeedbackOutcome({
+      routingResult,
+      body,
+      outcome: {
+        qualityScore,
+        costUsd: computeCostUsd(routingDecision.model || body._tierModel, inputTokens, outputTokens),
+        latencyMs: latency,
+        statusCode: 200,
+        errorType: null,
+        wasFallback: false,
+      },
     });
 
     // Return result with provider info and routing decision for headers
@@ -2880,6 +2970,12 @@ async function invokeModel(body, options = {}) {
     if (!shouldFallback) {
       metricsCollector.recordDatabricksRequest(false, retries);
 
+      const failQualityScore = scoreResponseQuality(
+        { tier: routingDecision.tier, hasTools: Array.isArray(body?.tools) && body.tools.length > 0 },
+        null,
+        { error_type: err.code || err.name, was_fallback: false, retry_count: retries, latency_ms: failLatency }
+      );
+
       // Record failed telemetry
       telemetry.record({
         request_id: crypto.randomUUID(),
@@ -2899,11 +2995,30 @@ async function invokeModel(body, options = {}) {
         latency_ms: failLatency,
         status_code: err.status || null,
         error_type: err.code || err.name || "unknown",
-        quality_score: scoreResponseQuality(
-          { tier: routingDecision.tier, hasTools: Array.isArray(body?.tools) && body.tools.length > 0 },
-          null,
-          { error_type: err.code || err.name, was_fallback: false, retry_count: retries, latency_ms: failLatency }
-        ),
+        quality_score: failQualityScore,
+        base_tier: routingResult.base_tier ?? null,
+        escalation_source: routingResult.escalation_source ?? null,
+        propensity: routingResult.propensity ?? null,
+        candidates: routingResult.candidates ?? null,
+        pinned: routingResult.pinned ? 1 : 0,
+        switch_reason: routingResult.switch_reason ?? null,
+      });
+
+      // WS5.4 — feedback loop (primary-failed, no fallback). Low quality
+      // scores are signal too: the bandit's reward drops, and if the
+      // outcome is conclusive-negative (≤40) the kNN index learns to
+      // steer away from this (query → model) pairing.
+      recordFeedbackOutcome({
+        routingResult,
+        body,
+        outcome: {
+          qualityScore: failQualityScore,
+          costUsd: null,
+          latencyMs: failLatency,
+          statusCode: err.status || null,
+          errorType: err.code || err.name || "unknown",
+          wasFallback: false,
+        },
       });
 
       throw err;
@@ -2991,6 +3106,14 @@ async function invokeModel(body, options = {}) {
         (b) => b.type === "tool_use"
       )?.length || 0;
 
+      const fbTotalLatency = Date.now() - startTime;
+      const fbQualityScore = scoreResponseQuality(
+        { tier: routingDecision.tier, hasTools: Array.isArray(body?.tools) && body.tools.length > 0 },
+        null,
+        { status_code: 200, output_tokens: fbOutputTokens, tool_calls_made: fbToolCalls, was_fallback: true, retry_count: 0, latency_ms: fbTotalLatency }
+      );
+      const fbCostUsd = computeCostUsd(routingDecision.model || body._tierModel, fbInputTokens, fbOutputTokens);
+
       telemetry.record({
         request_id: crypto.randomUUID(),
         session_id: body._sessionId || null,
@@ -3007,20 +3130,39 @@ async function invokeModel(body, options = {}) {
         routing_method: "fallback",
         was_fallback: true,
         output_tokens: fbOutputTokens || null,
-        latency_ms: Date.now() - startTime,
+        latency_ms: fbTotalLatency,
         status_code: 200,
         error_type: null,
         tool_calls_made: fbToolCalls,
         retry_count: 0,
-        quality_score: scoreResponseQuality(
-          { tier: routingDecision.tier, hasTools: Array.isArray(body?.tools) && body.tools.length > 0 },
-          null,
-          { status_code: 200, output_tokens: fbOutputTokens, tool_calls_made: fbToolCalls, was_fallback: true, retry_count: 0, latency_ms: Date.now() - startTime }
-        ),
+        quality_score: fbQualityScore,
         tokens_per_second: fbOutputTokens && fallbackLatency > 0 ? fbOutputTokens / (fallbackLatency / 1000) : null,
-        cost_usd: computeCostUsd(routingDecision.model || body._tierModel, fbInputTokens, fbOutputTokens),
+        cost_usd: fbCostUsd,
         request_text: captureRequestText(body),
         response_text: captureResponseText(fallbackResult.json),
+        base_tier: routingResult.base_tier ?? null,
+        escalation_source: routingResult.escalation_source ?? null,
+        propensity: routingResult.propensity ?? null,
+        candidates: routingResult.candidates ?? null,
+        pinned: routingResult.pinned ? 1 : 0,
+        switch_reason: routingResult.switch_reason ?? null,
+      });
+
+      // WS5.4 — feedback loop (fallback success). The served provider
+      // isn't the one the router picked, so the bandit reward records the
+      // fallback outcome under the original arm — which is the honest
+      // signal for future picks of that arm.
+      recordFeedbackOutcome({
+        routingResult,
+        body,
+        outcome: {
+          qualityScore: fbQualityScore,
+          costUsd: fbCostUsd,
+          latencyMs: fbTotalLatency,
+          statusCode: 200,
+          errorType: null,
+          wasFallback: true,
+        },
       });
 
       // Return result with actual provider used (fallback provider) and routing decision
@@ -3041,6 +3183,8 @@ async function invokeModel(body, options = {}) {
       metricsCollector.recordDatabricksRequest(false, retries);
       healthTracker.recordFailure(fallbackProvider, fallbackErr, fallbackErr.status);
 
+      const dfLatencyMs = Date.now() - startTime;
+
       // Record double-failure telemetry
       telemetry.record({
         request_id: crypto.randomUUID(),
@@ -3052,10 +3196,32 @@ async function invokeModel(body, options = {}) {
         model: routingDecision.model ?? body._tierModel ?? null,
         routing_method: "fallback",
         was_fallback: true,
-        latency_ms: Date.now() - startTime,
+        latency_ms: dfLatencyMs,
         status_code: fallbackErr.status || null,
         error_type: fallbackErr.code || fallbackErr.name || "double_failure",
         quality_score: 0,
+        base_tier: routingResult.base_tier ?? null,
+        escalation_source: routingResult.escalation_source ?? null,
+        propensity: routingResult.propensity ?? null,
+        candidates: routingResult.candidates ?? null,
+        pinned: routingResult.pinned ? 1 : 0,
+        switch_reason: routingResult.switch_reason ?? null,
+      });
+
+      // WS5.4 — feedback loop (double failure). quality=0 is a hard
+      // negative exemplar; the kNN index will learn to steer away from
+      // this arm for similar queries.
+      recordFeedbackOutcome({
+        routingResult,
+        body,
+        outcome: {
+          qualityScore: 0,
+          costUsd: null,
+          latencyMs: dfLatencyMs,
+          statusCode: fallbackErr.status || null,
+          errorType: fallbackErr.code || fallbackErr.name || "double_failure",
+          wasFallback: true,
+        },
       });
 
       logger.error({
@@ -3131,4 +3297,5 @@ module.exports = {
   stripLynkrBadges,
   destroyHttpAgents,
   normalizeBodyForConverse,
+  _stripInternalFields,
 };

@@ -7,7 +7,8 @@ const logger = require("../logger");
 const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");
-const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector, analyzeRisk } = require("../routing");
+const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector, analyzeRisk, checkSessionPin, writeSessionPin, checkPinScoreDrift } = require("../routing");
+const { detectClient } = require("../routing/client-profiles");
 const { buildInteractionBlock } = require("../routing/interaction");
 const { validateCwd } = require("../workspace");
 const { renderText } = require("../utils/markdown-ansi");
@@ -63,12 +64,13 @@ async function pickTierByIntent(body) {
   const decayFactor = Number.isFinite(decay) && decay > 0 && decay <= 1 ? decay : 0.7;
   const windowUserMsgs = allUserMsgs.slice(-N); // chronological, oldest-first
 
-  // Cap tools at 3 so we stay below the agentic detector's tool-count
-  // signal thresholds: high_tool_count fires at >5, moderate_tool_count at
-  // >3, no tool-count signal at <=3. Claude Code interactive mode attaches
-  // 11+ tools every request, but our pickTier needs to reflect USER intent,
-  // not session context.
-  const intentTools = Array.isArray(body?.tools) ? body.tools.slice(0, 3) : undefined;
+  // WS3 — we USED to slice tools to 3 here so Claude Code's 11 baseline
+  // tools didn't inflate the agentic detector's tool-count signal. That
+  // hack was client-specific and also discarded real MCP tools the user
+  // had configured. Now we pass the full tools array and let the detector
+  // subtract the client's baseline via the profile threaded onto the
+  // payload — same short-message-intent guarantee, but MCP tools count.
+  const intentTools = Array.isArray(body?.tools) ? body.tools : undefined;
 
   // CLEAN each user message: Claude Code wraps user input in
   //   <system-reminder>...</system-reminder> blocks (CLAUDE.md context,
@@ -124,6 +126,10 @@ async function pickTierByIntent(body) {
     const intentPayload = {
       messages: cleaned ? [cleaned] : [],
       tools: intentTools,
+      // WS3 — inherit the client profile from the parent request so the
+      // agentic detector inside determineProviderSmart can subtract the
+      // harness's baseline tools during intent scoring too.
+      _clientProfile: body?._clientProfile || null,
     };
     try {
       const decision = await determineProviderSmart(intentPayload, {
@@ -173,6 +179,23 @@ async function pickTierByIntent(body) {
     reason: d.reason || null,
     agenticResult: d.agenticResult || null,
     risk: d.risk || null,
+    // WS0: forward the intent-scoring decision's escalation ledger so the
+    // downstream forced-provider path can record it in telemetry.
+    base_tier: d.base_tier ?? null,
+    escalation_source: d.escalation_source ?? null,
+    // WS4: off-policy evaluation needs propensity + candidates on every row.
+    // The inner determineProviderSmart already sets these — we just forward.
+    // Falls back to a deterministic single-candidate view when the inner
+    // path returned neither (e.g. legacy shadow decisions).
+    propensity: d.propensity ?? 1.0,
+    candidates: d.candidates ?? [{ provider: d.provider, model: d.model || null }],
+    // WS5: feedback path needs the bandit context vector (to call
+    // bandit.update with the same features the arm was scored on) and the
+    // query embedding (to add conclusive-quality outcomes to kNN). Both
+    // are underscored — they don't leak through response headers.
+    _banditContext: d._banditContext ?? null,
+    _queryEmbedding: d._queryEmbedding ?? null,
+    _queryText: d._queryText ?? null,
   };
 }
 
@@ -226,6 +249,21 @@ async function handleOauthPassthrough(req, res, opts = {}) {
     if (HOP_BY_HOP.has(name.toLowerCase())) continue;
     outHeaders[name] = Array.isArray(value) ? value.join(", ") : value;
   }
+  // Strip Lynkr's internal underscore-prefixed fields (_sessionId,
+  // _forceProvider, _tierModel, _tierName, _forcedMethod, _baseTier,
+  // _escalationSource, _pinnedRoute, _switchReason, _clientProfile,
+  // _workspace, _tenantPolicy, _deadlineMs, _suggestionModeModel). Anthropic
+  // rejects unknown top-level keys with "Extra inputs are not permitted".
+  // The orchestrator's downstream paths whitelist their outbound bodies,
+  // but the passthrough sends this body VERBATIM — so we must strip here.
+  if (bodyToSend && typeof bodyToSend === 'object') {
+    const stripped = { ...bodyToSend };
+    for (const key of Object.keys(stripped)) {
+      if (key.startsWith('_')) delete stripped[key];
+    }
+    bodyToSend = stripped;
+  }
+
   // Re-stringify the body — express already parsed it. Identical re-encoding
   // is fine; Anthropic doesn't fingerprint key ordering.
   const bodyText = JSON.stringify(bodyToSend);
@@ -796,6 +834,20 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       model: req.body?.model,
     }, "Inbound /v1/messages");
 
+    // WS3 — detect the client harness (Claude Code / Cursor / Codex / …)
+    // ONCE per request and stash on the body so every downstream routing
+    // stage (pickTierByIntent's per-message scoring, orchestrator's full
+    // determineProviderSmart) sees the same profile and can subtract the
+    // client's baseline tool loadout when scoring agentic signals.
+    if (!req.body._clientProfile) {
+      try {
+        const profile = detectClient({ headers: req.headers, payload: req.body });
+        if (profile) req.body._clientProfile = profile;
+      } catch (err) {
+        logger.debug({ err: err.message }, '[Router] client detection failed');
+      }
+    }
+
     // Auth-mode classification (Headroom-style, UA-first):
     //
     //   - 'subscription': UX-bound CLI/IDE (Claude Code, Cursor, Copilot, …).
@@ -821,7 +873,170 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // COMPLEX/REASONING regardless of what the user actually typed. Window-
     // scoring fixes that for PAYG too.
     const authMode = classifyAuthMode(req.headers);
-    const tier = await pickTierByIntent(req.body);
+
+    // The session middleware sets req.sessionId from the x-session-id header,
+    // but req.body._sessionId isn't populated until deep in the orchestrator
+    // (src/orchestrator/index.js). WS1's checkSessionPin reads _sessionId off
+    // the payload, so mirror it onto the body here — the orchestrator's later
+    // assignment is a no-op when the value already matches.
+    if (req.sessionId && !req.body._sessionId) {
+      req.body._sessionId = req.sessionId;
+    }
+
+    // WS1 — sticky-session reuse. If this session already has a valid pin
+    // (guards pass, no compaction), skip pickTierByIntent entirely and reuse
+    // the pinned decision. This is the biggest cost win of WS1: repeat turns
+    // in a session skip the whole window-scored intent pipeline.
+    let tier;
+    const pinCheck = checkSessionPin(req.body);
+    // Side-request detection. Claude Code fires internal background calls
+    // (title generation, summarization, memory extraction, suggestion-mode
+    // autocomplete) that REPLAY the conversation — so they share the
+    // conversation's content fingerprint — but wrap it in harness prompts
+    // and repo transcript text. Two live incidents (2026-07-07):
+    //   1. A summarization side request replayed tool outputs full of
+    //      "security"/"credential" strings from the repo itself, tripped
+    //      the risk guard, re-routed COMPLEX (score 100), and OVERWROTE
+    //      the conversation's pin.
+    //   2. A suggestion-mode request — which DOES carry the full 13-tool
+    //      loadout, defeating the tool-less check — tripped risk on its
+    //      own "[SUGGESTION MODE: ...]" wrapper instructions and poisoned
+    //      the pin the same way (telemetry: risk+window COMPLEX 100).
+    // Discriminators: interactive turns attach tools AND have a plain last
+    // user message; side traffic is tool-less OR suggestion-tagged.
+    // Side requests are routed to a static cheap tier below — scoring
+    // harness wrapper text is meaningless and, worse, can land them on the
+    // subscription passthrough, burning quota on autocomplete calls.
+    const _lastUserText = (() => {
+      const msgs = req.body?.messages;
+      if (!Array.isArray(msgs)) return '';
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m?.role !== 'user') continue;
+        if (typeof m.content === 'string') return m.content;
+        if (Array.isArray(m.content)) {
+          return m.content.filter(b => b?.type === 'text').map(b => b.text || '').join(' ');
+        }
+        return '';
+      }
+      return '';
+    })();
+    const isSuggestionMode = _lastUserText.includes('[SUGGESTION MODE:');
+    // Tool-lessness alone is NOT harness evidence: generic API clients
+    // (curl, benchmarks, SDKs) legitimately send bare messages and must get
+    // full routing — live regression 2026-07-08: a benchmark's security-
+    // analysis scenario was force-SIMPLE'd as a "side request" and never
+    // reached the risk classifier. Require a detected client profile
+    // (harness UA / tool fingerprint) before treating tool-less traffic as
+    // side traffic; a suggestion-mode tag is harness evidence by itself.
+    const isKnownHarness = !!req.body?._clientProfile;
+    const isSideRequest = isSuggestionMode
+      || ((!Array.isArray(req.body?.tools) || req.body.tools.length === 0) && isKnownHarness);
+    // Side requests short-circuit to the static SIMPLE tier: no pin read
+    // (a COMPLEX-pinned conversation would burn expensive tokens on
+    // autocomplete), no pin write, no intent scoring of wrapper text.
+    // Upstream failures (e.g. a huge summarization overflowing the SIMPLE
+    // model's context) are rescued by the tier-fallback chain.
+    let sideTier = null;
+    if (isSideRequest) {
+      try {
+        const sel = getModelTierSelector().selectModel('SIMPLE', null);
+        sideTier = {
+          tier: 'SIMPLE',
+          provider: sel.provider,
+          model: sel.model || null,
+          score: null,
+          method: isSuggestionMode ? 'side_request_suggestion' : 'side_request',
+          reason: 'harness_side_request',
+          base_tier: null,
+          escalation_source: null,
+          pinned: false,
+          switch_reason: null,
+          propensity: 1.0,
+          candidates: [{ provider: sel.provider, model: sel.model || null }],
+        };
+      } catch (err) {
+        // Tier selector unavailable — fall through to the normal flow;
+        // the isSideRequest guards below still block pin writes.
+        logger.debug({ err: err.message }, 'Side-request static tier failed, falling through');
+      }
+    }
+    // WS1.5 — upward-drift check. A session pinned SIMPLE by a trivial
+    // opener ("Hi") must escape the pin the moment the real task arrives
+    // ("plan a refactor of the whole repo"). Only meaningful for
+    // guards_passed serves — tool_history turns must never switch models.
+    let pinDrift = null;
+    if (!sideTier && pinCheck.serve && pinCheck.reason === 'guards_passed' && !isSideRequest) {
+      pinDrift = await checkPinScoreDrift(pinCheck.pin, req.body);
+    }
+    if (sideTier) {
+      tier = sideTier;
+      logger.debug({
+        reqNumber: messagesRequestCount,
+        authMode,
+        suggestion: isSuggestionMode,
+        provider: tier.provider,
+      }, "OAuth intent — side request routed to static SIMPLE");
+    } else if (pinCheck.serve && !pinDrift?.drift) {
+      tier = {
+        tier: pinCheck.pin.tier || null,
+        provider: pinCheck.pin.provider,
+        model: pinCheck.pin.model || null,
+        // Prefer the drift check's fresh per-message score — it's already
+        // computed on every guards_passed pinned turn, and showing it makes
+        // the badge reflect THIS message instead of repeating the score
+        // that created the pin turns ago (users read a wall of "score 0"
+        // as the router being asleep). Falls back to the pin's original
+        // score on tool_history serves, where drift is deliberately
+        // skipped. Never complexity.score — the full-body value is
+        // inflated by tools + system + history.
+        score: typeof pinDrift?.freshScore === 'number'
+          ? pinDrift.freshScore
+          : (typeof pinCheck.pin.score === 'number' ? pinCheck.pin.score : null),
+        // Original pin score, surfaced in the badge as "pin@N" so both
+        // numbers are visible.
+        _pinScore: typeof pinCheck.pin.score === 'number' ? pinCheck.pin.score : null,
+        method: 'session_pin',
+        reason: 'sticky_' + pinCheck.reason,
+        base_tier: null,
+        escalation_source: null,
+        pinned: true,
+        switch_reason: null,
+      };
+      logger.debug({
+        reqNumber: messagesRequestCount,
+        authMode,
+        sessionId: pinCheck.sessionId,
+        tier,
+      }, "OAuth intent — served from session pin");
+    } else {
+      if (pinDrift?.drift) {
+        logger.info({
+          sessionId: pinCheck.sessionId,
+          pinnedTier: pinCheck.pin?.tier,
+          freshScore: pinDrift.freshScore,
+          ceiling: pinDrift.ceiling,
+        }, "OAuth intent — pin score drift, re-deciding");
+      }
+      tier = await pickTierByIntent(req.body);
+      if (pinDrift?.drift && tier) tier.switch_reason = 'score_drift';
+      // Persist the fresh decision so the next turn on this session can
+      // reuse it. checkSessionPin returned serve=false (or WS1.5 drift fired),
+      // so either there was no pin, the pin lost a guard (context/vision/
+      // risk), the session was compacted, or the conversation outgrew its
+      // pinned tier — in every case we want the new pin. EXCEPT side
+      // requests: their decisions reflect harness wrapper text, not the
+      // user's conversation, and must never poison the conversation's pin.
+      if (!isSideRequest && pinCheck.sessionId && tier?.provider) {
+        writeSessionPin(pinCheck.sessionId, tier, req.body);
+      } else if (isSideRequest && pinCheck.sessionId && tier?.provider) {
+        logger.debug({
+          sessionId: pinCheck.sessionId,
+          tier: tier.tier,
+          provider: tier.provider,
+        }, "OAuth intent — side request (no tools), pin write skipped");
+      }
+    }
 
     // Subscription-only fork: anti-abuse stealth passthrough when the picked
     // tier resolves to azure-anthropic. Bypasses the orchestrator entirely
@@ -852,6 +1067,26 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     }, "Intent-scored tier routing → orchestrator (forced provider)");
     req.body._forceProvider = tier.provider;
     if (tier.model) req.body._tierModel = tier.model;
+    // Carry the full intent-scored decision into the downstream client so
+    // WS0's telemetry columns (tier, base_tier, escalation_source, pinned)
+    // are populated for the forced path too — otherwise every OAuth-intent
+    // request lands in routing_telemetry with empty tier + method='forced'.
+    if (tier.tier) req.body._tierName = tier.tier;
+    if (tier.method) req.body._forcedMethod = tier.method;
+    if (tier.base_tier) req.body._baseTier = tier.base_tier;
+    if (tier.escalation_source) req.body._escalationSource = tier.escalation_source;
+    if (tier.pinned) req.body._pinnedRoute = true;
+    if (tier.switch_reason) req.body._switchReason = tier.switch_reason;
+    // WS4 — propensity + candidates land on every telemetry row so downstream
+    // off-policy evaluation can score any counterfactual policy from logs.
+    if (tier.propensity != null) req.body._propensity = tier.propensity;
+    if (tier.candidates) req.body._candidates = tier.candidates;
+    // WS5 — bandit context vector + query embedding for the feedback loop.
+    // All three are underscored; `_stripInternalFields` scrubs them before
+    // the outbound provider request so no risk of leaking to Anthropic/Ollama.
+    if (tier._banditContext) req.body._banditContext = tier._banditContext;
+    if (tier._queryEmbedding) req.body._queryEmbedding = tier._queryEmbedding;
+    if (tier._queryText) req.body._queryText = tier._queryText;
     req._intentTier = tier;
 
     // Convert Anthropic server tools (web_search_20260209, etc.) to regular
@@ -959,16 +1194,32 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       preRouteReason = 'user_intent';
     }
 
+    // Prefer the intent scorer's per-message score over the full-payload
+    // complexity score. The full-payload score is always inflated on
+    // subscription clients (5 KB system + 11 tools + prior turns) and would
+    // display "score 46" on a trivial "what did I just say?" follow-up.
+    // Only fall back to complexity.score when we don't have an intent
+    // decision at all (e.g. shouldForceLocal shortcut, or the intent scorer
+    // didn't run for this request type).
+    let displayScore = null;
+    if (req._intentTier && typeof req._intentTier.score === 'number') {
+      displayScore = req._intentTier.score;
+    } else if (!req._intentTier) {
+      displayScore = complexity.score;
+    }
+
     const preRouteDecision = {
       provider: preRouteProvider,
       tier: preRouteTier,
       model: preRouteModel,
       method: preRouteMethod,
       reason: preRouteReason,
-      // For OAuth requests, surface the user-intent score, not the full-payload one.
-      score: req._intentTier?.score ?? complexity.score,
+      score: displayScore,
       threshold: complexity.threshold,
       risk: preRouteRisk,
+      // Pin-serve turns carry the pin's original score so the badge can
+      // show "score <fresh> · pin@<original>".
+      _pinScore: typeof req._intentTier?._pinScore === 'number' ? req._intentTier._pinScore : null,
     };
 
     const routingHeaders = getRoutingHeaders(preRouteDecision);
@@ -1119,7 +1370,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       // Claude Code's TUI (TUI only renders content blocks; unknown top-level
       // fields are silently dropped).
       if (config.routing?.visibleInteraction && interaction) {
-        const badge = `*[Lynkr] ${interaction.tier || '—'} → ${interaction.model || '—'} (${interaction.provider || '—'}) · score ${interaction.complexity_score ?? '—'}*\n\n`;
+        const badge = `*[Lynkr] ${interaction.tier || '—'} → ${interaction.model || '—'} (${interaction.provider || '—'}) · score ${interaction.complexity_score ?? '—'}${interaction.pin_score != null ? ` · pin@${interaction.pin_score}` : ''}*\n\n`;
         contentBlocks = [{ type: 'text', text: badge }, ...contentBlocks];
       }
 
@@ -1305,7 +1556,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       // Claude Code's TUI (TUI only renders content blocks; unknown top-level
       // fields are silently dropped).
       if (config.routing?.visibleInteraction && interaction) {
-        const badge = `*[Lynkr] ${interaction.tier || '—'} → ${interaction.model || '—'} (${interaction.provider || '—'}) · score ${interaction.complexity_score ?? '—'}*\n\n`;
+        const badge = `*[Lynkr] ${interaction.tier || '—'} → ${interaction.model || '—'} (${interaction.provider || '—'}) · score ${interaction.complexity_score ?? '—'}${interaction.pin_score != null ? ` · pin@${interaction.pin_score}` : ''}*\n\n`;
         contentBlocks = [{ type: 'text', text: badge }, ...contentBlocks];
       }
 
@@ -1446,7 +1697,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           parsed.lynkr_interaction = interaction;
           // Inject a one-line routing badge into content so the TUI renders it.
           if (Array.isArray(parsed.content)) {
-            const badge = `*[Lynkr] ${interaction.tier || '—'} → ${interaction.model || '—'} (${interaction.provider || '—'}) · score ${interaction.complexity_score ?? '—'} · savings ~${interaction.estimated_savings_percent ?? 0}%*\n\n`;
+            const badge = `*[Lynkr] ${interaction.tier || '—'} → ${interaction.model || '—'} (${interaction.provider || '—'}) · score ${interaction.complexity_score ?? '—'}${interaction.pin_score != null ? ` · pin@${interaction.pin_score}` : ''} · savings ~${interaction.estimated_savings_percent ?? 0}%*\n\n`;
             parsed.content.unshift({ type: 'text', text: badge });
           }
           finalBody = JSON.stringify(parsed);

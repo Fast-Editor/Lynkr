@@ -26,6 +26,7 @@ function parseArgs(argv) {
     const a = argv[i];
     const next = argv[i + 1];
     if (a === "--json") opts.json = true;
+    else if (a === "--card") opts.card = true;
     else if (a === "--days" && next) {
       opts.window = `${parseInt(next, 10)}d`;
       i++;
@@ -204,12 +205,85 @@ function printReport(usage) {
   console.log("");
 }
 
+// ---------------------------------------------------------------------------
+// Shareable receipt card (`lynkr stats` / `lynkr usage --card`)
+// ---------------------------------------------------------------------------
+
+const LOCAL_PROVIDERS = new Set(["ollama", "llamacpp", "llama-cpp", "llama_cpp", "lmstudio", "lm-studio"]);
+
+function printCard(usage, opts) {
+  const { totals, byProvider, flagship, window } = usage;
+
+  let localReqs = 0;
+  let cloudReqs = 0;
+  for (const [provider, bucket] of Object.entries(byProvider)) {
+    if (LOCAL_PROVIDERS.has(String(provider).toLowerCase())) localReqs += bucket.requests;
+    else cloudReqs += bucket.requests;
+  }
+  const totalReqs = localReqs + cloudReqs;
+  const pct = (n) => (totalReqs > 0 ? `${Math.round((n / totalReqs) * 100)}%` : "0%");
+
+  let savings = { total: 0, byCategory: {} };
+  try {
+    const telemetry = require("../src/routing/telemetry");
+    const since = aggregator.resolveSince(opts.window) ?? 0;
+    savings = telemetry.getSavingsSummary(since);
+  } catch { /* savings table optional */ }
+
+  const WIDTH = 46;
+  const line = (label, value) => {
+    const l = ` ${label}`;
+    const v = `${value} `;
+    const gap = Math.max(1, WIDTH - l.length - v.length);
+    return `│${l}${" ".repeat(gap)}${v}│`;
+  };
+  const blank = `│${" ".repeat(WIDTH)}│`;
+
+  const rows = [
+    `╭${"─".repeat(WIDTH)}╮`,
+    line("Lynkr — savings receipt", `last ${window}`),
+    blank,
+    line("Requests routed", fmtInt(totalReqs)),
+    line("  local (free)", `${fmtInt(localReqs)} · ${pct(localReqs)}`),
+    line("  cloud", `${fmtInt(cloudReqs)} · ${pct(cloudReqs)}`),
+    blank,
+  ];
+
+  if (savings.total > 0) {
+    rows.push(line("Tokens saved", fmtTokens(savings.total)));
+    const labels = {
+      tool_stripping: "  tool-schema stripping",
+      compression: "  JSON compression",
+      cache_hit: "  semantic cache hits",
+    };
+    for (const [cat, label] of Object.entries(labels)) {
+      if (savings.byCategory[cat]) rows.push(line(label, fmtTokens(savings.byCategory[cat])));
+    }
+    rows.push(blank);
+  }
+
+  rows.push(line("Est. cost avoided*", fmtUSD(totals.saved)));
+  rows.push(blank);
+  rows.push(line("github.com/Fast-Editor/Lynkr", `v${require("../package.json").version}`));
+  rows.push(`╰${"─".repeat(WIDTH)}╯`);
+  rows.push(colour(`  *estimate vs routing everything to ${flagship}`, C.dim));
+
+  console.log("");
+  for (const row of rows) console.log(row);
+  console.log("");
+}
+
 function main() {
   const opts = parseArgs(process.argv);
   const usage = aggregator.getUsage(opts);
 
   if (opts.json) {
     process.stdout.write(JSON.stringify(usage, null, 2) + "\n");
+    return;
+  }
+
+  if (opts.card || process.env._LYNKR_SUBCMD === "stats") {
+    printCard(usage, opts);
     return;
   }
 
