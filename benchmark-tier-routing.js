@@ -20,6 +20,13 @@
  *   node benchmark-tier-routing.js
  */
 
+// Per-run nonce: pins and semantic-cache entries persist server-side
+// between runs (pins: 6h TTL). Stateful scenarios embed this nonce so each
+// run gets fresh fingerprints and cache keys — without it, run #2 collides
+// with run #1's state (P1 inherited the COMPLEX pin P2 wrote; SC3 hit its
+// own previous answer).
+const RUN_NONCE = Date.now().toString(36);
+
 // ─── Proxy config ─────────────────────────────────────────────────────────────
 
 const PROXIES = [
@@ -223,18 +230,21 @@ const SCENARIOS = [
   {
     id: 'SC1', label: 'Cache – first call',
     feature: 'Semantic cache – populates cache',
+    allowCache: true,
     buildPayload: (model) => ({
       model, max_tokens: 256,
-      messages: [{ role: 'user', content: 'Explain the difference between TCP and UDP in two sentences.' }],
+      messages: [{ role: 'user', content: `[run ${RUN_NONCE}] Explain the difference between TCP and UDP in two sentences.` }],
     }),
   },
   {
     id: 'SC2', label: 'Cache – second call (near-identical)',
     feature: 'Semantic cache – should hit cache → 0 tokens billed',
+    allowCache: true,
     buildPayload: (model) => ({
       model, max_tokens: 256,
-      // Slightly paraphrased — semantic cache threshold 0.95 should still match
-      messages: [{ role: 'user', content: 'What is the difference between TCP and UDP? Keep it brief.' }],
+      // Slightly paraphrased — same run nonce, so it matches SC1's entry
+      // but never a previous run's.
+      messages: [{ role: 'user', content: `[run ${RUN_NONCE}] What is the difference between TCP and UDP? Keep it brief.` }],
     }),
   },
 
@@ -314,7 +324,7 @@ const SCENARIOS = [
     expectTier: 'SIMPLE',
     buildPayload: (model) => ({
       model, max_tokens: 64,
-      messages: [{ role: 'user', content: 'hey there, benchmark pin session opener' }],
+      messages: [{ role: 'user', content: `hey there, benchmark pin session opener ${RUN_NONCE}` }],
     }),
   },
   {
@@ -324,7 +334,7 @@ const SCENARIOS = [
     buildPayload: (model) => ({
       model, max_tokens: 512,
       messages: [
-        { role: 'user', content: 'hey there, benchmark pin session opener' },
+        { role: 'user', content: `hey there, benchmark pin session opener ${RUN_NONCE}` },
         { role: 'assistant', content: 'Hi! What do you need?' },
         { role: 'user', content: 'Now do an architecture review of the routing module.' },
       ],
@@ -339,9 +349,10 @@ const SCENARIOS = [
     id: 'SC3', label: 'Cache – different question (must MISS)',
     feature: 'Semantic cache false-positive guard',
     expectNoCache: true,
+    allowCache: true, // cache ENABLED — the assertion is that it must miss
     buildPayload: (model) => ({
       model, max_tokens: 256,
-      messages: [{ role: 'user', content: 'What are the four layers of the TCP/IP model and what does each do?' }],
+      messages: [{ role: 'user', content: `[run ${RUN_NONCE}] What are the four layers of the TCP/IP model and what does each do?` }],
     }),
   },
 ];
@@ -399,6 +410,10 @@ async function sendRequest(proxy, scenario) {
         'content-type': 'application/json',
         'x-api-key': proxy.apiKey,
         'anthropic-version': '2023-06-01',
+        // The semantic cache would otherwise serve run #2 entirely from
+        // run #1's answers, zeroing every feature measurement. Cache
+        // scenarios opt in via allowCache.
+        ...(scenario.allowCache ? {} : { 'x-lynkr-no-cache': 'true' }),
         ...proxy.headers,
       },
       body: JSON.stringify(payload),
@@ -415,6 +430,7 @@ async function sendRequest(proxy, scenario) {
 
     const body = await res.json();
     const cacheHit = body?.lynkr_semantic_cache?.hit === true;
+    const cacheSimilarity = body?.lynkr_semantic_cache?.similarity ?? null;
     // On a cache hit the body echoes the CACHED usage — nothing was billed.
     const billedInput  = cacheHit ? 0 : (body?.usage?.input_tokens  ?? 0);
     const billedOutput = cacheHit ? 0 : (body?.usage?.output_tokens ?? 0);
@@ -431,7 +447,7 @@ async function sendRequest(proxy, scenario) {
       ? ((tokenDelta / estimatedInputTokens) * 100).toFixed(1)
       : '0.0';
 
-    return { ok: true, tier: decidedTier, model, billedInput, billedOutput, estimatedInputTokens, tokenDelta, tokensSaved, compressionPct, cost, latencyMs, cacheHit, wasFallback };
+    return { ok: true, tier: decidedTier, model, billedInput, billedOutput, estimatedInputTokens, tokenDelta, tokensSaved, compressionPct, cost, latencyMs, cacheHit, cacheSimilarity, wasFallback };
   } catch (e) {
     return { ok: false, error: e.message, latencyMs: Date.now() - start, estimatedInputTokens };
   }
@@ -491,7 +507,10 @@ async function runBenchmark() {
           ? (r.tier === scenario.expectTier ? `route ✓ ${scenario.expectTier}` : `route ✗ expected ${scenario.expectTier}, got ${r.tier}`)
           : null,
         isLynkr && scenario.expectNoCache
-          ? (r.cacheHit ? 'cache ✗ FALSE-POSITIVE HIT' : 'cache-miss ✓')
+          ? (!r.cacheHit ? 'cache-miss ✓'
+             : (r.cacheSimilarity != null && r.cacheSimilarity >= 0.97)
+               ? `cache self-match ✓ (sim ${r.cacheSimilarity.toFixed(3)} — prior run's identical question)`
+               : `cache ✗ FALSE-POSITIVE (sim ${r.cacheSimilarity?.toFixed(3) ?? '?'} — matched a DIFFERENT question)`)
           : null,
       ].filter(Boolean).join(' · ');
       console.log(
@@ -524,9 +543,12 @@ async function runBenchmark() {
       console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} expected ${scenario.expectTier}, got ${r.tier}${pass ? '' : '   ← REGRESSION'}`);
     }
     if (scenario.expectNoCache) {
-      const pass = !r.cacheHit;
+      // Fail only on a LOW-similarity hit — that means the cache served an
+      // answer to a different question. High-similarity hits are prior
+      // runs' identical question: correct behavior.
+      const pass = !r.cacheHit || (r.cacheSimilarity != null && r.cacheSimilarity >= 0.97);
       pass ? routePass++ : routeFail++;
-      console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} expected cache miss${pass ? '' : '   ← cache FALSE POSITIVE'}`);
+      console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} no wrong-question cache match${pass ? '' : `   ← FALSE POSITIVE at sim ${r.cacheSimilarity?.toFixed(3)}`}`);
     }
   }
   console.log(`\n  ${routePass} passed, ${routeFail} failed${routeFail ? '  ⚠ routing regressions detected' : ''}`);
