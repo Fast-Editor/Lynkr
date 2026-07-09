@@ -2818,7 +2818,7 @@ async function invokeModel(body, options = {}) {
     )?.length || 0;
 
     // Compute quality score
-    const qualityScore = scoreResponseQuality(
+    let qualityScore = scoreResponseQuality(
       { tier: routingDecision.tier, hasTools: Array.isArray(body?.tools) && body.tools.length > 0 },
       null,
       {
@@ -2831,6 +2831,25 @@ async function invokeModel(body, options = {}) {
         latency_ms: latency,
       }
     );
+
+    // WS6 — cascade verification. Only cheap-tier answers are judged, only
+    // on top-level calls (never re-verify an escalated attempt), only when
+    // opted in. A verify-fail overrides the heuristic quality score so the
+    // telemetry row and the WS5 feedback loop record the attempt as the
+    // hard negative it is (kNN learns "questions like this outgrow the
+    // cheap tier"), then the request escalates below.
+    let cascadeVerify = null;
+    if (
+      process.env.LYNKR_CASCADE_VERIFY === 'true' &&
+      !options._cascadeVerifyInner &&
+      (routingDecision.tier === 'SIMPLE' || routingDecision.tier === 'MEDIUM')
+    ) {
+      const { verify } = require('../routing/verifier');
+      cascadeVerify = verify({ payload: body, responseBody: result.json });
+      if (cascadeVerify.verdict === 'fail') {
+        qualityScore = Math.min(qualityScore ?? 100, 20);
+      }
+    }
 
     // Record routing telemetry (non-blocking)
     telemetry.record({
@@ -2881,6 +2900,59 @@ async function invokeModel(body, options = {}) {
         wasFallback: false,
       },
     });
+
+    // WS6 — cascade escalation: the cheap answer failed verification, so
+    // discard it and climb the tier ladder (upward candidates only). If
+    // every escalation attempt fails, serve the original cheap answer —
+    // the cascade must never make things worse than no cascade.
+    if (cascadeVerify?.verdict === 'fail') {
+      logger.info({
+        tier: routingDecision.tier,
+        model: routingDecision.model,
+        reasons: cascadeVerify.reasons,
+      }, '[Cascade] Cheap-tier answer failed verification — escalating');
+      try {
+        const { getFallbackChain } = require('../routing/tier-fallback');
+        const upward = getFallbackChain(routingDecision.tier).filter((c) => c.direction === 'up');
+        for (const cand of upward) {
+          try {
+            const attempt = await invokeModel(
+              { ...body, _tierModel: cand.model },
+              {
+                forceProvider: cand.provider,
+                _cascadeVerifyInner: true,
+                _cascadeInner: true,
+                disableFallback: true,
+                workspace,
+                tenantPolicy,
+                headers: incomingHeaders,
+              }
+            );
+            logger.info({
+              from: `${routingDecision.tier}:${routingDecision.model}`,
+              to: `${cand.tier}:${cand.model}`,
+            }, '[Cascade] Escalated answer served');
+            return {
+              ...attempt,
+              actualProvider: cand.provider,
+              routingDecision: {
+                ...routingDecision,
+                provider: cand.provider,
+                model: cand.model,
+                servedTier: cand.tier,
+                method: (routingDecision.method || '') + '+verify_escalated',
+                cascade: { failedTier: routingDecision.tier, reasons: cascadeVerify.reasons },
+              },
+            };
+          } catch (innerErr) {
+            logger.warn({ to: cand.provider, error: innerErr.message }, '[Cascade] Escalation candidate failed, trying next');
+          }
+        }
+      } catch (err) {
+        logger.debug({ err: err.message }, '[Cascade] Escalation setup failed — serving original answer');
+      }
+      // All escalations failed → fall through to the original cheap answer.
+    }
 
     // Return result with provider info and routing decision for headers
     return {
