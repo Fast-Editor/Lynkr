@@ -46,9 +46,16 @@ function convertOpenAIToAnthropic(openaiRequest) {
   const anthropicMessages = [];
 
   for (const msg of messageArray) {
-    if (msg.role === "system") {
-      // Anthropic uses a separate system field
-      system = msg.content;
+    if (msg.role === "system" || msg.role === "developer") {
+      // Anthropic uses a separate system field. OpenAI's `developer` role
+      // (Codex sends its sandbox/permissions rules this way) is system-level
+      // content — append rather than overwrite when both are present.
+      const sysText = typeof msg.content === "string"
+        ? msg.content
+        : Array.isArray(msg.content)
+          ? msg.content.filter((p) => p?.type === "text" || typeof p?.text === "string").map((p) => p.text || "").join("\n")
+          : "";
+      system = system ? `${system}\n\n${sysText}` : sysText;
     } else if (msg.role === "user" || msg.role === "assistant") {
       // Convert content format
       let content;

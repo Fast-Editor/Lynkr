@@ -53,7 +53,6 @@ function detectClient(headers) {
   const userAgent = (headers?.["user-agent"] || "").toLowerCase();
   const clientHeader = (headers?.["x-client"] || headers?.["x-client-name"] || "").toLowerCase();
 
-  // Check user-agent and custom headers
   if (userAgent.includes("codex") || clientHeader.includes("codex") || userAgent.includes("openai-codex")) {
     return "codex";
   }
@@ -297,14 +296,12 @@ function mapToolForClient(toolName, argsJson, clientType) {
 
   const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
   if (!clientMappings) {
-    // Unknown client - return as-is
     return { name: toolName, arguments: argsJson };
   }
 
   const mapping = clientMappings[toolName];
   if (mapping) {
     const mappedArgs = mapping.mapArgs(args);
-    // Remove undefined values
     Object.keys(mappedArgs).forEach(key => {
       if (mappedArgs[key] === undefined) {
         delete mappedArgs[key];
@@ -331,12 +328,23 @@ function mapToolForClient(toolName, argsJson, clientType) {
  * OpenAI-compatible chat completions endpoint.
  * Converts OpenAI format → Anthropic → processes → converts back to OpenAI format.
  */
+// Visible routing badge (LYNKR_VISIBLE_ROUTING=true) for OpenAI-format
+// clients (Codex, Cursor). Mirrors the Anthropic router's badge; sourced
+// from the _routingMeta the orchestrator attaches to every response.
+function lynkrBadge(resultBody) {
+  const config = require("../config");
+  if (!config.routing?.visibleInteraction) return "";
+  const m = resultBody?._routingMeta;
+  if (!m || !m.tier) return "";
+  const score = typeof m.score === "number" ? ` · score ${m.score}` : "";
+  return `*[Lynkr] ${m.tier} → ${m.model || "—"} (${m.provider || "—"})${score}*\n\n`;
+}
+
 router.post("/chat/completions", async (req, res) => {
   const startTime = Date.now();
   const sessionId = req.headers["x-session-id"] || req.headers["authorization"]?.split(" ")[1] || "openai-session";
 
   try {
-    // Validate request body exists
     if (!req.body || typeof req.body !== 'object') {
       logger.error({ body: req.body, bodyType: typeof req.body }, "Invalid or missing request body");
       return res.status(400).json({
@@ -348,7 +356,6 @@ router.post("/chat/completions", async (req, res) => {
       });
     }
 
-    // Validate required fields
     if (!req.body.messages || !Array.isArray(req.body.messages)) {
       logger.error({ hasMessages: !!req.body.messages }, "Missing or invalid messages array");
       return res.status(400).json({
@@ -360,32 +367,6 @@ router.post("/chat/completions", async (req, res) => {
       });
     }
 
-    // DEBUG: Log full message details to diagnose Codex caching issue
-    const messagesSummary = (req.body.messages || []).map((m, i) => ({
-      index: i,
-      role: m.role,
-      contentPreview: typeof m.content === 'string'
-        ? m.content.substring(0, 200)
-        : (m.content == null ? null : (JSON.stringify(m.content) ?? '').substring(0, 200))
-    }));
-
-    logger.debug({
-      endpoint: "/v1/chat/completions",
-      model: req.body.model,
-      messageCount: req.body.messages?.length,
-      stream: req.body.stream || false,
-      hasTools: !!req.body.tools,
-      toolCount: req.body.tools?.length || 0,
-      hasMessages: !!req.body.messages,
-      messagesType: typeof req.body.messages,
-      requestBodyKeys: Object.keys(req.body),
-      // Log first 500 chars of body for debugging
-      requestBodyPreview: JSON.stringify(req.body).substring(0, 500),
-      // DEBUG: Full messages breakdown
-      messages: messagesSummary
-    }, "=== OPENAI CHAT COMPLETION REQUEST ===");
-
-    // Convert OpenAI request to Anthropic format
     const anthropicRequest = convertOpenAIToAnthropic(req.body);
 
     // Inject tools if client didn't send any.
@@ -414,22 +395,18 @@ router.post("/chat/completions", async (req, res) => {
       }, "=== INJECTING TOOLS ===");
     }
 
-    // Get or create session
     const session = getSession(sessionId);
 
-    // Handle streaming vs non-streaming
     if (req.body.stream) {
-      // Set up SSE headers for streaming
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no"); // Prevent nginx buffering
-      res.flushHeaders(); // Ensure headers are sent immediately
+      res.flushHeaders();
 
       try {
         // For streaming, we need to handle it differently - convert to non-streaming temporarily
-        // Get non-streaming response from orchestrator
-        anthropicRequest.stream = false; // Force non-streaming from orchestrator
+        anthropicRequest.stream = false;
 
         const result = await orchestrator.processMessage({
           payload: anthropicRequest,
@@ -440,7 +417,6 @@ router.post("/chat/completions", async (req, res) => {
           }
         });
 
-        // Check if we have a valid response body
         logger.debug({
           hasResult: !!result,
           resultKeys: result ? Object.keys(result) : null,
@@ -459,11 +435,9 @@ router.post("/chat/completions", async (req, res) => {
           throw new Error("Invalid response from orchestrator");
         }
 
-        // Convert to OpenAI format
         const streamModel = resolveResponseModel(result.body, req.body.model);
         const openaiResponse = convertAnthropicToOpenAI(result.body, streamModel);
 
-        // Debug: Log what we're about to stream
         logger.debug({
           openaiResponseId: openaiResponse.id,
           messageContent: openaiResponse.choices[0]?.message?.content?.substring(0, 100),
@@ -475,10 +449,9 @@ router.post("/chat/completions", async (req, res) => {
         }, "=== PREPARING TO STREAM ===");
 
         // Simulate streaming by sending the complete response as chunks
-        const content = openaiResponse.choices[0].message.content || "";
+        const content = lynkrBadge(result.body) + (openaiResponse.choices[0].message.content || "");
         let toolCalls = openaiResponse.choices[0].message.tool_calls;
 
-        // Map tool names for known IDE clients
         if (clientType !== "unknown" && toolCalls && toolCalls.length > 0) {
           toolCalls = toolCalls.map(tc => {
             const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);
@@ -496,7 +469,6 @@ router.post("/chat/completions", async (req, res) => {
           }, "Tool names mapped for streaming chat/completions");
         }
 
-        // Send start chunk with role
         const startChunk = {
           id: openaiResponse.id,
           object: "chat.completion.chunk",
@@ -517,7 +489,6 @@ router.post("/chat/completions", async (req, res) => {
           logger.warn("Start chunk write returned false (backpressure)");
         }
 
-        // Send content in a single chunk (or character by character for true streaming simulation)
         if (content) {
           const contentChunk = {
             id: openaiResponse.id,
@@ -536,7 +507,6 @@ router.post("/chat/completions", async (req, res) => {
           logger.debug({ contentPreview: content.substring(0, 50), writeOk: contentWriteOk }, "Sent content chunk");
         }
 
-        // Send tool calls if present
         if (toolCalls && toolCalls.length > 0) {
           for (const toolCall of toolCalls) {
             const toolChunk = {
@@ -565,7 +535,6 @@ router.post("/chat/completions", async (req, res) => {
           }
         }
 
-        // Send finish chunk
         const finishChunk = {
           id: openaiResponse.id,
           object: "chat.completion.chunk",
@@ -584,7 +553,6 @@ router.post("/chat/completions", async (req, res) => {
         res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
         res.write("data: [DONE]\n\n");
 
-        // Ensure data is flushed before ending
         logger.debug({ contentLength: content.length, contentPreview: content.substring(0, 50) }, "=== SSE STREAM COMPLETE ===");
         res.end();
 
@@ -601,7 +569,6 @@ router.post("/chat/completions", async (req, res) => {
           stack: streamError.stack
         }, "=== STREAMING ERROR ===");
 
-        // Send error in OpenAI streaming format
         const errorChunk = {
           id: `chatcmpl-error-${Date.now()}`,
           object: "chat.completion.chunk",
@@ -622,7 +589,6 @@ router.post("/chat/completions", async (req, res) => {
         res.end();
       }
     } else {
-      // Non-streaming mode
       const result = await orchestrator.processMessage({
         payload: anthropicRequest,
         headers: req.headers,
@@ -632,7 +598,6 @@ router.post("/chat/completions", async (req, res) => {
         }
       });
 
-      // Debug logging
       logger.debug({
         resultKeys: Object.keys(result || {}),
         hasBody: !!result?.body,
@@ -640,10 +605,12 @@ router.post("/chat/completions", async (req, res) => {
         bodyKeys: result?.body ? Object.keys(result.body) : null
       }, "Orchestrator result structure");
 
-      // Convert Anthropic response to OpenAI format
       const openaiResponse = convertAnthropicToOpenAI(result.body, resolveResponseModel(result.body, req.body.model));
+      const _badge = lynkrBadge(result.body);
+      if (_badge && openaiResponse.choices?.[0]?.message) {
+        openaiResponse.choices[0].message.content = _badge + (openaiResponse.choices[0].message.content || "");
+      }
 
-      // Map tool names for known IDE clients
       if (clientType !== "unknown" && openaiResponse.choices?.[0]?.message?.tool_calls?.length > 0) {
         openaiResponse.choices[0].message.tool_calls = openaiResponse.choices[0].message.tool_calls.map(tc => {
           const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);
@@ -679,7 +646,6 @@ router.post("/chat/completions", async (req, res) => {
       duration: Date.now() - startTime
     }, "OpenAI chat completion error");
 
-    // Return OpenAI-format error
     res.status(500).json({
       error: {
         message: error.message || "Internal server error",
@@ -696,9 +662,7 @@ router.post("/chat/completions", async (req, res) => {
  */
 function getConfiguredProviders() {
   const providers = [];
-  const timestamp = Math.floor(Date.now() / 1000);
 
-  // Check Databricks
   if (config.databricks?.url && config.databricks?.apiKey) {
     providers.push({
       name: "databricks",
@@ -711,7 +675,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check AWS Bedrock
   if (config.bedrock?.apiKey) {
     const bedrockModels = [config.bedrock.modelId];
     if (config.bedrock.modelId?.includes("claude")) {
@@ -728,7 +691,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check Azure Anthropic
   if (config.azureAnthropic?.endpoint && config.azureAnthropic?.apiKey) {
     providers.push({
       name: "azure-anthropic",
@@ -737,7 +699,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check Azure OpenAI
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) {
     providers.push({
       name: "azure-openai",
@@ -752,7 +713,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check OpenAI
   if (config.openai?.apiKey) {
     providers.push({
       name: "openai",
@@ -766,7 +726,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check OpenRouter
   if (config.openrouter?.apiKey) {
     providers.push({
       name: "openrouter",
@@ -796,7 +755,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check Ollama
   if (config.ollama?.endpoint) {
     providers.push({
       name: "ollama",
@@ -805,7 +763,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check llama.cpp
   if (config.llamacpp?.endpoint) {
     providers.push({
       name: "llamacpp",
@@ -814,7 +771,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check LM Studio
   if (config.lmstudio?.endpoint) {
     providers.push({
       name: "lmstudio",
@@ -823,7 +779,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check Z.AI (Zhipu)
   if (config.zai?.apiKey) {
     providers.push({
       name: "zai",
@@ -837,7 +792,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check Moonshot AI (Kimi)
   if (config.moonshot?.apiKey) {
     providers.push({
       name: "moonshot",
@@ -849,7 +803,6 @@ function getConfiguredProviders() {
     });
   }
 
-  // Check Vertex AI (Google Cloud)
   if (config.vertex?.projectId) {
     providers.push({
       name: "vertex",
@@ -880,10 +833,8 @@ router.get("/models", (req, res) => {
     const models = [];
     const seenModelIds = new Set();
 
-    // Collect models from all providers
     for (const provider of providers) {
       for (const modelId of provider.models) {
-        // Create unique key to avoid duplicates
         const uniqueKey = `${provider.name}:${modelId}`;
         if (seenModelIds.has(uniqueKey)) continue;
         seenModelIds.add(uniqueKey);
@@ -901,7 +852,6 @@ router.get("/models", (req, res) => {
       }
     }
 
-    // Add embedding models if embeddings are configured
     const embeddingConfig = determineEmbeddingProvider();
     if (embeddingConfig) {
       let embeddingModelId;
@@ -1125,7 +1075,6 @@ async function generateOllamaEmbeddings(inputs, embeddingConfig) {
     inputCount: inputs.length
   }, "Generating embeddings with Ollama");
 
-  // Ollama doesn't support batch, so we need to process one by one
   const embeddings = [];
 
   for (let i = 0; i < inputs.length; i++) {
@@ -1166,7 +1115,6 @@ async function generateOllamaEmbeddings(inputs, embeddingConfig) {
     }
   }
 
-  // Convert to OpenAI format
   return {
     object: "list",
     data: embeddings,
@@ -1247,9 +1195,6 @@ async function generateLlamaCppEmbeddings(inputs, embeddingConfig) {
   }
 }
 
-/**
- * Generate embeddings using OpenRouter
- */
 async function generateOpenRouterEmbeddings(inputs, embeddingConfig) {
   const { model, apiKey, endpoint } = embeddingConfig;
 
@@ -1281,9 +1226,6 @@ async function generateOpenRouterEmbeddings(inputs, embeddingConfig) {
   return await response.json();
 }
 
-/**
- * Generate embeddings using OpenAI
- */
 async function generateOpenAIEmbeddings(inputs, embeddingConfig) {
   const { model, apiKey, endpoint } = embeddingConfig;
 
@@ -1325,7 +1267,6 @@ router.post("/embeddings", async (req, res) => {
   try {
     const { input, model, encoding_format } = req.body;
 
-    // Validate input
     if (!input) {
       return res.status(400).json({
         error: {
@@ -1336,7 +1277,6 @@ router.post("/embeddings", async (req, res) => {
       });
     }
 
-    // Convert input to array if string
     const inputs = Array.isArray(input) ? input : [input];
 
     logger.debug({
@@ -1346,7 +1286,6 @@ router.post("/embeddings", async (req, res) => {
       inputLengths: inputs.map(i => i.length)
     }, "=== OPENAI EMBEDDINGS REQUEST ===");
 
-    // Determine which provider to use for embeddings
     const embeddingConfig = determineEmbeddingProvider(model);
 
     if (!embeddingConfig) {
@@ -1360,7 +1299,6 @@ router.post("/embeddings", async (req, res) => {
       });
     }
 
-    // Route to appropriate provider
     let embeddingResponse;
 
     try {
@@ -1412,7 +1350,6 @@ router.post("/embeddings", async (req, res) => {
       totalTokens: embeddingResponse.usage?.total_tokens || 0
     }, "=== EMBEDDINGS RESPONSE ===");
 
-    // Return embeddings in OpenAI format
     res.json(embeddingResponse);
 
   } catch (error) {
@@ -1445,7 +1382,6 @@ router.post("/responses", async (req, res) => {
   try {
     const { convertResponsesToChat, convertChatToResponses } = require("../clients/responses-format");
 
-    // Comprehensive debug logging
     logger.debug({
       endpoint: "/v1/responses",
       inputType: typeof req.body.input,
@@ -1485,7 +1421,6 @@ router.post("/responses", async (req, res) => {
       }
     }
 
-    // Convert Responses API to Chat Completions format
     const chatRequest = convertResponsesToChat(req.body);
 
     logger.debug({
@@ -1497,7 +1432,6 @@ router.post("/responses", async (req, res) => {
       }))
     }, "After Responses→Chat conversion");
 
-    // Convert to Anthropic format
     const anthropicRequest = convertOpenAIToAnthropic(chatRequest);
 
     // Normalize tool_use names in conversation history to client format.
@@ -1592,17 +1526,9 @@ router.post("/responses", async (req, res) => {
       anthropicRequest.tools = anthropicRequest.tools.filter(t => !RESPONSES_EXCLUDED.has(t.name));
     }
 
-    // Snapshot tool names before the orchestrator can mutate them
-    const injectedToolNames = new Set(
-      (anthropicRequest.tools || []).map(t => t.name)
-    );
-
-    // Get session
     const session = getSession(sessionId);
 
-    // Handle streaming vs non-streaming
     if (req.body.stream) {
-      // Set up SSE headers for streaming
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
@@ -1638,7 +1564,6 @@ router.post("/responses", async (req, res) => {
           terminationReason: result?.terminationReason
         }, "=== ORCHESTRATOR RESULT FOR RESPONSES API ===");
 
-        // Convert back: Anthropic → OpenAI → Responses
         const responsesModel = resolveResponseModel(result.body, req.body.model);
 
         // Guard: if orchestrator returned an error body, surface it as text
@@ -1687,15 +1612,31 @@ router.post("/responses", async (req, res) => {
           }
         }
 
+        if (content) content = lynkrBadge(result.body) + content;
+
         // Universal tool→shell converter: ensures every tool call becomes
         // a "shell" command that Codex (or any client) can execute.
         // Server-side tools (Task, WebSearch, etc.) are dropped entirely.
         if (toolCalls.length > 0) {
           const SERVER_TOOLS = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent", "askuserquestion", "todowrite"]);
+          // Tool names the client itself declared (e.g. Codex v0.142's
+          // exec_command/update_plan) must go back verbatim — renaming them
+          // to "shell" gets rejected as "unsupported call". The shell
+          // conversion below only applies to Lynkr-injected tool names.
+          const clientToolNames = new Set(
+            (req.body.tools || [])
+              .filter((t) => t && (t.name || t.function?.name))
+              .map((t) => t.name || t.function.name)
+          );
           const converted = [];
           for (const tc of toolCalls) {
             const name = tc.function?.name || "";
             const ln = name.toLowerCase();
+
+            if (clientToolNames.has(name)) {
+              converted.push(tc);
+              continue;
+            }
 
             // Convert server-side tools to useful shell equivalents
             if (SERVER_TOOLS.has(ln)) {
@@ -1775,7 +1716,6 @@ router.post("/responses", async (req, res) => {
           chunks.push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
         };
 
-        // response.created
         sse("response.created", {
           type: "response.created",
           response: {
@@ -1785,7 +1725,6 @@ router.post("/responses", async (req, res) => {
           sequence_number: sequenceNumber++
         });
 
-        // response.in_progress
         sse("response.in_progress", {
           type: "response.in_progress",
           response: {
@@ -1797,7 +1736,6 @@ router.post("/responses", async (req, res) => {
 
         const outputItems = [];
 
-        // Function call events
         for (const toolCall of toolCalls) {
           const toolCallId = toolCall.id || `call_${Date.now()}_${outputIndex}`;
           const functionName = toolCall.function?.name || "unknown";
@@ -1829,7 +1767,6 @@ router.post("/responses", async (req, res) => {
           outputIndex++;
         }
 
-        // Text content events
         if (content) {
           sse("response.output_item.added", {
             type: "response.output_item.added", output_index: outputIndex,
@@ -1891,7 +1828,6 @@ router.post("/responses", async (req, res) => {
           sequence_number: sequenceNumber++
         });
 
-        // Write entire payload and close in one call
         const payload = chunks.join("");
         res.end(payload);
 
@@ -1902,7 +1838,9 @@ router.post("/responses", async (req, res) => {
             messages: chatRequest?.messages || [],
             assistantContent: content || null,
           });
-        } catch {}
+        } catch (err) {
+          logger.warn({ err }, "Failed to store response for previous_response_id continuity");
+        }
 
         logger.info({
           duration: Date.now() - startTime,
@@ -1938,7 +1876,6 @@ router.post("/responses", async (req, res) => {
       }
 
     } else {
-      // Non-streaming response
       anthropicRequest.stream = false;
 
       const result = await orchestrator.processMessage({
@@ -1950,7 +1887,6 @@ router.post("/responses", async (req, res) => {
         }
       });
 
-      // Convert back: Anthropic → OpenAI → Responses
       const chatResponse = convertAnthropicToOpenAI(result.body, resolveResponseModel(result.body, req.body.model));
       const responsesResponse = convertChatToResponses(chatResponse);
 
@@ -1962,6 +1898,10 @@ router.post("/responses", async (req, res) => {
           })
           .replace(/\\n/g, '\n')
           .replace(/\\t/g, '\t');
+      }
+
+      if (responsesResponse.content) {
+        responsesResponse.content = lynkrBadge(result.body) + responsesResponse.content;
       }
 
       logger.info({

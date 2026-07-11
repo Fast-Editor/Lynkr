@@ -17,7 +17,6 @@ const { performance } = require("perf_hooks");
 const { MetricsCollector } = require("../src/observability/metrics");
 const { LoadShedder } = require("../src/api/middleware/load-shedding");
 const { CircuitBreaker } = require("../src/clients/circuit-breaker");
-const { validateObject } = require("../src/api/middleware/validation");
 
 // Color utilities
 function colorize(text, color) {
@@ -162,56 +161,6 @@ async function runBenchmarks() {
     })
   );
 
-  // Input Validation (simple)
-  results.push(
-    await benchmark("Input Validation (simple)", 100000, async () => {
-      const schema = {
-        required: ["name"],
-        properties: {
-          name: { type: "string", minLength: 1, maxLength: 100 },
-        },
-      };
-      validateObject({ name: "test" }, schema);
-    })
-  );
-
-  // Input Validation (complex)
-  results.push(
-    await benchmark("Input Validation (complex)", 10000, async () => {
-      const schema = {
-        required: ["model", "messages"],
-        properties: {
-          model: { type: "string", minLength: 1 },
-          messages: {
-            type: "array",
-            minItems: 1,
-            items: {
-              type: "object",
-              required: ["role", "content"],
-              properties: {
-                role: { type: "string", enum: ["user", "assistant", "system"] },
-                content: { type: "string", minLength: 1 },
-              },
-            },
-          },
-          temperature: { type: "number", minimum: 0, maximum: 2 },
-        },
-      };
-
-      validateObject(
-        {
-          model: "test-model",
-          messages: [
-            { role: "user", content: "Hello" },
-            { role: "assistant", content: "Hi there" },
-          ],
-          temperature: 0.7,
-        },
-        schema
-      );
-    })
-  );
-
   // Request ID Generation
   results.push(
     await benchmark("Request ID Generation", 100000, async () => {
@@ -234,15 +183,6 @@ async function runBenchmarks() {
         // Metrics collection
         const start = performance.now();
         metrics.recordRequest("POST", "/v1/messages", 200, 0);
-
-        // Validation
-        const schema = {
-          required: ["model"],
-          properties: {
-            model: { type: "string" },
-          },
-        };
-        validateObject({ model: "test" }, schema);
 
         // Record latency
         const latency = performance.now() - start;

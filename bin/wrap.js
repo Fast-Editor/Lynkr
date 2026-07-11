@@ -323,9 +323,21 @@ async function wrapCodex() {
     binaryName: 'codex',
     findBinary: findCodexBinary,
     envVar: 'OPENAI_API_BASE',
+    // Modern Codex (Rust CLI) ignores OPENAI_API_BASE — with ChatGPT-plan
+    // auth it talks straight to its own backend. A custom model_provider
+    // passed via -c overrides is the only supported redirect, and it beats
+    // every config file. env_key must name an env var that is set.
+    extraArgs: (port) => [
+      '-c', 'model_providers.lynkr.name="Lynkr"',
+      '-c', `model_providers.lynkr.base_url="http://localhost:${port}/v1"`,
+      '-c', 'model_providers.lynkr.wire_api="responses"',
+      '-c', 'model_providers.lynkr.env_key="LYNKR_API_KEY"',
+      '-c', 'model_provider="lynkr"',
+    ],
+    extraEnv: { LYNKR_API_KEY: 'lynkr-local' },
     installInstructions: [
-      '  • Install OpenAI CLI: pip install openai',
-      '  • Or: npm install -g openai',
+      '  • brew install --cask codex',
+      '  • Or: npm install -g @openai/codex',
     ],
   });
 }
@@ -409,10 +421,12 @@ async function wrapGeneric(opts) {
   console.log('');
 
   // 4. Launch binary with Lynkr as base URL
-  const child = spawn(binaryPath, targetArgs, {
+  const extraArgs = typeof opts.extraArgs === 'function' ? opts.extraArgs(port) : [];
+  const child = spawn(binaryPath, [...extraArgs, ...targetArgs], {
     env: {
       ...process.env,
       [opts.envVar]: `http://localhost:${port}`,
+      ...(opts.extraEnv || {}),
     },
     stdio: 'inherit',
   });

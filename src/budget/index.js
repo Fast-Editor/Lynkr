@@ -77,7 +77,6 @@ class BudgetManager {
       );
     `);
 
-    // Prepared statements
     this.stmts = {
       getBudget: this.db.prepare('SELECT * FROM user_budgets WHERE user_id = ?'),
       createBudget: this.db.prepare(`
@@ -115,7 +114,6 @@ class BudgetManager {
     };
   }
 
-  // Check if user is within rate limits
   checkRateLimit(userId) {
     if (!this.enabled) return { allowed: true };
 
@@ -130,24 +128,21 @@ class BudgetManager {
       return { allowed: true };
     }
 
-    const minuteWindow = 60 * 1000; // 1 minute
-    const hourWindow = 60 * 60 * 1000; // 1 hour
+    const minuteWindow = 60 * 1000;
+    const hourWindow = 60 * 60 * 1000;
 
     let { request_count_minute, request_count_hour, minute_window_start, hour_window_start } = rateLimit;
 
-    // Reset minute window if needed
     if (now - minute_window_start >= minuteWindow) {
       request_count_minute = 0;
       minute_window_start = now;
     }
 
-    // Reset hour window if needed
     if (now - hour_window_start >= hourWindow) {
       request_count_hour = 0;
       hour_window_start = now;
     }
 
-    // Check limits
     if (request_count_minute >= rateLimit.requests_per_minute) {
       const resetIn = minuteWindow - (now - minute_window_start);
       return {
@@ -170,7 +165,6 @@ class BudgetManager {
       };
     }
 
-    // Increment counters
     request_count_minute++;
     request_count_hour++;
 
@@ -188,7 +182,6 @@ class BudgetManager {
     return { allowed: true };
   }
 
-  // Check if user is within budget
   checkBudget(userId) {
     if (!this.enabled) return { allowed: true };
 
@@ -199,7 +192,6 @@ class BudgetManager {
       return { allowed: true, warning: 'No budget configured' };
     }
 
-    // Get current month usage
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
@@ -207,7 +199,6 @@ class BudgetManager {
 
     const usage = this.stmts.getMonthlyUsage.get(userId, monthStartMs);
 
-    // Check token limit
     if (usage.total_tokens >= budget.monthly_token_limit) {
       return {
         allowed: false,
@@ -217,7 +208,6 @@ class BudgetManager {
       };
     }
 
-    // Check request limit
     if (usage.request_count >= budget.monthly_request_limit) {
       return {
         allowed: false,
@@ -227,7 +217,6 @@ class BudgetManager {
       };
     }
 
-    // Check cost limit
     if (usage.total_cost >= budget.monthly_cost_limit) {
       return {
         allowed: false,
@@ -237,7 +226,6 @@ class BudgetManager {
       };
     }
 
-    // Check if approaching limits (alert threshold)
     const warnings = [];
     if (usage.total_tokens / budget.monthly_token_limit >= budget.alert_threshold) {
       warnings.push({
@@ -274,7 +262,6 @@ class BudgetManager {
     };
   }
 
-  // Record usage for a request
   recordUsage(userId, sessionId, usage) {
     if (!this.enabled) return;
 
@@ -302,7 +289,6 @@ class BudgetManager {
     }
   }
 
-  // Set budget for a user
   setBudget(userId, budget) {
     if (!this.enabled) return;
 
@@ -333,7 +319,6 @@ class BudgetManager {
     logger.info({ userId, budget }, 'Budget updated');
   }
 
-  // Get usage summary for a user
   getUsageSummary(userId, days = 30) {
     if (!this.enabled) return null;
 
@@ -366,7 +351,6 @@ class BudgetManager {
   }
 }
 
-// Singleton instance
 let budgetManager = null;
 
 function getBudgetManager() {
@@ -379,7 +363,6 @@ function getBudgetManager() {
   return budgetManager;
 }
 
-// Cleanup on exit
 process.on('exit', () => {
   if (budgetManager) {
     budgetManager.close();

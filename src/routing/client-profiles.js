@@ -70,8 +70,15 @@ const PROFILES = {
   'openai-codex': {
     name: 'openai-codex',
     baselineTools: new Set([
-      // Codex CLI's default shell/apply tools
+      // Legacy Codex CLI (and Lynkr's injected fallback names)
       'shell', 'apply_patch', 'read_file', 'write_file',
+      // Codex v0.142+ (Rust CLI) default loadout — captured live 2026-07-11.
+      // All of these attach to EVERY request, including "Hi": counting them
+      // as agentic intent floored every Codex turn at MEDIUM.
+      'exec_command', 'write_stdin', 'update_plan', 'request_user_input',
+      'view_image', 'get_goal', 'create_goal', 'update_goal',
+      'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource',
+      'list_available_plugins_to_install', 'request_plugin_install',
     ]),
     detect: {
       headerPatterns: [/codex/i, /openai-cli/i],

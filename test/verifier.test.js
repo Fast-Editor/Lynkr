@@ -148,6 +148,20 @@ test('structured answer to a structured ask passes with healthy score', () => {
   assert.ok(r.score >= 60, `score ${r.score}`);
 });
 
+test('Codex environment_context merged into a trivial prompt does not fail the short answer', () => {
+  // Live incident 2026-07-11: "Hi" merged with Codex's <environment_context>
+  // (containing "claude-code" and access="write") scored 10 and escalated
+  // every trivial Codex turn from SIMPLE to COMPLEX.
+  const envBlock = '<environment_context>\n<cwd>/Users/x/claude-code</cwd>'
+    + '<permission_profile type="managed"><entry access="write"><path>/Users/x/claude-code</path></entry></permission_profile>'.padEnd(400, ' ')
+    + '</environment_context>';
+  const r = verify({
+    payload: ask(envBlock + '\n\nHi'),
+    responseBody: answer('Hi! What can I help you with today?'),
+  });
+  assert.equal(r.verdict, 'pass', r.reasons.join());
+});
+
 // ---------------------------------------------------------------------------
 // Fail-open contract
 // ---------------------------------------------------------------------------

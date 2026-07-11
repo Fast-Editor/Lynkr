@@ -130,7 +130,16 @@ function findHits(keywords, haystack) {
  */
 function stripSystemReminders(text) {
   if (typeof text !== 'string' || !text) return '';
-  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ');
+  return text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ')
+    // Codex harness blocks arrive as user-role messages and get merged into
+    // the typed text by the orchestrator's consecutive-role coalescing.
+    // <environment_context> carries <permission_profile> ("permission" is a
+    // high-risk keyword — live traffic showed every Codex turn, including
+    // "Hi", force-escalated to COMPLEX on it) and <user_instructions>
+    // carries AGENTS.md contents the user never typed this turn.
+    .replace(/<environment_context>[\s\S]*?<\/environment_context>/g, ' ')
+    .replace(/<user_instructions>[\s\S]*?<\/user_instructions>/g, ' ');
 }
 
 /**

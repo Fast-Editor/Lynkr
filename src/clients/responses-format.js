@@ -71,7 +71,7 @@ function mapClientToolToLynkr(clientToolName) {
  * @returns {Object} Chat Completions format request
  */
 function convertResponsesToChat(responsesRequest) {
-  const { input, model, max_tokens, temperature, top_p, tools, tool_choice, stream } = responsesRequest;
+  const { input, instructions, model, max_tokens, temperature, top_p, tools, tool_choice, stream } = responsesRequest;
 
   logger.info({
     inputType: typeof input,
@@ -173,7 +173,9 @@ function convertResponsesToChat(responsesRequest) {
         if (Array.isArray(content)) {
           // Extract text from array of content parts
           const textParts = content
-            .filter(part => part && (part.type === 'text' || part.type === 'input_text'))
+            // output_text is how prior ASSISTANT replies arrive in input[] —
+            // dropping it made the model re-answer every previous turn.
+            .filter(part => part && (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text'))
             .map(part => part.text || part.input_text || '')
             .filter(text => text.length > 0);
 
@@ -249,13 +251,42 @@ function convertResponsesToChat(responsesRequest) {
     messages = [{ role: "user", content: String(input || "") }];
   }
 
+  // Responses API carries the system prompt in `instructions`, not as an
+  // input message — Codex's entire harness prompt lives here. Dropping it
+  // leaves the model with no tool-usage conventions.
+  if (typeof instructions === "string" && instructions.trim()) {
+    messages = [{ role: "system", content: instructions }, ...messages];
+  }
+
+  // Responses API declares function tools with a top-level name/parameters;
+  // downstream converters expect Chat Completions shape ({function:{name}})
+  // and silently drop anything else. Convert function tools; exotic types
+  // (custom/namespace/tool_search/web_search/image_generation) have no
+  // Chat/Anthropic equivalent and are dropped.
+  let chatTools;
+  if (Array.isArray(tools)) {
+    chatTools = tools
+      .map((t) => {
+        if (t?.type === "function" && t.function) return t; // already Chat-shaped
+        if (t?.type === "function" && t.name && t.parameters) {
+          return {
+            type: "function",
+            function: { name: t.name, description: t.description || "", parameters: t.parameters },
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+    if (chatTools.length === 0) chatTools = undefined;
+  }
+
   const result = {
     model: model || "gpt-4o",
     messages: messages,
     max_tokens: max_tokens || 4096,
     temperature: temperature,
     top_p: top_p,
-    tools: tools,
+    tools: chatTools,
     tool_choice: tool_choice,
     stream: stream || false
   };

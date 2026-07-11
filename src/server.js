@@ -37,13 +37,10 @@ const lazyLoader = require("./tools/lazy-loader");
 const { setLazyLoader } = require("./tools");
 const { waitForOllama } = require("./clients/ollama-startup");
 
-// Initialize MCP
 initialiseMcp();
 
-// Set up lazy tool loading
 setLazyLoader(lazyLoader);
 
-// Check if lazy loading is enabled (default: true)
 const LAZY_TOOLS_ENABLED = process.env.LAZY_TOOLS_ENABLED !== "false";
 
 if (LAZY_TOOLS_ENABLED) {
@@ -88,16 +85,13 @@ function createApp() {
   app.get('/dashboard/api/routing',  require('./dashboard/api').routing);
   app.get('/dashboard/api/logs',     require('./dashboard/api').logs);
 
-  // Initialize load shedder (log configuration)
   initializeLoadShedder();
 
-  // Load shedding (protect against overload)
   app.use(loadSheddingMiddleware);
 
   // Request logging (add request IDs, structured logs)
   app.use(requestLoggingMiddleware);
 
-  // Metrics collection
   app.use(metricsMiddleware);
 
   // Note: If using a tunnel (ngrok, Cloudflare Tunnel) and seeing BrotliDecompressionError,
@@ -119,11 +113,9 @@ function createApp() {
   // Phase 6.2 — hierarchical budget enforcement (LYNKR_BUDGET_ENFORCER=false to disable).
   app.use('/v1/messages', budgetEnforcer);
 
-  // Health check endpoints
   app.get("/health/live", livenessCheck);
   app.get("/health/ready", readinessCheck);
 
-  // Metrics endpoints
   app.get("/metrics", (req, res) => {
     res.json(metrics.snapshot());
   });
@@ -176,10 +168,8 @@ function createApp() {
 
   app.use(router);
 
-  // Dashboard UI
   app.use('/dashboard', require('./dashboard/router'));
 
-  // Files API
   const filesRouter = require("./api/files-router");
   app.use("/v1", filesRouter);
 
@@ -193,8 +183,7 @@ function createApp() {
 }
 
 async function start() {
-  // Initialize Worker Thread Pool (if enabled)
-  // This pre-warms worker threads for CPU-intensive tasks
+  // Pre-warms worker threads for CPU-intensive tasks
   if (config.workerPool?.enabled !== false) {
     try {
       const poolOptions = {
@@ -300,12 +289,10 @@ async function start() {
     logger.info({ firstDelayMs: firstDelay, intervalMs: DAY_MS }, '[Calibration] Scheduler armed');
   }
 
-  // Setup graceful shutdown
   const shutdownManager = getShutdownManager();
   shutdownManager.registerServer(server);
   shutdownManager.setupSignalHandlers();
 
-  // Register Headroom shutdown callback
   if (config.headroom?.enabled) {
     shutdownManager.onShutdown(async () => {
       logger.info("Stopping Headroom sidecar on shutdown");
@@ -313,7 +300,6 @@ async function start() {
     });
   }
 
-  // Register Worker Pool shutdown callback
   if (config.workerPool?.enabled !== false && isWorkerPoolReady()) {
     shutdownManager.onShutdown(async () => {
       logger.info("Stopping worker thread pool on shutdown");
@@ -322,7 +308,6 @@ async function start() {
     });
   }
 
-  // Register Codex process shutdown callback
   shutdownManager.onShutdown(async () => {
     try {
       const { getCodexProcess } = require("./clients/codex-process");
@@ -333,7 +318,6 @@ async function start() {
     } catch { /* ignore if codex never started */ }
   });
 
-  // Initialize hot reload config watcher
   if (config.hotReload?.enabled !== false) {
     const watcher = initConfigWatcher({
       paths: [".env"],
@@ -350,7 +334,6 @@ async function start() {
       }
     });
 
-    // Stop watcher on shutdown
     shutdownManager.onShutdown(() => {
       const w = getConfigWatcher();
       if (w) w.stop();

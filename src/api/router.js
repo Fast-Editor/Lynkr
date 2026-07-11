@@ -40,7 +40,6 @@ const { classifyAuthMode } = require("../auth-mode");
 
 const router = express.Router();
 
-// Create rate limiter middleware
 const rateLimiter = createRateLimiter();
 
 /**
@@ -442,59 +441,53 @@ async function handleOauthPassthrough(req, res, opts = {}) {
         ?? inputTokenEstimate;
 
       // Lynkr-wide metrics
-      try {
-        const { getMetricsCollector } = require("../observability/metrics");
-        const mc = getMetricsCollector();
-        mc.recordProviderSuccess?.("azure-anthropic-passthrough", latencyMs);
-        if (outputTokens || inputTokensActual) mc.recordTokens?.(inputTokensActual, outputTokens || 0);
-      } catch (_) {}
+      const { getMetricsCollector } = require("../observability/metrics");
+      const mc = getMetricsCollector();
+      mc.recordProviderSuccess("azure-anthropic-passthrough", latencyMs);
+      if (outputTokens || inputTokensActual) mc.recordTokens(inputTokensActual, outputTokens || 0);
 
       // Tier router telemetry (so it shows up in dashboards / routing stats)
-      try {
-        const tlm = require("../routing/telemetry");
-        tlm.record?.({
-          request_id: req.headers["request-id"] || req.headers["x-request-id"] || null,
-          session_id: req.body?._sessionId || req.sessionId || null,
-          timestamp: startedAt,
-          tier: tier.tier || "COMPLEX",
-          provider: "azure-anthropic-passthrough",
-          model: req.body?.model || tier.model || null,
-          routing_method: "oauth-passthrough",
-          status_code: upstreamResp.status,
-          latency_ms: latencyMs,
-          input_tokens: inputTokensActual || null,
-          output_tokens: outputTokens || null,
-          message_count: req.body?.messages?.length || null,
-          tool_count: Array.isArray(req.body?.tools) ? req.body.tools.length : 0,
-          was_fallback: false,
-        });
-      } catch (_) {}
+      const tlm = require("../routing/telemetry");
+      tlm.record({
+        request_id: req.headers["request-id"] || req.headers["x-request-id"] || null,
+        session_id: req.body?._sessionId || req.sessionId || null,
+        timestamp: startedAt,
+        tier: tier.tier || "COMPLEX",
+        provider: "azure-anthropic-passthrough",
+        model: req.body?.model || tier.model || null,
+        routing_method: "oauth-passthrough",
+        status_code: upstreamResp.status,
+        latency_ms: latencyMs,
+        input_tokens: inputTokensActual || null,
+        output_tokens: outputTokens || null,
+        message_count: req.body?.messages?.length || null,
+        tool_count: Array.isArray(req.body?.tools) ? req.body.tools.length : 0,
+        was_fallback: false,
+      });
 
-      // Audit log
-      try {
-        const { createAuditLogger } = require("../logger/audit-logger");
-        const audit = createAuditLogger(config.audit);
-        audit?.log?.({
-          provider: "azure-anthropic-passthrough",
-          destination: upstream,
-          status: upstreamResp.status,
-          latencyMs,
-          inputTokens: inputTokensActual,
-          outputTokens,
-          model: req.body?.model,
-        });
-      } catch (_) {}
+      // Audit log. NOTE: the interface returned by createAuditLogger exposes
+      // logLlmRequest/logLlmResponse — no generic `.log` — so the optional
+      // call stays until this is migrated to the real audit API.
+      const { createAuditLogger } = require("../logger/audit-logger");
+      const audit = createAuditLogger(config.audit);
+      audit.log?.({
+        provider: "azure-anthropic-passthrough",
+        destination: upstream,
+        status: upstreamResp.status,
+        latencyMs,
+        inputTokens: inputTokensActual,
+        outputTokens,
+        model: req.body?.model,
+      });
 
       // Memory extraction (read-only on response, no LLM call — pure regex)
       if (parsedResponse && config.memory?.extraction?.enabled) {
-        try {
-          const memoryExtractor = require("../memory/extractor");
-          memoryExtractor.extractMemories?.(
-            parsedResponse,
-            req.body?.messages || [],
-            { sessionId: req.body?._sessionId || req.sessionId || null }
-          ).catch(() => {});
-        } catch (_) {}
+        const memoryExtractor = require("../memory/extractor");
+        memoryExtractor.extractMemories(
+          parsedResponse,
+          req.body?.messages || [],
+          { sessionId: req.body?._sessionId || req.sessionId || null }
+        ).catch(() => {});
       }
     } catch (err) {
       logger.debug({ err: err.message }, "OAuth passthrough observability hook failed (non-fatal)");
@@ -547,7 +540,6 @@ function extractAnthropicMessageFromSSE(sseText) {
  *   - Memory is disabled
  *   - No memories retrieved
  *   - Latest message is not a user turn (could be tool_result, assistant)
- *   - Latest user message sits inside a cache_control-marked prefix
  *
  * Returns a new body with appended context otherwise. Original body never
  * mutated (returns a shallow-cloned messages array).
@@ -559,29 +551,6 @@ function maybeInjectMemoryIntoUserTail(body) {
   const lastMsg = body.messages[lastIdx];
   if (!lastMsg || lastMsg.role !== "user") return body;
 
-  // Frozen-prefix check: if the previous message has cache_control set, the
-  // model client (Claude Code) considers messages up to that point cached.
-  // We refuse to mutate inside the cached prefix to preserve cache hits.
-  // (For Anthropic, cache_control is on a content block, not the message
-  // itself, so scan content blocks.)
-  const hasCacheControlAtOrBefore = (idx) => {
-    for (let i = 0; i <= idx; i++) {
-      const m = body.messages[i];
-      if (!m || !Array.isArray(m.content)) continue;
-      for (const blk of m.content) {
-        if (blk && typeof blk === "object" && blk.cache_control) return true;
-      }
-    }
-    return false;
-  };
-  // Only mutate if the previous message (lastIdx-1) is NOT cache-marked.
-  // That keeps Claude Code's prompt-cache breakpoint stable.
-  if (lastIdx >= 1 && hasCacheControlAtOrBefore(lastIdx - 1)) {
-    // Common case: it's fine — the user message itself isn't in the prefix.
-    // Continue.
-  }
-
-  // Retrieve relevant memories for this user query.
   const { retrieveRelevantMemories, formatMemoriesForContext, extractQueryFromMessage } =
     require("../memory/retriever");
   const query = extractQueryFromMessage(lastMsg);
@@ -763,11 +732,9 @@ router.post("/routing/analyze", async (req, res) => {
     const selector = getModelTierSelector();
     const tier = selector.getTier(analysis.score);
 
-    // Get recommended model for tier
     const provider = req.query.provider || "openai";
     const modelSelection = selector.selectModel(tier, provider);
 
-    // Get model cost info
     let modelInfo = null;
     if (modelSelection.model) {
       const registry = await getModelRegistry();
@@ -802,7 +769,6 @@ router.post("/v1/messages/count_tokens", rateLimiter, async (req, res, next) => 
   try {
     const { messages, system } = req.body;
 
-    // Validate required fields
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({
         error: {
@@ -812,7 +778,6 @@ router.post("/v1/messages/count_tokens", rateLimiter, async (req, res, next) => 
       });
     }
 
-    // Estimate token count
     const inputTokens = estimateTokenCount(messages, system);
 
     // Return token count in Anthropic API format
@@ -826,7 +791,6 @@ router.post("/v1/messages/count_tokens", rateLimiter, async (req, res, next) => 
 
 // Stub endpoint for event logging (used by Claude CLI)
 router.post("/api/event_logging/batch", (req, res) => {
-  // Silently accept and discard event logging requests
   res.status(200).json({ success: true });
 });
 
@@ -1315,19 +1279,17 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // response body when LYNKR_VISIBLE_ROUTING=true.
     const interaction = buildInteractionBlock(preRouteDecision);
 
-    // Extract client CWD from request body or header
     const clientCwd = validateCwd(req.body?.cwd || req.headers['x-workspace-cwd']);
 
     // For true streaming: only support non-tool requests for MVP
     // Tool requests require buffering for agent loop
     if (wantsStream && !hasTools) {
-      // True streaming path for text-only requests
       metrics.recordStreamingStart();
       res.set({
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
-        ...routingHeaders,  // Include routing headers
+        ...routingHeaders,
       });
       if (typeof res.flushHeaders === "function") {
         res.flushHeaders();
@@ -1345,7 +1307,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         },
       });
 
-      // Check if we got a stream back
       if (result.stream) {
         // Parse SSE stream from provider and forward to client
         const reader = result.stream.getReader();
@@ -1360,7 +1321,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
             const chunk = decoder.decode(value, { stream: true });
             bufferChunks.push(chunk);
 
-            // Join buffer and split by lines
             const buffer = bufferChunks.join('');
             const lines = buffer.split('\n');
 
@@ -1375,13 +1335,11 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
               }
             }
 
-            // Flush after each chunk
             if (typeof res.flush === 'function') {
               res.flush();
             }
           }
 
-          // Send any remaining buffer
           const remaining = bufferChunks.join('');
           if (remaining.trim()) {
             res.write(remaining + '\n');
@@ -1393,7 +1351,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         } catch (streamError) {
           logger.error({ error: streamError }, "Error streaming response");
 
-          // Cancel stream on error
           try {
             await reader.cancel();
           } catch (cancelError) {
@@ -1421,8 +1378,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         }
       }
 
-      // Fallback: if no stream, wrap buffered response in proper Anthropic SSE format
-      // Check if result.body exists
       if (!result || !result.body) {
         res.write(`event: error\n`);
         res.write(`data: ${JSON.stringify({ type: "error", error: { message: "Empty response from provider" } })}\n\n`);
@@ -1432,7 +1387,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
       const msg = result.body;
 
-      // 1. message_start
       res.write(`event: message_start\n`);
       res.write(`data: ${JSON.stringify({
         type: "message_start",
@@ -1448,7 +1402,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         }
       })}\n\n`);
 
-      // 2. content_block_start and content_block_delta for each content block
       // Filter out server-side tools that shouldn't reach the client
       // Server-tool filtering is server-mode only: in client mode Task and
       // WebSearch are the CLIENT'S tools, and stripping them emits a
@@ -1568,7 +1521,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         }
       }
 
-      // 3. message_delta with stop_reason
       res.write(`event: message_delta\n`);
       res.write(`data: ${JSON.stringify({
         type: "message_delta",
@@ -1583,7 +1535,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         usage: { output_tokens: msg.usage?.output_tokens || 0 }
       })}\n\n`);
 
-      // 4. message_stop
       res.write(`event: message_stop\n`);
       res.write(`data: ${JSON.stringify({ type: "message_stop" })}\n\n`);
 
@@ -1620,7 +1571,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         res.flushHeaders();
       }
 
-      // Check if result.body exists
       if (!result || !result.body) {
         res.write(`event: error\n`);
         res.write(`data: ${JSON.stringify({ type: "error", error: { message: "Empty response from provider" } })}\n\n`);
@@ -1628,10 +1578,8 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         return;
       }
 
-      // Use proper Anthropic SSE format
       const msg = result.body;
 
-      // 1. message_start
       res.write(`event: message_start\n`);
       res.write(`data: ${JSON.stringify({
         type: "message_start",
@@ -1647,7 +1595,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         }
       })}\n\n`);
 
-      // 2. content_block_start and content_block_delta for each content block
       // Filter out server-side tools that shouldn't reach the client
       // Server-tool filtering is server-mode only: in client mode Task and
       // WebSearch are the CLIENT'S tools, and stripping them emits a
@@ -1747,7 +1694,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         }
       }
 
-      // 3. message_delta with stop_reason
       res.write(`event: message_delta\n`);
       res.write(`data: ${JSON.stringify({
         type: "message_delta",
@@ -1762,7 +1708,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         usage: { output_tokens: msg.usage?.output_tokens || 0 }
       })}\n\n`);
 
-      // 4. message_stop
       res.write(`event: message_stop\n`);
       res.write(`data: ${JSON.stringify({ type: "message_stop" })}\n\n`);
 

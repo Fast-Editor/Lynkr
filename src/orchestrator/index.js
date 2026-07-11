@@ -20,7 +20,6 @@ const { getShuttingDown } = require("../api/health");
 const { tryPreflight, buildSatisfiedResponse: buildPreflightResponse } = require("./preflight");
 const { detectBypass, buildBypassResponse } = require("./bypass");
 const crypto = require("crypto");
-const { asyncClone, asyncTransform, getPoolStats } = require("../workers/helpers");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
 const lazyLoader = require("../tools/lazy-loader");
 const { areSimilarToolCalls } = require("../clients/gpt-utils");
@@ -237,10 +236,18 @@ function normaliseTools(tools) {
 function ensureAnthropicToolFormat(tools) {
   if (!Array.isArray(tools) || tools.length === 0) return undefined;
   return tools.map((tool) => {
+    // Shape-detect: unwrap OpenAI-format tools rather than fabricating
+    // "unnamed_tool" from their absent top-level fields.
+    if (tool?.type === "function" && tool.function) {
+      tool = {
+        name: tool.function.name,
+        description: tool.function.description,
+        input_schema: tool.function.parameters,
+      };
+    }
     // Ensure input_schema has required 'type' field
     let input_schema = tool.input_schema || { type: "object", properties: {} };
 
-    // If input_schema exists but missing 'type', add it
     if (input_schema && !input_schema.type) {
       input_schema = { type: "object", ...input_schema };
     }
@@ -470,7 +477,6 @@ function injectToolLoopStopInstruction(messages, threshold = 5) {
       content: `⚠️ IMPORTANT: You have already executed ${toolResultCount} tool calls in this conversation. This is likely an infinite loop. STOP calling tools immediately and provide a direct text response to the user based on the information you have gathered. If you cannot complete the task, explain why. DO NOT call any more tools.`,
     };
 
-    // Add to end of messages
     return [...messages, stopInstruction];
   }
 
@@ -552,7 +558,6 @@ function recordCrossRequestToolCall(session, toolCall) {
     }
 
     if (!mergedInto) {
-      // New unique signature
       dedup.signatures[signature] = {
         count: 1,
         toolName,
@@ -612,7 +617,6 @@ function getMaxDedupCount(session) {
 function extractToolUseFromCurrentTurn(messages) {
   if (!Array.isArray(messages)) return [];
 
-  // Find last user text message
   let lastUserTextIndex = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -733,7 +737,6 @@ function parseExecutionContent(content) {
               if (block.type === 'text' && typeof block.text === 'string') {
                 return block.text;
               }
-              // Handle other block types gracefully
               if (block.text) return block.text;
               if (block.content) return typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
               return null;
@@ -924,7 +927,6 @@ function normaliseToolChoice(choice) {
 function stripThinkingBlocks(text) {
   if (typeof text !== "string") return text;
 
-  // Split into lines
   const lines = text.split("\n");
   const cleanedLines = [];
   let inThinkingBlock = false;
@@ -949,15 +951,12 @@ function stripThinkingBlocks(text) {
       continue;
     }
 
-    // Reset empty line counter
     consecutiveEmptyLines = 0;
 
-    // Skip lines that are part of thinking block
     if (inThinkingBlock) {
       continue;
     }
 
-    // Keep this line
     cleanedLines.push(line);
   }
 
@@ -1332,7 +1331,6 @@ function sanitizePayload(payload) {
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
       delete clean.tools;
     } else {
-      // Ensure tools are in Anthropic format
       clean.tools = ensureAnthropicToolFormat(clean.tools);
     }
   } else if (providerType === "vertex") {
@@ -1444,7 +1442,7 @@ function sanitizePayload(payload) {
   // Run this BEFORE message coalescing to preserve parseable JSON boundaries.
   applyToonCompression(clean, config.toon, { logger });
 
-  // FIX: Handle consecutive messages with the same role (causes llama.cpp 400 error)
+  // Handle consecutive messages with the same role (causes llama.cpp 400 error)
   // Strategy: Merge consecutive same-role messages, but NEVER merge messages
   // that contain tool_use or tool_result blocks — they must stay intact for
   // the provider's tool-call protocol.
@@ -1732,7 +1730,6 @@ async function runAgentLoop({
                 memoriesRetrieved: relevantMemories.length,
               }, 'Injecting long-term memories into context');
 
-              // Inject memories into system prompt
               const injectedSystem = memoryRetriever.injectMemoriesIntoSystem(
                 cleanPayload.system,
                 relevantMemories,
@@ -2000,7 +1997,6 @@ IMPORTANT TOOL USAGE RULES:
   // Generate correlation ID for request/response pairing
   const correlationId = `req_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
 
-  // Log LLM request before invocation
   if (auditLogger.enabled) {
     auditLogger.logLlmRequest({
       correlationId,
@@ -2123,7 +2119,6 @@ IMPORTANT TOOL USAGE RULES:
     throw modelError;
   }
 
-  // Extract and log actual token usage
   const actualUsage = databricksResponse.ok && config.tokenTracking?.enabled !== false
     ? tokens.extractUsageFromResponse(databricksResponse.json)
     : null;
@@ -2137,12 +2132,10 @@ IMPORTANT TOOL USAGE RULES:
     }
   }
 
-  // Log LLM response after invocation
   if (auditLogger.enabled) {
     const latencyMs = Date.now() - start;
 
     if (databricksResponse.stream) {
-      // Log streaming response (no content, just metadata)
       auditLogger.logLlmResponse({
         correlationId,
         sessionId: session?.id ?? null,
@@ -2155,7 +2148,6 @@ IMPORTANT TOOL USAGE RULES:
         streamingNote: 'Content streamed directly to client, not captured in audit log',
       });
     } else if (databricksResponse.ok && databricksResponse.json) {
-      // Log successful non-streaming response
       const message = databricksResponse.json;
       const assistantMessage = message.content ?? message.choices?.[0]?.message;
 
@@ -2174,7 +2166,6 @@ IMPORTANT TOOL USAGE RULES:
         status: databricksResponse.status,
       });
     } else {
-      // Log error response
       auditLogger.logLlmResponse({
         correlationId,
         sessionId: session?.id ?? null,
@@ -2382,7 +2373,6 @@ IMPORTANT TOOL USAGE RULES:
         const contentBlocks = [];
         let toolCallIdx = 0;
 
-        // Add text content if present
         if (message.content && typeof message.content === 'string' && message.content.trim()) {
           contentBlocks.push({
             type: "text",
@@ -2390,12 +2380,10 @@ IMPORTANT TOOL USAGE RULES:
           });
         }
 
-        // Add tool_use blocks from tool_calls
         for (const toolCall of toolCalls) {
           const func = toolCall.function || {};
           let input = {};
 
-          // Parse arguments string to object
           if (func.arguments) {
             try {
               input = typeof func.arguments === "string"
@@ -2468,7 +2456,6 @@ IMPORTANT TOOL USAGE RULES:
 
       cleanPayload.messages.push(assistantToolMessage);
 
-      // Check if tool execution should happen on client side
       const executionMode = config.toolExecutionMode || "server";
 
       // Server-side tool split: in SERVER mode task/web tools run on Lynkr.
@@ -2632,7 +2619,6 @@ IMPORTANT TOOL USAGE RULES:
         }, "Executing multiple Task tools in parallel");
 
         try {
-          // Execute all Task tools in parallel
           const taskExecutions = await Promise.all(
             taskCalls.map(({ call }) => executeToolCall(call, {
               session,
@@ -2642,7 +2628,6 @@ IMPORTANT TOOL USAGE RULES:
             }))
           );
 
-          // Process results and add to messages
           taskExecutions.forEach((execution, index) => {
             const call = taskCalls[index].call;
             toolCallsExecuted += 1;
@@ -2806,7 +2791,6 @@ IMPORTANT TOOL USAGE RULES:
 
           cleanPayload.messages.push(toolResultMessage);
 
-          // Convert to Anthropic format for session storage
           let sessionToolResult;
           if (providerType === "azure-anthropic") {
             sessionToolResult = toolResultMessage.content;
@@ -2839,7 +2823,6 @@ IMPORTANT TOOL USAGE RULES:
 
         toolCallsExecuted += 1;
 
-        // Check if we've exceeded the max tool calls limit
         if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
           logger.error(
             {
@@ -2937,7 +2920,6 @@ IMPORTANT TOOL USAGE RULES:
 
         cleanPayload.messages.push(toolMessage);
 
-        // Convert to Anthropic format for session storage
         let sessionToolResultContent;
         if (providerType === "azure-anthropic") {
           // Azure Anthropic already has content in correct format
@@ -3033,7 +3015,6 @@ IMPORTANT TOOL USAGE RULES:
             `Tool call loop detected - same tool called ${loopThreshold} times with identical/similar parameters`,
           );
 
-          // Inject warning message to model
           loopWarningInjected = true;
           const warningMessage = {
             role: "user",
@@ -3270,7 +3251,6 @@ IMPORTANT TOOL USAGE RULES:
         };
       }
 
-      // Log OpenAI raw response
       logger.info({
         hasChoices: !!databricksResponse.json?.choices,
         choiceCount: databricksResponse.json?.choices?.length || 0,
@@ -3320,7 +3300,6 @@ IMPORTANT TOOL USAGE RULES:
         };
       }
 
-      // Log llama.cpp raw response
       logger.info({
         hasChoices: !!databricksResponse.json?.choices,
         choiceCount: databricksResponse.json?.choices?.length || 0,
@@ -3345,10 +3324,6 @@ IMPORTANT TOOL USAGE RULES:
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     } else if (actualProvider === "zai") {
       // Z.AI responses are already converted to Anthropic format in invokeZai
-      logger.info({
-        hasJson: !!databricksResponse.json,
-        jsonContent: JSON.stringify(databricksResponse.json?.content)?.substring(0, 200),
-      }, "=== ZAI ORCHESTRATOR DEBUG ===");
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
@@ -3361,10 +3336,6 @@ IMPORTANT TOOL USAGE RULES:
       }
     } else if (actualProvider === "moonshot") {
       // Moonshot responses are already converted to Anthropic format in invokeMoonshot
-      logger.info({
-        hasJson: !!databricksResponse.json,
-        jsonContent: JSON.stringify(databricksResponse.json?.content)?.substring(0, 300),
-      }, "=== MOONSHOT ORCHESTRATOR DEBUG ===");
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
@@ -3519,7 +3490,6 @@ IMPORTANT TOOL USAGE RULES:
 
           cleanPayload.messages.push(assistantToolMessage);
 
-          // Convert to Anthropic format for session storage
           let sessionFallbackContent;
           if (providerType === "azure-anthropic") {
             // Already in Anthropic format
@@ -3534,7 +3504,6 @@ IMPORTANT TOOL USAGE RULES:
               });
             }
 
-            // Add tool_use blocks from tool_calls
             if (Array.isArray(assistantToolMessage.tool_calls)) {
               for (const tc of assistantToolMessage.tool_calls) {
                 const func = tc.function || {};
@@ -3588,7 +3557,6 @@ IMPORTANT TOOL USAGE RULES:
 
           cleanPayload.messages.push(toolResultMessage);
 
-          // Convert to Anthropic format for session storage
           let sessionFallbackToolResult;
           if (providerType === "azure-anthropic") {
             // Already in Anthropic format
@@ -3622,7 +3590,6 @@ IMPORTANT TOOL USAGE RULES:
 
           toolCallsExecuted += 1;
 
-          // Check if we've exceeded the max tool calls limit
           if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
             logger.error(
               {
@@ -3674,6 +3641,7 @@ IMPORTANT TOOL USAGE RULES:
         provider: databricksResponse.routingDecision.provider,
         model: databricksResponse.routingDecision.model,
         tier: databricksResponse.routingDecision.tier,
+        score: databricksResponse.routingDecision.score ?? null,
       };
     }
 
@@ -3892,11 +3860,6 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   // === TOOL LOOP GUARD (EARLY CHECK) ===
   // Check BEFORE sanitization since sanitizePayload removes conversation history
-  // All providers use threshold 2 to catch loops early
-  const providerType = config.modelProvider?.type ?? "databricks";
-  const toolLoopThreshold = 2;
-  const { toolResultCount, toolUseCount } = countToolCallsInHistory(payload?.messages);
-
   const executionMode = config.toolExecutionMode || "server";
   const isClientMode = executionMode === "client" || executionMode === "passthrough";
 
@@ -4042,7 +4005,6 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
   const cleanPayload = sanitizePayload(payload);
   pTimer.mark("sanitizePayload");
 
-  // Proactively load tools based on prompt content (lazy loading)
   try {
     const { loaded } = lazyLoader.ensureToolsForPrompt(cleanPayload.messages);
     if (loaded.length > 0) {
@@ -4072,8 +4034,7 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     cacheKey = key;
     if (entry?.value) {
       try {
-        // Use worker pool for large cached responses
-        cachedResponse = await asyncClone(entry.value);
+        cachedResponse = structuredClone(entry.value);
       } catch {
         cachedResponse = entry.value;
       }
@@ -4105,6 +4066,7 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
         provider: cachedResponse.routingDecision.provider,
         model: cachedResponse.routingDecision.model,
         tier: cachedResponse.routingDecision.tier,
+        score: cachedResponse.routingDecision.score ?? null,
       };
     }
 
@@ -4131,7 +4093,6 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     };
   }
 
-  // Semantic cache lookup (fuzzy matching based on embedding similarity)
   let semanticLookupResult = null;
   const semanticCache = getSemanticCache();
   if (semanticCache.isEnabled()) {
@@ -4173,9 +4134,6 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
     }
   }
 
-  // NOTE: Tool loop guard moved to BEFORE sanitizePayload() since sanitization
-  // removes conversation history (consecutive same-role messages)
-
   pTimer.mark("preAgentLoop");
   const loopResult = await runAgentLoop({
     cleanPayload,
@@ -4191,7 +4149,6 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
   pTimer.mark("agentLoopDone");
   pTimer.done();
 
-  // Store successful responses in semantic cache for future fuzzy matching
   if (semanticCache.isEnabled() && semanticLookupResult && !semanticLookupResult.hit) {
     if (loopResult.response?.status === 200 && loopResult.response?.body) {
       try {

@@ -54,7 +54,14 @@ function _lastUserText(payload) {
       : Array.isArray(m.content)
         ? m.content.filter((b) => b?.type === 'text').map((b) => b.text || '').join(' ')
         : '';
-    return raw.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ').trim();
+    return raw
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ')
+      // Codex harness blocks merged into the typed text — inflate askLen
+      // and trip the wants-code regexes ("claude-code", access="write"),
+      // failing every short answer to a trivial prompt.
+      .replace(/<environment_context>[\s\S]*?<\/environment_context>/g, ' ')
+      .replace(/<user_instructions>[\s\S]*?<\/user_instructions>/g, ' ')
+      .trim();
   }
   return '';
 }

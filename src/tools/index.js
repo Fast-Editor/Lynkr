@@ -1,6 +1,5 @@
 const logger = require("../logger");
 const { truncateToolOutput } = require("./truncate");
-const { isGPTProvider, formatToolResultForGPT } = require("../clients/gpt-utils");
 
 const registry = new Map();
 const registryLowercase = new Map();
@@ -258,19 +257,7 @@ async function executeToolCall(call, context = {}) {
     );
     const formatted = normalizeHandlerResult(result);
 
-    // Apply tool output truncation for token efficiency
-    let truncatedContent = truncateToolOutput(normalisedCall.name, formatted.content);
-
-    // GPT-specific formatting temporarily disabled for testing
-    // const isGPT = context?.provider && isGPTProvider(context.provider);
-    // if (isGPT) {
-    //   truncatedContent = formatToolResultForGPT(
-    //     normalisedCall.name,
-    //     truncatedContent,
-    //     normalisedCall.arguments
-    //   );
-    // }
-    const isGPT = false; // Disabled for testing
+    const truncatedContent = truncateToolOutput(normalisedCall.name, formatted.content);
 
     return {
       id: normalisedCall.id,
@@ -284,7 +271,6 @@ async function executeToolCall(call, context = {}) {
         truncated: truncatedContent !== formatted.content,
         originalLength: formatted.content?.length,
         truncatedLength: truncatedContent?.length,
-        gptFormatted: isGPT,
       },
     };
   } catch (err) {

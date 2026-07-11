@@ -26,18 +26,25 @@ function convertAnthropicToolsToOpenRouter(anthropicTools) {
     return [];
   }
 
-  return anthropicTools.map(tool => ({
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description || "",
-      parameters: tool.input_schema || {
-        type: "object",
-        properties: {},
-        required: []
+  return anthropicTools.map(tool => {
+    // Shape-detect: already OpenAI-format tools pass through untouched —
+    // the orchestrator's build step may have normalised for a different
+    // provider before routing picked this one, and re-wrapping strips the
+    // name ({type:"function", function:{name:undefined}}).
+    if (tool?.type === "function" && tool.function) return tool;
+    return {
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description || "",
+        parameters: tool.input_schema || {
+          type: "object",
+          properties: {},
+          required: []
+        }
       }
-    }
-  }));
+    };
+  });
 }
 
 /**

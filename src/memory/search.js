@@ -10,7 +10,7 @@ const MAX_QUERY_LENGTH = 1000;
 const MAX_OR_TERMS = 50;
 
 // ============================================================================
-// KEYWORD SANITIZATION (NEW - Critical for FTS5 Safety)
+// KEYWORD SANITIZATION
 // ============================================================================
 
 /**
@@ -52,13 +52,13 @@ function sanitizeKeywords(keywords) {
 }
 
 // ============================================================================
-// FTS5 QUERY PREPARATION (UPDATED - Hardened)
+// FTS5 QUERY PREPARATION
 // ============================================================================
 
 /**
  * Prepare FTS5 query - handle special characters and phrases
  * 
- * CRITICAL FIX for better-sqlite3 v12+ (SQLite 3.46+):
+ * For better-sqlite3 v12+ (SQLite 3.46+):
  * - Commas and periods inside quoted strings cause "fts5: syntax error near ,"
  * - Solution: Extract keywords and search for them individually with OR
  * - This is more robust than attempting to quote complex phrases
@@ -66,7 +66,6 @@ function sanitizeKeywords(keywords) {
 function prepareFTS5Query(query) {
   let cleaned = query.trim();
 
-  // Length validation
   if (cleaned.length > MAX_QUERY_LENGTH) {
     logger.warn({ 
       queryLength: cleaned.length, 
@@ -145,7 +144,7 @@ function prepareFTS5Query(query) {
 }
 
 // ============================================================================
-// SEARCH FUNCTIONS (UPDATED)
+// SEARCH FUNCTIONS
 // ============================================================================
 
 /**
@@ -175,7 +174,6 @@ function searchMemories(options) {
       ftsQuery: ftsQuery.substring(0, 100) 
     }, 'FTS5 query prepared');
 
-    // Build SQL with filters
     let sql = `
       SELECT m.id, m.session_id, m.content, m.type, m.category,
              m.importance, m.surprise_score, m.access_count, m.decay_factor,
@@ -188,7 +186,6 @@ function searchMemories(options) {
 
     const params = [ftsQuery];
 
-    // Add filters
     if (sessionId) {
       sql += ` AND (m.session_id = ? OR m.session_id IS NULL)`;
       params.push(sessionId);
@@ -211,7 +208,6 @@ function searchMemories(options) {
       params.push(minImportance);
     }
 
-    // Order by FTS5 rank and importance
     sql += ` ORDER BY memories_fts.rank, m.importance DESC LIMIT ?`;
     params.push(limit);
 
@@ -264,9 +260,8 @@ function searchMemories(options) {
 function searchWithExpansion(options) {
   const { query, limit = 10 } = options;
 
-  // Extract keywords from query
   const keywords = extractKeywords(query);
-  const sanitizedKeywords = sanitizeKeywords(keywords);  // ✅ ADDED
+  const sanitizedKeywords = sanitizeKeywords(keywords);
 
   // Search with original query (already sanitized by prepareFTS5Query)
   const results = searchMemories({ ...options, limit: limit * 2 });
@@ -275,7 +270,7 @@ function searchWithExpansion(options) {
   if (results.length < limit && sanitizedKeywords.length > 1) {
     const seen = new Set(results.map((r) => r.id));
 
-    for (const keyword of sanitizedKeywords) {  // ✅ CHANGED - use sanitized
+    for (const keyword of sanitizedKeywords) {
       if (results.length >= limit) break;
 
       const kwResults = searchMemories({
@@ -315,7 +310,7 @@ function extractKeywords(text) {
 }
 
 /**
- * Find similar memories by keyword overlap (UPDATED - sanitized)
+ * Find similar memories by keyword overlap
  */
 function findSimilar(memoryId, limit = 5) {
   const memory = store.getMemory(memoryId);
@@ -324,12 +319,12 @@ function findSimilar(memoryId, limit = 5) {
   }
 
   const keywords = extractKeywords(memory.content);
-  const sanitizedKeywords = sanitizeKeywords(keywords);  // ✅ ADDED
-  
+  const sanitizedKeywords = sanitizeKeywords(keywords);
+
   if (sanitizedKeywords.length === 0) return [];
 
   // Build OR query with SANITIZED keywords
-  const query = sanitizedKeywords.join(" OR ");  // ✅ CHANGED - use sanitized
+  const query = sanitizedKeywords.join(" OR ");
 
   const results = searchMemories({
     query,
@@ -337,27 +332,6 @@ function findSimilar(memoryId, limit = 5) {
   });
 
   return results.filter((r) => r.id !== memoryId).slice(0, limit);
-}
-
-/**
- * Search by content similarity (UPDATED - sanitized)
- */
-function searchByContent(content, options = {}) {
-  const keywords = extractKeywords(content);
-  const sanitizedKeywords = sanitizeKeywords(keywords);  // ✅ ADDED
-  
-  if (sanitizedKeywords.length === 0) return [];
-
-  const query = sanitizedKeywords.slice(0, 5).join(" OR ");  // ✅ CHANGED
-  return searchMemories({ ...options, query });
-}
-
-/**
- * Count search results without fetching them
- */
-function countSearchResults(options) {
-  const results = searchMemories({ ...options, limit: 1000 });
-  return results.length;
 }
 
 // ============================================================================
@@ -369,9 +343,7 @@ module.exports = {
   searchWithExpansion,
   extractKeywords,
   findSimilar,
-  searchByContent,
-  countSearchResults,
   prepareFTS5Query,
-  sanitizeKeyword,      // ✅ NEW - exported for testing
-  sanitizeKeywords,     // ✅ NEW - exported for testing
+  sanitizeKeyword,      // exported for testing
+  sanitizeKeywords,     // exported for testing
 };

@@ -275,48 +275,6 @@ describe("Memory Search", () => {
     });
   });
 
-  describe("searchByContent()", () => {
-    it("should search by content similarity", () => {
-      const results = search.searchByContent("Python programming language");
-      assert.ok(results.length > 0);
-      assert.ok(results.some(m => m.content.toLowerCase().includes("python")));
-    });
-
-    it("should handle empty content", () => {
-      const results = search.searchByContent("");
-      assert.strictEqual(results.length, 0);
-    });
-
-    it("should filter by type and category", () => {
-      const results = search.searchByContent("project", {
-        types: ["fact"],
-        categories: ["project"]
-      });
-
-      assert.ok(results.every(m => m.type === "fact" && m.category === "project"));
-    });
-  });
-
-  describe("countSearchResults()", () => {
-    it("should count matching memories", () => {
-      const count = search.countSearchResults({ query: "project" });
-      assert.ok(count > 0);
-      assert.strictEqual(typeof count, "number");
-    });
-
-    it("should return 0 for no matches", () => {
-      const count = search.countSearchResults({ query: "nonexistent-xyz" });
-      assert.strictEqual(count, 0);
-    });
-
-    it("should respect filters", () => {
-      const totalCount = search.countSearchResults({ query: "project" });
-      const factCount = search.countSearchResults({ query: "project", types: ["fact"] });
-
-      assert.ok(factCount <= totalCount);
-    });
-  });
-
   describe("FTS5 Query Preparation", () => {
     it("should handle AND operator", () => {
       const results = search.searchMemories({ query: "Python AND machine" });

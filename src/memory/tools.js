@@ -13,19 +13,16 @@ const MAX_QUERY_LENGTH = 1000;
 const MAX_CONTENT_LENGTH = 5000;
 
 // ============================================================================
-// MEMORY TOOLS (UPDATED WITH VALIDATION)
+// MEMORY TOOLS
 // ============================================================================
 
 /**
  * Tool: memory_search
  * Search long-term memories for relevant facts
- * 
- * UPDATED: Added input validation to prevent FTS5 errors and injection
  */
 async function memory_search(args, context = {}) {
   const { query, limit = 10, type, category } = args;
 
-  // ✅ Validate query exists and is string
   if (!query || typeof query !== 'string') {
     return {
       ok: false,
@@ -35,18 +32,16 @@ async function memory_search(args, context = {}) {
     };
   }
 
-  // ✅ Validate query length
   if (query.length > MAX_QUERY_LENGTH) {
     return {
       ok: false,
-      content: JSON.stringify({ 
+      content: JSON.stringify({
         error: `Query too long (max ${MAX_QUERY_LENGTH} characters)`,
         provided: query.length
       }),
     };
   }
 
-  // ✅ Validate type if provided
   if (type && !VALID_TYPES.includes(type)) {
     return {
       ok: false,
@@ -57,7 +52,6 @@ async function memory_search(args, context = {}) {
     };
   }
 
-  // ✅ Validate category if provided
   if (category && !VALID_CATEGORIES.includes(category)) {
     return {
       ok: false,
@@ -68,7 +62,6 @@ async function memory_search(args, context = {}) {
     };
   }
 
-  // ✅ Validate limit
   if (typeof limit !== 'number' || limit < 1 || limit > 100) {
     return {
       ok: false,
@@ -121,8 +114,6 @@ async function memory_search(args, context = {}) {
 /**
  * Tool: memory_add
  * Manually add a fact to long-term memory
- * 
- * UPDATED: Enhanced validation
  */
 async function memory_add(args, context = {}) {
   const {
@@ -132,7 +123,6 @@ async function memory_add(args, context = {}) {
     importance = 0.5,
   } = args;
 
-  // ✅ Validate content
   if (!content || typeof content !== 'string') {
     return {
       ok: false,
@@ -142,7 +132,6 @@ async function memory_add(args, context = {}) {
     };
   }
 
-  // ✅ Validate content length
   if (content.length > MAX_CONTENT_LENGTH) {
     return {
       ok: false,
@@ -163,7 +152,6 @@ async function memory_add(args, context = {}) {
     };
   }
 
-  // ✅ Validate type
   if (!VALID_TYPES.includes(type)) {
     return {
       ok: false,
@@ -174,7 +162,6 @@ async function memory_add(args, context = {}) {
     };
   }
 
-  // ✅ Validate category
   if (!VALID_CATEGORIES.includes(category)) {
     return {
       ok: false,
@@ -185,7 +172,6 @@ async function memory_add(args, context = {}) {
     };
   }
 
-  // ✅ Validate importance
   if (typeof importance !== 'number' || importance < 0 || importance > 1) {
     return {
       ok: false,
@@ -241,13 +227,10 @@ async function memory_add(args, context = {}) {
 /**
  * Tool: memory_forget
  * Remove memories matching a query
- * 
- * UPDATED: Enhanced validation
  */
 async function memory_forget(args, context = {}) {
   const { query, confirm = false } = args;
 
-  // ✅ Validate query
   if (!query || typeof query !== 'string') {
     return {
       ok: false,
@@ -257,7 +240,6 @@ async function memory_forget(args, context = {}) {
     };
   }
 
-  // ✅ Validate query length
   if (query.length > MAX_QUERY_LENGTH) {
     return {
       ok: false,
@@ -268,7 +250,6 @@ async function memory_forget(args, context = {}) {
     };
   }
 
-  // ✅ Validate confirm is boolean
   if (typeof confirm !== 'boolean') {
     return {
       ok: false,
@@ -280,7 +261,6 @@ async function memory_forget(args, context = {}) {
   }
 
   try {
-    // Search for matching memories
     const matches = search.searchMemories({
       query,
       limit: 50, // Check up to 50 matches
@@ -318,7 +298,6 @@ async function memory_forget(args, context = {}) {
       };
     }
 
-    // Delete all matching memories
     let deletedCount = 0;
     for (const memory of matches) {
       const deleted = store.deleteMemory(memory.id);
@@ -386,7 +365,7 @@ async function memory_stats(args, context = {}) {
 }
 
 // ============================================================================
-// TOOL DEFINITIONS (UPDATED)
+// TOOL DEFINITIONS
 // ============================================================================
 
 const MEMORY_TOOLS = {

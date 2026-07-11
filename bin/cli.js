@@ -23,6 +23,15 @@ if (sub && Object.prototype.hasOwnProperty.call(SUBCOMMANDS, sub)) {
   return;
 }
 
+// Unknown positional commands must error loudly, not silently boot the
+// server (`lynkr codex` used to start a bare gateway and never say why).
+if (sub && !sub.startsWith('-')) {
+  console.error(`Error: unknown command '${sub}'.`);
+  console.error(`Did you mean: lynkr wrap ${sub}`);
+  console.error(`Known commands: ${Object.keys(SUBCOMMANDS).join(', ')} (or no command to start the server)`);
+  process.exit(1);
+}
+
 if (process.argv.includes('--version') || process.argv.includes('-v')) {
   console.log(pkg.version);
   process.exit(0);

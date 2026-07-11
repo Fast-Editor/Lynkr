@@ -97,6 +97,10 @@ function extractCleanUserText(payload) {
       .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
       // Harness task/background-agent notifications — not user-authored.
       .replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '')
+      // Codex harness blocks (merged into the typed text upstream):
+      // sandbox/permission profile and AGENTS.md contents.
+      .replace(/<environment_context>[\s\S]*?<\/environment_context>/g, '')
+      .replace(/<user_instructions>[\s\S]*?<\/user_instructions>/g, '')
       // Lynkr's own injected notices (quota banners, badges) start with the
       // [Lynkr] marker — the user didn't type those.
       .replace(/^\s*\[Lynkr\][^\n]*$/gm, '')
