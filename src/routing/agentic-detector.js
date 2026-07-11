@@ -42,12 +42,9 @@ const PATTERNS = {
   // Iterative work indicators
   iterative: /\b(keep\s+trying|until|repeat|loop|retry|iterate|fix.*again|try.*different|debug)\b/i,
 
-  // Autonomous work indicators. Includes the literal "autonomous(ly)" ask:
-  // under a client profile the baseline-tool subtraction drops the score
-  // below the 60 gate, so the phrase gate (>=40) is the only path — and
-  // "Work autonomously: run the tests, fix each failure…" matched NOTHING
-  // here (live 2026-07-09: routed MEDIUM on a real wrap; REASONING fired
-  // only for profile-less clients whose raw tool count inflated the score).
+  // Autonomous work indicators. Must include the literal "autonomous(ly)":
+  // under client profiles the tool-count score sits below the 60 gate, so
+  // the phrase gate is the only path to AUTONOMOUS.
   autonomous: /\b(figure\s+out|solve|complete\s+the\s+task|do\s+whatever|make\s+it\s+work|find\s+a\s+way|whatever\s+it\s+takes|autonomous(ly)?|on\s+your\s+own|without\s+(asking|supervision)|keep\s+(going|iterating|working)\s+until)\b/i,
 
   // Multi-file work

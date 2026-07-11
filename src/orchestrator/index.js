@@ -1351,14 +1351,9 @@ function sanitizePayload(payload) {
       clean.tools = ensureAnthropicToolFormat(clean.tools);
     }
   } else if (providerType === "azure-openai" || providerType === "openai") {
-    // Azure OpenAI / OpenAI support tools — keep Anthropic format; converted
-    // to OpenAI (or Responses API) format inside the client. This branch was
-    // MISSING: azure-openai fell into the unknown-provider catch-all below,
-    // which deleted every request's tools at ingress "for safety" — the
-    // azure client then injected its own STANDARD_TOOLS, the model used
-    // them, and the orchestrator (whose list was empty) dropped every call
-    // as hallucinated and injected the design.html redirect. Root of every
-    // azure-tier failure on 2026-07-10.
+    // Azure OpenAI / OpenAI support tools — keep Anthropic format; the
+    // client converts to Chat Completions / Responses format. Without this
+    // branch the unknown-provider catch-all below deletes the tools.
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
       delete clean.tools;
     } else {
@@ -1656,17 +1651,10 @@ async function runAgentLoop({
       "Agent loop step",
     );
 
-    // Trim messages when they grow too large to prevent OOM.
-    // Keep the head, THE CURRENT TASK, and the most recent tail.
-    //
-    // The old head+tail-only splice caused model amnesia: a session that
-    // OPENED with "Hi" kept the greeting as its head and trimmed the actual
-    // ask ("Do an architecture review…") the moment the tool loop passed 40
-    // messages — the model then saw 38 frames of tool results whose only
-    // user text was "Hi", and dutifully answered the greeting (live
-    // 2026-07-09 and again 2026-07-10; masqueraded as a model-quality bug
-    // for a full day). The latest user message with real typed text is the
-    // task — it must survive every trim.
+    // Trim over-long loop conversations to prevent OOM, keeping the head,
+    // THE CURRENT TASK (latest user message with real typed text), and the
+    // recent tail — a head+tail-only trim discards the ask itself when the
+    // session opened with a greeting, and the model answers the greeting.
     // Tunable: LYNKR_MAX_LOOP_MESSAGES (default 40; 0 disables trimming
     // entirely). Disabling trades flat per-frame cost/latency for full
     // context fidelity — on weak models expect coherence loss on very long
@@ -2361,12 +2349,9 @@ IMPORTANT TOOL USAGE RULES:
         ? (databricksResponse.json?.content ?? []).some(b => b?.type === "text" && String(b.text || "").trim().length > 0)
         : (typeof message.content === "string" && message.content.trim().length > 0);
 
-      // The artifact redirect is an open-design (SERVER-mode) feature. On wrap
-      // traffic it fires on tool-less SIDE requests, instructs the model to
-      // emit design.html artifacts, burns an extra model call, and those
-      // artifacts then leak into suggestions/memory/telemetry (2026-07-10:
-      // an entire afternoon of HTML-form "reviews"). Client mode: drop the
-      // hallucinated calls and return whatever text exists — never redirect.
+      // The artifact redirect is an open-design (SERVER-mode) feature; in
+      // client mode, drop the hallucinated calls and return whatever text
+      // exists — never instruct the model to emit artifacts.
       const _clientOwnsOutput = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
       if (!hasTextContent && steps < settings.maxSteps - 1 && !_clientOwnsOutput) {
         logger.info({
@@ -2486,15 +2471,10 @@ IMPORTANT TOOL USAGE RULES:
       // Check if tool execution should happen on client side
       const executionMode = config.toolExecutionMode || "server";
 
-      // Server-side tool split. In SERVER mode, task/web tools run on Lynkr
-      // (clients there have no tool runtime). In CLIENT mode the client owns
-      // ALL of its tools: Claude Code's "Task" is its SUBAGENT SPAWNER and
-      // WebSearch/WebFetch are its own — hijacking them to Lynkr's same-named
-      // internal tools executes the wrong semantics entirely. Live
-      // 2026-07-10: gpt-5.2 opened a review by calling Task; Lynkr ran its
-      // internal task tracker instead, got nothing, and the artifact-redirect
-      // then told the model "you have no tools — output design.html" — the
-      // user received an HTML form asking them to paste their own code.
+      // Server-side tool split: in SERVER mode task/web tools run on Lynkr.
+      // In CLIENT mode the client owns ALL its tools — its "Task" (subagent
+      // spawner) and WebSearch collide with Lynkr's same-named internal
+      // tools, which have entirely different semantics.
       const serverSideToolCalls = [];
       const clientSideToolCalls = [];
 
@@ -3396,12 +3376,9 @@ IMPORTANT TOOL USAGE RULES:
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
       }
     } else if (databricksResponse.json?.type === "message" && Array.isArray(databricksResponse.json?.content)) {
-      // Shape-detected: ALREADY Anthropic. Provider allowlists rot — the
-      // azure-openai Responses path converts to Anthropic upstream, and
-      // running that through toAnthropicResponse (which reads OpenAI's
-      // choices[]) EMPTIES the content. Live 2026-07-10: gpt's answers
-      // existed at telemetry capture but processMessage returned
-      // {type:"text", text:""} — the user saw badges and nothing else.
+      // Shape-detected: already Anthropic (some clients convert upstream).
+      // Re-converting via toAnthropicResponse reads the absent choices[]
+      // and empties the content.
       anthropicPayload = databricksResponse.json;
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     } else {
@@ -3419,11 +3396,8 @@ IMPORTANT TOOL USAGE RULES:
       (item) => item.type === "text" && needsWebFallback(item.text),
     );
 
-    // Web fallback is a SERVER-mode feature: in client/passthrough mode the
-    // client owns WebSearch/WebFetch, and a server-side fetch injected into
-    // the loop both duplicates the client's capability and has crashed on
-    // wrap traffic (live 2026-07-09: "web_fetch failed: invalid onError
-    // method" on a greeting turn).
+    // Web fallback is SERVER-mode only: in client mode the client owns
+    // WebSearch/WebFetch, and a server-side fetch would duplicate it.
     const _clientOwnsWeb = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
     if (fallbackCandidate && !fallbackPerformed && !_clientOwnsWeb) {
       if (providerType === "azure-anthropic") {

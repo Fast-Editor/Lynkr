@@ -428,18 +428,12 @@ function _liftLeakedThinkingBlocks(response) {
 }
 
 /**
- * Ollama daemon proxies cloud-provider errors as a JSON body that can arrive
- * with HTTP 200 — e.g. weekly quota exhaustion:
- *   {"StatusCode":429,"Status":"429 Too Many Requests","error":"you (…) have
- *    reached your weekly usage limit…"}
- * Left unthrown, that serves as an empty assistant message: neither
- * tier-fallback nor the cascade ever fires and the user sees a badge with no
- * reply (live incident 2026-07-09). Throwing here hands the request to the
- * tier-fallback ladder in invokeModel's catch, which climbs to a healthy tier.
- *
- * Also covers the streamed shape: on error the daemon answers with a JSON
- * body instead of an SSE stream, so a json-ish content-type on a streaming
- * response IS the error case — buffer the (small) body and throw.
+ * Ollama proxies cloud-provider errors as a JSON body that can arrive with
+ * HTTP 200 (e.g. quota exhaustion). Unthrown, that serves as an empty
+ * message and no fallback fires — so detect and throw, handing the request
+ * to invokeModel's tier-fallback catch. On streamed requests the daemon
+ * answers errors with JSON instead of SSE, so a json content-type on a
+ * streaming response IS the error case.
  */
 async function _throwIfOllamaError(response, modelName) {
   if (!response) return response;
@@ -536,23 +530,14 @@ async function invokeOllama(body, incomingHeaders = {}) {
     };
 
     // Build body with only valid Anthropic Messages API fields.
-    //
-    // max_tokens floor: MiniMax M2.5 (and other interleaved-thinking models)
-    // spend 200-400 tokens THINKING before any text. A small client budget
-    // (Claude Code side requests send a few hundred) gets fully consumed by
-    // the thinking phase → stop_reason=max_tokens with ZERO text — the user
-    // sees an empty reply and the cascade escalates a healthy provider.
-    // Measured 2026-07-09: probes at max_tokens=200 died mid-think 2/5 times
-    // (674-980 chars of thinking before 7-13 chars of answer).
+    // max_tokens floor: thinking models spend 200-400 tokens reasoning
+    // before any text; small client budgets die mid-think and return
+    // stop_reason=max_tokens with zero text.
     const minMaxTokens = Number(process.env.LYNKR_OLLAMA_MIN_MAX_TOKENS) || 1536;
-    // Buffer ollama responses (opt out: LYNKR_OLLAMA_BUFFER_RESPONSES=false).
-    // Thinking models stream reasoning deltas that Claude Code renders as
-    // dead air (live 2026-07-09 23:05: a streamed "Hi" produced 171 output
-    // tokens per telemetry, the UI showed NOTHING and the client aborted).
-    // Buffered responses instead flow through _liftLeakedThinkingBlocks and
-    // the router's SSE synthesis — which Claude Code renders correctly —
-    // and become verifiable by the WS6 cascade (streams bypass it).
-    // Cheap-tier answers are short; the lost token-trickle is negligible.
+    // Buffer ollama responses (opt out: LYNKR_OLLAMA_BUFFER_RESPONSES=false):
+    // thinking models stream reasoning deltas Claude Code renders as dead
+    // air. Buffered responses go through thinking-block cleanup + SSE
+    // synthesis, and become verifiable by the cascade (streams bypass it).
     const bufferOllama = process.env.LYNKR_OLLAMA_BUFFER_RESPONSES !== "false";
     const ollamaBody = {
       model: modelName,
@@ -1195,13 +1180,9 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
     if (result.ok && result.json?.output) {
       const outputArray = result.json.output || [];
 
-      // Find message output (contains text content). Robust extraction:
-      // gpt-5.2 emits several content-item shapes ("output_text", "text",
-      // occasionally string content), and there can be MULTIPLE message
-      // items / multiple text items per message. The old single-find of one
-      // "output_text" silently produced "" for other shapes — the model's
-      // whole answer vanished and the client rendered an empty turn (live
-      // 2026-07-10: 37 output tokens generated, one "\n" delivered).
+      // Extract text across ALL message outputs and content-item shapes
+      // ("output_text", "text", string content) — a single-shape find
+      // silently returns "" and the whole answer vanishes.
       const messageOutputs = outputArray.filter(o => o.type === "message");
       const messageOutput = messageOutputs[0];
       const textContent = messageOutputs.map(mo => {
@@ -1276,10 +1257,8 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
           },
           finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop"
         }],
-        // Responses API usage is {input_tokens, output_tokens}; everything
-        // downstream (telemetry, cost, feedback) reads Chat Completions'
-        // {prompt_tokens, completion_tokens}. Unmapped, every azure row
-        // recorded NULL tokens (live 2026-07-10).
+        // Responses API usage is {input,output}_tokens; downstream reads
+        // Chat Completions' {prompt,completion}_tokens.
         usage: result.json.usage ? {
           prompt_tokens: result.json.usage.prompt_tokens ?? result.json.usage.input_tokens ?? 0,
           completion_tokens: result.json.usage.completion_tokens ?? result.json.usage.output_tokens ?? 0,
@@ -2103,11 +2082,9 @@ async function invokeMoonshot(body, incomingHeaders = {}) {
     toolCount: moonshotBody.tools?.length || 0,
   }, "=== Moonshot REQUEST ===");
 
-  // 429 is NOT retryable here: Moonshot's org-level rate/quota limits persist
-  // for minutes-hours (live 2026-07-09: retry backoff held a "Hi" hostage for
-  // 50+ seconds against a limit that wasn't going to clear). Failing fast
-  // hands the request to the tier-fallback ladder, which climbs to a healthy
-  // tier in ~1s instead.
+  // 429 is NOT retryable here: Moonshot's org-level limits persist for
+  // minutes-hours, so retry backoff holds requests hostage. Fail fast and
+  // let tier-fallback climb instead.
   const response = await performJsonRequest(endpoint, {
     headers,
     body: moonshotBody,

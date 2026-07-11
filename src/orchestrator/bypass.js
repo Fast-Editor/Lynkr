@@ -90,11 +90,9 @@ function detectBypass({ payload, headers = {} }) {
     };
   }
 
-  // Pattern 3: Warmup / count / quota probes — a single short user message.
-  // "quota" observed live 2026-07-09 on claude-cli 2.1.206: the unbypassed
-  // probe reached the SIMPLE-tier model, whose confused reply ("Quota what?
-  // Clarify…") was auto-extracted into long-term memory and re-injected
-  // into real turns — a self-feeding pollution loop.
+  // Pattern 3: Warmup / count / quota probes — single short user messages.
+  // Unbypassed probes reach a real model, whose confused replies get
+  // memory-extracted and re-injected into real turns.
   if (messages.length === 1 && messages[0]?.role === "user") {
     const firstText = getText(messages[0].content).trim();
     if (firstText === "Warmup" || firstText === "count" || firstText === "quota") {

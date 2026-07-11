@@ -463,14 +463,9 @@ async function checkPinScoreDrift(pin, payload) {
       return { drift: true, freshScore: 100, ceiling: null, forced: 'force_cloud' };
     }
 
-    // Agentic-autonomous asks are triggers of the same rank as force-cloud:
-    // full routing early-returns them to REASONING, but a pinned turn never
-    // reaches full routing, and the anchor score alone can't escape (live
-    // 2026-07-09: "Work autonomously: run the test suite, fix each failure…"
-    // scored 50 on a MEDIUM@44 pin — under ceiling+margin — and served
-    // minimax, which then botched the task). Mirror the force-cloud escape:
-    // detect on the TYPED text + real payload tools/profile so the caller
-    // falls through to full routing, where the AUTONOMOUS path fires properly.
+    // Agentic-autonomous is a trigger of the same rank as force-cloud, and
+    // its anchor score alone can't clear ceiling+margin — without this
+    // escape, autonomous asks are trapped by any pin.
     try {
       const agentic = getAgenticDetector().detect(
         { messages: [{ role: 'user', content: text }], tools: payload.tools },
@@ -484,13 +479,8 @@ async function checkPinScoreDrift(pin, payload) {
     // Heuristic-only score of the isolated message. Mirrors the intent
     // scorer's shape (single message + tools + client profile) so the
     // number is comparable to the score that produced the pin.
-    //
-    // WS7: pins are now written with anchor-classifier scores, so the drift
-    // comparison must use the SAME scorer or ceiling+margin stops meaning
-    // anything (lexical noise vs anchor bands was exactly finding #1). The
-    // embed call is cache-backed (~0ms on repeat turns); scoreIntent falls
-    // back to a clean-text lexical score if Ollama is unreachable, and we
-    // fall back to the legacy full analyzer only in legacy mode.
+    // Pins hold anchor scores, so drift must use the same scorer or
+    // ceiling+margin comparisons are meaningless.
     let freshScore = null;
     if (intentScoreMode() !== 'legacy') {
       const intent = await scoreIntent({ messages: [{ role: 'user', content: text }] });
@@ -547,14 +537,9 @@ function checkSessionPin(payload, options = {}) {
   if (!pin) return { serve: false, sessionId, reason: 'no_pin' };
 
   const messageCount = Array.isArray(payload?.messages) ? payload.messages.length : 0;
-  // Opener-only conversations (1-2 messages) neither write pins NOR consume
-  // them — symmetric with writeSessionPin's opener skip. Identical openers
-  // share a fingerprint for 6h, so any pin visible here may belong to a
-  // different conversation entirely; and the messageCount bookkeeping the
-  // new_conversation guard relies on can be ratcheted DOWN by refreshes
-  // (live 2026-07-10 00:18: a fresh "Hi" was served a COMPLEX@100 pin whose
-  // stored count a prior 4-message collision had shrunk to 4). A full route
-  // on the first frame or two costs ~one cached embed — nothing.
+  // Opener-only conversations (≤2 messages) never consume pins either —
+  // a visible pin may belong to a different conversation with the same
+  // opener, and a full route on frame 1-2 costs one cached embed.
   if (messageCount <= 2) {
     return { serve: false, pin, sessionId, reason: 'opener_conversation' };
   }
@@ -566,15 +551,10 @@ function checkSessionPin(payload, options = {}) {
   const refreshOk = Array.isArray(payload?.tools) && payload.tools.length > 0;
 
   if (sessionAffinity.payloadHasToolHistory(payload)) {
-    // A user who types WHILE a tool loop is running gets their text merged
-    // into the same message as the pending tool_result — so a heavyweight
-    // ask can arrive INSIDE a tool exchange, where the pin serves
-    // unconditionally and the drift/force escapes never run (live
-    // 2026-07-09: "Do an architecture review of the orchestrator" rode a
-    // MEDIUM pin for its entire loop this way). We cannot switch tiers on
-    // THIS frame (tool_use↔tool_result id linkage), but we can make sure
-    // the pin dies with the exchange: if the embedded typed text trips a
-    // trigger, drop the pin so the next turn boundary re-routes in full.
+    // Text typed during a tool loop arrives merged with the pending
+    // tool_result, where the pin serves unconditionally (id linkage forbids
+    // switching mid-exchange). If that embedded text trips a trigger, drop
+    // the pin so the next turn boundary re-routes.
     try {
       const { extractCleanUserText } = require('./intent-score');
       const lastMsg = payload.messages[payload.messages.length - 1];
@@ -652,13 +632,9 @@ function writeSessionPin(sessionId, decision, payload) {
     return;
   }
   const messageCount = Array.isArray(payload?.messages) ? payload.messages.length : 0;
-  // Opener-only sessions (1-2 messages) never pin. A pin exists to keep an
-  // ONGOING conversation stable; a bare opener has nothing to stabilize —
-  // and identical openers ("Hi") share a fingerprint for 6h, so a pin
-  // written here leaks to every other session with the same opener. Live
-  // 2026-07-09 (twice): a trigger-tier pin under the "Hi" fingerprint at
-  // messageCount≤2 slipped under the new_conversation guard (which needs
-  // pinnedMsgCount>4) and served greetings on COMPLEX/REASONING for hours.
+  // Opener-only sessions (≤2 messages) never pin: a bare opener has nothing
+  // to stabilize, and identical openers share a fingerprint for the 6h TTL,
+  // so any pin written here leaks to unrelated sessions.
   if (messageCount <= 2) {
     logger.debug({ sessionId, tier: decision.tier, messageCount },
       '[Routing] Opener-only session — pin write skipped');
@@ -862,13 +838,9 @@ async function _determineProviderSmartInner(payload, options = {}) {
   const useWeightedScoring = config.routing?.weightedScoring ?? false;
   const analysis = await analyzeComplexity(payload, { weighted: useWeightedScoring, workspace: options.workspace });
 
-  // WS7 — payload-invariant intent score. The lexical score above reads the
-  // whole payload (tool schemas, history, injected reminders) and its noise
-  // exceeds the band width (±25 on a 24-point band). Replace it with the
-  // anchor-classifier score of the CLEANED USER TEXT only; keep the lexical
-  // number on the analysis for comparison telemetry. Envelope signals still
-  // escalate via their own triggers (agentic boost/minTier, risk, context,
-  // vision) further down. LYNKR_INTENT_SCORE_MODE=legacy restores old behaviour.
+  // WS7 — replace the full-payload lexical score with the anchor score of
+  // cleaned user text (payload-invariant). Envelope signals escalate via
+  // triggers, never via this score. LYNKR_INTENT_SCORE_MODE=legacy opts out.
   let intentScored = false;
   try {
     const intent = await scoreIntent(payload);
@@ -889,9 +861,8 @@ async function _determineProviderSmartInner(payload, options = {}) {
     degradation.record('intent_score', err);
   }
 
-  // Phase 4: Optional embeddings adjustment — legacy path only. The WS7
-  // anchor score already lives in embedding space; adjusting it with the
-  // old full-payload embedding heuristic would reintroduce envelope noise.
+  // Phase 4 embeddings adjustment: legacy path only — it reads the full
+  // payload and would reintroduce envelope noise into an anchor score.
   let embeddingsResult = null;
   if (!intentScored && options.useEmbeddings !== false && config.ollama?.embeddingsModel) {
     try {
@@ -919,15 +890,8 @@ async function _determineProviderSmartInner(payload, options = {}) {
         || null;
       agenticResult = detector.detect(payload, { clientProfile });
 
-      // Boost complexity score for agentic workflows.
-      //
-      // WS7: in anchor mode the boost is SKIPPED — mutating the score with
-      // an envelope signal (tool count, chain phrasing) reintroduces the
-      // exact noise the payload-invariant scorer removes, and the pinned
-      // score / drift margin / calibration all consume this number. The
-      // agentic trigger still escalates via minTier below (TOOL_CHAIN →
-      // MEDIUM, ITERATIVE → COMPLEX, AUTONOMOUS → REASONING early return),
-      // which is the sanctioned trigger mechanism.
+      // Agentic boost: legacy mode only. In anchor mode the score must stay
+      // payload-invariant; agentic escalation happens via minTier instead.
       if (agenticResult.isAgentic) {
         if (!intentScored) {
           analysis.score = Math.min(100, analysis.score + agenticResult.scoreBoost);
@@ -960,12 +924,9 @@ async function _determineProviderSmartInner(payload, options = {}) {
                 method: 'agentic',
                 reason: 'autonomous_workflow',
                 // Triggers present a score consistent with the tier they
-                // force, like force_cloud/risk (100). WS7's boost-skip left
-                // this at the anchor score (~20-47), so downstream consumers
-                // that compare scores — the intent window's recency decay,
-                // pin ceilings — treated a REASONING decision as trivial and
-                // let harness noise outvote it (live 2026-07-09: autonomous
-                // session repinned SIMPLE@19 mid-test-run).
+                // force (like force_cloud/risk) — score-comparing consumers
+                // (intent window decay, pin ceilings) would otherwise treat
+                // a REASONING decision as trivial.
                 score: 100,
                 agenticResult,
                 risk,

@@ -9,15 +9,10 @@ const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");
 const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector, analyzeRisk, checkSessionPin, writeSessionPin, checkPinScoreDrift } = require("../routing");
 
-// Streamed upstreams can die without a clean end: live 2026-07-09 22:32,
-// Moonshot dropped a kimi SSE connection mid-flight (socket CLOSED) and
-// reader.read() simply never resolved — the client request hung forever
-// with no badge, no error, no timeout anywhere in the chain. Every
-// forwarding loop must read through this watchdog: if no bytes arrive for
-// the idle window the read rejects, the caller emits an SSE error event
-// and ends the response, and Claude Code fails fast + retries instead of
-// spinning. The window is IDLE time (reset on every chunk), not total —
-// reasoning models legitimately stream for many minutes.
+// Upstream streams can die without a clean end (reader.read() never
+// resolves on a dropped socket), hanging the client forever. Every
+// forwarding loop must read through this idle watchdog. The window is
+// IDLE time, reset per chunk — long-thinking models stream for minutes.
 const STREAM_IDLE_TIMEOUT_MS = Number(process.env.LYNKR_STREAM_IDLE_TIMEOUT_MS) || 90000;
 async function readWithIdleTimeout(reader, label) {
   let timer;
@@ -91,14 +86,10 @@ async function pickTierByIntent(body) {
   const N = Math.max(1, Number(process.env.LYNKR_INTENT_WINDOW_N) || 5);
   const decay = Number(process.env.LYNKR_INTENT_DECAY);
   const decayFactor = Number.isFinite(decay) && decay > 0 && decay <= 1 ? decay : 0.7;
-  // WS7 — window over messages the USER actually authored, not raw user-role
-  // frames. Mid-tool-loop conversations fill the tail with tool_result-only
-  // and harness-injected messages; slicing those into the window (a) ages
-  // the real typed ask out after 5 tool calls and (b) scores harness bulk
-  // via the lexical fallback, fabricating 38-50 "MEDIUM" noise that then
-  // re-pins the session (observed live 2026-07-09, pin 44→38→40). Window
-  // over text-bearing messages only; pure tool exchanges (no typed text
-  // anywhere) keep the legacy raw window.
+  // Window over messages the USER actually authored: tool_result-only and
+  // harness frames would otherwise age the typed ask out of the window and
+  // score envelope noise in its place. Pure tool exchanges keep the raw
+  // window as a fallback.
   const { extractCleanUserText } = require("../routing/intent-score");
   const textBearingMsgs = allUserMsgs.filter(
     (m) => extractCleanUserText({ messages: [m] })
@@ -1075,14 +1066,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       tier = await pickTierByIntent(req.body);
       if (pinDrift?.drift && tier) tier.switch_reason = 'score_drift';
 
-      // Compaction floor. A compaction re-route exists because the CACHE
-      // economics reset (messages shrank) — the TASK did not get easier.
-      // Post-compaction windows score harness summaries instead of the ask
-      // that earned the pin (live 2026-07-09: an autonomous COMPLEX@100
-      // session compacted mid-test-run, the window scored the summary text
-      // at 19, repinned SIMPLE, and the fix-the-tests loop ran on the
-      // weakest model). Fresh decisions may move UP freely; on a compaction
-      // re-route they may not fall below the pinned tier.
+      // Compaction floor: compaction resets cache economics, not task
+      // difficulty — post-compaction windows score harness summaries, not
+      // the ask that earned the pin. Re-routes may move up, never below
+      // the pinned tier.
       if (pinCheck.reason === 'compaction' && pinCheck.pin?.tier && tier?.tier) {
         const { TIER_DEFINITIONS } = require("../routing/model-tiers");
         const pri = (t) => TIER_DEFINITIONS[t]?.priority ?? -1;
@@ -1126,14 +1113,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // tier resolves to azure-anthropic. Bypasses the orchestrator entirely
     // so the inbound bytes hit api.anthropic.com unchanged (Anthropic
     // fingerprints subscription clients; any mutation gets flagged).
-    // Passthrough forwards the CLIENT's credentials to api.anthropic.com —
-    // only useful when the client actually has some. GUI harnesses that
-    // spawn claude headless (T3 Code alpha, others) inject placeholder keys
-    // like "dummy", which Anthropic 401s ten retries in a row (live
-    // 2026-07-11 00:01, authShape "(none)" + xApiKeyShape "dummy…"). When
-    // the client's auth is a known placeholder, skip the passthrough and let
-    // the orchestrator serve REASONING via the azure-anthropic provider's
-    // own (Foundry) credentials instead.
+    // Passthrough forwards the CLIENT's credentials; GUI harnesses that
+    // spawn claude headless inject placeholder keys ("dummy") that Anthropic
+    // 401s. Placeholder auth ⇒ serve REASONING via the provider's own
+    // credentials instead.
     const _clientApiKey = String(req.headers?.['x-api-key'] || '').toLowerCase();
     const _clientAuthHdr = String(req.headers?.authorization || '');
     const _placeholderAuth =
@@ -1467,13 +1450,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
       // 2. content_block_start and content_block_delta for each content block
       // Filter out server-side tools that shouldn't reach the client
-      // Server-tool filtering applies ONLY in server mode, where Lynkr executes
-      // task/websearch itself and the client must not see them. In CLIENT mode
-      // these are the CLIENT'S OWN tools — Claude Code's Task (subagents) and
-      // WebSearch — and stripping them emits a malformed turn: stop_reason
-      // says tool_use but no tool_use block follows, and the client dies
-      // silently (live 2026-07-10: gpt-5.2 opens loops by calling Task; every
-      // azure COMPLEX review died on frame 1 with zero visible output).
+      // Server-tool filtering is server-mode only: in client mode Task and
+      // WebSearch are the CLIENT'S tools, and stripping them emits a
+      // malformed turn (stop_reason tool_use with no tool_use block).
       const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
       const _clientOwnsTools = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
       let contentBlocks = _clientOwnsTools
@@ -1670,13 +1649,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
       // 2. content_block_start and content_block_delta for each content block
       // Filter out server-side tools that shouldn't reach the client
-      // Server-tool filtering applies ONLY in server mode, where Lynkr executes
-      // task/websearch itself and the client must not see them. In CLIENT mode
-      // these are the CLIENT'S OWN tools — Claude Code's Task (subagents) and
-      // WebSearch — and stripping them emits a malformed turn: stop_reason
-      // says tool_use but no tool_use block follows, and the client dies
-      // silently (live 2026-07-10: gpt-5.2 opens loops by calling Task; every
-      // azure COMPLEX review died on frame 1 with zero visible output).
+      // Server-tool filtering is server-mode only: in client mode Task and
+      // WebSearch are the CLIENT'S tools, and stripping them emits a
+      // malformed turn (stop_reason tool_use with no tool_use block).
       const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
       const _clientOwnsTools = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
       let contentBlocks = _clientOwnsTools

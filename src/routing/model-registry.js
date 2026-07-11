@@ -105,8 +105,8 @@ class ModelRegistry {
    */
   async initialize() {
     if (this.loaded) {
-      // WS8.1: the sync accessor marks the instance loaded without a
-      // staleness check, so the refresh must not hide behind this return.
+      // The sync accessor marks the instance loaded without a staleness
+      // check, so the refresh must not hide behind this return.
       this._refreshIfStale();
       return;
     }
@@ -508,8 +508,6 @@ function getModelRegistrySync() {
     instance._buildIndex();
     instance.loaded = true;
   }
-  // WS8.1: this accessor used to freeze the cache forever — it set
-  // loaded=true so initialize()'s stale check became unreachable.
   instance._refreshIfStale();
   return instance;
 }

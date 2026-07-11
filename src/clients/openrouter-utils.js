@@ -62,12 +62,9 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
       const textBlocks = content.filter(block => block.type === 'text');
       const toolUseBlocks = content.filter(block => block.type === 'tool_use');
       const toolResultBlocks = content.filter(block => block.type === 'tool_result');
-      // Thinking models (Kimi K2.x, MiniMax) REQUIRE their prior reasoning
-      // passed back as reasoning_content on replayed assistant turns —
-      // dropping it severs the model's interleaved chain across a tool loop
-      // (live 2026-07-09: kimi did 30 tool steps of an architecture review
-      // and then answered with a greeting; Moonshot's docs and the MiniMax
-      // model card both call this out).
+      // Thinking models (Kimi, MiniMax) require prior reasoning passed back
+      // as reasoning_content on replayed assistant turns — dropping it
+      // severs the model's chain across a tool loop.
       const thinkingText = content
         .filter(block => block.type === 'thinking' && typeof block.thinking === 'string')
         .map(block => block.thinking)
@@ -114,15 +111,10 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
 
         converted.push(message);
       }
-      // User message with tool results.
-      // ORDER MATTERS: tool messages must directly follow the assistant
-      // message that carries their tool_calls. Claude Code attaches
-      // system-reminder TEXT blocks to its tool_result messages; emitting
-      // that text as a user message BEFORE the tool messages broke the
-      // adjacency — the tool-call repair pass then stopped its backward
-      // search at the user turn, orphan-dropped the results, and Azure's
-      // Responses API 400'd the unpaired function_call ("No tool output
-      // found") killing the whole turn (live 2026-07-10 14:48).
+      // User message with tool results. ORDER MATTERS: tool messages must
+      // directly follow the assistant message carrying their tool_calls —
+      // a user-text message in between orphans the results, and strict
+      // providers 400 the unpaired function_call.
       else if (msg.role === 'user' && toolResultBlocks.length > 0) {
         // Tool results first — adjacent to their assistant tool_calls.
         for (const toolResult of toolResultBlocks) {

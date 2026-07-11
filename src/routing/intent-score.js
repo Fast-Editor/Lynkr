@@ -59,11 +59,8 @@ const CLASS_VALUES = {
 const BLEND_TEMPERATURE = 0.05;
 
 // The CLASS is the decision; the blend only positions within the class's
-// band. Without this clamp, a trivial-class ask whose runner-up sim is
-// close leaks upward ("what does git stash do?" blended to 31 → MEDIUM
-// despite trivial being argmax — measured live, benchmark S1). Bands
-// mirror calibration's DEFAULT_RANGES; calibration may move live range
-// edges, but the class→band contract is what makes three-way honest.
+// band — without the clamp, a close runner-up sim leaks trivial asks
+// across the band edge. Bands mirror calibration's DEFAULT_RANGES.
 const CLASS_BANDS = {
   trivial: [0, 25],
   substantive: [26, 50],
@@ -98,25 +95,18 @@ function extractCleanUserText(payload) {
     if (text == null) continue;
     text = text
       .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
-      // Harness task/background-agent notifications — replay measurement
-      // showed these classify as heavyweight (~55) despite the user having
-      // typed nothing. Not user-authored → not scoreable.
+      // Harness task/background-agent notifications — not user-authored.
       .replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '')
       // Lynkr's own injected notices (quota banners, badges) start with the
       // [Lynkr] marker — the user didn't type those.
       .replace(/^\s*\[Lynkr\][^\n]*$/gm, '')
       .trim();
-    // Whole-message harness content: compaction summaries and system
-    // notifications arrive as user-role messages but the user typed none of
-    // it. Live 2026-07-09: three such messages scored "trivial 19" at ages
-    // 0-2 and outvoted the real autonomous ask (decayed to 16) — the session
-    // repinned SIMPLE mid-test-run. Treat as empty and keep walking back.
+    // Whole-message harness content: compaction/continuation summaries and
+    // system notifications arrive as user-role messages the user never
+    // typed. Treat as empty and keep walking back.
     if (/^\s*(\[SYSTEM NOTIFICATION|<conversation[\s>]|<session[\s>]|\[Request interrupted|This session is being continued from a previous conversation)/i.test(text)) {
-      // The continuation summary is the sneakiest of these: it PARAPHRASES
-      // the previous session, so it carries force-phrase vocabulary the user
-      // typed hours ago ("architecture review" — live 2026-07-09 22:11, the
-      // summary force-clouded every re-route to COMPLEX@100 and buried the
-      // session's actual autonomous ask).
+      // Continuation summaries PARAPHRASE the prior session, so they carry
+      // force-phrase vocabulary the user typed hours ago.
       text = '';
     }
     if (text) return text;
