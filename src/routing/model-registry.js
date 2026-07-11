@@ -15,6 +15,7 @@ const MODELS_DEV_URL = 'https://models.dev/api.json';
 // Cache settings
 const CACHE_FILE = path.join(__dirname, '../../data/model-prices-cache.json');
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const REFRESH_RETRY_MS = 5 * 60 * 1000; // backoff between failed refresh attempts
 
 // Databricks fallback pricing (based on Anthropic direct API prices)
 const DATABRICKS_FALLBACK = {
@@ -103,23 +104,42 @@ class ModelRegistry {
    * Initialize registry - load from cache or fetch fresh data
    */
   async initialize() {
-    if (this.loaded) return;
+    if (this.loaded) {
+      // WS8.1: the sync accessor marks the instance loaded without a
+      // staleness check, so the refresh must not hide behind this return.
+      this._refreshIfStale();
+      return;
+    }
 
     // Try cache first
     if (this._loadFromCache()) {
       this.loaded = true;
-      // Background refresh if stale
-      if (Date.now() - this.lastFetch > CACHE_TTL_MS) {
-        this._fetchAll().catch(err =>
-          logger.warn({ err: err.message }, '[ModelRegistry] Background refresh failed')
-        );
-      }
+      this._refreshIfStale();
       return;
     }
 
     // Fetch fresh data
     await this._fetchAll();
     this.loaded = true;
+  }
+
+  /**
+   * Fire-and-forget background refresh when the cache is past its TTL.
+   * Safe to call from sync paths; concurrent calls coalesce onto one fetch.
+   */
+  _refreshIfStale() {
+    if (Date.now() - this.lastFetch <= CACHE_TTL_MS) return;
+    if (this._refreshInFlight) return;
+    // Failed attempts don't advance lastFetch — back off so a dead network
+    // doesn't turn every routed request into a fetch.
+    if (this._lastRefreshAttempt && Date.now() - this._lastRefreshAttempt < REFRESH_RETRY_MS) return;
+    this._lastRefreshAttempt = Date.now();
+    this._refreshInFlight = true;
+    this._fetchAll()
+      .catch(err =>
+        logger.warn({ err: err.message }, '[ModelRegistry] Background refresh failed')
+      )
+      .finally(() => { this._refreshInFlight = false; });
   }
 
   /**
@@ -488,6 +508,9 @@ function getModelRegistrySync() {
     instance._buildIndex();
     instance.loaded = true;
   }
+  // WS8.1: this accessor used to freeze the cache forever — it set
+  // loaded=true so initialize()'s stale check became unreachable.
+  instance._refreshIfStale();
   return instance;
 }
 

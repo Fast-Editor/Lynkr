@@ -11,10 +11,25 @@
  */
 
 const smartRouting = require('../routing');
+const config = require('../config');
+
+// Synchronous version for benchmarking/tests
+// (when tiers are disabled, routing is purely static)
+function determineProviderSync(payload) {
+  const primaryProvider = config.modelProvider?.type || 'databricks';
+  const defaultModel = config.modelProvider?.defaultModel || 'databricks-claude-sonnet-4-5';
+
+  return {
+    provider: primaryProvider,
+    model: defaultModel,
+    reason: 'static_provider'
+  };
+}
 
 // Re-export all functions from smart routing
 module.exports = {
   determineProviderSmart: smartRouting.determineProviderSmart,
+  determineProviderSync,
   isFallbackEnabled: smartRouting.isFallbackEnabled,
   getFallbackProvider: smartRouting.getFallbackProvider,
   getRoutingHeaders: smartRouting.getRoutingHeaders,

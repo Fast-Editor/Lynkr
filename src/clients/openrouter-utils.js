@@ -62,6 +62,16 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
       const textBlocks = content.filter(block => block.type === 'text');
       const toolUseBlocks = content.filter(block => block.type === 'tool_use');
       const toolResultBlocks = content.filter(block => block.type === 'tool_result');
+      // Thinking models (Kimi K2.x, MiniMax) REQUIRE their prior reasoning
+      // passed back as reasoning_content on replayed assistant turns —
+      // dropping it severs the model's interleaved chain across a tool loop
+      // (live 2026-07-09: kimi did 30 tool steps of an architecture review
+      // and then answered with a greeting; Moonshot's docs and the MiniMax
+      // model card both call this out).
+      const thinkingText = content
+        .filter(block => block.type === 'thinking' && typeof block.thinking === 'string')
+        .map(block => block.thinking)
+        .join('\n');
 
       logger.debug({
         role: msg.role,
@@ -98,20 +108,23 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
           message.content = null;
         }
 
-        converted.push(message);
-      }
-      // User message with tool results
-      else if (msg.role === 'user' && toolResultBlocks.length > 0) {
-        // Add text content as user message first if present
-        const textContent = textBlocks.map(block => block.text || '').join('\n');
-        if (textContent) {
-          converted.push({
-            role: 'user',
-            content: textContent
-          });
+        if (thinkingText) {
+          message.reasoning_content = thinkingText;
         }
 
-        // Add each tool result as a separate tool message
+        converted.push(message);
+      }
+      // User message with tool results.
+      // ORDER MATTERS: tool messages must directly follow the assistant
+      // message that carries their tool_calls. Claude Code attaches
+      // system-reminder TEXT blocks to its tool_result messages; emitting
+      // that text as a user message BEFORE the tool messages broke the
+      // adjacency — the tool-call repair pass then stopped its backward
+      // search at the user turn, orphan-dropped the results, and Azure's
+      // Responses API 400'd the unpaired function_call ("No tool output
+      // found") killing the whole turn (live 2026-07-10 14:48).
+      else if (msg.role === 'user' && toolResultBlocks.length > 0) {
+        // Tool results first — adjacent to their assistant tool_calls.
         for (const toolResult of toolResultBlocks) {
           converted.push({
             role: 'tool',
@@ -121,14 +134,27 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
               : JSON.stringify(toolResult.content || {})
           });
         }
+
+        // Then any user-authored/injected text as a user message.
+        const textContent = textBlocks.map(block => block.text || '').join('\n');
+        if (textContent) {
+          converted.push({
+            role: 'user',
+            content: textContent
+          });
+        }
       }
       // Regular message with just text
       else {
         const textContent = textBlocks.map(block => block.text || '').join('\n');
-        converted.push({
+        const message = {
           role: msg.role,
           content: textContent || ''
-        });
+        };
+        if (msg.role === 'assistant' && thinkingText) {
+          message.reasoning_content = thinkingText;
+        }
+        converted.push(message);
       }
     }
     // Simple string content

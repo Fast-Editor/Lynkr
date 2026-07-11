@@ -98,3 +98,56 @@ describe("tier-fallback chain (escalate-then-demote)", () => {
     assert.deepEqual(TIER_ORDER, ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"]);
   });
 });
+
+describe("2026-07-09 — ollama quota errors must throw so tier-fallback fires", () => {
+  const { _throwIfOllamaError } = require("../src/clients/databricks");
+
+  it("throws on the quota-exhausted JSON body even with HTTP 200", async () => {
+    const resp = { ok: true, status: 200, json: {
+      StatusCode: 429, Status: "429 Too Many Requests",
+      error: "you (khelmate) have reached your weekly usage limit, upgrade for higher limits",
+    }};
+    await assert.rejects(() => _throwIfOllamaError(resp, "minimax-m2.5:cloud"), (err) => {
+      assert.match(err.message, /weekly usage limit/);
+      assert.strictEqual(err.status, 429);
+      return true;
+    });
+  });
+
+  it("throws on a plain error field without StatusCode", async () => {
+    const resp = { ok: true, status: 200, json: { error: "model overloaded" } };
+    await assert.rejects(() => _throwIfOllamaError(resp, "m"), /model overloaded/);
+  });
+
+  it("throws on non-ok HTTP status", async () => {
+    const resp = { ok: false, status: 503, json: null };
+    await assert.rejects(() => _throwIfOllamaError(resp, "m"), /HTTP 503/);
+  });
+
+  it("passes a healthy Anthropic-shaped response through untouched", async () => {
+    const resp = { ok: true, status: 200, json: {
+      id: "msg_x", type: "message", role: "assistant",
+      content: [{ type: "text", text: "hi there" }],
+    }};
+    const out = await _throwIfOllamaError(resp, "m");
+    assert.strictEqual(out, resp);
+  });
+
+  it("streamed request answered with a JSON error body throws (the silent-failure case)", async () => {
+    async function* fakeStream() {
+      yield Buffer.from(JSON.stringify({ StatusCode: 429, error: "weekly usage limit reached" }));
+    }
+    const resp = { ok: true, status: 200, stream: fakeStream(), contentType: "application/json" };
+    await assert.rejects(() => _throwIfOllamaError(resp, "minimax-m2.5:cloud"), (err) => {
+      assert.match(err.message, /weekly usage limit/);
+      assert.strictEqual(err.status, 429);
+      return true;
+    });
+  });
+
+  it("streamed SSE responses pass through untouched", async () => {
+    const resp = { ok: true, status: 200, stream: {}, contentType: "text/event-stream" };
+    const out = await _throwIfOllamaError(resp, "m");
+    assert.strictEqual(out, resp);
+  });
+});

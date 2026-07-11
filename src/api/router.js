@@ -8,6 +8,35 @@ const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");
 const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector, analyzeRisk, checkSessionPin, writeSessionPin, checkPinScoreDrift } = require("../routing");
+
+// Streamed upstreams can die without a clean end: live 2026-07-09 22:32,
+// Moonshot dropped a kimi SSE connection mid-flight (socket CLOSED) and
+// reader.read() simply never resolved — the client request hung forever
+// with no badge, no error, no timeout anywhere in the chain. Every
+// forwarding loop must read through this watchdog: if no bytes arrive for
+// the idle window the read rejects, the caller emits an SSE error event
+// and ends the response, and Claude Code fails fast + retries instead of
+// spinning. The window is IDLE time (reset on every chunk), not total —
+// reasoning models legitimately stream for many minutes.
+const STREAM_IDLE_TIMEOUT_MS = Number(process.env.LYNKR_STREAM_IDLE_TIMEOUT_MS) || 90000;
+async function readWithIdleTimeout(reader, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`upstream stream idle >${STREAM_IDLE_TIMEOUT_MS}ms (${label})`)),
+          STREAM_IDLE_TIMEOUT_MS,
+        );
+        if (typeof timer.unref === "function") timer.unref();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const SSE_STALL_EVENT = `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Lynkr: upstream stream stalled — retry" } })}\n\n`;
 const { detectClient } = require("../routing/client-profiles");
 const { buildInteractionBlock } = require("../routing/interaction");
 const { validateCwd } = require("../workspace");
@@ -62,7 +91,20 @@ async function pickTierByIntent(body) {
   const N = Math.max(1, Number(process.env.LYNKR_INTENT_WINDOW_N) || 5);
   const decay = Number(process.env.LYNKR_INTENT_DECAY);
   const decayFactor = Number.isFinite(decay) && decay > 0 && decay <= 1 ? decay : 0.7;
-  const windowUserMsgs = allUserMsgs.slice(-N); // chronological, oldest-first
+  // WS7 — window over messages the USER actually authored, not raw user-role
+  // frames. Mid-tool-loop conversations fill the tail with tool_result-only
+  // and harness-injected messages; slicing those into the window (a) ages
+  // the real typed ask out after 5 tool calls and (b) scores harness bulk
+  // via the lexical fallback, fabricating 38-50 "MEDIUM" noise that then
+  // re-pins the session (observed live 2026-07-09, pin 44→38→40). Window
+  // over text-bearing messages only; pure tool exchanges (no typed text
+  // anywhere) keep the legacy raw window.
+  const { extractCleanUserText } = require("../routing/intent-score");
+  const textBearingMsgs = allUserMsgs.filter(
+    (m) => extractCleanUserText({ messages: [m] })
+  );
+  const windowUserMsgs = (textBearingMsgs.length > 0 ? textBearingMsgs : allUserMsgs)
+    .slice(-N); // chronological, oldest-first
 
   // WS3 — we USED to slice tools to 3 here so Claude Code's 11 baseline
   // tools didn't inflate the agentic detector's tool-count signal. That
@@ -334,7 +376,7 @@ async function handleOauthPassthrough(req, res, opts = {}) {
     const decoder = new TextDecoder();
     try {
       while (true) {
-        const { value, done } = await reader.read();
+        const { value, done } = await readWithIdleTimeout(reader, "oauth-passthrough");
         if (done) break;
         const buf = Buffer.from(value);
         res.write(buf);
@@ -344,6 +386,10 @@ async function handleOauthPassthrough(req, res, opts = {}) {
           responseTextForObservability += decoder.decode(value, { stream: true });
         }
       }
+    } catch (err) {
+      logger.warn({ err: err.message }, "OAuth passthrough stream stalled — ending response");
+      try { reader.cancel(); } catch { /* already dead */ }
+      try { res.write(SSE_STALL_EVENT); } catch { /* client gone */ }
     } finally {
       try { reader.releaseLock(); } catch {}
     }
@@ -351,10 +397,18 @@ async function handleOauthPassthrough(req, res, opts = {}) {
   } else {
     const text = await upstreamResp.text();
     if (!upstreamResp.ok) {
+      // Auth-shape diagnostics (prefix only, never the token): sk-ant-oat*
+      // = subscription OAuth (fix: /login refresh), sk-ant-api* = an API KEY
+      // is overriding the subscription (fix: unset ANTHROPIC_API_KEY or the
+      // client's injected key), JWT/none = client sent something unusable.
+      const authHdr = String(req.headers?.authorization || "");
+      const apiKeyHdr = String(req.headers?.["x-api-key"] || "");
       logger.warn({
         status: upstreamResp.status,
         bodyPreview: text.slice(0, 500),
         upstream,
+        authShape: authHdr ? authHdr.replace("Bearer ", "").slice(0, 12) + "…" : "(none)",
+        xApiKeyShape: apiKeyHdr ? apiKeyHdr.slice(0, 12) + "…" : "(none)",
       }, "OAuth passthrough upstream returned non-2xx");
     }
     responseTextForObservability = text;
@@ -1020,6 +1074,36 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       }
       tier = await pickTierByIntent(req.body);
       if (pinDrift?.drift && tier) tier.switch_reason = 'score_drift';
+
+      // Compaction floor. A compaction re-route exists because the CACHE
+      // economics reset (messages shrank) — the TASK did not get easier.
+      // Post-compaction windows score harness summaries instead of the ask
+      // that earned the pin (live 2026-07-09: an autonomous COMPLEX@100
+      // session compacted mid-test-run, the window scored the summary text
+      // at 19, repinned SIMPLE, and the fix-the-tests loop ran on the
+      // weakest model). Fresh decisions may move UP freely; on a compaction
+      // re-route they may not fall below the pinned tier.
+      if (pinCheck.reason === 'compaction' && pinCheck.pin?.tier && tier?.tier) {
+        const { TIER_DEFINITIONS } = require("../routing/model-tiers");
+        const pri = (t) => TIER_DEFINITIONS[t]?.priority ?? -1;
+        if (pri(tier.tier) < pri(pinCheck.pin.tier)) {
+          const { getModelTierSelector } = require("../routing/model-tiers");
+          const floored = getModelTierSelector().selectModel(pinCheck.pin.tier, null);
+          logger.info({
+            sessionId: pinCheck.sessionId,
+            windowTier: tier.tier,
+            flooredTo: pinCheck.pin.tier,
+          }, "OAuth intent — compaction re-route floored at pinned tier");
+          tier = {
+            ...tier,
+            tier: pinCheck.pin.tier,
+            provider: floored.provider,
+            model: floored.model,
+            method: (tier.method || 'tier_config') + '+compaction_floor',
+            switch_reason: 'compaction_floor',
+          };
+        }
+      }
       // Persist the fresh decision so the next turn on this session can
       // reuse it. checkSessionPin returned serve=false (or WS1.5 drift fired),
       // so either there was no pin, the pin lost a guard (context/vision/
@@ -1042,7 +1126,26 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // tier resolves to azure-anthropic. Bypasses the orchestrator entirely
     // so the inbound bytes hit api.anthropic.com unchanged (Anthropic
     // fingerprints subscription clients; any mutation gets flagged).
-    if (authMode === 'subscription' && tier.provider === 'azure-anthropic') {
+    // Passthrough forwards the CLIENT's credentials to api.anthropic.com —
+    // only useful when the client actually has some. GUI harnesses that
+    // spawn claude headless (T3 Code alpha, others) inject placeholder keys
+    // like "dummy", which Anthropic 401s ten retries in a row (live
+    // 2026-07-11 00:01, authShape "(none)" + xApiKeyShape "dummy…"). When
+    // the client's auth is a known placeholder, skip the passthrough and let
+    // the orchestrator serve REASONING via the azure-anthropic provider's
+    // own (Foundry) credentials instead.
+    const _clientApiKey = String(req.headers?.['x-api-key'] || '').toLowerCase();
+    const _clientAuthHdr = String(req.headers?.authorization || '');
+    const _placeholderAuth =
+      !_clientAuthHdr &&
+      (['dummy', 'test', 'placeholder', 'none', 'x', 'sk-dummy'].includes(_clientApiKey) || _clientApiKey.length < 8);
+    if (_placeholderAuth && authMode === 'subscription' && tier.provider === 'azure-anthropic') {
+      logger.info({
+        reqNumber: messagesRequestCount,
+        xApiKeyShape: _clientApiKey.slice(0, 12),
+      }, 'Placeholder client auth — skipping passthrough, serving REASONING via provider credentials');
+    }
+    if (authMode === 'subscription' && tier.provider === 'azure-anthropic' && !_placeholderAuth) {
       logger.debug({
         reqNumber: messagesRequestCount,
         authMode,
@@ -1268,7 +1371,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
         try {
           while (true) {
-            const { done, value } = await reader.read();
+            const { done, value } = await readWithIdleTimeout(reader, "provider-stream");
             if (done) break;
 
             const chunk = decoder.decode(value, { stream: true });
@@ -1317,6 +1420,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           if (!res.headersSent) {
             res.status(500).json({ error: "Streaming error" });
           } else {
+            // Mid-stream failure: emit a parseable Anthropic error event so
+            // the client fails fast and retries, instead of seeing a
+            // truncated stream it may wait on.
+            try { res.write(SSE_STALL_EVENT); } catch { /* client gone */ }
             res.end();
           }
           return;
@@ -1360,10 +1467,20 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
       // 2. content_block_start and content_block_delta for each content block
       // Filter out server-side tools that shouldn't reach the client
+      // Server-tool filtering applies ONLY in server mode, where Lynkr executes
+      // task/websearch itself and the client must not see them. In CLIENT mode
+      // these are the CLIENT'S OWN tools — Claude Code's Task (subagents) and
+      // WebSearch — and stripping them emits a malformed turn: stop_reason
+      // says tool_use but no tool_use block follows, and the client dies
+      // silently (live 2026-07-10: gpt-5.2 opens loops by calling Task; every
+      // azure COMPLEX review died on frame 1 with zero visible output).
       const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
-      let contentBlocks = (msg.content || []).filter(b =>
-        !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
-      );
+      const _clientOwnsTools = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
+      let contentBlocks = _clientOwnsTools
+        ? (msg.content || []).slice()
+        : (msg.content || []).filter(b =>
+            !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
+          );
 
       // When LYNKR_VISIBLE_ROUTING=true, prepend a one-line routing badge so
       // users can see which tier/provider/model handled the request inside
@@ -1476,7 +1593,14 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       res.write(`event: message_delta\n`);
       res.write(`data: ${JSON.stringify({
         type: "message_delta",
-        delta: { stop_reason: msg.stop_reason || "end_turn", stop_sequence: null },
+        // Consistency: never claim tool_use if no tool_use block was emitted
+        // (a stop_reason pointing at a missing block hangs the client).
+        delta: {
+          stop_reason: (msg.stop_reason === "tool_use" && !contentBlocks.some(b => b.type === "tool_use"))
+            ? "end_turn"
+            : (msg.stop_reason || "end_turn"),
+          stop_sequence: null,
+        },
         usage: { output_tokens: msg.usage?.output_tokens || 0 }
       })}\n\n`);
 
@@ -1546,10 +1670,20 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
 
       // 2. content_block_start and content_block_delta for each content block
       // Filter out server-side tools that shouldn't reach the client
+      // Server-tool filtering applies ONLY in server mode, where Lynkr executes
+      // task/websearch itself and the client must not see them. In CLIENT mode
+      // these are the CLIENT'S OWN tools — Claude Code's Task (subagents) and
+      // WebSearch — and stripping them emits a malformed turn: stop_reason
+      // says tool_use but no tool_use block follows, and the client dies
+      // silently (live 2026-07-10: gpt-5.2 opens loops by calling Task; every
+      // azure COMPLEX review died on frame 1 with zero visible output).
       const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
-      let contentBlocks = (msg.content || []).filter(b =>
-        !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
-      );
+      const _clientOwnsTools = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
+      let contentBlocks = _clientOwnsTools
+        ? (msg.content || []).slice()
+        : (msg.content || []).filter(b =>
+            !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
+          );
 
       // When LYNKR_VISIBLE_ROUTING=true, prepend a one-line routing badge so
       // users can see which tier/provider/model handled the request inside
@@ -1642,7 +1776,14 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       res.write(`event: message_delta\n`);
       res.write(`data: ${JSON.stringify({
         type: "message_delta",
-        delta: { stop_reason: msg.stop_reason || "end_turn", stop_sequence: null },
+        // Consistency: never claim tool_use if no tool_use block was emitted
+        // (a stop_reason pointing at a missing block hangs the client).
+        delta: {
+          stop_reason: (msg.stop_reason === "tool_use" && !contentBlocks.some(b => b.type === "tool_use"))
+            ? "end_turn"
+            : (msg.stop_reason || "end_turn"),
+          stop_sequence: null,
+        },
         usage: { output_tokens: msg.usage?.output_tokens || 0 }
       })}\n\n`);
 

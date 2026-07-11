@@ -180,3 +180,53 @@ describe("caveman injector", () => {
     assert.ok(out.includes("[brevity]"));
   });
 });
+
+describe("trimLoopMessages — the current task survives every trim", () => {
+  const { trimLoopMessages } = require("../src/orchestrator");
+
+  const toolFrame = (i) => [
+    { role: "assistant", content: [{ type: "tool_use", id: `t${i}`, name: "Read", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: `t${i}`, content: "…" }] },
+  ];
+
+  it("keeps the typed ask when the session opened with a greeting (the amnesia bug)", () => {
+    const msgs = [
+      { role: "user", content: "Hi" },
+      { role: "assistant", content: "Hi! What can I help you with?" },
+      { role: "user", content: "Do an architecture review of the orchestrator" },
+      ...Array.from({ length: 30 }, (_, i) => toolFrame(i)).flat(),
+    ];
+    const out = trimLoopMessages(msgs, 40);
+    assert.ok(out.length <= 41);
+    const texts = out.filter(m => typeof m.content === "string").map(m => m.content);
+    assert.ok(texts.includes("Do an architecture review of the orchestrator"),
+      "the task must survive the trim");
+  });
+
+  it("does not duplicate the task when it is already inside the kept tail", () => {
+    const msgs = [
+      { role: "user", content: "Hi" },
+      { role: "assistant", content: "hello" },
+      ...Array.from({ length: 25 }, (_, i) => toolFrame(i)).flat(),
+      { role: "user", content: "now fix the failing test" },
+      ...Array.from({ length: 5 }, (_, i) => toolFrame(100 + i)).flat(),
+    ];
+    const out = trimLoopMessages(msgs, 40);
+    const occurrences = out.filter(m => m.content === "now fix the failing test").length;
+    assert.strictEqual(occurrences, 1);
+  });
+
+  it("harness-only user messages are not mistaken for the task", () => {
+    const msgs = [
+      { role: "user", content: "refactor the parser module please" },
+      { role: "assistant", content: "on it" },
+      ...Array.from({ length: 25 }, (_, i) => toolFrame(i)).flat(),
+      { role: "user", content: "[SYSTEM NOTIFICATION - NOT USER INPUT] background task update" },
+      ...Array.from({ length: 5 }, (_, i) => toolFrame(200 + i)).flat(),
+    ];
+    const out = trimLoopMessages(msgs, 40);
+    // Head IS the task here (msg 0) — must be kept; the notification must not
+    // have been selected as "the task".
+    assert.strictEqual(out[0].content, "refactor the parser module please");
+  });
+});

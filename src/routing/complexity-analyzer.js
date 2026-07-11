@@ -903,7 +903,15 @@ async function analyzeComplexity(payload, options = {}) {
  */
 function shouldForceLocal(payload) {
   const content = extractContent(payload);
-  return FORCE_LOCAL_PATTERNS.some(pattern => pattern.test(content));
+  const matched = FORCE_LOCAL_PATTERNS.find(pattern => pattern.test(content));
+  if (matched) {
+    // Deliberately loud: a force_local misfire routed a subagent's opening
+    // frames to the weakest tier (live 2026-07-09, pattern unidentified at
+    // the time because the wrap gateway had no file logging). This line is
+    // how the next misfire names itself.
+    logger.debug({ pattern: matched.source.slice(0, 50), text: content.slice(0, 100) }, '[Force] force_local matched');
+  }
+  return !!matched;
 }
 
 /**
@@ -911,7 +919,11 @@ function shouldForceLocal(payload) {
  */
 function shouldForceCloud(payload) {
   const content = extractContent(payload);
-  return FORCE_CLOUD_PATTERNS.some(pattern => pattern.test(content));
+  const matched = FORCE_CLOUD_PATTERNS.find(pattern => pattern.test(content));
+  if (matched) {
+    logger.debug({ pattern: matched.source.slice(0, 50), text: content.slice(0, 100) }, '[Force] force_cloud matched');
+  }
+  return !!matched;
 }
 
 // ============================================================================

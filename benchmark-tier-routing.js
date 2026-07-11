@@ -128,6 +128,16 @@ const TOOL_DEFINITIONS = [
   { name: 'mcp__github__create_pull_request', description: 'Create a GitHub pull request via MCP', input_schema: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' }, base: { type: 'string' }, head: { type: 'string' } }, required: ['title', 'body'] } },
 ];
 
+
+// expectTier may be a string or an array (boundary asks assert the rung that
+// matters — e.g. cheap-start — instead of pretending one exact band is real).
+function tierMatches(expect, got) {
+  return Array.isArray(expect) ? expect.includes(got) : got === expect;
+}
+function fmtExpect(expect) {
+  return Array.isArray(expect) ? expect.join('|') : expect;
+}
+
 // ─── Scenarios ────────────────────────────────────────────────────────────────
 
 const SCENARIOS = [
@@ -135,10 +145,17 @@ const SCENARIOS = [
   {
     id: 'S1', label: 'Simple Q&A',
     feature: 'Tier routing → cheap model',
-    expectTier: 'SIMPLE',
+    // Boundary ask: the anchor classifier legitimately reads a short
+    // explain-a-command question as trivial-or-substantive depending on
+    // phrasing jitter. What this scenario guards is CHEAP-START (never
+    // kimi/opus) — asserting one exact band there is fake granularity.
+    expectTier: ['SIMPLE', 'MEDIUM'],
     buildPayload: (model) => ({
       model, max_tokens: 256,
-      messages: [{ role: 'user', content: 'What does git stash do?' }],
+      // Nonced: an un-nonced opener fingerprints to the same session every
+      // run, and a stale pin (6h TTL, survives gateway restarts) then serves
+      // whatever tier a PREVIOUS run pinned — observed live 2026-07-09.
+      messages: [{ role: 'user', content: `[run ${RUN_NONCE}] What does git stash do?` }],
     }),
   },
 
@@ -324,7 +341,7 @@ const SCENARIOS = [
     expectTier: 'SIMPLE',
     buildPayload: (model) => ({
       model, max_tokens: 64,
-      messages: [{ role: 'user', content: `hey there, benchmark pin session opener ${RUN_NONCE}` }],
+      messages: [{ role: 'user', content: `hi, you there? (run ${RUN_NONCE})` }],
     }),
   },
   {
@@ -334,9 +351,41 @@ const SCENARIOS = [
     buildPayload: (model) => ({
       model, max_tokens: 512,
       messages: [
-        { role: 'user', content: `hey there, benchmark pin session opener ${RUN_NONCE}` },
+        { role: 'user', content: `hi, you there? (run ${RUN_NONCE})` },
         { role: 'assistant', content: 'Hi! What do you need?' },
         { role: 'user', content: 'Now do an architecture review of the routing module.' },
+      ],
+    }),
+  },
+
+  // ── 8.5 WS7 envelope invariance pair ──────────────────────────────────────
+  // Same semantic ask, bare (IV1) vs wrapped in the full payload envelope
+  // (IV2: 15 tool schemas + a fat system-reminder + prior turns). Pre-WS7
+  // the lexical scorer measured these 31 vs 56 — a whole band apart. The
+  // anchor classifier scores CLEANED USER TEXT only, so both must land the
+  // same tier. Both assert MEDIUM: a substantive-but-not-heavy ask.
+  {
+    id: 'IV1', label: 'Invariance – bare ask',
+    feature: 'WS7 anchor score, no envelope',
+    expectTier: 'MEDIUM',
+    buildPayload: (model) => ({
+      model, max_tokens: 512,
+      messages: [{ role: 'user', content: `Review this retry helper for bugs and edge cases and suggest concrete improvements. [run ${RUN_NONCE}-iv]` }],
+    }),
+  },
+  {
+    id: 'IV2', label: 'Invariance – same ask + envelope',
+    feature: 'WS7 payload-invariant scoring: schemas/reminders/history must not move the SCORE',
+    // NOTE: deliberately ≤3 tools — the agentic detector is an envelope
+    // TRIGGER that is allowed to escalate; this pair isolates the score.
+    expectTier: 'MEDIUM',
+    buildPayload: (model) => ({
+      model, max_tokens: 512,
+      tools: TOOL_DEFINITIONS.slice(0, 3),
+      messages: [
+        { role: 'user', content: `earlier context for the invariance pair ${RUN_NONCE}` },
+        { role: 'assistant', content: 'Understood — send the code when ready.' },
+        { role: 'user', content: `<system-reminder>Contents of project notes: ${'lorem ipsum dolor sit amet '.repeat(120)}</system-reminder>\nReview this retry helper for bugs and edge cases and suggest concrete improvements. [run ${RUN_NONCE}-iv]\n<system-reminder>The user opened file retry.js in the IDE.</system-reminder>` },
       ],
     }),
   },
@@ -504,7 +553,7 @@ async function runBenchmark() {
         // Route expectations only judge Lynkr — other proxies synthesize
         // tier labels from cost heuristics, so comparing is meaningless.
         isLynkr && scenario.expectTier
-          ? (r.tier === scenario.expectTier ? `route ✓ ${scenario.expectTier}` : `route ✗ expected ${scenario.expectTier}, got ${r.tier}`)
+          ? (tierMatches(scenario.expectTier, r.tier) ? `route ✓ ${r.tier}` : `route ✗ expected ${fmtExpect(scenario.expectTier)}, got ${r.tier}`)
           : null,
         isLynkr && scenario.expectNoCache
           ? (!r.cacheHit ? 'cache-miss ✓'
@@ -538,9 +587,9 @@ async function runBenchmark() {
     const r = results.Lynkr?.[scenario.id];
     if (!r?.ok) continue;
     if (scenario.expectTier) {
-      const pass = r.tier === scenario.expectTier;
+      const pass = tierMatches(scenario.expectTier, r.tier);
       pass ? routePass++ : routeFail++;
-      console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} expected ${scenario.expectTier}, got ${r.tier}${pass ? '' : '   ← REGRESSION'}`);
+      console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} expected ${fmtExpect(scenario.expectTier)}, got ${r.tier}${pass ? '' : '   ← REGRESSION'}`);
     }
     if (scenario.expectNoCache) {
       // Fail only on a LOW-similarity hit — that means the cache served an

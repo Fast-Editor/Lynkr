@@ -171,16 +171,20 @@ test('drift verdict is consistent with the scorer: drift ⇔ score > ceiling + m
     'write services: analyze coupling in the current design, weigh consistency ' +
     'guarantees under concurrent load, estimate operational overhead, and ' +
     'recommend an incremental decomposition sequence with test checkpoints.';
-  const analysis = await analyzeComplexity(
-    { messages: [{ role: 'user', content: SCORED_ASK }] }, {},
-  );
+  // WS7: the drift checker scores via scoreIntent (anchor classifier with
+  // clean-text lexical fallback); the legacy analyzer is the comparison
+  // only when scoreIntent abstains.
+  const { scoreIntent } = require('../src/routing/intent-score');
+  const intent = await scoreIntent({ messages: [{ role: 'user', content: SCORED_ASK }] });
+  const expectedScore = intent?.score
+    ?? (await analyzeComplexity({ messages: [{ role: 'user', content: SCORED_ASK }] }, {})).score;
   const r = await routing.checkPinScoreDrift(
     { tier: 'SIMPLE' },
     { messages: [{ role: 'user', content: SCORED_ASK }] },
   );
   assert.equal(typeof r.freshScore, 'number');
   assert.equal(typeof r.ceiling, 'number');
-  assert.equal(r.freshScore, analysis.score);
+  assert.equal(r.freshScore, expectedScore);
   const margin = Number(process.env.LYNKR_PIN_DRIFT_MARGIN) || 15;
   assert.equal(r.drift, r.freshScore > r.ceiling + margin);
 });

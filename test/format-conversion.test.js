@@ -576,3 +576,40 @@ describe("Enhanced Format Conversion", () => {
     });
   });
 });
+
+describe("reasoning_content passback for thinking models (kimi/minimax multi-turn)", () => {
+  const { convertAnthropicMessagesToOpenRouter } = require("../src/clients/openrouter-utils");
+
+  it("re-emits assistant thinking blocks as reasoning_content alongside tool_calls", () => {
+    const out = convertAnthropicMessagesToOpenRouter([
+      { role: "user", content: "review the orchestrator" },
+      { role: "assistant", content: [
+        { type: "thinking", thinking: "I should list the directory first, then read index.js" },
+        { type: "text", text: "Let me look around." },
+        { type: "tool_use", id: "t1", name: "Read", input: { file_path: "src/orchestrator/index.js" } },
+      ]},
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "…file…" }] },
+    ]);
+    const assistant = out.find(m => m.role === "assistant");
+    assert.ok(assistant.tool_calls?.length === 1);
+    assert.match(assistant.reasoning_content, /list the directory first/);
+  });
+
+  it("re-emits thinking on plain assistant turns too", () => {
+    const out = convertAnthropicMessagesToOpenRouter([
+      { role: "assistant", content: [
+        { type: "thinking", thinking: "the user greeted me" },
+        { type: "text", text: "Hello!" },
+      ]},
+    ]);
+    assert.strictEqual(out[0].reasoning_content, "the user greeted me");
+    assert.strictEqual(out[0].content, "Hello!");
+  });
+
+  it("omits reasoning_content when there was no thinking", () => {
+    const out = convertAnthropicMessagesToOpenRouter([
+      { role: "assistant", content: [{ type: "text", text: "plain" }] },
+    ]);
+    assert.strictEqual("reasoning_content" in out[0], false);
+  });
+});

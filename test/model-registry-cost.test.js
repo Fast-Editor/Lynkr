@@ -48,3 +48,49 @@ describe("model-registry cost resolution ladder", () => {
     assert.strictEqual(c.unknown, true);
   });
 });
+
+describe("WS8.1 — stale-cache background refresh", () => {
+  const { ModelRegistry } = require("../src/routing/model-registry");
+
+  function stubbed(lastFetch) {
+    const r = new ModelRegistry();
+    r.loaded = true;
+    r.lastFetch = lastFetch;
+    r.fetchCalls = 0;
+    r._fetchAll = async () => { r.fetchCalls++; r.lastFetch = Date.now(); };
+    return r;
+  }
+
+  it("initialize() on an already-loaded stale instance still refreshes (the dead-code regression)", async () => {
+    const r = stubbed(0); // stale since epoch
+    await r.initialize();
+    assert.strictEqual(r.fetchCalls, 1);
+  });
+
+  it("does not refresh when the cache is within TTL", () => {
+    const r = stubbed(Date.now());
+    r._refreshIfStale();
+    assert.strictEqual(r.fetchCalls, 0);
+  });
+
+  it("coalesces concurrent refresh attempts onto one fetch", async () => {
+    const r = stubbed(0);
+    let release;
+    r._fetchAll = () => { r.fetchCalls++; return new Promise(res => { release = res; }); };
+    r._refreshIfStale();
+    r._refreshIfStale();
+    r._refreshIfStale();
+    release();
+    await Promise.resolve();
+    assert.strictEqual(r.fetchCalls, 1);
+  });
+
+  it("backs off after a failed refresh instead of retrying every call", async () => {
+    const r = stubbed(0);
+    r._fetchAll = async () => { r.fetchCalls++; throw new Error("network down"); };
+    r._refreshIfStale();
+    await new Promise(res => setImmediate(res)); // let the rejection settle
+    r._refreshIfStale(); // within backoff window — must not fetch again
+    assert.strictEqual(r.fetchCalls, 1);
+  });
+});

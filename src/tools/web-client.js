@@ -1,4 +1,4 @@
-const { Agent, setGlobalDispatcher } = require("undici");
+const { Agent, fetch: undiciFetch, setGlobalDispatcher } = require("undici");
 const logger = require("../logger");
 
 /**
@@ -42,10 +42,10 @@ function createWebAgent() {
 const webAgent = createWebAgent();
 
 /**
- * Fetch with the optimized agent
+ * Fetch with the optimized agent (uses undici.fetch for dispatcher support)
  */
 async function fetchWithAgent(url, options = {}) {
-  return fetch(url, {
+  return undiciFetch(url, {
     ...options,
     dispatcher: webAgent,
   });

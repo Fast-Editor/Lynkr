@@ -72,7 +72,11 @@ test('writeSessionPin: still writes normal decisions', () => {
   routing.writeSessionPin('sess-ok-1', {
     provider: 'ollama', model: 'minimax-m2.5:cloud',
     tier: 'SIMPLE', method: 'tier_config+window', score: 12,
-  }, { messages: [{ role: 'user', content: 'hi' }] });
+  }, { messages: [
+    { role: 'user', content: 'hi' },
+    { role: 'assistant', content: 'hello' },
+    { role: 'user', content: 'review this function please' },
+  ] });
   const pin = sessionAffinity.getPin('sess-ok-1');
   assert.ok(pin);
   assert.equal(pin.provider, 'ollama');
@@ -85,7 +89,11 @@ test('writeSessionPin: does not misfire on methods merely containing "risk" subs
   // must not be blocked.
   routing.writeSessionPin('sess-ok-2', {
     provider: 'ollama', model: 'm', tier: 'SIMPLE', method: 'asterisk',
-  }, { messages: [] });
+  }, { messages: [
+    { role: 'user', content: 'a' },
+    { role: 'assistant', content: 'b' },
+    { role: 'user', content: 'c' },
+  ] });
   assert.ok(sessionAffinity.getPin('sess-ok-2'));
 });
 

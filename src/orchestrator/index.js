@@ -1350,6 +1350,20 @@ function sanitizePayload(payload) {
     } else {
       clean.tools = ensureAnthropicToolFormat(clean.tools);
     }
+  } else if (providerType === "azure-openai" || providerType === "openai") {
+    // Azure OpenAI / OpenAI support tools — keep Anthropic format; converted
+    // to OpenAI (or Responses API) format inside the client. This branch was
+    // MISSING: azure-openai fell into the unknown-provider catch-all below,
+    // which deleted every request's tools at ingress "for safety" — the
+    // azure client then injected its own STANDARD_TOOLS, the model used
+    // them, and the orchestrator (whose list was empty) dropped every call
+    // as hallucinated and injected the design.html redirect. Root of every
+    // azure-tier failure on 2026-07-10.
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
   } else if (Array.isArray(clean.tools)) {
     // Unknown provider - remove tools for safety
     delete clean.tools;
@@ -1643,16 +1657,27 @@ async function runAgentLoop({
     );
 
     // Trim messages when they grow too large to prevent OOM.
-    // Keep the first message (system/user) and the last MAX_LOOP_MESSAGES.
-    const MAX_LOOP_MESSAGES = 40;
-    if (cleanPayload.messages && cleanPayload.messages.length > MAX_LOOP_MESSAGES) {
-      const excess = cleanPayload.messages.length - MAX_LOOP_MESSAGES;
-      // Keep first 2 messages (system context + initial user) and trim from the middle
-      cleanPayload.messages.splice(2, excess);
-      logger.debug(
-        { trimmed: excess, remaining: cleanPayload.messages.length },
-        "Trimmed intermediate messages to prevent memory growth",
-      );
+    // Keep the head, THE CURRENT TASK, and the most recent tail.
+    //
+    // The old head+tail-only splice caused model amnesia: a session that
+    // OPENED with "Hi" kept the greeting as its head and trimmed the actual
+    // ask ("Do an architecture review…") the moment the tool loop passed 40
+    // messages — the model then saw 38 frames of tool results whose only
+    // user text was "Hi", and dutifully answered the greeting (live
+    // 2026-07-09 and again 2026-07-10; masqueraded as a model-quality bug
+    // for a full day). The latest user message with real typed text is the
+    // task — it must survive every trim.
+    // Tunable: LYNKR_MAX_LOOP_MESSAGES (default 40; 0 disables trimming
+    // entirely). Disabling trades flat per-frame cost/latency for full
+    // context fidelity — on weak models expect coherence loss on very long
+    // loops (their competence degrades before their context window fills),
+    // and on paid models expect per-frame input cost to grow with session
+    // length. The task-preservation fix makes the default cap safe.
+    const MAX_LOOP_MESSAGES = Number.isFinite(Number(process.env.LYNKR_MAX_LOOP_MESSAGES))
+      ? Number(process.env.LYNKR_MAX_LOOP_MESSAGES)
+      : 40;
+    if (MAX_LOOP_MESSAGES > 0 && cleanPayload.messages && cleanPayload.messages.length > MAX_LOOP_MESSAGES) {
+      cleanPayload.messages = trimLoopMessages(cleanPayload.messages, MAX_LOOP_MESSAGES);
     }
 
     // Debug: Log payload before sending to Azure
@@ -2336,7 +2361,14 @@ IMPORTANT TOOL USAGE RULES:
         ? (databricksResponse.json?.content ?? []).some(b => b?.type === "text" && String(b.text || "").trim().length > 0)
         : (typeof message.content === "string" && message.content.trim().length > 0);
 
-      if (!hasTextContent && steps < settings.maxSteps - 1) {
+      // The artifact redirect is an open-design (SERVER-mode) feature. On wrap
+      // traffic it fires on tool-less SIDE requests, instructs the model to
+      // emit design.html artifacts, burns an extra model call, and those
+      // artifacts then leak into suggestions/memory/telemetry (2026-07-10:
+      // an entire afternoon of HTML-form "reviews"). Client mode: drop the
+      // hallucinated calls and return whatever text exists — never redirect.
+      const _clientOwnsOutput = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
+      if (!hasTextContent && steps < settings.maxSteps - 1 && !_clientOwnsOutput) {
         logger.info({
           sessionId: session?.id ?? null,
           step: steps,
@@ -2454,12 +2486,21 @@ IMPORTANT TOOL USAGE RULES:
       // Check if tool execution should happen on client side
       const executionMode = config.toolExecutionMode || "server";
 
-      // IMPORTANT: Task tools (subagents) and Web Search tools ALWAYS execute server-side, regardless of execution mode to ensure reliability
-      // Separate Server-side tools from Client-side tools
+      // Server-side tool split. In SERVER mode, task/web tools run on Lynkr
+      // (clients there have no tool runtime). In CLIENT mode the client owns
+      // ALL of its tools: Claude Code's "Task" is its SUBAGENT SPAWNER and
+      // WebSearch/WebFetch are its own — hijacking them to Lynkr's same-named
+      // internal tools executes the wrong semantics entirely. Live
+      // 2026-07-10: gpt-5.2 opened a review by calling Task; Lynkr ran its
+      // internal task tracker instead, got nothing, and the artifact-redirect
+      // then told the model "you have no tools — output design.html" — the
+      // user received an HTML form asking them to paste their own code.
       const serverSideToolCalls = [];
       const clientSideToolCalls = [];
 
-      const SERVER_SIDE_TOOLS = new Set(["task", "Task", "web_search", "web_fetch", "websearch", "webfetch", "web_agent", "WebSearch", "WebFetch", "WebAgent"]);
+      const SERVER_SIDE_TOOLS = (executionMode === "passthrough" || executionMode === "client")
+        ? new Set()
+        : new Set(["task", "Task", "web_search", "web_fetch", "websearch", "webfetch", "web_agent", "WebSearch", "WebFetch", "WebAgent"]);
 
       for (const call of toolCalls) {
         const toolName = (call.function?.name ?? call.name ?? "").toLowerCase();
@@ -3354,6 +3395,15 @@ IMPORTANT TOOL USAGE RULES:
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
       }
+    } else if (databricksResponse.json?.type === "message" && Array.isArray(databricksResponse.json?.content)) {
+      // Shape-detected: ALREADY Anthropic. Provider allowlists rot — the
+      // azure-openai Responses path converts to Anthropic upstream, and
+      // running that through toAnthropicResponse (which reads OpenAI's
+      // choices[]) EMPTIES the content. Live 2026-07-10: gpt's answers
+      // existed at telemetry capture but processMessage returned
+      // {type:"text", text:""} — the user saw badges and nothing else.
+      anthropicPayload = databricksResponse.json;
+      anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     } else {
       anthropicPayload = toAnthropicResponse(
         databricksResponse.json,
@@ -3369,7 +3419,13 @@ IMPORTANT TOOL USAGE RULES:
       (item) => item.type === "text" && needsWebFallback(item.text),
     );
 
-    if (fallbackCandidate && !fallbackPerformed) {
+    // Web fallback is a SERVER-mode feature: in client/passthrough mode the
+    // client owns WebSearch/WebFetch, and a server-side fetch injected into
+    // the loop both duplicates the client's capability and has crashed on
+    // wrap traffic (live 2026-07-09: "web_fetch failed: invalid onError
+    // method" on a greeting turn).
+    const _clientOwnsWeb = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
+    if (fallbackCandidate && !fallbackPerformed && !_clientOwnsWeb) {
       if (providerType === "azure-anthropic") {
         anthropicPayload.content.push({
           type: "text",
@@ -4051,11 +4107,14 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
   }
 
   if (cachedResponse) {
-    const anthropicPayload = toAnthropicResponse(
-      cachedResponse.json,
-      requestedModel,
-      wantsThinking,
-    );
+    // Same shape guard as the live path: cached json may already be Anthropic.
+    const anthropicPayload = (cachedResponse.json?.type === "message" && Array.isArray(cachedResponse.json?.content))
+      ? cachedResponse.json
+      : toAnthropicResponse(
+          cachedResponse.json,
+          requestedModel,
+          wantsThinking,
+        );
     anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
 
     const promptTokens = cachedResponse.json?.usage?.prompt_tokens ?? 0;
@@ -4172,8 +4231,39 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
   return loopResult.response;
 }
 
+/**
+ * Trim an over-long agent-loop conversation while ALWAYS preserving the
+ * current task: the latest user message with real typed text. Keeps the
+ * 2-message head (opening context), the task message (re-inserted if it
+ * would fall in the trimmed middle), and the most recent tail. Boundary
+ * orphans (tool_results whose tool_use was trimmed) are handled by the
+ * converters' existing orphan-droppers.
+ */
+function trimLoopMessages(messages, max) {
+  const { extractCleanUserText } = require("../routing/intent-score");
+  let taskIdx = -1;
+  for (let i = messages.length - 1; i >= 2; i--) {
+    if (messages[i]?.role === "user" && extractCleanUserText({ messages: [messages[i]] })) {
+      taskIdx = i;
+      break;
+    }
+  }
+  const head = messages.slice(0, 2);
+  const keepTail = max - head.length - 1;
+  const tailStart = messages.length - keepTail;
+  const taskMsg = taskIdx >= 2 && taskIdx < tailStart ? [messages[taskIdx]] : [];
+  const trimmed = [...head, ...taskMsg, ...messages.slice(tailStart)];
+  logger.debug(
+    { trimmed: messages.length - trimmed.length, remaining: trimmed.length, taskKept: taskMsg.length > 0 || taskIdx >= tailStart || taskIdx < 2 },
+    "Trimmed intermediate messages to prevent memory growth",
+  );
+  return trimmed;
+}
+
 module.exports = {
   processMessage,
   // Exported for unit testing of response-metadata conversion.
   toAnthropicResponse,
+  // Exported for unit testing of loop trimming (task-preservation contract).
+  trimLoopMessages,
 };

@@ -95,10 +95,23 @@ if (config.oversizedErrorLogging?.enabled) {
 	});
 }
 
+// Root level must be the most verbose of any enabled stream, or quieter
+// streams starve louder ones: LOG_LEVEL=silent (the recommended wrap
+// setting) used to make LOG_FILE_ENABLED capture nothing — the exact
+// sessions that most need a log file. Per-stream levels still apply, so
+// the console stays at LOG_LEVEL.
+const LEVEL_ORDER = ["trace", "debug", "info", "warn", "error", "fatal", "silent"];
+const rootLevel = streams
+	.map((s) => s.level)
+	.reduce(
+		(min, l) => (LEVEL_ORDER.indexOf(l) < LEVEL_ORDER.indexOf(min) ? l : min),
+		config.logger.level,
+	);
+
 // Create logger with multistream
 const logger = pino(
 	{
-		level: config.logger.level,
+		level: rootLevel,
 		name: "claude-backend",
 		base: {
 			env: config.env,

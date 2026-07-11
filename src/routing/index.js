@@ -23,6 +23,7 @@ const { getAgenticDetector, AGENT_TYPES } = require('./agentic-detector');
 const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
 const { getCostOptimizer } = require('./cost-optimizer');
 const { analyzeRisk } = require('./risk-classifier');
+const { scoreIntent, intentScoreMode } = require('./intent-score');
 
 // Phase 3-6 routing modules
 const { getKnnRouter } = require('./knn-router');
@@ -462,15 +463,47 @@ async function checkPinScoreDrift(pin, payload) {
       return { drift: true, freshScore: 100, ceiling: null, forced: 'force_cloud' };
     }
 
+    // Agentic-autonomous asks are triggers of the same rank as force-cloud:
+    // full routing early-returns them to REASONING, but a pinned turn never
+    // reaches full routing, and the anchor score alone can't escape (live
+    // 2026-07-09: "Work autonomously: run the test suite, fix each failure…"
+    // scored 50 on a MEDIUM@44 pin — under ceiling+margin — and served
+    // minimax, which then botched the task). Mirror the force-cloud escape:
+    // detect on the TYPED text + real payload tools/profile so the caller
+    // falls through to full routing, where the AUTONOMOUS path fires properly.
+    try {
+      const agentic = getAgenticDetector().detect(
+        { messages: [{ role: 'user', content: text }], tools: payload.tools },
+        { clientProfile: payload._clientProfile || null },
+      );
+      if (agentic?.agentType === 'AUTONOMOUS') {
+        return { drift: true, freshScore: 100, ceiling: null, forced: 'agentic_autonomous' };
+      }
+    } catch { /* detector failure never blocks the pin path */ }
+
     // Heuristic-only score of the isolated message. Mirrors the intent
     // scorer's shape (single message + tools + client profile) so the
     // number is comparable to the score that produced the pin.
-    const analysis = await analyzeComplexity({
-      messages: [{ role: 'user', content: text }],
-      tools: payload.tools,
-      _clientProfile: payload._clientProfile,
-    }, {});
-    const freshScore = analysis?.score;
+    //
+    // WS7: pins are now written with anchor-classifier scores, so the drift
+    // comparison must use the SAME scorer or ceiling+margin stops meaning
+    // anything (lexical noise vs anchor bands was exactly finding #1). The
+    // embed call is cache-backed (~0ms on repeat turns); scoreIntent falls
+    // back to a clean-text lexical score if Ollama is unreachable, and we
+    // fall back to the legacy full analyzer only in legacy mode.
+    let freshScore = null;
+    if (intentScoreMode() !== 'legacy') {
+      const intent = await scoreIntent({ messages: [{ role: 'user', content: text }] });
+      if (intent && Number.isFinite(intent.score)) freshScore = intent.score;
+    }
+    if (freshScore === null) {
+      const analysis = await analyzeComplexity({
+        messages: [{ role: 'user', content: text }],
+        tools: payload.tools,
+        _clientProfile: payload._clientProfile,
+      }, {});
+      freshScore = analysis?.score;
+    }
     if (typeof freshScore !== 'number') return none;
 
     // Calibrated ceiling for the pinned tier (falls back to defaults).
@@ -514,6 +547,17 @@ function checkSessionPin(payload, options = {}) {
   if (!pin) return { serve: false, sessionId, reason: 'no_pin' };
 
   const messageCount = Array.isArray(payload?.messages) ? payload.messages.length : 0;
+  // Opener-only conversations (1-2 messages) neither write pins NOR consume
+  // them — symmetric with writeSessionPin's opener skip. Identical openers
+  // share a fingerprint for 6h, so any pin visible here may belong to a
+  // different conversation entirely; and the messageCount bookkeeping the
+  // new_conversation guard relies on can be ratcheted DOWN by refreshes
+  // (live 2026-07-10 00:18: a fresh "Hi" was served a COMPLEX@100 pin whose
+  // stored count a prior 4-message collision had shrunk to 4). A full route
+  // on the first frame or two costs ~one cached embed — nothing.
+  if (messageCount <= 2) {
+    return { serve: false, pin, sessionId, reason: 'opener_conversation' };
+  }
   // Tool-less requests are harness side traffic (title generation,
   // summarization, memory extraction) replaying the conversation. They may
   // be SERVED from the pin but must not refresh its ts/messageCount — a
@@ -522,9 +566,42 @@ function checkSessionPin(payload, options = {}) {
   const refreshOk = Array.isArray(payload?.tools) && payload.tools.length > 0;
 
   if (sessionAffinity.payloadHasToolHistory(payload)) {
+    // A user who types WHILE a tool loop is running gets their text merged
+    // into the same message as the pending tool_result — so a heavyweight
+    // ask can arrive INSIDE a tool exchange, where the pin serves
+    // unconditionally and the drift/force escapes never run (live
+    // 2026-07-09: "Do an architecture review of the orchestrator" rode a
+    // MEDIUM pin for its entire loop this way). We cannot switch tiers on
+    // THIS frame (tool_use↔tool_result id linkage), but we can make sure
+    // the pin dies with the exchange: if the embedded typed text trips a
+    // trigger, drop the pin so the next turn boundary re-routes in full.
+    try {
+      const { extractCleanUserText } = require('./intent-score');
+      const lastMsg = payload.messages[payload.messages.length - 1];
+      const embedded = extractCleanUserText({ messages: [lastMsg] });
+      if (embedded) {
+        const trippedForce = shouldForceCloud({ messages: [{ role: 'user', content: embedded }] });
+        const agentic = trippedForce ? null : getAgenticDetector().detect(
+          { messages: [{ role: 'user', content: embedded }], tools: payload.tools },
+          { clientProfile: payload._clientProfile || null },
+        );
+        if (trippedForce || agentic?.agentType === 'AUTONOMOUS') {
+          sessionAffinity.removePin(sessionId);
+          logger.info({
+            sessionId,
+            trigger: trippedForce ? 'force_cloud' : 'agentic_autonomous',
+            pinnedTier: pin.tier,
+          }, '[Routing] Trigger text embedded in tool exchange — pin dropped, next boundary re-routes');
+          return { serve: true, pin, reason: 'tool_history_pin_dropped', sessionId };
+        }
+      }
+    } catch { /* never block the pin-serve path */ }
     if (refreshOk) {
       sessionAffinity.setPin(sessionId, pin, {
-        messageCount,
+        // Monotonic within a pin's lifetime: refreshes must never SHRINK the
+        // recorded conversation size, or a short colliding session blinds
+        // the new_conversation guard for everyone after it.
+        messageCount: Math.max(messageCount, pin.messageCount ?? 0),
         promptTokensEst: pin.promptTokensEst,
       });
     }
@@ -539,7 +616,7 @@ function checkSessionPin(payload, options = {}) {
 
   if (refreshOk) {
     sessionAffinity.setPin(sessionId, pin, {
-      messageCount,
+      messageCount: Math.max(messageCount, pin.messageCount ?? 0),
       promptTokensEst: guards.promptTokensEst ?? pin.promptTokensEst,
     });
   }
@@ -575,6 +652,18 @@ function writeSessionPin(sessionId, decision, payload) {
     return;
   }
   const messageCount = Array.isArray(payload?.messages) ? payload.messages.length : 0;
+  // Opener-only sessions (1-2 messages) never pin. A pin exists to keep an
+  // ONGOING conversation stable; a bare opener has nothing to stabilize —
+  // and identical openers ("Hi") share a fingerprint for 6h, so a pin
+  // written here leaks to every other session with the same opener. Live
+  // 2026-07-09 (twice): a trigger-tier pin under the "Hi" fingerprint at
+  // messageCount≤2 slipped under the new_conversation guard (which needs
+  // pinnedMsgCount>4) and served greetings on COMPLEX/REASONING for hours.
+  if (messageCount <= 2) {
+    logger.debug({ sessionId, tier: decision.tier, messageCount },
+      '[Routing] Opener-only session — pin write skipped');
+    return;
+  }
   const promptTokensEst = _tryCountTokens(payload, decision.model);
   sessionAffinity.setPin(sessionId, decision, { messageCount, promptTokensEst });
 }
@@ -773,9 +862,38 @@ async function _determineProviderSmartInner(payload, options = {}) {
   const useWeightedScoring = config.routing?.weightedScoring ?? false;
   const analysis = await analyzeComplexity(payload, { weighted: useWeightedScoring, workspace: options.workspace });
 
-  // Phase 4: Optional embeddings adjustment
+  // WS7 — payload-invariant intent score. The lexical score above reads the
+  // whole payload (tool schemas, history, injected reminders) and its noise
+  // exceeds the band width (±25 on a 24-point band). Replace it with the
+  // anchor-classifier score of the CLEANED USER TEXT only; keep the lexical
+  // number on the analysis for comparison telemetry. Envelope signals still
+  // escalate via their own triggers (agentic boost/minTier, risk, context,
+  // vision) further down. LYNKR_INTENT_SCORE_MODE=legacy restores old behaviour.
+  let intentScored = false;
+  try {
+    const intent = await scoreIntent(payload);
+    if (intent && Number.isFinite(intent.score)) {
+      analysis.lexicalScore = analysis.score;
+      analysis.score = intent.score;
+      analysis.scoreMode = intent.mode; // 'anchor' | 'lexical' (clean-text fallback)
+      analysis.anchorClass = intent.class ?? null;
+      intentScored = true;
+      logger.debug({
+        score: intent.score,
+        mode: intent.mode,
+        class: intent.class,
+        lexicalScore: analysis.lexicalScore,
+      }, '[Routing] WS7 intent score');
+    }
+  } catch (err) {
+    degradation.record('intent_score', err);
+  }
+
+  // Phase 4: Optional embeddings adjustment — legacy path only. The WS7
+  // anchor score already lives in embedding space; adjusting it with the
+  // old full-payload embedding heuristic would reintroduce envelope noise.
   let embeddingsResult = null;
-  if (options.useEmbeddings !== false && config.ollama?.embeddingsModel) {
+  if (!intentScored && options.useEmbeddings !== false && config.ollama?.embeddingsModel) {
     try {
       embeddingsResult = await analyzeWithEmbeddings(payload);
       if (embeddingsResult?.adjustment) {
@@ -801,10 +919,20 @@ async function _determineProviderSmartInner(payload, options = {}) {
         || null;
       agenticResult = detector.detect(payload, { clientProfile });
 
-      // Boost complexity score for agentic workflows
+      // Boost complexity score for agentic workflows.
+      //
+      // WS7: in anchor mode the boost is SKIPPED — mutating the score with
+      // an envelope signal (tool count, chain phrasing) reintroduces the
+      // exact noise the payload-invariant scorer removes, and the pinned
+      // score / drift margin / calibration all consume this number. The
+      // agentic trigger still escalates via minTier below (TOOL_CHAIN →
+      // MEDIUM, ITERATIVE → COMPLEX, AUTONOMOUS → REASONING early return),
+      // which is the sanctioned trigger mechanism.
       if (agenticResult.isAgentic) {
-        analysis.score = Math.min(100, analysis.score + agenticResult.scoreBoost);
-        analysis.agenticBoost = agenticResult.scoreBoost;
+        if (!intentScored) {
+          analysis.score = Math.min(100, analysis.score + agenticResult.scoreBoost);
+          analysis.agenticBoost = agenticResult.scoreBoost;
+        }
         analysis.agentType = agenticResult.agentType;
 
         logger.debug({
@@ -831,7 +959,14 @@ async function _determineProviderSmartInner(payload, options = {}) {
                 tier: 'REASONING',
                 method: 'agentic',
                 reason: 'autonomous_workflow',
-                score: analysis.score,
+                // Triggers present a score consistent with the tier they
+                // force, like force_cloud/risk (100). WS7's boost-skip left
+                // this at the anchor score (~20-47), so downstream consumers
+                // that compare scores — the intent window's recency decay,
+                // pin ceilings — treated a REASONING decision as trivial and
+                // let harness noise outvote it (live 2026-07-09: autonomous
+                // session repinned SIMPLE@19 mid-test-run).
+                score: 100,
                 agenticResult,
                 risk,
                 propensity: 1.0,
@@ -850,7 +985,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
             provider,
             method: 'agentic',
             reason: 'autonomous_workflow',
-            score: analysis.score,
+            score: 100, // trigger score matches forced tier — see comment above
             agenticResult,
             risk,
             propensity: 1.0,

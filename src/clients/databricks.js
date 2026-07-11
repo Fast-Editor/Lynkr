@@ -427,6 +427,55 @@ function _liftLeakedThinkingBlocks(response) {
   return response;
 }
 
+/**
+ * Ollama daemon proxies cloud-provider errors as a JSON body that can arrive
+ * with HTTP 200 — e.g. weekly quota exhaustion:
+ *   {"StatusCode":429,"Status":"429 Too Many Requests","error":"you (…) have
+ *    reached your weekly usage limit…"}
+ * Left unthrown, that serves as an empty assistant message: neither
+ * tier-fallback nor the cascade ever fires and the user sees a badge with no
+ * reply (live incident 2026-07-09). Throwing here hands the request to the
+ * tier-fallback ladder in invokeModel's catch, which climbs to a healthy tier.
+ *
+ * Also covers the streamed shape: on error the daemon answers with a JSON
+ * body instead of an SSE stream, so a json-ish content-type on a streaming
+ * response IS the error case — buffer the (small) body and throw.
+ */
+async function _throwIfOllamaError(response, modelName) {
+  if (!response) return response;
+
+  // Streamed request answered with JSON → provider error, not a stream.
+  if (response.stream && /json/i.test(response.contentType || "")) {
+    let text = "";
+    try {
+      for await (const chunk of response.stream) text += chunk;
+    } catch { /* partial body is fine — we're throwing anyway */ }
+    let j = null;
+    try { j = JSON.parse(text); } catch { /* non-JSON error body */ }
+    // A JSON content-type that is actually a valid non-streamed Anthropic
+    // message would be unusual; treat anything without content blocks as error.
+    if (!Array.isArray(j?.content)) {
+      const msg = (typeof j?.error === "string" ? j.error : j?.error?.message) || text.slice(0, 200) || `HTTP ${response.status}`;
+      const err = new Error(`Ollama error for ${modelName}: ${msg}`);
+      err.status = Number(j?.StatusCode) >= 400 ? Number(j.StatusCode) : (response.ok ? 502 : response.status);
+      throw err;
+    }
+    // Valid message that happened to be JSON — reshape as non-streamed result.
+    return { ok: true, status: response.status, json: j, text, contentType: response.contentType, headers: response.headers };
+  }
+
+  const j = response.json;
+  const errMsg = typeof j?.error === "string" ? j.error
+    : typeof j?.error?.message === "string" ? j.error.message : null;
+  const embeddedStatus = Number(j?.StatusCode);
+  if (!response.ok || errMsg || (Number.isFinite(embeddedStatus) && embeddedStatus >= 400)) {
+    const err = new Error(`Ollama error for ${modelName}: ${errMsg || `HTTP ${response.status}`}`);
+    err.status = Number.isFinite(embeddedStatus) && embeddedStatus >= 400 ? embeddedStatus : response.status;
+    throw err;
+  }
+  return response;
+}
+
 async function invokeOllama(body, incomingHeaders = {}) {
   if (!config.ollama?.endpoint) {
     throw new Error("Ollama endpoint is not configured.");
@@ -486,12 +535,30 @@ async function invokeOllama(body, incomingHeaders = {}) {
       "anthropic-version": "2023-06-01",
     };
 
-    // Build body with only valid Anthropic Messages API fields
+    // Build body with only valid Anthropic Messages API fields.
+    //
+    // max_tokens floor: MiniMax M2.5 (and other interleaved-thinking models)
+    // spend 200-400 tokens THINKING before any text. A small client budget
+    // (Claude Code side requests send a few hundred) gets fully consumed by
+    // the thinking phase → stop_reason=max_tokens with ZERO text — the user
+    // sees an empty reply and the cascade escalates a healthy provider.
+    // Measured 2026-07-09: probes at max_tokens=200 died mid-think 2/5 times
+    // (674-980 chars of thinking before 7-13 chars of answer).
+    const minMaxTokens = Number(process.env.LYNKR_OLLAMA_MIN_MAX_TOKENS) || 1536;
+    // Buffer ollama responses (opt out: LYNKR_OLLAMA_BUFFER_RESPONSES=false).
+    // Thinking models stream reasoning deltas that Claude Code renders as
+    // dead air (live 2026-07-09 23:05: a streamed "Hi" produced 171 output
+    // tokens per telemetry, the UI showed NOTHING and the client aborted).
+    // Buffered responses instead flow through _liftLeakedThinkingBlocks and
+    // the router's SSE synthesis — which Claude Code renders correctly —
+    // and become verifiable by the WS6 cascade (streams bypass it).
+    // Cheap-tier answers are short; the lost token-trickle is negligible.
+    const bufferOllama = process.env.LYNKR_OLLAMA_BUFFER_RESPONSES !== "false";
     const ollamaBody = {
       model: modelName,
       messages: body.messages,
-      max_tokens: body.max_tokens || 16384,
-      stream: body.stream ?? false,
+      max_tokens: Math.max(body.max_tokens || 16384, minMaxTokens),
+      stream: bufferOllama ? false : (body.stream ?? false),
     };
 
     if (body.system) ollamaBody.system = body.system;
@@ -515,7 +582,10 @@ async function invokeOllama(body, incomingHeaders = {}) {
       logger.debug({ keepAlive: ollamaBody.keep_alive }, "Ollama keep_alive configured");
     }
 
-    const response = await performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
+    const response = await _throwIfOllamaError(
+      await performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama"),
+      modelName,
+    );
     // Even on the Anthropic-native path, Ollama Cloud's MiniMax M2.5 adapter
     // sometimes leaks <think>...</think> as raw text inside content blocks
     // instead of emitting a thinking content block (ollama/ollama#14220 was
@@ -664,7 +734,10 @@ async function invokeOllama(body, incomingHeaders = {}) {
     ollamaBody.tools = convertAnthropicToolsToOllama(toolsToSend);
   }
 
-  return performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama");
+  return _throwIfOllamaError(
+    await performJsonRequest(endpoint, { headers, body: ollamaBody }, "Ollama"),
+    modelName,
+  );
 }
 
 async function invokeOpenRouter(body, incomingHeaders = {}) {
@@ -1122,9 +1195,29 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
     if (result.ok && result.json?.output) {
       const outputArray = result.json.output || [];
 
-      // Find message output (contains text content)
-      const messageOutput = outputArray.find(o => o.type === "message");
-      const textContent = messageOutput?.content?.find(c => c.type === "output_text")?.text || "";
+      // Find message output (contains text content). Robust extraction:
+      // gpt-5.2 emits several content-item shapes ("output_text", "text",
+      // occasionally string content), and there can be MULTIPLE message
+      // items / multiple text items per message. The old single-find of one
+      // "output_text" silently produced "" for other shapes — the model's
+      // whole answer vanished and the client rendered an empty turn (live
+      // 2026-07-10: 37 output tokens generated, one "\n" delivered).
+      const messageOutputs = outputArray.filter(o => o.type === "message");
+      const messageOutput = messageOutputs[0];
+      const textContent = messageOutputs.map(mo => {
+        if (typeof mo.content === "string") return mo.content;
+        if (!Array.isArray(mo.content)) return "";
+        return mo.content
+          .filter(c => (c.type === "output_text" || c.type === "text") && typeof c.text === "string")
+          .map(c => c.text)
+          .join("");
+      }).join("\n").trim() || "";
+      if (!textContent && messageOutputs.length > 0) {
+        logger.warn({
+          contentShapes: messageOutputs.map(mo =>
+            Array.isArray(mo.content) ? mo.content.map(c => c.type) : typeof mo.content),
+        }, "[AzureResponses] Message output present but no text extracted — unknown content shape");
+      }
 
       // Find function_call outputs (tool calls are separate items in output array)
       const rawToolCalls = outputArray
@@ -1183,7 +1276,16 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
           },
           finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop"
         }],
-        usage: result.json.usage
+        // Responses API usage is {input_tokens, output_tokens}; everything
+        // downstream (telemetry, cost, feedback) reads Chat Completions'
+        // {prompt_tokens, completion_tokens}. Unmapped, every azure row
+        // recorded NULL tokens (live 2026-07-10).
+        usage: result.json.usage ? {
+          prompt_tokens: result.json.usage.prompt_tokens ?? result.json.usage.input_tokens ?? 0,
+          completion_tokens: result.json.usage.completion_tokens ?? result.json.usage.output_tokens ?? 0,
+          total_tokens: result.json.usage.total_tokens
+            ?? ((result.json.usage.input_tokens ?? 0) + (result.json.usage.output_tokens ?? 0)),
+        } : undefined
       };
 
       logger.debug({
@@ -2001,7 +2103,22 @@ async function invokeMoonshot(body, incomingHeaders = {}) {
     toolCount: moonshotBody.tools?.length || 0,
   }, "=== Moonshot REQUEST ===");
 
-  const response = await performJsonRequest(endpoint, { headers, body: moonshotBody }, "Moonshot");
+  // 429 is NOT retryable here: Moonshot's org-level rate/quota limits persist
+  // for minutes-hours (live 2026-07-09: retry backoff held a "Hi" hostage for
+  // 50+ seconds against a limit that wasn't going to clear). Failing fast
+  // hands the request to the tier-fallback ladder, which climbs to a healthy
+  // tier in ~1s instead.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: moonshotBody,
+    retryableStatusesOverride: [500, 502, 503, 504],
+  }, "Moonshot");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`Moonshot rate-limited (org quota): ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
 
   const rawMsg = response?.json?.choices?.[0]?.message;
   logger.debug({
@@ -3370,4 +3487,5 @@ module.exports = {
   destroyHttpAgents,
   normalizeBodyForConverse,
   _stripInternalFields,
+  _throwIfOllamaError,
 };

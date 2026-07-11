@@ -151,6 +151,17 @@ function shouldRepin(pin, payload) {
   if (!pin) return { repin: true, reason: "no_pin" };
   const currentMsgCount = Array.isArray(payload?.messages) ? payload.messages.length : 0;
   const pinnedMsgCount = pin.messageCount ?? null;
+  // A 1-2 message payload against a pin from a long conversation is NOT a
+  // compaction — it's a brand-new conversation whose opener collided with
+  // an old session's fingerprint (identical openers like "Hi" share a
+  // fingerprint for the 6h TTL). Claude Code compaction always leaves the
+  // summary + recent turns, never a bare opener. Distinguishing matters:
+  // the compaction floor holds re-routes at the pinned tier, and live
+  // 2026-07-09 22:15 it held a fresh "Hi" at an inherited REASONING pin —
+  // a greeting served by the opus passthrough.
+  if (pinnedMsgCount != null && currentMsgCount <= 2 && pinnedMsgCount > 4) {
+    return { repin: true, reason: "new_conversation" };
+  }
   if (pinnedMsgCount != null && currentMsgCount < pinnedMsgCount - 2) {
     return { repin: true, reason: "compaction" };
   }
@@ -183,6 +194,20 @@ function getPinned(sessionId) {
   return { provider: p.provider, model: p.model, tier: p.tier, ts: p.ts };
 }
 
+/**
+ * Drop a session's pin (memory + store). Used when a mid-tool-exchange
+ * frame carries embedded typed text that trips a trigger (force-cloud /
+ * autonomous): the frame itself must still serve the pin (tool_use ↔
+ * tool_result id linkage breaks on a mid-exchange switch), but the pin
+ * must not survive to the next turn boundary.
+ * @param {string} sessionId
+ */
+function removePin(sessionId) {
+  if (!sessionId) return;
+  pins.delete(sessionId);
+  store.remove(sessionId);
+}
+
 /** @deprecated use setPin */
 function setPinned(sessionId, decision) {
   setPin(sessionId, decision);
@@ -192,6 +217,7 @@ module.exports = {
   payloadHasToolHistory,
   getPin,
   setPin,
+  removePin,
   shouldRepin,
   // legacy
   getPinned,
