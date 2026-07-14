@@ -71,7 +71,7 @@
     "@azure/openai": "^2.0.0",
     "@babel/parser": "^7.29.0",
     "@babel/traverse": "^7.29.0",
-    "@blackwell-systems/gcf": "^2.4.0",
+    "@blackwell-systems/gcf": "2.4.0",
     "@toon-format/toon": "^2.1.0",
     "cockatiel": "^3.2.1",
     "compression": "^1.7.4",
