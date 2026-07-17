@@ -124,6 +124,17 @@ function compressTestOutput(text) {
 
   if (summary.length === 0 && failures.length === 0) return null;
 
+  // Corroboration: one summary-looking line alone is not a test run — a
+  // README quoting "1041 passing" would otherwise compress the whole doc
+  // down to that quote. Require failures, a second summary line, or at
+  // least three per-test result markers before treating it as a test run.
+  if (failures.length === 0 && summary.length < 2) {
+    const perTestMarkers = lines.filter(l =>
+      /^\s*(?:✓|✔|✗|✘|ok \d+|not ok \d+|PASS\b|FAIL\b)/.test(l.trim())
+    ).length;
+    if (perTestMarkers < 3) return null;
+  }
+
   const parts = [];
   if (summary.length > 0) parts.push(summary.join("\n"));
   if (failures.length > 0) {
@@ -176,9 +187,12 @@ function compressGitDiff(text) {
 
 // 3. Git status
 function compressGitStatus(text) {
+  // Anchor on git-status STRUCTURE (branch line or section headers), not on
+  // bare "modified:" / "new file:" substrings — source code or prose that
+  // merely contains those strings must not be compressed into a fake status.
   if (!text.includes("Changes not staged") && !text.includes("Changes to be committed") &&
-      !text.includes("Untracked files") && !text.includes("On branch") &&
-      !text.includes("modified:") && !text.includes("new file:")) return null;
+      !text.includes("Untracked files") && !/^On branch \S+/m.test(text) &&
+      !/^HEAD detached/m.test(text)) return null;
 
   const staged = [];
   const modified = [];
@@ -442,18 +456,35 @@ function extractJSONStructure(obj, depth, maxDepth) {
   return typeof obj;
 }
 
-// 10. Docker/kubectl output
+// 10. Docker/kubectl table output (docker ps, docker images, kubectl get).
+// Detection anchors on the TABLE HEADER, never on a keyword appearing
+// anywhere in the text: the old /docker/i containment trigger fired on any
+// `ls` output that contained "Dockerfile", truncated the listing to 10
+// lines, and the model hallucinated the dropped file names.
+const CONTAINER_HEADER_COLUMNS = [
+  "CONTAINER ID", "IMAGE ID", "IMAGE", "COMMAND", "CREATED", "STATUS",
+  "PORTS", "NAMES", "REPOSITORY", "TAG", "SIZE",
+  "NAMESPACE", "NAME", "READY", "RESTARTS", "AGE", "CLUSTER-IP",
+  "EXTERNAL-IP", "TYPE", "DESIRED", "CURRENT", "AVAILABLE", "UP-TO-DATE",
+];
 function compressContainerOutput(text) {
-  const isDocker = /(?:CONTAINER ID|IMAGE|PORTS|STATUS|docker|NAMESPACE|READY|RESTARTS|AGE|kubectl|pod\/)/i.test(text);
-  if (!isDocker) return null;
-
   const lines = text.split("\n").filter(l => l.trim());
   if (lines.length < 3) return null;
 
-  // Keep header + data rows, strip verbose columns
+  // The first line must be a real docker/kubectl column header: at least
+  // three known column tokens and nothing but known tokens and whitespace.
   const header = lines[0];
-  const dataLines = lines.slice(1).filter(l => l.trim());
+  let rest = header;
+  let columns = 0;
+  for (const col of CONTAINER_HEADER_COLUMNS) {
+    if (rest.includes(col)) {
+      columns++;
+      rest = rest.split(col).join(" ");
+    }
+  }
+  if (columns < 3 || rest.trim() !== "") return null;
 
+  const dataLines = lines.slice(1);
   if (dataLines.length <= 10) return null; // Not enough to compress
 
   return `${header}\n${dataLines.slice(0, 10).join("\n")}\n... +${dataLines.length - 10} more (${dataLines.length} total)`;
@@ -561,6 +592,13 @@ function compressSmartTruncate(text) {
 }
 
 // ── Compression Pipeline ─────────────────────────────────────────────
+//
+// DETECTION RULE: a compressor's trigger must anchor on the STRUCTURE of
+// its target format (header line anatomy, per-line shape, section markers)
+// — never on a keyword appearing anywhere in the text. A misfire doesn't
+// just waste tokens: it silently drops content the model then hallucinates
+// back (live incident: /docker/i matched "Dockerfile" in an ls listing,
+// truncated it to 10 lines, and the model invented the rest).
 
 const COMPRESSORS = [
   { name: "test_output", fn: compressTestOutput },
