@@ -37,6 +37,103 @@ describe("RTK filters — grep", () => {
   });
 });
 
+describe("container_output — structure-anchored detection", () => {
+  // Live incident 2026-07-12 (goose session): the old /docker/i containment
+  // trigger matched "Dockerfile" inside a plain `ls` listing, truncated it
+  // to 10 lines, and the model hallucinated the dropped file names.
+  const LS_WITH_DOCKERFILE = [
+    "BENCHMARK_REPORT.md", "Dockerfile", "docker-compose.yml", "LICENSE",
+    "README.md", "index.js", "package.json", "src", "test", "docs",
+    "scripts", "logs", "models", "native", "public", "skills", "bin",
+    "config", "data", "examples", "marketing", "documentation",
+  ].join("\n");
+
+  it("does NOT fire on an ls listing that contains Dockerfile", () => {
+    const { out } = compressOne(LS_WITH_DOCKERFILE);
+    const m = getMetrics();
+    // Whatever else happens, the container table summarizer must not run.
+    assert.ok(!(m.patterns.container_output?.count > 0),
+      "container_output fired on a plain file listing");
+    // Every original file name must survive in some form or the output must
+    // carry an explicit count — never a silent 10-line truncation.
+    assert.ok(!/^\.\.\. \+\d+ more/m.test(out) || /total\)/.test(out));
+  });
+
+  it("still compresses a real `docker ps` table", () => {
+    const header = "CONTAINER ID   IMAGE          COMMAND        CREATED        STATUS         PORTS     NAMES";
+    const rows = Array.from({ length: 15 }, (_, i) =>
+      `abc${i}def        nginx:latest   "nginx -g"     2 hours ago    Up 2 hours     80/tcp    web-${i}`);
+    const { out } = compressOne([header, ...rows].join("\n"));
+    assert.ok(out.includes("CONTAINER ID"), "keeps the header");
+    assert.ok(out.includes("+5 more (15 total)"), `got: ${out.slice(0, 200)}`);
+  });
+
+  it("still compresses a real `kubectl get pods` table", () => {
+    const header = "NAME                     READY   STATUS    RESTARTS   AGE";
+    const rows = Array.from({ length: 40 }, (_, i) =>
+      `api-deployment-${i}       1/1     Running   0          ${i}d`);
+    const { out } = compressOne([header, ...rows].join("\n"));
+    assert.ok(out.includes("READY"), "keeps the header");
+    assert.ok(out.includes("+30 more (40 total)"));
+  });
+});
+
+describe("git_status — structure-anchored detection", () => {
+  it("does NOT fire on source code containing 'modified:'", () => {
+    const code = [
+      "function render(item) {",
+      "  // fields: modified: timestamp, new file: boolean",
+      "  return `modified: ${item.modified}`;",
+      "}",
+    ].join("\n").repeat(30);
+    const { out } = compressOne(code);
+    assert.ok(!out.startsWith("branch:"), "compressed code into a fake git status");
+    assert.ok(!/^staged:/m.test(out.slice(0, 200)));
+  });
+
+  it("still compresses a real git status", () => {
+    const status = [
+      "On branch main",
+      "Changes not staged for commit:",
+      '  (use "git add <file>..." to update what will be committed)',
+      ...Array.from({ length: 20 }, (_, i) => `\tmodified:   src/file${i}.js`),
+      "",
+      "Untracked files:",
+      ...Array.from({ length: 10 }, (_, i) => `\tnew-thing-${i}.md`),
+    ].join("\n");
+    const { out } = compressOne(status);
+    assert.ok(out.includes("branch: main"), `got: ${out.slice(0, 120)}`);
+    assert.ok(out.includes("modified:"));
+  });
+});
+
+describe("test_output — corroboration required", () => {
+  it("does NOT eat a long README that quotes a test count once", () => {
+    const readme = [
+      "# MyLib",
+      "A fast library for doing things.",
+      "The CI badge shows 1041 passing at time of writing.",
+      ...Array.from({ length: 60 }, (_, i) => `Feature ${i}: does something useful with details.`),
+    ].join("\n");
+    const { out } = compressOne(readme);
+    assert.ok(out.includes("Feature 3:"),
+      `README content was eaten, got: ${out.slice(0, 150)}`);
+  });
+
+  it("still compresses a real test run with failures", () => {
+    const run = [
+      ...Array.from({ length: 40 }, (_, i) => `✓ test case ${i} passes`),
+      "✗ test case 40 fails",
+      "  AssertionError: expected 4 to equal 5",
+      "Tests: 40 passed, 1 failed",
+    ].join("\n");
+    const { out } = compressOne(run);
+    assert.ok(out.includes("Tests: 40 passed, 1 failed"));
+    assert.ok(out.includes("AssertionError"), "keeps failure detail");
+    assert.ok(!out.includes("✓ test case 12"), "drops passing noise");
+  });
+});
+
 describe("RTK filters — dedup log", () => {
   it("collapses consecutive duplicate lines", () => {
     const text = "starting\n" + "retrying connection...\n".repeat(200) + "done\n";

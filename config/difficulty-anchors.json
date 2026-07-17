@@ -1,0 +1,22 @@
+{
+  "_comment": "WS7.1b — difficulty anchor exemplars. All texts are REAL user asks from live telemetry / the engineering ledger (do not invent synthetic anchors; mine new ones with the §7 telemetry query). Embedded at boot via the kNN router's embed(); centroid vectors cached in difficulty-anchors.vectors.json (safe to delete — regenerates).",
+  "trivial": [
+    "hi",
+    "How are you",
+    "ok thanks",
+    "345+32",
+    "how do I install golang on mac?",
+    "what is meaning of purging?",
+    "Explain the difference between TCP and UDP in two sentences."
+  ],
+  "substantive": [
+    "Review this retry helper for bugs and race conditions",
+    "give me a plan to refactor this code",
+    "Read the current repo and explain it to me"
+  ],
+  "heavyweight": [
+    "Do an architecture review of the orchestrator",
+    "analyze every module in src/ for circular dependencies and give me a dependency-order refactor plan",
+    "design a horizontally scalable architecture for this service with failure-mode analysis"
+  ]
+}

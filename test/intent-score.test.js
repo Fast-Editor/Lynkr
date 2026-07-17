@@ -93,6 +93,19 @@ describe("WS7.1a — extractCleanUserText", () => {
     assert.strictEqual(t, "give me a plan to refactor this code");
   });
 
+  it("strips goose turn-context blocks (harness content, not user-authored)", () => {
+    // Live incident 2026-07-13: goose wraps every typed message in a
+    // <turn-context> block whose todo/tasks vocabulary scored "Hi" as
+    // substantive/MEDIUM instead of trivial/SIMPLE.
+    const t = extractCleanUserText(bare(
+      "<turn-context>\n<current-time>2026-07-13 15:21:00</current-time>\n"
+      + "<working-directory>/Users/x/claude-code</working-directory>\n\n"
+      + "Current tasks and notes:\nOnce given a task, immediately update your todo with all explicit and implicit requirements\n"
+      + "</turn-context>\nHi"
+    ));
+    assert.strictEqual(t, "Hi");
+  });
+
   it("strips task-notification blocks (harness content, not user-authored)", () => {
     const t = extractCleanUserText(bare(
       "<task-notification> <task-id>abc</task-id> agent finished with 3 findings </task-notification>"

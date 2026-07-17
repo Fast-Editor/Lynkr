@@ -61,6 +61,10 @@ function _lastUserText(payload) {
       // failing every short answer to a trivial prompt.
       .replace(/<environment_context>[\s\S]*?<\/environment_context>/g, ' ')
       .replace(/<user_instructions>[\s\S]*?<\/user_instructions>/g, ' ')
+      // Goose wraps every typed message in a turn-context block (time, cwd,
+      // todo notes) — 275+ chars of harness plumbing that made a bare "Hi"
+      // look like a substantive ask, failing every short cheap-tier answer.
+      .replace(/<turn-context>[\s\S]*?<\/turn-context>/g, ' ')
       .trim();
   }
   return '';

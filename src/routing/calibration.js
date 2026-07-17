@@ -29,8 +29,10 @@ const QUALITY_FLOOR = {
 };
 
 const DEFAULT_RANGES = {
-  SIMPLE: [0, 25],
-  MEDIUM: [26, 50],
+  // SIMPLE/MEDIUM boundary at 20 — mirrors model-tiers.js TIER_DEFINITIONS
+  // (see the rationale comment there; RouterArena-diagnosed 2026-07-16).
+  SIMPLE: [0, 19],
+  MEDIUM: [20, 50],
   COMPLEX: [51, 75],
   REASONING: [76, 100],
 };

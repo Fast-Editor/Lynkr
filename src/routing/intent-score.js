@@ -39,7 +39,12 @@ const path = require('path');
 const crypto = require('crypto');
 const logger = require('../logger');
 
-const ANCHORS_PATH = path.join(__dirname, '../../data/difficulty-anchors.json');
+// data/ (user-editable, gitignored) wins; config/ is the bundled default —
+// data/ is excluded from the npm tarball, so installs load from config/.
+const ANCHORS_PATHS = [
+  path.join(__dirname, '../../data/difficulty-anchors.json'),
+  path.join(__dirname, '../../config/difficulty-anchors.json'),
+];
 const VECTORS_CACHE_PATH = path.join(__dirname, '../../data/difficulty-anchors.vectors.json');
 
 // Class → representative score. Chosen so each class lands inside an
@@ -60,7 +65,14 @@ const BLEND_TEMPERATURE = 0.05;
 
 // The CLASS is the decision; the blend only positions within the class's
 // band — without the clamp, a close runner-up sim leaks trivial asks
-// across the band edge. Bands mirror calibration's DEFAULT_RANGES.
+// across the band edge.
+//
+// NOTE: the trivial band [0,25] deliberately overlaps the MEDIUM tier
+// (which starts at 20 — see model-tiers.js). Trivial-classified asks whose
+// blend lands in the top of the band (20-25) route MEDIUM: RouterArena
+// optimality data (2026-07-16) showed cheap-model failures cluster exactly
+// there (miss median 23 vs hit median 14). Clamping trivial to [0,19]
+// would erase that signal — do not "fix" the mismatch.
 const CLASS_BANDS = {
   trivial: [0, 25],
   substantive: [26, 50],
@@ -101,6 +113,10 @@ function extractCleanUserText(payload) {
       // sandbox/permission profile and AGENTS.md contents.
       .replace(/<environment_context>[\s\S]*?<\/environment_context>/g, '')
       .replace(/<user_instructions>[\s\S]*?<\/user_instructions>/g, '')
+      // Goose harness block wrapping every typed message (time, cwd, todo
+      // notes) — its "tasks"/"update"/"requirements" vocabulary scored a
+      // bare "Hi" as substantive/MEDIUM.
+      .replace(/<turn-context>[\s\S]*?<\/turn-context>/g, '')
       // Lynkr's own injected notices (quota banners, badges) start with the
       // [Lynkr] marker — the user didn't type those.
       .replace(/^\s*\[Lynkr\][^\n]*$/gm, '')
@@ -203,11 +219,15 @@ function _anchorsHash(anchors, model) {
 }
 
 async function _loadDefaultCentroids() {
-  let anchors;
-  try {
-    anchors = JSON.parse(fs.readFileSync(ANCHORS_PATH, 'utf8'));
-  } catch (err) {
-    logger.warn({ err: err.message }, '[IntentScore] No difficulty-anchors.json — anchor mode unavailable');
+  let anchors = null;
+  for (const p of ANCHORS_PATHS) {
+    try {
+      anchors = JSON.parse(fs.readFileSync(p, 'utf8'));
+      break;
+    } catch { /* try next path */ }
+  }
+  if (!anchors) {
+    logger.warn('[IntentScore] No difficulty-anchors.json — anchor mode unavailable');
     return null;
   }
   const config = require('../config');

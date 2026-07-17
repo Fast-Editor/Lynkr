@@ -24,6 +24,7 @@ const {
   convertAnthropicToOpenAI
 } = require("../clients/openai-format");
 const { IDE_SAFE_TOOLS } = require("../clients/standard-tools");
+const clientProfiles = require("../routing/client-profiles");
 
 const router = express.Router();
 
@@ -393,6 +394,23 @@ router.post("/chat/completions", async (req, res) => {
           ? `Known client '${clientType}' — filtered to mapped tools only`
           : "Unknown client — injecting full IDE_SAFE_TOOLS"
       }, "=== INJECTING TOOLS ===");
+    }
+
+    // WS3 — detect the client harness on the OpenAI-compat paths too (the
+    // /v1/messages router already does this). Runs after tool injection so
+    // the fingerprint sees the final tools array either way: goose/Cursor
+    // send their own loadout, tool-less clients get IDE_SAFE_TOOLS injected
+    // and fingerprint as claude-code. Without this the agentic detector
+    // counts the harness baseline as intent and floors every request —
+    // including "hi" — at the ITERATIVE minTier (COMPLEX).
+    try {
+      const profile = clientProfiles.detectClient({
+        headers: req.headers,
+        payload: anthropicRequest,
+      });
+      if (profile) anthropicRequest._clientProfile = profile;
+    } catch (err) {
+      logger.debug({ err: err.message }, "[OpenAI Router] client profile detection failed");
     }
 
     const session = getSession(sessionId);
@@ -1524,6 +1542,23 @@ router.post("/responses", async (req, res) => {
     const RESPONSES_EXCLUDED = new Set(["Task", "AskUserQuestion", "TodoWrite", "WebSearch", "WebFetch", "WebAgent"]);
     if (Array.isArray(anthropicRequest.tools)) {
       anthropicRequest.tools = anthropicRequest.tools.filter(t => !RESPONSES_EXCLUDED.has(t.name));
+    }
+
+    // WS3 — detect the client harness on the OpenAI-compat paths too (the
+    // /v1/messages router already does this). Runs after tool injection so
+    // the fingerprint sees the final tools array either way: goose/Cursor
+    // send their own loadout, tool-less clients get IDE_SAFE_TOOLS injected
+    // and fingerprint as claude-code. Without this the agentic detector
+    // counts the harness baseline as intent and floors every request —
+    // including "hi" — at the ITERATIVE minTier (COMPLEX).
+    try {
+      const profile = clientProfiles.detectClient({
+        headers: req.headers,
+        payload: anthropicRequest,
+      });
+      if (profile) anthropicRequest._clientProfile = profile;
+    } catch (err) {
+      logger.debug({ err: err.message }, "[OpenAI Router] client profile detection failed");
     }
 
     const session = getSession(sessionId);

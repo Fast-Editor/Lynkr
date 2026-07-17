@@ -162,6 +162,22 @@ test('Codex environment_context merged into a trivial prompt does not fail the s
   assert.equal(r.verdict, 'pass', r.reasons.join());
 });
 
+test('goose turn-context wrapped around a trivial prompt does not fail the short answer', () => {
+  // Live incident 2026-07-13: goose wraps every typed message in a
+  // <turn-context> block (time, cwd, todo notes) — 275+ chars that made
+  // "Hi" look like a substantive ask, so minimax's greeting scored 25 and
+  // every trivial goose turn escalated MEDIUM→COMPLEX (Azure).
+  const turnContext = '<turn-context>\n<current-time>2026-07-13 15:21:00</current-time>\n'
+    + '<working-directory>/Users/x/claude-code</working-directory>\n\n'
+    + 'Current tasks and notes:\nOnce given a task, immediately update your todo with all explicit and implicit requirements\n'
+    + '</turn-context>';
+  const r = verify({
+    payload: ask(turnContext + '\nHi'),
+    responseBody: answer('Hi! What can I help you with today?'),
+  });
+  assert.equal(r.verdict, 'pass', r.reasons.join());
+});
+
 // ---------------------------------------------------------------------------
 // Fail-open contract
 // ---------------------------------------------------------------------------

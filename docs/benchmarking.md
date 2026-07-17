@@ -12,6 +12,14 @@ incidents so they can't silently return.
 node index.js &          # or: lynkr wrap claude in another terminal
 
 node benchmark-tier-routing.js
+
+# Routing-only head-to-head (skips compression/cache scenarios; judges
+# EVERY proxy on the same acceptable-tier sets, not just Lynkr):
+MODE=routing node benchmark-tier-routing.js
+
+# Repeat each scenario to catch non-deterministic routers (a scenario
+# passes only if every run passes); restrict to one proxy with ONLY:
+MODE=routing RUNS=3 ONLY=LiteLLM node benchmark-tier-routing.js
 ```
 
 Competitors are optional; unreachable proxies are reported as
@@ -19,23 +27,32 @@ Competitors are optional; unreachable proxies are reported as
 never counted as $0.00.
 
 ```bash
-# LiteLLM head-to-head: point a LiteLLM proxy at the same free Ollama
-# backend (model_name "smart-router" → ollama_chat/<your-model>) so the
-# comparison is proxy-vs-proxy, not model pricing.
+# LiteLLM head-to-head against its Auto Router v2 complexity router
+# (litellm >= 1.94): tier targets mirror Lynkr's TIER_* config, and each
+# tier deployment carries an explicit model_info.id so the benchmark can
+# read the tier decision from the x-litellm-model-id header.
+litellm --port 8082 --config litellm-autorouter-v2.yaml       # heuristic (default)
+litellm --port 8082 --config litellm-autorouter-v2-llm.yaml   # LLM classifier
+
+# Legacy load-balancing comparison (cost heuristic tier inference):
 litellm --port 8082 --config your-litellm-config.yaml
 
 # Portkey (needs a real ANTHROPIC_API_KEY — OAuth tokens won't work)
 docker run -d -p 8083:8787 portkeyai/gateway
 ```
 
-## The 17 scenarios
+## The 19 scenarios
 
 | Group | IDs | What it measures |
 |---|---|---|
 | Feature economics | S1, T1, T2, H1, L1, L2, SC1, SC2, R1 | tier routing, tool-schema stripping, history compression, TOON JSON compression, semantic cache |
 | Routing regressions | F1, F2, RS1, SR1, A1 | force-cloud phrases, path-risk, reminder-injection immunity, suggestion-mode side requests, autonomous→REASONING |
 | Session behaviour | P1, P2 | fingerprint pins a SIMPLE opener, then the pin **escapes mid-session** when the real task arrives |
+| Envelope invariance | IV1, IV2 | the same ask bare vs wrapped in tool schemas + fat system-reminders must land the same tier (WS7 anchor scoring) |
 | Cache correctness | SC3 | the cache must not serve an answer to a *different* question |
+
+`MODE=routing` runs the 11 scenarios that carry an `acceptable` tier set
+(S1, R1, F1, F2, RS1, SR1, A1, P1, P2, IV1, IV2) and nothing else.
 
 ## Reading the output
 
@@ -46,10 +63,21 @@ differ when tier-fallback rescued a failed upstream, flagged
 overhead (e.g. system-prompt injection on small requests) instead of
 hiding it.
 
-**`ROUTING CORRECTNESS (Lynkr)`** is the pass/fail scoreboard. Route
-expectations judge Lynkr only — other proxies synthesize tier labels from
-cost heuristics. Any `✗ … ← REGRESSION` means a routing change re-broke a
-fixed incident. Current baseline: **10/10**.
+**`ROUTING CORRECTNESS (Lynkr)`** is the regression scoreboard: Lynkr's
+strict per-incident expectations (`expectTier`). Any `✗ … ← REGRESSION`
+means a routing change re-broke a fixed incident. Current baseline:
+**12/12** (11 tier assertions + SC3's cache guard). With `RUNS>1` a
+scenario passes only if **every** run passes.
+
+**`ROUTING SCOREBOARD (all proxies)`** judges every proxy that exposes a
+real tier decision against the same `acceptable` sets — broader than
+`expectTier` (e.g. R1 accepts COMPLEX *or* REASONING) so it's fair to
+routers with different tier philosophies. Lynkr's tier comes from
+`X-Lynkr-Tier`; LiteLLM's from `x-litellm-model-id` when running an
+Auto Router v2 config. IV2 additionally requires the same tier as IV1.
+Reference run (2026-07-15, same backends): Lynkr 11/11, LiteLLM v1.94
+heuristic 4/11, LiteLLM + GPT-5.2 LLM classifier 6–8/11 (non-deterministic)
+— details in [BENCHMARK_REPORT.md](../BENCHMARK_REPORT.md) addendum.
 
 **Cost tables** price local models (ollama/minimax/llama/qwen) at $0 and
 bill cache hits as zero (`[CACHE-HIT]`, detected via the
@@ -70,8 +98,9 @@ semantic cache retains answers. The harness compensates:
   that matched a *different* question — the real false positive — and
   fails with the similarity printed.
 
-Two consecutive runs must both score 10/10. If run #2 diverges, the
-benchmark found state leakage — that's a finding, not noise.
+Two consecutive runs must both score 12/12 (or pass `RUNS=2` in one
+invocation — each run gets a fresh nonce automatically). If run #2
+diverges, the benchmark found state leakage — that's a finding, not noise.
 
 ## Known limitations
 
@@ -79,7 +108,7 @@ benchmark found state leakage — that's a finding, not noise.
   requires the OAuth token that only Claude Code supplies, so COMPLEX/
   REASONING decisions get *served* by the fallback chain. Routing
   decisions are still asserted; served-quality comparisons need the wrap.
-- Nine-figure extrapolations from 17 requests are directional. For
-  publishable numbers, loop the mix 50–100×.
+- Nine-figure extrapolations from 19 requests are directional. For
+  publishable numbers, loop the mix 50–100× (`RUNS=50`).
 - The token estimator (chars/4) is approximate; treat `Saved` as relative,
   not invoice-grade.

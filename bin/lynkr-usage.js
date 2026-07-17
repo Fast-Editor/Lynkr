@@ -18,6 +18,10 @@ const path = require("path");
 // Make sure config/logger pick up the workspace root
 process.env.WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || path.resolve(__dirname, "..");
 
+// Reports and receipts go to stdout for humans (and screenshots) — telemetry
+// init logs would pollute them. Respect an explicit LOG_LEVEL override.
+if (!process.env.LOG_LEVEL) process.env.LOG_LEVEL = "silent";
+
 const aggregator = require("../src/usage/aggregator");
 
 function parseArgs(argv) {

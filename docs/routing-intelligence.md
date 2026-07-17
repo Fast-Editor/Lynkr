@@ -128,7 +128,7 @@ at `.lynkr/telemetry.db`.
 
 ## Verifying routing behaviour
 
-`node benchmark-tier-routing.js` (repo root) runs 17 scenarios against a
+`node benchmark-tier-routing.js` (repo root) runs 19 scenarios against a
 live gateway, including 10 routing-correctness assertions that encode past
 production incidents — reminder-injection immunity, suggestion-mode
 handling, force/risk triggers, pin-then-escape, cache false-positive

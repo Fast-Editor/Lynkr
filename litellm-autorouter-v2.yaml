@@ -1,0 +1,72 @@
+# LiteLLM Auto Router v2 (complexity_router) config for benchmarking against
+# Lynkr tier routing — same backends as Lynkr's LIVE TIER_* env config
+# (verified against .env 2026-07-15):
+#   SIMPLE/MEDIUM  → ollama minimax-m2.5:cloud (local, free)
+#   COMPLEX        → azure gpt-5.2-chat
+#   REASONING      → z.ai GLM-5.2 (Anthropic-compatible endpoint)
+#
+# Requires litellm >= 1.94.0.dev1 (Auto Router v2). Heuristic classifier —
+# the default, zero-API-call, sub-ms mode. classifier_type: llm and
+# semantic keyword rules exist but are not enabled here; this measures the
+# out-of-the-box complexity router.
+#
+# Each tier deployment carries an explicit model_info.id so the
+# x-litellm-model-id response header reveals which tier served the request.
+#
+# Run:
+#   source ~/venvs/litellm/bin/activate
+#   export $(grep -E '^(MOONSHOT_API_KEY|AZURE_OPENAI_API_KEY)=' .env | xargs)
+#   litellm --port 8082 --config litellm-autorouter-v2.yaml
+
+model_list:
+  - model_name: tier-simple
+    litellm_params:
+      model: ollama_chat/minimax-m2.5:cloud
+      api_base: http://localhost:11434
+    model_info:
+      id: tier-simple
+
+  - model_name: tier-medium
+    litellm_params:
+      model: ollama_chat/minimax-m2.5:cloud
+      api_base: http://localhost:11434
+    model_info:
+      id: tier-medium
+
+  - model_name: tier-complex
+    litellm_params:
+      model: azure/gpt-5.2-chat
+      api_base: https://visha-mddvh2sw-eastus2.cognitiveservices.azure.com
+      api_key: os.environ/AZURE_OPENAI_API_KEY
+      api_version: "2024-08-01-preview"
+    model_info:
+      id: tier-complex
+
+  - model_name: tier-reasoning
+    litellm_params:
+      model: anthropic/GLM-5.2
+      api_base: https://api.z.ai/api/anthropic
+      api_key: os.environ/ZAI_API_KEY
+    model_info:
+      id: tier-reasoning
+
+  - model_name: smart-router
+    litellm_params:
+      model: auto_router/complexity_router
+      complexity_router_config:
+        tiers:
+          SIMPLE: tier-simple
+          MEDIUM: tier-medium
+          COMPLEX: tier-complex
+          REASONING: tier-reasoning
+        default_model: tier-medium
+
+litellm_settings:
+  return_response_headers: true
+  drop_params: true
+  num_retries: 1
+  request_timeout: 90
+
+router_settings:
+  allowed_fails: 2
+  cooldown_time: 30

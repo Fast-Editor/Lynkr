@@ -67,6 +67,53 @@ const PROFILES = {
       minToolFingerprintMatch: 0.8,
     },
   },
+  'lynkr-injected': {
+    name: 'lynkr-injected',
+    baselineTools: new Set([
+      // Lynkr's own IDE_SAFE_TOOLS loadout (src/clients/standard-tools.js),
+      // injected by the OpenAI-compat routers when a client sends no tools.
+      // These are Lynkr plumbing, not user intent: without this profile the
+      // agentic detector counts its own injected tools and floors every
+      // tool-less client (e.g. goose's summarizer side-requests) at
+      // ITERATIVE/COMPLEX. Matches claude-code's names plus the four
+      // (MultiEdit, LS, NotebookRead, WebAgent) that keep it from
+      // fingerprinting as claude-code.
+      'Write', 'Read', 'Edit', 'Bash', 'Glob', 'Grep', 'MultiEdit', 'LS',
+      'NotebookRead', 'TodoWrite', 'Task', 'WebSearch', 'WebFetch',
+      'WebAgent', 'NotebookEdit',
+    ]),
+    detect: {
+      headerPatterns: [],
+      minToolFingerprintMatch: 0.8,
+    },
+  },
+  'goose': {
+    name: 'goose',
+    baselineTools: new Set([
+      // Goose CLI 1.41 default loadout — captured live 2026-07-13 against
+      // the OpenAI-compatible endpoint. Goose sends NO user-agent header,
+      // so detection relies entirely on this tool fingerprint. The apps__*,
+      // extensionmanager__* and todo__* names come from goose's default
+      // extensions; the rest are core tools that attach to every request.
+      'analyze', 'delegate', 'edit', 'load', 'load_skill', 'read_image',
+      'shell', 'tree', 'write',
+      'apps__create_app', 'apps__delete_app', 'apps__iterate_app',
+      'apps__list_apps',
+      'extensionmanager__list_resources', 'extensionmanager__manage_extensions',
+      'extensionmanager__read_resource',
+      'extensionmanager__search_available_extensions',
+      'todo__todo_write',
+    ]),
+    detect: {
+      headerPatterns: [/goose/i],
+      // 0.5 rather than the usual 0.8: users can disable goose's default
+      // extensions (apps, extensionmanager, todo), which removes up to 9 of
+      // the 18 baseline names while the 9 core tools still identify goose.
+      // A false-positive match on another harness with this many identical
+      // tool names would subtract only those shared names — harmless.
+      minToolFingerprintMatch: 0.5,
+    },
+  },
   'openai-codex': {
     name: 'openai-codex',
     baselineTools: new Set([

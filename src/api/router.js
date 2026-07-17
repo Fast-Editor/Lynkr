@@ -727,7 +727,20 @@ router.post("/routing/analyze", async (req, res) => {
     const { getModelTierSelector } = require("../routing/model-tiers");
     const { getModelRegistry } = require("../routing/model-registry");
 
-    const analysis = await analyzeComplexity(req.body, { weighted: req.query.weighted === "true" });
+    // ?mode=intent scores through the WS7 anchor intent path — the same
+    // scorer live /v1/messages routing uses — instead of the legacy lexical
+    // complexity analyzer. Falls back to lexical when embeddings are down
+    // (mirroring live behavior).
+    let analysis;
+    if (req.query.mode === "intent") {
+      const { scoreIntent } = require("../routing/intent-score");
+      const intent = await scoreIntent(req.body);
+      analysis = intent
+        ? { score: intent.score, intentMode: intent.mode, intentClass: intent.class ?? null }
+        : await analyzeComplexity(req.body, { weighted: req.query.weighted === "true" });
+    } else {
+      analysis = await analyzeComplexity(req.body, { weighted: req.query.weighted === "true" });
+    }
     const agentic = getAgenticDetector().detect(req.body);
     const selector = getModelTierSelector();
     const tier = selector.getTier(analysis.score);

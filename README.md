@@ -20,7 +20,9 @@
 </tr>
 </table>
 
-> Numbers from the bundled benchmark against LiteLLM on identical free local backends — run it yourself: `node benchmark-tier-routing.js`. It doubles as a 17-scenario routing regression harness (currently 10/10 correctness checks). [How it works →](docs/benchmarking.md)
+> Numbers from the bundled benchmark against LiteLLM on identical free local backends — run it yourself: `node benchmark-tier-routing.js`. It doubles as a 19-scenario routing regression harness (currently 12/12 correctness checks), and `MODE=routing` runs a routing-only head-to-head that judges **both** proxies on the same acceptable-tier sets — including LiteLLM's Auto Router v2. [How it works →](docs/benchmarking.md)
+
+> **Third-party benchmark:** on [RouterArena](https://github.com/RouteWorks/RouterArena) (ICLR 2026, 8,400 queries) Lynkr's routing scores **67.65 arena / 68.41% accuracy at $0.29 per 1K queries with 92.38 robustness** — above GPT-5's built-in router and NotDiamond at a fraction of their cost. [Methodology & caveats →](docs/routerarena-benchmark.md)
 
 ---
 
@@ -431,14 +433,19 @@ Lynkr strips irrelevant tool schemas (smart tool selection) and binary-compresse
 
 Near-identical prompts return cached responses in 171ms. Zero model tokens billed on a cache hit.
 
-### Tier routing
+### Tier routing — vs LiteLLM Auto Router v2 (July 15, 2026)
 
-| Request | Lynkr routes to | LiteLLM routes to |
+LiteLLM v1.94 shipped a native complexity router (`auto_router/complexity_router`) with the same four tier names Lynkr uses. Head-to-head on the **same backends** with identical prompts, both proxies judged against the same acceptable-tier sets (11 routing scenarios, `MODE=routing node benchmark-tier-routing.js`, LiteLLM config in `litellm-autorouter-v2.yaml`):
+
+| Router | Routing-correct | Routing overhead |
 |---|---|---|
-| "What does git stash do?" | `minimax-m2.5` (local, free) | Ollama (local) |
-| JWT vs cookies security analysis | `moonshot` (cloud — correct) | **Ollama (local — wrong call)** |
+| **Lynkr** | **11/11** | local embedding, ~0 marginal cost/latency after cache |
+| LiteLLM v2 — heuristic (default) | 4/11 | <1ms, free — but every miss under-routed hard work (banking security analysis, autonomous agentic loop) to the free local model |
+| LiteLLM v2 — LLM classifier | 6–8/11 (non-deterministic across runs) | a paid GPT-5.2 call + ~2–3s on **every** request; fails outright with local classifier models (structured-output errors → silent heuristic fallback) |
 
-Lynkr scores each request on 15 dimensions (token count, code complexity, reasoning markers, risk signals, agentic patterns) and escalates automatically. LiteLLM's `cost-based-routing` sends everything to the cheapest model regardless of complexity.
+Lynkr scores cleaned user-authored text against embedding anchors plus 13 weighted heuristic dimensions, detects agentic workflows, and strips harness-injected noise before scoring. LiteLLM's router reads the raw last message and has no verify-then-escalate cascade — its fallbacks trigger only on HTTP errors, never on a bad answer.
+
+_Fairness notes: the 11 scenarios derive from Lynkr's own regression suite, so Lynkr has home-field advantage — the transferable finding is the direction of LiteLLM's failures (systematic under-routing on defaults; per-request cost and instability with the LLM classifier), not the exact scores. Lynkr's top tiers used Azure gpt-5.2-chat / Z.ai GLM-5.2; LiteLLM was given the identical tier targets._
 
 ### Cost projection (100,000 requests/month, same backend)
 
@@ -472,7 +479,7 @@ With tier routing + token optimization: **additional 50-87% savings** on cloud p
 | **Claude Code native** | ✅ Drop-in | ⚠️ Requires config | ❌ | ⚠️ Partial |
 | **Cursor native** | ✅ Drop-in | ⚠️ Partial | ❌ | ⚠️ Partial |
 | **Local models** | Ollama, llama.cpp, LM Studio | Ollama only | ❌ | ❌ |
-| **Automatic tier routing** | ✅ 15-dimension scorer | ⚠️ Cost-only | ❌ | ❌ Manual metadata |
+| **Automatic tier routing** | ✅ embedding intent + 13-dimension scorer, verified cascade | ⚠️ Auto Router v2 (v1.94): heuristic under-routes, LLM classifier billed per request | ❌ | ❌ Manual metadata |
 | **TOON JSON compression** | ✅ up to 87.6% | ❌ | ❌ | ❌ |
 | **Smart tool selection** | ✅ up to 60% token reduction | ❌ | ❌ | ❌ |
 | **Semantic cache** | ✅ 171ms hits, 0 tokens | ❌ | ❌ | ✅ Prompt cache only |

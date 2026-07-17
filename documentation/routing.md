@@ -10,20 +10,23 @@ Lynkr automatically routes each request to the right model based on complexity �
 Request → Force Patterns → Tool Thresholds → Complexity Analysis → Agentic Detection → Tier Selection → Cost Optimization → Provider
 ```
 
-**Benchmarked routing accuracy (June 2026):**
+**Benchmarked routing accuracy (July 15, 2026 — head-to-head vs LiteLLM Auto Router v2):**
 
-| Request | Lynkr routes to | Correct? |
+11 routing scenarios, identical prompts to both proxies on the same backends, both judged against the same acceptable-tier sets (`MODE=routing node benchmark-tier-routing.js`):
+
+| Router | Routing-correct | Notes |
 |---|---|---|
-| "What does git stash do?" | SIMPLE → local model | ✅ |
-| "Edit config file to set DEBUG=true" | SIMPLE → local model | ✅ |
-| "Analyse JWT vs httpOnly cookies security for banking" | COMPLEX → cloud model | ✅ |
-| "Debug race condition in async auth middleware" | COMPLEX → cloud model | ✅ |
+| **Lynkr** | **11/11** | embedding intent score on cleaned user text + guards |
+| LiteLLM v1.94 Auto Router v2, heuristic default | 4/11 | all misses under-routed hard work to the free local model |
+| LiteLLM v1.94 Auto Router v2, LLM classifier | 6–8/11 | paid GPT-5.2 call per request; non-deterministic across runs |
+
+Scenarios include the live-incident regressions (injected `<system-reminder>` immunity, suggestion-mode side requests, agentic detection, session pin escape, payload-envelope invariance). Caveat: the scenario set derives from Lynkr's own regression suite — see [BENCHMARK_REPORT.md](../BENCHMARK_REPORT.md) addendum for methodology and fairness notes.
 
 **Key benefits:**
 - Routes simple requests to cheap/local models automatically
 - Escalates complex and risk-sensitive requests to capable cloud models
 - Automatic agentic workflow detection with tier upgrades
-- 15-dimension complexity scorer — not just token count
+- Embedding-anchor intent scoring + 13-dimension weighted scorer — not just token count
 
 ---
 
@@ -213,10 +216,10 @@ The standard score is the sum of all components, capped at 100.
 
 ### Weighted Scoring Mode (15 Dimensions)
 
-When `ROUTING_WEIGHTED_SCORING=true`, the analyzer uses a 15-dimension weighted scoring system instead of the standard additive scoring:
+When `ROUTING_WEIGHTED_SCORING=true`, the analyzer uses a 13-dimension weighted scoring system instead of the standard additive scoring:
 
 ```
-Score = Sum of (dimension_value * weight) for all 15 dimensions
+Score = Sum of (dimension_value * weight) for all 13 dimensions
 ```
 
 #### Dimension Weights
@@ -447,7 +450,7 @@ Every response includes routing metadata in `X-Lynkr-*` headers:
 | `TIER_COMPLEX` | *required* | Model for complex tier (`provider:model`) |
 | `TIER_REASONING` | *required* | Model for reasoning tier (`provider:model`) |
 | `SMART_TOOL_SELECTION_MODE` | `heuristic` | Scoring mode: `aggressive` (threshold=60), `heuristic` (threshold=40), `conservative` (threshold=25) |
-| `ROUTING_WEIGHTED_SCORING` | `false` | Enable 15-dimension weighted scoring |
+| `ROUTING_WEIGHTED_SCORING` | `false` | Enable 13-dimension weighted scoring |
 | `ROUTING_AGENTIC_DETECTION` | `true` | Enable agentic workflow detection |
 | `ROUTING_COST_OPTIMIZATION` | `false` | Enable cost-based model selection |
 | `OLLAMA_MAX_TOOLS_FOR_ROUTING` | `3` | Max tools before routing away from Ollama |
@@ -637,7 +640,7 @@ Per-provider latency is tracked in a 200-sample circular buffer. Statistics expo
 | File | Description |
 |------|-------------|
 | `src/routing/index.js` | Main routing orchestrator (`determineProviderSmart()`) |
-| `src/routing/complexity-analyzer.js` | 5-phase complexity analysis, 15-dimension weighted scoring, Graphify integration |
+| `src/routing/complexity-analyzer.js` | 5-phase complexity analysis, 13-dimension weighted scoring, Graphify integration |
 | `src/routing/agentic-detector.js` | Agentic workflow detection and classification |
 | `src/routing/model-tiers.js` | Tier definitions, model selection from `TIER_*` env vars |
 | `src/routing/model-registry.js` | Multi-source pricing (LiteLLM, models.dev, Databricks fallback) |

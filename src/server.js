@@ -101,9 +101,21 @@ function createApp() {
   app.use(sessionMiddleware);
   app.use(loggingMiddleware);
 
+  // Agent-framework endpoints: LangGraph/CrewAI/AutoGen talk to the
+  // OpenAI-compat surface, Claude Code to /v1/messages. Guards that protect
+  // against runaway agents must cover BOTH — mounting on /v1/messages only
+  // silently exempts every OpenAI-compat client (this bit us with client
+  // profiles already).
+  const AGENT_ENDPOINTS = ['/v1/messages', '/v1/chat/completions', '/v1/responses'];
+
+  // Loop guard — stateless runaway-agent circuit breaker
+  // (LYNKR_MAX_SESSION_TURNS / LYNKR_MAX_TOOL_TURNS; off unless set).
+  const { loopGuard } = require('./api/middleware/loop-guard');
+  for (const p of AGENT_ENDPOINTS) app.use(p, loopGuard);
+
   // Budget and rate limiting (can be disabled via config)
   if (config.budget?.enabled !== false) {
-    app.use('/v1/messages', budgetMiddleware);
+    for (const p of AGENT_ENDPOINTS) app.use(p, budgetMiddleware);
   }
 
   // Phase 6.1 — per-tenant routing policies (LYNKR-Tenant-Id header).
@@ -111,7 +123,7 @@ function createApp() {
   app.use('/v1/messages', tenantMiddleware);
 
   // Phase 6.2 — hierarchical budget enforcement (LYNKR_BUDGET_ENFORCER=false to disable).
-  app.use('/v1/messages', budgetEnforcer);
+  for (const p of AGENT_ENDPOINTS) app.use(p, budgetEnforcer);
 
   app.get("/health/live", livenessCheck);
   app.get("/health/ready", readinessCheck);
