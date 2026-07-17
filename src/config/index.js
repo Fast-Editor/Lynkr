@@ -225,6 +225,13 @@ const toonMinBytes = Number.parseInt(process.env.TOON_MIN_BYTES ?? "4096", 10);
 const toonFailOpen = process.env.TOON_FAIL_OPEN !== "false"; // default true
 const toonLogStats = process.env.TOON_LOG_STATS !== "false"; // default true
 
+// GCF payload compression (opt-in; drop-in alternative to TOON)
+const gcfEnabled = process.env.GCF_ENABLED === "true"; // default false
+const gcfMinBytes = Number.parseInt(process.env.GCF_MIN_BYTES ?? "4096", 10);
+const gcfFailOpen = process.env.GCF_FAIL_OPEN !== "false"; // default true
+const gcfLogStats = process.env.GCF_LOG_STATS !== "false"; // default true
+const gcfVerify = process.env.GCF_VERIFY !== "false"; // default true (round-trip check)
+
 // Smart tool selection configuration (always enabled)
 const smartToolSelectionMode = (process.env.SMART_TOOL_SELECTION_MODE ?? "heuristic").toLowerCase();
 const smartToolSelectionTokenBudget = Number.parseInt(
@@ -867,6 +874,13 @@ var config = {
     failOpen: toonFailOpen,
     logStats: toonLogStats,
   },
+  gcf: {
+    enabled: gcfEnabled,
+    minBytes: Number.isNaN(gcfMinBytes) ? 4096 : gcfMinBytes,
+    failOpen: gcfFailOpen,
+    logStats: gcfLogStats,
+    verify: gcfVerify,
+  },
   smartToolSelection: {
     enabled: true,  // HARDCODED - always enabled
     mode: smartToolSelectionMode,
@@ -1055,6 +1069,12 @@ function reloadConfig() {
   config.toon.minBytes = Number.isNaN(newToonMinBytes) ? 4096 : newToonMinBytes;
   config.toon.failOpen = process.env.TOON_FAIL_OPEN !== "false";
   config.toon.logStats = process.env.TOON_LOG_STATS !== "false";
+  config.gcf.enabled = process.env.GCF_ENABLED === "true";
+  const newGcfMinBytes = Number.parseInt(process.env.GCF_MIN_BYTES ?? "4096", 10);
+  config.gcf.minBytes = Number.isNaN(newGcfMinBytes) ? 4096 : newGcfMinBytes;
+  config.gcf.failOpen = process.env.GCF_FAIL_OPEN !== "false";
+  config.gcf.logStats = process.env.GCF_LOG_STATS !== "false";
+  config.gcf.verify = process.env.GCF_VERIFY !== "false";
 
   // Tier routing (critical for fixing model name issues without restart)
   config.modelTiers.SIMPLE = process.env.TIER_SIMPLE?.trim() || null;

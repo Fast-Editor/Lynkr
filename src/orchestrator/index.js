@@ -12,6 +12,7 @@ const systemPrompt = require("../prompts/system");
 const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
 const { applyToonCompression } = require("../context/toon");
+const { applyGcfCompression } = require("../context/gcf");
 const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
 const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = require("../headroom");
 const { createAuditLogger } = require("../logger/audit-logger");
@@ -1440,7 +1441,12 @@ function sanitizePayload(payload) {
 
   // Optional TOON conversion for large JSON message payloads (prompt context only).
   // Run this BEFORE message coalescing to preserve parseable JSON boundaries.
-  applyToonCompression(clean, config.toon, { logger });
+  // GCF takes precedence when enabled; otherwise TOON. Both are opt-in and mutually exclusive.
+  if (config.gcf && config.gcf.enabled) {
+    applyGcfCompression(clean, config.gcf, { logger });
+  } else {
+    applyToonCompression(clean, config.toon, { logger });
+  }
 
   // Handle consecutive messages with the same role (causes llama.cpp 400 error)
   // Strategy: Merge consecutive same-role messages, but NEVER merge messages
