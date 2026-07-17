@@ -1,6 +1,26 @@
 {
   "name": "lynkr",
   "version": "9.9.0",
+  "files": [
+    "index.js",
+    "install.sh",
+    "bin",
+    "config",
+    "public",
+    "skills",
+    "lynkr-skill.tar.gz",
+    "src",
+    "!src/db/database.sqlite",
+    "!src/**/*.db",
+    "!src/**/*.backup",
+    "native/index.js",
+    "native/lynkr-native.node",
+    "native/src/lib.rs",
+    "native/Cargo.toml",
+    "models/router/README.md",
+    "scripts",
+    "!scripts/export-routellm-bert.py"
+  ],
   "description": "Self-hosted LLM gateway and tier-routing proxy for Claude Code, Cursor, and Codex. Routes across Ollama, AWS Bedrock, OpenRouter, Databricks, Azure OpenAI, llama.cpp, and LM Studio with prompt caching, MCP tools, and 60-80% cost savings.",
   "main": "index.js",
   "bin": {

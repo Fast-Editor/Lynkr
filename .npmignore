@@ -82,3 +82,10 @@ src/db/database.sqlite
 .venv/
 .impeccable/
 path/
+
+# Never ship business/marketing internals or benchmark configs
+marketing/
+benchmark-configs/
+litellm-*.yaml
+litellm-config.yaml
+tmp/
