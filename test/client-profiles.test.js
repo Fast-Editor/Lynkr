@@ -209,6 +209,102 @@ test('user-agent alone matches even with empty tools array', () => {
   assert.equal(result.isAgentic, false);
 });
 
+// ─── Goose (Block CLI) profile ─────────────────────────────────────────────
+
+// Goose CLI 1.41 default loadout — captured live 2026-07-13. Goose sends NO
+// user-agent header, so detection is fingerprint-only.
+const GOOSE_TOOLS = [
+  'analyze', 'delegate', 'edit', 'load', 'load_skill', 'read_image',
+  'shell', 'tree', 'write',
+  'apps__create_app', 'apps__delete_app', 'apps__iterate_app', 'apps__list_apps',
+  'extensionmanager__list_resources', 'extensionmanager__manage_extensions',
+  'extensionmanager__read_resource', 'extensionmanager__search_available_extensions',
+  'todo__todo_write',
+].map((name) => ({ name, input_schema: { type: 'object', properties: {} } }));
+
+test('detectClient — goose fingerprint matches with no user-agent', () => {
+  const profile = detectClient({
+    headers: {},
+    payload: { tools: GOOSE_TOOLS },
+  });
+  assert.ok(profile);
+  assert.equal(profile.name, 'goose');
+});
+
+test('detectClient — goose fingerprint survives default extensions being disabled', () => {
+  // Drop the apps__* and extensionmanager__* extension tools (7 of 18);
+  // the core loadout alone must still clear the 0.6 threshold.
+  const coreOnly = GOOSE_TOOLS.filter((t) =>
+    !t.name.startsWith('apps__') && !t.name.startsWith('extensionmanager__')
+  );
+  const profile = detectClient({ headers: {}, payload: { tools: coreOnly } });
+  assert.ok(profile);
+  assert.equal(profile.name, 'goose');
+});
+
+test('trivial "hi" + goose baseline tools + profile → NOT agentic', () => {
+  const detector = new AgenticDetector();
+  const payload = {
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: GOOSE_TOOLS,
+  };
+  const result = detector.detect(payload, { clientProfile: PROFILES['goose'] });
+  assert.equal(result.isAgentic, false);
+  assert.equal(result.agentType, 'SINGLE_SHOT');
+  const toolSignals = result.signals.filter((s) =>
+    s.signal.includes('tool_count') || s.signal.includes('agentic_tool')
+  );
+  assert.equal(toolSignals.length, 0);
+});
+
+test('goose baseline + MCP additions with profile → scores only the additions', () => {
+  const detector = new AgenticDetector();
+  const extraTools = [
+    { name: 'mcp__github__list_issues' },
+    { name: 'mcp__slack__post' },
+  ];
+  const payload = {
+    messages: [{ role: 'user', content: 'check github and slack' }],
+    tools: [...GOOSE_TOOLS, ...extraTools],
+  };
+  const result = detector.detect(payload, { clientProfile: PROFILES['goose'] });
+  const toolCountSignals = result.signals.filter((s) => s.signal.endsWith('tool_count'));
+  assert.equal(toolCountSignals.length, 0);
+  assert.deepEqual(
+    effectiveTools(payload, PROFILES['goose']).map((t) => t.name).sort(),
+    ['mcp__github__list_issues', 'mcp__slack__post'],
+  );
+});
+
+// ─── Lynkr's own injected loadout ──────────────────────────────────────────
+
+// IDE_SAFE_TOOLS — what the OpenAI-compat routers inject when a client sends
+// no tools (e.g. goose's summarizer side-requests). Must fingerprint as a
+// harness baseline so the detector doesn't score Lynkr's own plumbing.
+const LYNKR_INJECTED_TOOLS = [
+  'Write', 'Read', 'Edit', 'Bash', 'Glob', 'Grep', 'MultiEdit', 'LS',
+  'NotebookRead', 'TodoWrite', 'Task', 'WebSearch', 'WebFetch',
+  'WebAgent', 'NotebookEdit',
+].map((name) => ({ name, input_schema: { type: 'object', properties: {} } }));
+
+test('detectClient — Lynkr-injected IDE_SAFE loadout fingerprints as lynkr-injected', () => {
+  const profile = detectClient({ headers: {}, payload: { tools: LYNKR_INJECTED_TOOLS } });
+  assert.ok(profile);
+  assert.equal(profile.name, 'lynkr-injected');
+});
+
+test('trivial "hi" + Lynkr-injected tools + profile → NOT agentic', () => {
+  const detector = new AgenticDetector();
+  const payload = {
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: LYNKR_INJECTED_TOOLS,
+  };
+  const profile = detectClient({ headers: {}, payload });
+  const result = detector.detect(payload, { clientProfile: profile });
+  assert.equal(result.isAgentic, false);
+  assert.equal(result.agentType, 'SINGLE_SHOT');
+});
+
 test('unknown harness guard requires >=10 tools', () => {
   const detector = new AgenticDetector();
   // 5 baseline-only tools — the guard's threshold is >=10, so this should
