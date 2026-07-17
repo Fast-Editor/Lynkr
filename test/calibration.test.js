@@ -107,17 +107,17 @@ test('writes calibrated ranges when a tier bucket dips below its quality floor',
     try {
       const rows = [];
       const now = Date.now();
-      // SIMPLE tier, 200 rows across score buckets [0,5,10,15,20].
-      // Buckets 0-15 → high quality (80). Bucket 20 → 30 (below floor 55).
-      // That should shrink SIMPLE's upper bound from 25 down toward 24
-      // (i.e. lo + 4 of the failing bucket = 20 + 4 = 24).
-      for (let s = 0; s < 20; s += 5) {
+      // SIMPLE tier rows across score buckets [0,5,10].
+      // Buckets 0-5 → high quality (80). Bucket 10 → 30 (below floor 55).
+      // That should shrink SIMPLE's upper bound from 19 down to 14
+      // (i.e. lo + 4 of the failing bucket = 10 + 4 = 14).
+      for (let s = 0; s < 10; s += 5) {
         for (let i = 0; i < 40; i++) {
           rows.push({ tier: 'SIMPLE', score: s + 1, quality: 80, timestamp: now - i * 1000 });
         }
       }
       for (let i = 0; i < 40; i++) {
-        rows.push({ tier: 'SIMPLE', score: 22, quality: 30, timestamp: now - i * 1000 });
+        rows.push({ tier: 'SIMPLE', score: 12, quality: 30, timestamp: now - i * 1000 });
       }
       // Fill MEDIUM/COMPLEX/REASONING with plenty of high-quality rows so
       // they stay at defaults (nothing to adjust).
@@ -136,9 +136,9 @@ test('writes calibrated ranges when a tier bucket dips below its quality floor',
       assert.equal(fs.existsSync(outputPath), true, 'calibrated file must be written');
 
       const saved = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
-      assert.deepEqual(saved.ranges.SIMPLE, [0, 24], 'SIMPLE upper should shrink to 24');
+      assert.deepEqual(saved.ranges.SIMPLE, [0, 14], 'SIMPLE upper should shrink to 14');
       // Re-stitching: MEDIUM should start at SIMPLE_hi + 1.
-      assert.equal(saved.ranges.MEDIUM[0], 25);
+      assert.equal(saved.ranges.MEDIUM[0], 15);
       // Higher tiers with all-good buckets keep their defaults.
       assert.deepEqual(saved.ranges.REASONING, DEFAULT_RANGES.REASONING);
       assert.equal(saved.stats.SIMPLE.adjusted, true);
@@ -210,8 +210,9 @@ test('malformed calibrated file falls back to defaults on reload',
       fs.writeFileSync(CALIBRATED_PATH, '{ not valid json ');
       const { reloadCalibratedThresholds } = require('../src/routing/model-tiers');
       const ranges = reloadCalibratedThresholds();
-      // Falls back to defaults — SIMPLE is [0, 25] in TIER_DEFINITIONS.
-      assert.deepEqual(ranges.SIMPLE, [0, 25]);
+      // Falls back to defaults — SIMPLE is [0, 19] in TIER_DEFINITIONS
+      // (boundary moved 25→20 on 2026-07-16, RouterArena-diagnosed).
+      assert.deepEqual(ranges.SIMPLE, [0, 19]);
     } finally {
       if (backup === null) {
         try { fs.unlinkSync(CALIBRATED_PATH); } catch { /* fine */ }

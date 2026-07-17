@@ -19,12 +19,19 @@ const CALIBRATED_PATH = path.join(__dirname, '../../data/calibrated-thresholds.j
 const TIER_DEFINITIONS = {
   SIMPLE: {
     description: 'Greetings, simple Q&A, confirmations',
-    range: [0, 25],
+    // Boundary at 20, not 25: the top of the trivial intent band (20-25) is
+    // where cheap-model failures cluster. Diagnosed 2026-07-16 from
+    // RouterArena optimality data — SIMPLE-routed queries the cheap model
+    // got wrong (but a bigger pool model got right) re-scored at median 23,
+    // while correctly-served SIMPLE traffic scored median 14. At 20 the
+    // split recovers ~70% of those misses while escalating ~12% of
+    // correct-cheap traffic (usually to a tier that is also local/free).
+    range: [0, 19],
     priority: 1,
   },
   MEDIUM: {
     description: 'Code reading, simple edits, research',
-    range: [26, 50],
+    range: [20, 50],
     priority: 2,
   },
   COMPLEX: {
