@@ -18,6 +18,16 @@
  *   LITELLM_MASTER_KEY=sk-1234    \
  *   PORTKEY_API_KEY=your-key      \
  *   node benchmark-tier-routing.js
+ *
+ * Modes (absorbed from the former benchmark-autorouter-v2.js):
+ *   MODE=routing  — routing scenarios only (skips compression/cache); every
+ *                   scenario with an `acceptable` set is judged on ALL proxies,
+ *                   not just Lynkr. Use against LiteLLM Auto Router v2
+ *                   (litellm-autorouter-v2*.yaml) for the head-to-head.
+ *   RUNS=3        — repeat each scenario N times (stateful scenarios get a
+ *                   fresh nonce per run; a scenario passes only if every run
+ *                   passes — catches non-deterministic classifiers).
+ *   ONLY=Lynkr | ONLY=LiteLLM | ONLY=Portkey — restrict to one proxy.
  */
 
 // Per-run nonce: pins and semantic-cache entries persist server-side
@@ -25,9 +35,29 @@
 // run gets fresh fingerprints and cache keys — without it, run #2 collides
 // with run #1's state (P1 inherited the COMPLEX pin P2 wrote; SC3 hit its
 // own previous answer).
-const RUN_NONCE = Date.now().toString(36);
+const BASE_NONCE = Date.now().toString(36);
+let RUN_NONCE = BASE_NONCE; // reassigned per run when RUNS > 1
+
+const RUNS = Math.max(1, parseInt(process.env.RUNS ?? '1', 10));
+const MODE = process.env.MODE ?? 'full';   // 'routing' = routing scenarios only
+const ONLY = process.env.ONLY;             // proxy-name filter
 
 // ─── Proxy config ─────────────────────────────────────────────────────────────
+
+// Tier detection for LiteLLM Auto Router v2 (explicit model_info.id per tier
+// deployment in litellm-autorouter-v2*.yaml).
+const LITELLM_ID_TO_TIER = {
+  'tier-simple': 'SIMPLE',
+  'tier-medium': 'MEDIUM',
+  'tier-complex': 'COMPLEX',
+  'tier-reasoning': 'REASONING',
+};
+const LITELLM_ID_TO_MODEL = {
+  'tier-simple': 'ollama/minimax-m2.5:cloud',
+  'tier-medium': 'ollama/minimax-m2.5:cloud',
+  'tier-complex': 'azure/gpt-5.2-chat',
+  'tier-reasoning': 'zai/GLM-5.2',
+};
 
 const PROXIES = [
   {
@@ -50,13 +80,21 @@ const PROXIES = [
     apiKey: process.env.LITELLM_MASTER_KEY ?? 'sk-1234',
     defaultModel: 'smart-router',
     headers: {},
+    // Auto Router v2 configs (litellm-autorouter-v2*.yaml) set an explicit
+    // model_info.id per tier deployment, surfaced as x-litellm-model-id.
+    // Legacy configs (litellm-config.yaml) expose only a hash id — fall back
+    // to the cost heuristic for those.
     getTier: (_b, h) => {
+      const tier = LITELLM_ID_TO_TIER[h['x-litellm-model-id']];
+      if (tier) return tier;
       const cost = parseFloat(h['x-litellm-response-cost-original'] ?? '0');
       if (cost === 0)    return 'SIMPLE/MEDIUM (Ollama)';
       if (cost < 0.01)   return 'MEDIUM (Moonshot)';
       return 'COMPLEX/REASONING (Azure)';
     },
     getModel: (_b, h) => {
+      const model = LITELLM_ID_TO_MODEL[h['x-litellm-model-id']];
+      if (model) return model;
       const cost = parseFloat(h['x-litellm-response-cost-original'] ?? '0');
       if (cost === 0)   return 'ollama (local/free)';
       if (cost < 0.01)  return 'moonshot/kimi-k2.6';
@@ -144,6 +182,7 @@ const SCENARIOS = [
   // ── 1. Simple Q&A ─────────────────────────────────────────────────────────
   {
     id: 'S1', label: 'Simple Q&A',
+    acceptable: ['SIMPLE', 'MEDIUM'],
     feature: 'Tier routing → cheap model',
     // Boundary ask: the anchor classifier legitimately reads a short
     // explain-a-command question as trivial-or-substantive depending on
@@ -268,6 +307,7 @@ const SCENARIOS = [
   // ── 6. Reasoning ──────────────────────────────────────────────────────────
   {
     id: 'R1', label: 'Reasoning – security analysis',
+    acceptable: ['COMPLEX', 'REASONING'],
     feature: 'Tier routing → top model + risk classifier',
     expectTier: 'COMPLEX', // risk keywords force COMPLEX
     buildPayload: (model) => ({
@@ -281,6 +321,7 @@ const SCENARIOS = [
   // route ✓/✗ flags apply to Lynkr only.
   {
     id: 'F1', label: 'Force-cloud trigger phrase',
+    acceptable: ['COMPLEX', 'REASONING'],
     feature: 'FORCE_CLOUD_PATTERNS → instant COMPLEX regardless of score',
     expectTier: 'COMPLEX',
     buildPayload: (model) => ({
@@ -290,6 +331,7 @@ const SCENARIOS = [
   },
   {
     id: 'F2', label: 'Risk via protected path',
+    acceptable: ['COMPLEX', 'REASONING'],
     feature: 'Path-keyword risk → write-intent on auth file forces COMPLEX',
     expectTier: 'COMPLEX',
     buildPayload: (model) => ({
@@ -299,8 +341,14 @@ const SCENARIOS = [
   },
   {
     id: 'RS1', label: 'Reminder-injection immunity',
+    acceptable: ['SIMPLE', 'MEDIUM'],
     feature: 'Risk scan must ignore harness-injected <system-reminder> text',
-    expectTier: 'SIMPLE', // "17+25" is trivial; injected credential/security words must not escalate
+    // The property under test is reminder IMMUNITY: injected credential/
+    // security words must not risk-escalate to COMPLEX/REASONING. SIMPLE vs
+    // MEDIUM is boundary jitter, not a leak — "17+25" blends near the top of
+    // the trivial band, and the 2026-07-16 boundary move (25→20, RouterArena-
+    // diagnosed) legitimately places top-of-band trivial asks in MEDIUM.
+    expectTier: ['SIMPLE', 'MEDIUM'],
     buildPayload: (model) => ({
       model, max_tokens: 64,
       messages: [{ role: 'user', content: '17+25\n<system-reminder>7 MCP servers need authentication. Provide credentials via /mcp. Security policy applies to production deploys.</system-reminder>' }],
@@ -308,6 +356,7 @@ const SCENARIOS = [
   },
   {
     id: 'SR1', label: 'Suggestion-mode side request',
+    acceptable: ['SIMPLE', 'MEDIUM'],
     feature: 'Harness autocomplete wrapper → static SIMPLE, never scored/pinned',
     expectTier: 'SIMPLE',
     buildPayload: (model) => ({
@@ -322,6 +371,7 @@ const SCENARIOS = [
   },
   {
     id: 'A1', label: 'Autonomous agentic ask',
+    acceptable: ['COMPLEX', 'REASONING'],
     feature: 'AUTONOMOUS detection → minTier REASONING via tier config',
     expectTier: 'REASONING',
     buildPayload: (model) => ({
@@ -337,6 +387,7 @@ const SCENARIOS = [
   // via the force-cloud phrase (deterministic, unlike raw drift scores).
   {
     id: 'P1', label: 'Pin – trivial opener',
+    acceptable: ['SIMPLE', 'MEDIUM'],
     feature: 'Fingerprint session opens → pins SIMPLE',
     expectTier: 'SIMPLE',
     buildPayload: (model) => ({
@@ -346,6 +397,7 @@ const SCENARIOS = [
   },
   {
     id: 'P2', label: 'Pin – escape on real task (same session)',
+    acceptable: ['COMPLEX', 'REASONING'],
     feature: 'WS1.5 pin escape: force phrase breaks a SIMPLE pin mid-session',
     expectTier: 'COMPLEX',
     buildPayload: (model) => ({
@@ -366,6 +418,7 @@ const SCENARIOS = [
   // same tier. Both assert MEDIUM: a substantive-but-not-heavy ask.
   {
     id: 'IV1', label: 'Invariance – bare ask',
+    acceptable: ['MEDIUM', 'COMPLEX'],
     feature: 'WS7 anchor score, no envelope',
     expectTier: 'MEDIUM',
     buildPayload: (model) => ({
@@ -375,6 +428,7 @@ const SCENARIOS = [
   },
   {
     id: 'IV2', label: 'Invariance – same ask + envelope',
+    acceptable: ['MEDIUM', 'COMPLEX'], invariantWith: 'IV1',
     feature: 'WS7 payload-invariant scoring: schemas/reminders/history must not move the SCORE',
     // NOTE: deliberately ≤3 tools — the agentic detector is an envelope
     // TRIGGER that is allowed to escalate; this pair isolates the score.
@@ -510,97 +564,150 @@ const $ = (n) => `$${n.toFixed(6)}`;
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function runBenchmark() {
+  const ACTIVE = ONLY ? PROXIES.filter(p => p.name === ONLY) : PROXIES;
+  const RUN_SCENARIOS = MODE === 'routing' ? SCENARIOS.filter(s => s.acceptable) : SCENARIOS;
+  if (ACTIVE.length === 0) { console.error(`Unknown proxy in ONLY=${ONLY} (use ${PROXIES.map(p => p.name).join('|')})`); process.exit(1); }
+
   console.log('\n╔═══════════════════════════════════════════════════════════════════╗');
   console.log('║   Full-Stack Benchmark: Lynkr vs LiteLLM vs Portkey               ║');
   console.log('║   Tests: tier routing · tool selection · history · TOON · cache    ║');
-  console.log('╚═══════════════════════════════════════════════════════════════════╝\n');
+  console.log('╚═══════════════════════════════════════════════════════════════════╝');
+  console.log(`\nmode=${MODE} · scenarios=${RUN_SCENARIOS.length} · runs=${RUNS} · proxies=${ACTIVE.map(p => p.name).join(', ')}\n`);
 
-  // results[proxyName][scenarioId] = result
+  // results[proxyName][scenarioId] = array of per-run results
   const results = {};
-  for (const p of PROXIES) results[p.name] = {};
+  for (const p of ACTIVE) results[p.name] = {};
 
-  for (const scenario of SCENARIOS) {
-    process.stdout.write(`\n[${scenario.id}] ${scenario.label.padEnd(35)} `);
-    for (const proxy of PROXIES) {
-      process.stdout.write(`${proxy.name}… `);
-      results[proxy.name][scenario.id] = await sendRequest(proxy, scenario);
-      await new Promise(r => setTimeout(r, 400));
+  for (let run = 0; run < RUNS; run++) {
+    // Stateful scenarios (pins, semantic cache) key off the nonce — each run
+    // gets a fresh one so run #2 never collides with run #1's server-side state.
+    RUN_NONCE = RUNS > 1 ? `${BASE_NONCE}-r${run}` : BASE_NONCE;
+    for (const scenario of RUN_SCENARIOS) {
+      process.stdout.write(`\n[${scenario.id}] ${scenario.label.padEnd(35)} `);
+      for (const proxy of ACTIVE) {
+        process.stdout.write(`${proxy.name}… `);
+        (results[proxy.name][scenario.id] ??= []).push(await sendRequest(proxy, scenario));
+        await new Promise(r => setTimeout(r, 400));
+      }
+      process.stdout.write('✓');
     }
-    process.stdout.write('✓');
+    if (RUNS > 1) process.stdout.write(`\n— run ${run + 1}/${RUNS} done`);
   }
 
   // ─── Per-Scenario Detail ────────────────────────────────────────────────────
 
   console.log('\n\n\n━━━  PER-SCENARIO DETAIL  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  for (const scenario of SCENARIOS) {
+  for (const scenario of RUN_SCENARIOS) {
     console.log(`\n▸ [${scenario.id}] ${scenario.label}`);
     console.log(`  Feature under test: ${scenario.feature}`);
     console.log(`  ${'Proxy'.padEnd(10)} ${'Tier'.padEnd(14)} ${'Model'.padEnd(26)} ${'Est.Tok'.padEnd(9)} ${'Billed'.padEnd(9)} ${'Saved'.padEnd(8)} ${'Compress%'.padEnd(11)} ${'Cost'.padEnd(12)} Latency`);
     console.log('  ' + '─'.repeat(110));
 
-    for (const proxy of PROXIES) {
-      const r = results[proxy.name][scenario.id];
-      if (!r.ok) {
-        const skipped = /fetch failed|ECONNREFUSED|timeout/i.test(r.error || '');
-        console.log(`  ${col(proxy.name,10)} ${skipped ? 'SKIPPED (proxy not reachable — is it running?)' : 'ERROR: ' + r.error?.slice(0,80)}`);
-        continue;
+    for (const proxy of ACTIVE) {
+      for (const [runIdx, r] of (results[proxy.name][scenario.id] ?? []).entries()) {
+        const label = RUNS > 1 ? `${proxy.name}#${runIdx}` : proxy.name;
+        if (!r.ok) {
+          const skipped = /fetch failed|ECONNREFUSED|timeout/i.test(r.error || '');
+          console.log(`  ${col(label,10)} ${skipped ? 'SKIPPED (proxy not reachable — is it running?)' : 'ERROR: ' + r.error?.slice(0,80)}`);
+          continue;
+        }
+        const isLynkr = proxy.name === 'Lynkr';
+        const flags = [
+          r.cacheHit ? 'CACHE-HIT' : null,
+          r.wasFallback ? 'SERVED-VIA-FALLBACK' : null,
+          // expectTier is Lynkr's regression assertion; `acceptable` (below,
+          // scoreboard) is the cross-proxy judgment.
+          isLynkr && scenario.expectTier
+            ? (tierMatches(scenario.expectTier, r.tier) ? `route ✓ ${r.tier}` : `route ✗ expected ${fmtExpect(scenario.expectTier)}, got ${r.tier}`)
+            : null,
+          isLynkr && scenario.expectNoCache
+            ? (!r.cacheHit ? 'cache-miss ✓'
+               : (r.cacheSimilarity != null && r.cacheSimilarity >= 0.97)
+                 ? `cache self-match ✓ (sim ${r.cacheSimilarity.toFixed(3)} — prior run's identical question)`
+                 : `cache ✗ FALSE-POSITIVE (sim ${r.cacheSimilarity?.toFixed(3) ?? '?'} — matched a DIFFERENT question)`)
+            : null,
+        ].filter(Boolean).join(' · ');
+        console.log(
+          '  ' +
+          col(label, 10) +
+          col(r.tier, 14) +
+          col(r.model, 26) +
+          col(r.estimatedInputTokens, 9) +
+          col(r.billedInput, 9) +
+          col(r.tokenDelta, 8) +
+          col(r.compressionPct + '%', 11) +
+          col($(r.cost), 12) +
+          `${r.latencyMs}ms` +
+          (flags ? `   [${flags}]` : '')
+        );
       }
-      const isLynkr = proxy.name === 'Lynkr';
-      const flags = [
-        r.cacheHit ? 'CACHE-HIT' : null,
-        r.wasFallback ? 'SERVED-VIA-FALLBACK' : null,
-        // Route expectations only judge Lynkr — other proxies synthesize
-        // tier labels from cost heuristics, so comparing is meaningless.
-        isLynkr && scenario.expectTier
-          ? (tierMatches(scenario.expectTier, r.tier) ? `route ✓ ${r.tier}` : `route ✗ expected ${fmtExpect(scenario.expectTier)}, got ${r.tier}`)
-          : null,
-        isLynkr && scenario.expectNoCache
-          ? (!r.cacheHit ? 'cache-miss ✓'
-             : (r.cacheSimilarity != null && r.cacheSimilarity >= 0.97)
-               ? `cache self-match ✓ (sim ${r.cacheSimilarity.toFixed(3)} — prior run's identical question)`
-               : `cache ✗ FALSE-POSITIVE (sim ${r.cacheSimilarity?.toFixed(3) ?? '?'} — matched a DIFFERENT question)`)
-          : null,
-      ].filter(Boolean).join(' · ');
-      console.log(
-        '  ' +
-        col(proxy.name, 10) +
-        col(r.tier, 14) +
-        col(r.model, 26) +
-        col(r.estimatedInputTokens, 9) +
-        col(r.billedInput, 9) +
-        col(r.tokenDelta, 8) +
-        col(r.compressionPct + '%', 11) +
-        col($(r.cost), 12) +
-        `${r.latencyMs}ms` +
-        (flags ? `   [${flags}]` : '')
-      );
     }
   }
 
-  // ─── Feature-Level Summary ──────────────────────────────────────────────────
+  // ─── Routing correctness scoreboard (Lynkr regression assertions) ──────────
+  // A scenario passes only if EVERY ok run passes — catches nondeterminism.
 
-  // ── Routing correctness scoreboard (Lynkr only) ──
-  console.log('\n\n━━━  ROUTING CORRECTNESS (Lynkr)  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-  let routePass = 0, routeFail = 0;
-  for (const scenario of SCENARIOS) {
-    const r = results.Lynkr?.[scenario.id];
-    if (!r?.ok) continue;
-    if (scenario.expectTier) {
-      const pass = tierMatches(scenario.expectTier, r.tier);
-      pass ? routePass++ : routeFail++;
-      console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} expected ${fmtExpect(scenario.expectTier)}, got ${r.tier}${pass ? '' : '   ← REGRESSION'}`);
+  if (results.Lynkr) {
+    console.log('\n\n━━━  ROUTING CORRECTNESS (Lynkr)  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    let routePass = 0, routeFail = 0;
+    for (const scenario of RUN_SCENARIOS) {
+      const okRs = (results.Lynkr[scenario.id] ?? []).filter(r => r.ok);
+      if (okRs.length === 0) continue;
+      if (scenario.expectTier) {
+        const tiers = [...new Set(okRs.map(r => r.tier))];
+        const pass = tiers.every(t => tierMatches(scenario.expectTier, t));
+        pass ? routePass++ : routeFail++;
+        console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} expected ${fmtExpect(scenario.expectTier)}, got ${tiers.join('/')}${pass ? '' : '   ← REGRESSION'}`);
+      }
+      if (scenario.expectNoCache) {
+        // Fail only on a LOW-similarity hit — that means the cache served an
+        // answer to a different question. High-similarity hits are prior
+        // runs' identical question: correct behavior.
+        const bad = okRs.find(r => r.cacheHit && !(r.cacheSimilarity != null && r.cacheSimilarity >= 0.97));
+        const pass = !bad;
+        pass ? routePass++ : routeFail++;
+        console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} no wrong-question cache match${pass ? '' : `   ← FALSE POSITIVE at sim ${bad.cacheSimilarity?.toFixed(3)}`}`);
+      }
     }
-    if (scenario.expectNoCache) {
-      // Fail only on a LOW-similarity hit — that means the cache served an
-      // answer to a different question. High-similarity hits are prior
-      // runs' identical question: correct behavior.
-      const pass = !r.cacheHit || (r.cacheSimilarity != null && r.cacheSimilarity >= 0.97);
-      pass ? routePass++ : routeFail++;
-      console.log(`  [${scenario.id}] ${pass ? '✓' : '✗'} no wrong-question cache match${pass ? '' : `   ← FALSE POSITIVE at sim ${r.cacheSimilarity?.toFixed(3)}`}`);
+    console.log(`\n  ${routePass} passed, ${routeFail} failed${routeFail ? '  ⚠ routing regressions detected' : ''}`);
+  }
+
+  // ─── Cross-proxy routing scoreboard (`acceptable` sets, all proxies) ───────
+  // Unlike expectTier (Lynkr's strict regression targets), `acceptable` lists
+  // every defensible tier for the ask and is judged on ALL proxies that
+  // expose a real tier decision. IV2 additionally requires the same tier as
+  // IV1 (payload envelope must not move the classification).
+
+  const judged = ACTIVE.filter(p => RUN_SCENARIOS.some(s => s.acceptable &&
+    (results[p.name][s.id] ?? []).some(r => r.ok && !String(r.tier).includes('N/A'))));
+  if (judged.length > 0) {
+    console.log('\n\n━━━  ROUTING SCOREBOARD (all proxies, acceptable-tier sets)  ━━━━━\n');
+    const routingScenarios = RUN_SCENARIOS.filter(s => s.acceptable);
+    console.log(`  ${col('ID', 5)}${col('Acceptable', 19)}` + judged.map(p => col(p.name, 24)).join(''));
+    console.log('  ' + '─'.repeat(5 + 19 + 24 * judged.length));
+    const score = Object.fromEntries(judged.map(p => [p.name, { pass: 0, fail: 0 }]));
+    for (const sc of routingScenarios) {
+      const cells = judged.map(proxy => {
+        const okRs = (results[proxy.name][sc.id] ?? []).filter(r => r.ok);
+        if (okRs.length === 0) return col('– no data', 24);
+        const tiers = [...new Set(okRs.map(r => r.tier))];
+        let pass = tiers.every(t => sc.acceptable.includes(t));
+        if (pass && sc.invariantWith) {
+          const partner = (results[proxy.name][sc.invariantWith] ?? []).filter(r => r.ok).map(r => r.tier);
+          pass = partner.length > 0 && [...new Set([...tiers, ...partner])].length === 1;
+        }
+        pass ? score[proxy.name].pass++ : score[proxy.name].fail++;
+        return col(`${pass ? '✓' : '✗'} ${tiers.join('/')}`, 24);
+      });
+      console.log(`  ${col(sc.id, 5)}${col(sc.acceptable.join('|'), 19)}${cells.join('')}`);
+    }
+    console.log();
+    for (const p of judged) {
+      const s = score[p.name];
+      console.log(`  ${col(p.name, 12)} ${s.pass}/${s.pass + s.fail} routing-correct`);
     }
   }
-  console.log(`\n  ${routePass} passed, ${routeFail} failed${routeFail ? '  ⚠ routing regressions detected' : ''}`);
 
   console.log('\n\n━━━  FEATURE SUMMARY  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
@@ -613,9 +720,10 @@ async function runBenchmark() {
   ];
 
   for (const group of featureGroups) {
+    if (!group.ids.some(id => RUN_SCENARIOS.some(s => s.id === id))) continue;
     console.log(`  ${group.label}`);
-    for (const proxy of PROXIES) {
-      const rs = group.ids.map(id => results[proxy.name][id]).filter(r => r?.ok);
+    for (const proxy of ACTIVE) {
+      const rs = group.ids.flatMap(id => results[proxy.name][id] ?? []).filter(r => r?.ok);
       if (rs.length === 0) { console.log(`    ${proxy.name.padEnd(10)} – no data`); continue; }
       const totalCost    = rs.reduce((s, r) => s + r.cost, 0);
       const totalSaved   = rs.reduce((s, r) => s + r.tokensSaved, 0);
@@ -630,8 +738,8 @@ async function runBenchmark() {
 
   console.log('\n━━━  OVERALL COST (all scenarios)  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const totals = PROXIES.map(proxy => {
-    const rs = Object.values(results[proxy.name]).filter(r => r?.ok);
+  const totals = ACTIVE.map(proxy => {
+    const rs = Object.values(results[proxy.name]).flat().filter(r => r?.ok);
     return {
       name: proxy.name,
       n: rs.length,
@@ -642,10 +750,8 @@ async function runBenchmark() {
   }).filter(t => t.n > 0)  // proxies with zero data have no business in cost tables
     .sort((a, b) => a.cost - b.cost);
 
-  const withData = totals.filter(t =>
-    Object.values(results[t.name]).some(r => r?.ok));
-  if (withData.length < 2) {
-    console.log('  ⚠ Only ' + (withData.map(t=>t.name).join(', ') || 'no proxies') + ' returned data — comparative claims and extrapolation are meaningless with a single proxy.');
+  if (totals.length < 2) {
+    console.log('  ⚠ Only ' + (totals.map(t=>t.name).join(', ') || 'no proxies') + ' returned data — comparative claims and extrapolation are meaningless with a single proxy.');
     console.log('    To compare: start LiteLLM on :8082 and/or Portkey gateway on :8083 (see header comment).');
   }
   const maxCost = Math.max(...totals.map(t => t.cost), 0.000001);
@@ -665,7 +771,7 @@ async function runBenchmark() {
   console.log('\n\n━━━  EXTRAPOLATED: 100,000 requests/month  ──────────────────────────\n');
   console.log('  (same scenario mix × scale factor)\n');
 
-  const factor = 100_000 / SCENARIOS.length;
+  const factor = 100_000 / (RUN_SCENARIOS.length * RUNS);
   for (const t of totals) {
     const monthly = t.cost * factor;
     const annualSaving = baseline > 0 ? (baseline - t.cost) * factor * 12 : 0;

@@ -1,6 +1,8 @@
 # Lynkr vs LiteLLM — Benchmark Report
-**Date:** June 5, 2026  
+**Date:** June 5, 2026 · **Addendum:** July 15, 2026 (LiteLLM Auto Router v2 — see bottom)  
 **Setup:** Same backend providers (Ollama local, Moonshot, Azure OpenAI), 9 scenarios across 4 feature categories.
+
+> ⚠️ **Update (2026-07-15):** Section 4 and the summary table below predate LiteLLM v1.94's Auto Router v2, which added a native complexity router. The claim "LiteLLM has no complexity routing" is no longer true — see the [addendum](#addendum-july-15-2026--litellm-auto-router-v2) for the re-run against it.
 
 ---
 
@@ -78,7 +80,7 @@ LiteLLM's `cost-based-routing` sends everything to the cheapest available model 
 | Smart tool selection | ✅ 53% token reduction | ❌ |
 | TOON JSON compression | ✅ 87.6% on large results | ❌ |
 | Semantic cache | ✅ 171ms cache hits | ❌ |
-| Automatic complexity routing | ✅ 15-dimension scorer | ❌ Cost-only routing |
+| Automatic complexity routing | ✅ embedding intent + 13-dimension scorer | ⚠️ Auto Router v2 since v1.94 (see addendum: 4/11 default, 6–8/11 with paid LLM classifier) |
 | Self-hosted / data stays local | ✅ | ✅ |
 | MCP integration | ✅ | ❌ |
 | Memory system | ✅ Long-term per-session | ❌ |
@@ -162,3 +164,36 @@ Important caveat: Lynkr injects a system prompt (memory context, agent instructi
 - The benchmark script is open and reproducible: `node benchmark-tier-routing.js` from the Lynkr repo root.
 
 *Benchmark run on macOS, Apple Silicon. Lynkr v9.3.2. LiteLLM v1.87.1.*
+
+---
+
+## Addendum (July 15, 2026) — LiteLLM Auto Router v2
+
+LiteLLM v1.94.0.dev1 shipped **Auto Router v2** with a native `auto_router/complexity_router`: a 7-signal heuristic scorer (default), an optional LLM classifier, keyword tier rules, and the same SIMPLE/MEDIUM/COMPLEX/REASONING tier names Lynkr uses. This obsoletes the June tier-routing comparison (Section 4), which ran LiteLLM with `cost-based-routing` — a strategy that by design ignores prompt content.
+
+### Re-run setup
+
+- **LiteLLM:** v1.94.0.dev1, `litellm-autorouter-v2.yaml` (heuristic default) and `litellm-autorouter-v2-llm.yaml` (LLM classifier). Tier targets identical to Lynkr's live config: SIMPLE/MEDIUM → Ollama `minimax-m2.5:cloud` (free local), COMPLEX → Azure `gpt-5.2-chat`, REASONING → Z.ai `GLM-5.2`.
+- **Harness:** `MODE=routing node benchmark-tier-routing.js` — 11 routing scenarios, identical prompts to both proxies, **both judged on the same acceptable-tier sets** (unlike the June run, which asserted routing for Lynkr only). Tier decisions read from `x-lynkr-tier` and `x-litellm-model-id` (explicit `model_info.id` per tier deployment).
+
+### Results
+
+| Router | Routing-correct | Failure pattern |
+|---|---|---|
+| **Lynkr** | **11/11** | — (2 transient HTTP errors on repeat runs; surviving runs all passed) |
+| LiteLLM v2 heuristic (default, <1ms, free) | **4/11** | every miss under-routed: banking security analysis → MEDIUM, whole-pipeline refactor → MEDIUM, prod auth fix → SIMPLE, autonomous agentic loop → SIMPLE, session escalation → SIMPLE |
+| LiteLLM v2 + LLM classifier (GPT-5.2) | **6–8/11**, varies run to run | non-deterministic (same prompt flipped SIMPLE↔REASONING); over-escalated a harness suggestion-mode side request; failed the envelope-invariance pair |
+
+Additional findings:
+
+1. **The LLM classifier requires a strong structured-output model.** With the free local minimax as classifier, every classification call failed (`json_invalid`) and silently fell back to the heuristic after burning 3–8s per request. With GPT-5.2 it works but adds a metered API call and ~2–3s to **every** routed request.
+2. **No verify-then-escalate cascade.** LiteLLM's fallbacks trigger only on HTTP errors (429/5xx/context-window) — never on answer content. Lynkr's cascade demonstrably claws back cost: one scenario classified COMPLEX was served by the free local model because the cheap answer passed verification.
+3. **Cost structure:** LiteLLM's default spent $0 by being wrong (misroutes are invisible on the invoice, visible in answer quality); its accurate mode has a per-request classifier tax that scales linearly with traffic. Lynkr's routing overhead is a cached local embedding, and its spend concentrated on the requests that warranted paid models.
+
+### Fairness caveats (read before quoting)
+
+- The 11 scenarios derive from **Lynkr's own regression suite** — prompts Lynkr's live incidents were hardened against. Lynkr's 11/11 is expected on home turf. The transferable finding is the *direction* of LiteLLM's failures (systematic under-routing on defaults; cost and instability with the classifier), not the exact scores.
+- Both proxies had identical tier targets; answer quality was not scored, only the routing decision.
+- Auto Router v2 was ~1 day old at test time (first dev release cut 2026-07-14); expect it to improve.
+
+*Addendum run on macOS, Apple Silicon. LiteLLM v1.94.0.dev1, heuristic + GPT-5.2-classifier configs. Reproduce: start LiteLLM with either yaml, then `MODE=routing RUNS=2 node benchmark-tier-routing.js`.*

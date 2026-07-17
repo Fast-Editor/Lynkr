@@ -33,7 +33,7 @@ Results from a live benchmark on real agentic coding workloads (June 2026):
 │ • Strip unused tool schemas  │  ← 47–60% token reduction
 │ • Compress JSON tool results │  ← up to 87.6% (TOON)
 │ • Semantic cache lookup      │  ← 171ms hits, 0 tokens
-│ • Route by complexity tier   │  ← 15-dimension scorer
+│ • Route by complexity tier   │  ← 13-dimension scorer
 │ • Format conversion          │
 └────────┬─────────────────────┘
          │
@@ -78,7 +78,7 @@ Lynkr uses a multi-phase complexity analysis to route each request to the optima
 | COMPLEX (51-75) | Multi-file changes, debugging | Capable models (o1-mini, Claude Sonnet) |
 | REASONING (76-100) | Security audits, architecture | Best models (o1, Claude Opus) |
 
-Includes agentic workflow detection, 15-dimension weighted scoring, Graphify structural analysis, and cost optimization.
+Includes agentic workflow detection, 13-dimension weighted scoring, Graphify structural analysis, and cost optimization.
 See **[Routing & Model Tiering](routing.md)** for full details.
 
 **Automatic Fallback:**
