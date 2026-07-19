@@ -34,13 +34,15 @@ const {
 // 4-dim unit-ish vectors: axis 0 ~ trivial, axis 1 ~ substantive,
 // axis 2 ~ heavyweight. Paraphrases share direction with small jitter.
 const FIXTURES = {
-  "hi": [1, 0.05, 0.02, 0],
-  "hello there": [0.98, 0.08, 0.03, 0.05],
-  "review this retry helper for bugs": [0.06, 1, 0.2, 0],
-  "give me a plan to refactor this code": [0.05, 0.95, 0.28, 0.03],
-  "can you put together a refactoring plan for this code": [0.07, 0.93, 0.3, 0.06],
-  "design a horizontally scalable architecture": [0.02, 0.25, 1, 0],
-  "analyze every module in src/ for circular dependencies": [0.01, 0.3, 0.97, 0.04],
+  "hi": [1, 0.05, 0.02, 0, 0],
+  "hello there": [0.98, 0.08, 0.03, 0.05, 0],
+  "review this retry helper for bugs": [0.06, 1, 0.2, 0, 0.1],
+  "give me a plan to refactor this code": [0.05, 0.95, 0.28, 0.03, 0.08],
+  "can you put together a refactoring plan for this code": [0.07, 0.93, 0.3, 0.06, 0.1],
+  "design a horizontally scalable architecture": [0.02, 0.25, 1, 0, 0.15],
+  "analyze every module in src/ for circular dependencies": [0.01, 0.3, 0.97, 0.04, 0.12],
+  "prove this lock-free queue is correct and identify aba hazards": [0.01, 0.15, 0.35, 0, 1],
+  "derive the optimal cache eviction policy and prove its competitive ratio": [0, 0.1, 0.25, 0, 0.95],
 };
 const fakeEmbed = async (text) => {
   const key = (text || "").toLowerCase().trim();
@@ -51,6 +53,7 @@ const ANCHORS = {
   trivial: ["hi"],
   substantive: ["review this retry helper for bugs"],
   heavyweight: ["design a horizontally scalable architecture"],
+  frontier: ["prove this lock-free queue is correct and identify aba hazards"],
 };
 
 async function centroids() {
@@ -158,8 +161,8 @@ describe("WS7.1a — envelope invariance (the defining test)", () => {
   it("anchor mode: score(text) === score(text + 13 fat schemas + reminders + 40-msg history)", async () => {
     const c = await centroids();
     for (const text of TEXTS) {
-      const a = await scoreIntent(bare(text), { embedFn: fakeEmbed, centroids: c });
-      const b = await scoreIntent(enveloped(text), { embedFn: fakeEmbed, centroids: c });
+      const a = await scoreIntent(bare(text), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
+      const b = await scoreIntent(enveloped(text), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
       assert.ok(a && b, `scoreIntent returned null for "${text}"`);
       assert.strictEqual(a.score, b.score, `envelope changed score for "${text}": ${a.score} vs ${b.score}`);
     }
@@ -168,8 +171,8 @@ describe("WS7.1a — envelope invariance (the defining test)", () => {
   it("lexical fallback mode is envelope-invariant too", async () => {
     const c = await centroids();
     const text = "please summarize the key exports of this file for me quickly";
-    const a = await scoreIntent(bare(text), { embedFn: fakeEmbed, centroids: c });
-    const b = await scoreIntent(enveloped(text), { embedFn: fakeEmbed, centroids: c });
+    const a = await scoreIntent(bare(text), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
+    const b = await scoreIntent(enveloped(text), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
     assert.ok(a && b);
     assert.strictEqual(a.mode, "lexical");
     assert.strictEqual(b.mode, "lexical");
@@ -186,8 +189,8 @@ describe("WS7.4 — paraphrase stability", () => {
       ["design a horizontally scalable architecture", "analyze every module in src/ for circular dependencies"],
     ];
     for (const [x, y] of pairs) {
-      const a = await scoreIntent(bare(x), { embedFn: fakeEmbed, centroids: c });
-      const b = await scoreIntent(bare(y), { embedFn: fakeEmbed, centroids: c });
+      const a = await scoreIntent(bare(x), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
+      const b = await scoreIntent(bare(y), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
       assert.ok(Math.abs(a.score - b.score) <= 12,
         `paraphrases diverged: "${x}"=${a.score} vs "${y}"=${b.score}`);
     }
@@ -197,9 +200,9 @@ describe("WS7.4 — paraphrase stability", () => {
 describe("WS7.1b — anchor classification + blend", () => {
   it("classifies fixtures into their classes with sensible scores", async () => {
     const c = await centroids();
-    const trivial = await scoreIntent(bare("hi"), { embedFn: fakeEmbed, centroids: c });
-    const substantive = await scoreIntent(bare("review this retry helper for bugs"), { embedFn: fakeEmbed, centroids: c });
-    const heavy = await scoreIntent(bare("design a horizontally scalable architecture"), { embedFn: fakeEmbed, centroids: c });
+    const trivial = await scoreIntent(bare("hi"), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
+    const substantive = await scoreIntent(bare("review this retry helper for bugs"), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
+    const heavy = await scoreIntent(bare("design a horizontally scalable architecture"), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
 
     assert.strictEqual(trivial.class, "trivial");
     assert.strictEqual(substantive.class, "substantive");
@@ -210,9 +213,10 @@ describe("WS7.1b — anchor classification + blend", () => {
   });
 
   it("borderline embeddings interpolate between class values (no cliff)", async () => {
+    const { FRONTIER_MIN_SIM } = require("../src/routing/intent-score");
     const c = await centroids();
-    // halfway between substantive and heavyweight directions
-    const mid = [0.04, 0.62, 0.62, 0.02];
+    // halfway between substantive and heavyweight directions, frontier weak
+    const mid = [0.04, 0.62, 0.62, 0.02, FRONTIER_MIN_SIM - 0.1];
     const { sims } = classify(mid, c);
     const s = blendScore(sims);
     assert.ok(s > CLASS_VALUES.substantive && s < CLASS_VALUES.heavyweight,
@@ -220,15 +224,25 @@ describe("WS7.1b — anchor classification + blend", () => {
   });
 });
 
-describe("WS7.3 — rung containment (REASONING is trigger-only)", () => {
-  it("blendScore can never reach the REASONING band", () => {
-    // Adversarial grid: every corner and midpoint of sim space.
+describe("WS7.3 — rung containment (REASONING reachable via frontier class + floor)", () => {
+  it("blendScore with frontier below FRONTIER_MIN_SIM behaves like 3-class baseline", () => {
+    const { FRONTIER_MIN_SIM } = require("../src/routing/intent-score");
+    // Adversarial grid: 3-class sims with weak frontier.
     const vals = [-1, 0, 0.5, 0.9, 1];
     for (const t of vals) for (const s of vals) for (const h of vals) {
-      const score = blendScore({ trivial: t, substantive: s, heavyweight: h });
-      assert.ok(score <= 75, `blend escaped COMPLEX: sims=(${t},${s},${h}) → ${score}`);
+      const weakFrontier = FRONTIER_MIN_SIM - 0.05;
+      const score = blendScore({ trivial: t, substantive: s, heavyweight: h, frontier: weakFrontier });
+      assert.ok(score <= 75, `blend escaped COMPLEX with weak frontier: sims=(${t},${s},${h},f=${weakFrontier}) → ${score}`);
       assert.ok(score >= 0, `blend went negative: ${score}`);
     }
+  });
+
+  it("blendScore reaches REASONING when frontier sim ≥ FRONTIER_MIN_SIM and wins", () => {
+    const { FRONTIER_MIN_SIM } = require("../src/routing/intent-score");
+    // Strong frontier sim, weak others → should reach 76+
+    const score = blendScore({ trivial: 0, substantive: 0.1, heavyweight: 0.2, frontier: FRONTIER_MIN_SIM + 0.15 });
+    assert.ok(score >= 76, `frontier above floor should reach REASONING: got ${score}`);
+    assert.ok(score <= 100, `score exceeds ceiling: ${score}`);
   });
 
   it("lexical fallback is clamped below the REASONING band", async () => {
@@ -240,7 +254,7 @@ describe("WS7.3 — rung containment (REASONING is trigger-only)", () => {
       "database migrations, performance benchmarks and testing. First analyze " +
       "step by step the trade-offs, then plan edge cases, then implement. "
     ).repeat(50);
-    const r = await scoreIntent(bare(adversarial), { embedFn: fakeEmbed, centroids: c });
+    const r = await scoreIntent(bare(adversarial), { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
     assert.strictEqual(r.mode, "lexical");
     assert.ok(r.score <= 75, `lexical fallback escaped COMPLEX: ${r.score}`);
   });
@@ -259,13 +273,18 @@ describe("WS7.3 — rung containment (REASONING is trigger-only)", () => {
     assert.ok(r.score <= 25, `trivial-class score leaked out of SIMPLE band: ${r.score} (sims ${JSON.stringify(sims)})`);
   });
 
-  it("maximal text-only score still maps to the COMPLEX tier, never REASONING", () => {
+  it("frontier-class prompt routes to REASONING tier when similarity clears floor", async () => {
     const { getModelTierSelector } = require("../src/routing/model-tiers");
-    const maxBlend = blendScore({ trivial: -1, substantive: -1, heavyweight: 1 });
-    const tier = getModelTierSelector().getTier(maxBlend);
-    assert.strictEqual(tier, "COMPLEX",
-      `text-only ceiling must be COMPLEX (rung 3); got ${tier} at score ${maxBlend}. ` +
-      "REASONING is reachable only via triggers (risk/force/agentic) or correction (cascade/fallback) or memory (kNN).");
+    const c = await centroids();
+    const r = await scoreIntent(bare("prove this lock-free queue is correct and identify aba hazards"), {
+      embedFn: fakeEmbed,
+      centroids: c,
+    });
+    assert.strictEqual(r.class, "frontier");
+    assert.ok(r.score >= 76, `frontier-class score must reach REASONING: got ${r.score}`);
+    const tier = getModelTierSelector().getTier(r.score);
+    assert.strictEqual(tier, "REASONING",
+      `frontier-class ask at score ${r.score} should route REASONING; got ${tier}`);
   });
 
   it("legacy mode opts out entirely", async () => {
@@ -275,7 +294,7 @@ describe("WS7.3 — rung containment (REASONING is trigger-only)", () => {
 
   it("no clean text → null (caller keeps its own score)", async () => {
     const c = await centroids();
-    const r = await scoreIntent({ messages: [] }, { embedFn: fakeEmbed, centroids: c });
+    const r = await scoreIntent({ messages: [] }, { embedFn: fakeEmbed, centroids: c, skipClassifier: true });
     assert.strictEqual(r, null);
   });
 });

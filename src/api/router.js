@@ -53,6 +53,8 @@ const rateLimiter = createRateLimiter();
  *   - force_local / force_cloud regex shortcuts
  *   - risk classifier (high-risk → forced COMPLEX)
  *   - complexity scoring (weighted heuristic)
+ *   - thinking-budget trigger (≥10k tokens → REASONING, Claude Code ultrathink)
+ *   - force patterns (ultrathink/prove → REASONING; architecture review → COMPLEX; hi → SIMPLE)
  *   - agentic-workflow detector (may bump min-tier)
  *   - kNN router (embedding-based nearest-neighbors of historical queries)
  *   - LinUCB contextual bandit (intra-tier model selection, learns from reward)
@@ -63,6 +65,21 @@ const rateLimiter = createRateLimiter();
  * Plus telemetry — every decision is recorded so kNN/bandit improve over time.
  */
 async function pickTierByIntent(body) {
+  // thinking.budget_tokens is NOT a reliable routing signal. Claude Code
+  // Enterprise on Haiku 4.5 attaches budget_tokens=31999 to EVERY request
+  // as its default extended-thinking behavior — the model's baseline, not
+  // an intent signal from the user. Trying to threshold this dragged every
+  // casual "hi" into REASONING via passthrough (live-verified 2026-07-19,
+  // fp-e33173b… session logs).
+  //
+  // Explicit user intent (ultrathink / prove / security audit / …) is
+  // caught by FORCE_REASONING_PATTERNS on the *text*, which is unambiguous.
+  // No thinking-budget trigger here on purpose. Kept a debug log of the
+  // observed value so future tuning has data.
+  const thinkingBudget = body?.thinking?.budget_tokens;
+  if (typeof thinkingBudget === 'number') {
+    logger.debug({ thinkingBudget }, '[OAuthIntent] thinking budget present (informational, not used for routing)');
+  }
   // Build a user-intent payload. We INCLUDE the tools array (signals agentic
   // intent — a request with 12 tools attached is meaningfully different from
   // a chat-only one, even if both messages look short) but EXCLUDE the system

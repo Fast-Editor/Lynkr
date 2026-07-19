@@ -14,6 +14,7 @@ const {
   analyzeComplexity,
   shouldForceLocal,
   shouldForceCloud,
+  shouldForceReasoning,
   routingMetrics,
   analyzeWithEmbeddings,
 } = require('./complexity-analyzer');
@@ -706,11 +707,14 @@ async function _determineProviderSmartInner(payload, options = {}) {
   if (risk?.level === 'high' && isFallbackEnabled()) {
     try {
       const selector = getModelTierSelector();
-      const modelSelection = selector.selectModel('COMPLEX', null);
+      // Config B (local → GLM → Claude): high-risk requests route to the
+      // trusted provider (Claude) via REASONING, not the mid-tier GLM.
+      // Security/auth/middleware changes belong on the governance path.
+      const modelSelection = selector.selectModel('REASONING', null);
       const decision = {
         provider: modelSelection.provider,
         model: modelSelection.model,
-        tier: 'COMPLEX',
+        tier: 'REASONING',
         method: 'risk',
         reason: 'high_risk_forced_tier',
         score: 100,
@@ -719,7 +723,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
         escalations: [{
           source: 'risk',
           fromTier: null,
-          toTier: 'COMPLEX',
+          toTier: 'REASONING',
           fromModel: null,
           toModel: modelSelection.model,
         }],
@@ -731,7 +735,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
       };
       routingMetrics.record(decision);
       logger.debug({
-        tier: 'COMPLEX',
+        tier: 'REASONING',
         provider: decision.provider,
         instructionHits: risk.instructionHits,
         pathHits: risk.pathHits,
@@ -783,6 +787,33 @@ async function _determineProviderSmartInner(payload, options = {}) {
     };
     routingMetrics.record(decision);
     return decision;
+  }
+
+  // Force REASONING (Claude in config B) — checked before force_cloud.
+  // Matches ultrathink/prove/security-audit/first-principles. Deterministic
+  // routing to the top tier regardless of embedding score.
+  if (shouldForceReasoning(payload) && isFallbackEnabled() && config.modelTiers?.enabled) {
+    try {
+      const selector = getModelTierSelector();
+      const modelSelection = selector.selectModel('REASONING', null);
+      const decision = {
+        provider: modelSelection.provider,
+        model: modelSelection.model,
+        tier: 'REASONING',
+        method: 'force',
+        reason: 'force_reasoning_pattern',
+        score: 100,
+        risk,
+        propensity: 1.0,
+        candidates: [{ provider: modelSelection.provider, model: modelSelection.model }],
+        _queryEmbedding: queryEmbedding,
+        _queryText: queryText,
+      };
+      routingMetrics.record(decision);
+      return decision;
+    } catch (err) {
+      degradation.record('tier_select', err);
+    }
   }
 
   if (shouldForceCloud(payload) && isFallbackEnabled()) {

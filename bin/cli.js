@@ -14,21 +14,23 @@ const SUBCOMMANDS = {
 };
 
 const sub = process.argv[2];
-if (sub && Object.prototype.hasOwnProperty.call(SUBCOMMANDS, sub)) {
+// `lynkr start` is an alias for `lynkr` (start the proxy). Drop the token
+// and fall through so users can use whichever spelling they prefer.
+if (sub === 'start') {
+  process.argv.splice(2, 1);
+} else if (sub && Object.prototype.hasOwnProperty.call(SUBCOMMANDS, sub)) {
   process.argv.splice(2, 1); // drop the subcommand token so the script's own arg parser is happy
   // Subcommand scripts check this to decide whether to invoke their main()
   // when they're require()'d (vs being loaded by a test for unit-checking).
   process.env._LYNKR_SUBCMD = sub;
   require(SUBCOMMANDS[sub]);
   return;
-}
-
-// Unknown positional commands must error loudly, not silently boot the
-// server (`lynkr codex` used to start a bare gateway and never say why).
-if (sub && !sub.startsWith('-')) {
+} else if (sub && !sub.startsWith('-')) {
+  // Unknown positional commands must error loudly, not silently boot the
+  // server (`lynkr codex` used to start a bare gateway and never say why).
   console.error(`Error: unknown command '${sub}'.`);
   console.error(`Did you mean: lynkr wrap ${sub}`);
-  console.error(`Known commands: ${Object.keys(SUBCOMMANDS).join(', ')} (or no command to start the server)`);
+  console.error(`Known commands: ${Object.keys(SUBCOMMANDS).join(', ')}, start (or no command to start the server)`);
   process.exit(1);
 }
 
@@ -45,6 +47,8 @@ ${pkg.description}
 
 Usage:
   lynkr [options]                  Start the proxy server (default)
+  lynkr start [options]            Alias for the above
+  lynkr init [options]             Interactive setup wizard (writes .env, pulls classifier model)
   lynkr wrap <target> [options]    Wrap CLI tools through Lynkr proxy
   lynkr usage [options]            Show AI spend report and tier-routing savings
   lynkr stats [options]            Shareable savings-receipt card (also: lynkr usage --card)

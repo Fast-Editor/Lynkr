@@ -92,9 +92,23 @@ const ADVANCED_PATTERNS = {
   },
 };
 
-// Force cloud patterns - always route to cloud regardless of score
-const FORCE_CLOUD_PATTERNS = [
+// Force REASONING patterns - deterministic escalation to top tier (Claude in
+// config B). Checked before force_cloud. Hardcoded constants (no env var).
+// Security/governance asks route to the trusted Claude provider; deep
+// reasoning asks route to extended thinking.
+const FORCE_REASONING_PATTERNS = [
   /\b(security\s+(audit|review|assessment)|penetration\s+test|vulnerability\s+scan)\b/i,
+  /\b(ultrathink|ultra[\s-]?think)\b/i,
+  /\b(think\s+(hard|deeply|carefully|step[\s-]by[\s-]step|through\s+this))/i,
+  /\b(prove|proof|formal\s+proof|verify|verification)\b/i,
+  /\b(from\s+first\s+principles)\b/i,
+  /\b(reason\s+(through|about|from)\s+(the|this))/i,
+];
+
+// Force COMPLEX patterns - route to COMPLEX (GLM in config B) regardless of
+// score. Architecture/refactor/code-review are substantial but not
+// security-critical, so GLM is appropriate.
+const FORCE_CLOUD_PATTERNS = [
   /\b(architect(ure)?\s+(review|design|diagram)|system\s+design)\b/i,
   /\b(refactor\s+(entire|whole|all|the\s+entire)|complete\s+rewrite)\b/i,
   /\b(code\s+review|pr\s+review|pull\s+request\s+review)\b/i,
@@ -465,7 +479,13 @@ function scoreTools(payload) {
 function scoreTaskType(content) {
   const contentLower = content.toLowerCase();
 
-  // Check force patterns first
+  // Check force patterns first (priority: REASONING > cloud > local)
+  for (const pattern of FORCE_REASONING_PATTERNS) {
+    if (pattern.test(content)) {
+      return { score: 100, reason: 'force_reasoning', pattern: pattern.source.slice(0, 40) };
+    }
+  }
+
   for (const pattern of FORCE_LOCAL_PATTERNS) {
     if (pattern.test(content)) {
       return { score: 0, reason: 'force_local', pattern: 'greeting_or_simple' };
@@ -474,7 +494,7 @@ function scoreTaskType(content) {
 
   for (const pattern of FORCE_CLOUD_PATTERNS) {
     if (pattern.test(content)) {
-      return { score: 25, reason: 'force_cloud', pattern: pattern.source.slice(0, 30) };
+      return { score: 75, reason: 'force_cloud', pattern: pattern.source.slice(0, 30) };
     }
   }
 
@@ -926,6 +946,20 @@ function shouldForceCloud(payload) {
   return !!matched;
 }
 
+/**
+ * Quick check if request should be forced to REASONING tier (Claude in
+ * config B). Matches: ultrathink, think hard/deeply, prove/formal proof,
+ * from first principles, security audit.
+ */
+function shouldForceReasoning(payload) {
+  const content = extractContent(payload);
+  const matched = FORCE_REASONING_PATTERNS.find(pattern => pattern.test(content));
+  if (matched) {
+    logger.debug({ pattern: matched.source.slice(0, 50), text: content.slice(0, 100) }, '[Force] force_reasoning matched');
+  }
+  return !!matched;
+}
+
 // ============================================================================
 // PHASE 4: Embeddings-Based Similarity (Optional Enhancement)
 // ============================================================================
@@ -1041,6 +1075,7 @@ module.exports = {
   // Quick checks
   shouldForceLocal,
   shouldForceCloud,
+  shouldForceReasoning,
 
   // Individual scoring (for testing/debugging)
   scoreTokens,
@@ -1069,6 +1104,7 @@ module.exports = {
   // Constants (for testing)
   PATTERNS,
   ADVANCED_PATTERNS,
+  FORCE_REASONING_PATTERNS,
   FORCE_CLOUD_PATTERNS,
   FORCE_LOCAL_PATTERNS,
   DIMENSION_WEIGHTS,

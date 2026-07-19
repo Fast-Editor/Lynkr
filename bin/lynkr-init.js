@@ -550,6 +550,36 @@ async function runInteractive(opts) {
     close();
     console.log('');
     writeEnvFile(buildEnvContent(env, isWrap, tierConfig), opts);
+
+    // ── Classifier bootstrap: detect ollama, pull model, warm-up ──
+    // Runs AFTER .env is written so the classifier can read tier config
+    // (currently uses hardcoded qwen2.5:3b, but leaves room for the future
+    // fine-tuned model to plug in via SIMPLE tier or an env override).
+    if (!opts.dryRun) {
+      console.log('');
+      console.log('Setting up the difficulty classifier…');
+      try {
+        const { ensureClassifierReady } = require('../src/routing/classifier-setup');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const prompt = (q) => new Promise((res) => rl.question(q, (a) => res(a)));
+        const result = await ensureClassifierReady({
+          mode: 'interactive',
+          log: (m) => console.log(m),
+          warn: (m) => console.warn(m),
+          prompt,
+        });
+        rl.close();
+        if (result.ready) {
+          console.log('✓ Classifier ready.');
+        } else if (result.reason === 'ollama_missing') {
+          console.log('(Install Ollama and re-run `lynkr init` to enable the classifier — Lynkr will still start without it, using anchor-only scoring.)');
+        } else {
+          console.log(`(Classifier disabled: ${result.reason}. Lynkr will fall back to anchor-only scoring.)`);
+        }
+      } catch (err) {
+        console.warn(`⚠ Classifier setup skipped: ${err.message}`);
+      }
+    }
   } catch (err) {
     close();
     throw err;

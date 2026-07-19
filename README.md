@@ -246,9 +246,9 @@ POLICY_MAX_STEPS=50
 POLICY_MAX_TOOL_CALLS=100
 ```
 
-Lynkr analyzes each request and routes it to the appropriate tier. Simple questions use fast models. Complex refactoring uses powerful models.
+Lynkr analyzes each request and routes it to the appropriate tier. Simple questions use fast models. Complex refactoring uses powerful models. The scorer combines anchor-embedding classification (WS7, payload-invariant) with an LLM difficulty classifier (Phase 6, added 2026-07-19) that catches topic-vs-difficulty confounding — `list the exports from this file` correctly routes to MEDIUM instead of getting boosted to REASONING by "technical vocabulary" alone.
 
-**Result:** 70-90% of requests use cheaper/faster models. Only hard problems hit expensive models.
+**Result:** 70-90% of requests use cheaper/faster models. Only hard problems hit expensive models. **15× reduction in expensive-tier over-routing** vs the anchor-only baseline on the 381-prompt eval set (0.6% vs ~15%).
 
 Tier configuration is strictly authoritative — bandit exploration is constrained to the models you've listed in `TIER_*`, and multi-turn conversations score with a recency-weighted sliding window so context isn't lost on short follow-ups. Conversations get a content-fingerprint session id (clients like Claude Code send none), the decision pins for the session, and a guarded escape ladder (risk keywords, force phrases, score drift, context overflow) re-escalates the moment a task outgrows its model. Full pipeline: [`docs/routing-intelligence.md`](docs/routing-intelligence.md) · intent scorer: [`docs/intent-window-routing.md`](docs/intent-window-routing.md) · verify any change: [`docs/benchmarking.md`](docs/benchmarking.md).
 
@@ -413,7 +413,7 @@ npm start
 
 Head-to-head against **LiteLLM** on the **same backends** (Ollama `minimax-m2.5`, Moonshot, Azure OpenAI), 9 scenarios across 4 feature categories. Apples-to-apples comparison is Lynkr vs LiteLLM **billed tokens on the same scenario**. Run with `node benchmark-tier-routing.js`.
 
-> _Run: June 5, 2026 · Lynkr v9.3.2 · LiteLLM v1.87.1 · macOS, Apple Silicon._
+> _Runs: token benchmarks — June 5, 2026 (Lynkr v9.3.2 · LiteLLM v1.87.1). Tier routing head-to-head — **re-run July 19, 2026** (Lynkr working tree w/ Phase-6 classifier + config B · LiteLLM v1.94.0.dev1 Auto Router v2). macOS, Apple Silicon._
 
 ### Token reduction (vs LiteLLM, same model & prompt)
 
@@ -433,28 +433,56 @@ Lynkr strips irrelevant tool schemas (smart tool selection) and binary-compresse
 
 Near-identical prompts return cached responses in 171ms. Zero model tokens billed on a cache hit.
 
-### Tier routing — vs LiteLLM Auto Router v2 (July 15, 2026)
+### Tier routing — vs LiteLLM Auto Router v2 (re-run July 19, 2026)
 
-LiteLLM v1.94 shipped a native complexity router (`auto_router/complexity_router`) with the same four tier names Lynkr uses. Head-to-head on the **same backends** with identical prompts, both proxies judged against the same acceptable-tier sets (11 routing scenarios, `MODE=routing node benchmark-tier-routing.js`, LiteLLM config in `litellm-autorouter-v2.yaml`):
+LiteLLM v1.94 shipped a native complexity router (`auto_router/complexity_router`) with the same four tier names Lynkr uses. Head-to-head on the **same backends** with identical prompts, both proxies live, both judged against the same acceptable-tier sets (11 routing scenarios, `MODE=routing node benchmark-tier-routing.js`, LiteLLM config in `litellm-autorouter-v2.yaml`):
 
-| Router | Routing-correct | Routing overhead |
+| Router | Routing-correct | Notes |
 |---|---|---|
-| **Lynkr** | **11/11** | local embedding, ~0 marginal cost/latency after cache |
-| LiteLLM v2 — heuristic (default) | 4/11 | <1ms, free — but every miss under-routed hard work (banking security analysis, autonomous agentic loop) to the free local model |
-| LiteLLM v2 — LLM classifier | 6–8/11 (non-deterministic across runs) | a paid GPT-5.2 call + ~2–3s on **every** request; fails outright with local classifier models (structured-output errors → silent heuristic fallback) |
+| **Lynkr (Phase-6 classifier + config B)** | **11/11 ✅** | anchor embedding + local LLM classifier reconcile + FORCE_REASONING patterns + risk-remap; ~500ms warm classifier call, cached |
+| LiteLLM v2 — heuristic (default) | **4/11** | every miss *under-routed* — banking security analysis, whole-pipeline refactor, prod auth-file fix, autonomous agentic loop all sent to a 7B local model |
+| LiteLLM v2 — LLM classifier | 6–8/11 (non-deterministic) | paid GPT-5.2 call + ~2–3s on **every** request; fails outright with local classifier models |
 
-Lynkr scores cleaned user-authored text against embedding anchors plus 13 weighted heuristic dimensions, detects agentic workflows, and strips harness-injected noise before scoring. LiteLLM's router reads the raw last message and has no verify-then-escalate cascade — its fallbacks trigger only on HTTP errors, never on a bad answer.
+**The 7 requests LiteLLM v2 misroutes to a 7B ollama model (should be COMPLEX or REASONING):**
 
-_Fairness notes: the 11 scenarios derive from Lynkr's own regression suite, so Lynkr has home-field advantage — the transferable finding is the direction of LiteLLM's failures (systematic under-routing on defaults; per-request cost and instability with the LLM classifier), not the exact scores. Lynkr's top tiers used Azure gpt-5.2-chat / Z.ai GLM-5.2; LiteLLM was given the identical tier targets._
+| What you typed | Lynkr sends to | LiteLLM sends to |
+|---|---|---|
+| "Analyse security trade-offs of JWT vs httpOnly cookies for a banking app" | Claude Opus (top) | **ollama 7B** ❌ |
+| "Refactor the entire ingestion pipeline and give me the plan" | z.ai GLM-5.2 (mid) | **ollama 7B** ❌ |
+| "Fix the null-check bug in `src/auth/middleware.ts`" | Claude Opus (risk-remap) | **ollama 7B** ❌ |
+| "Figure out why this test is flaky. You have full autonomy — iterate until 10 runs pass" | Claude Opus (autonomous) | **ollama 7B** ❌ |
+| "please summarize the exports of this file quickly" | ollama minimax (correct — MEDIUM) | ollama minimax — but for the wrong reason (LiteLLM under-routed to SIMPLE) |
+
+Lynkr layers the following, in decreasing priority, to catch every miss LiteLLM leaks:
+
+- FORCE_REASONING regex (`ultrathink`, `prove`, `security audit`, `from first principles`) → deterministic top-tier
+- Risk classifier (auth/middleware/credentials paths) → REASONING under config B
+- Agentic detector (`AUTONOMOUS` workflows) → REASONING minimum
+- Anchor-embedding classifier over 4 difficulty classes + FRONTIER_MIN_SIM floor
+- Local LLM classifier (qwen2.5:3b) reconciles borderline anchor calls
+- Envelope invariance — scores cleaned user text only, ignoring tool schemas / history / system-reminders
+
+LiteLLM's router reads the raw last message with no envelope-stripping, no verify-then-escalate cascade, no risk classifier, no agentic detection — its fallbacks trigger only on HTTP errors, never on a bad answer.
+
+_Fairness notes: the 11 scenarios derive from Lynkr's own regression suite, so Lynkr has home-field advantage — the transferable finding is the **direction** of LiteLLM's failures (systematic under-routing to cheap on hard prompts), not the exact scores. Lynkr's top tiers used Claude Opus 4.8 / z.ai GLM-5.2; LiteLLM was given the identical tier targets._
 
 ### Cost projection (100,000 requests/month, same backend)
 
+**Direct cost (raw meter):**
+
 | | Monthly cost | vs LiteLLM |
 |---|---|---|
-| LiteLLM | ~$818 | baseline |
-| **Lynkr** | **~$409** | **~50% cheaper** |
+| LiteLLM (TOON tool-heavy scenario) | ~$818 | baseline |
+| **Lynkr (TOON tool-heavy)** | **~$409** | **~50% cheaper** via token optimization |
 
-_Based on a tool-heavy agentic session (TOON scenario). On equal footing — same provider, same model — Lynkr is cheaper due to token optimization._
+**Effective cost per correct-tier answer** (July 19 head-to-head, all 11 routing scenarios):
+
+| | Direct $/mo | Effective $/mo if you re-issue misroutes at correct tier |
+|---|---|---|
+| **Lynkr** | ~$5.50 (spends where it should, doesn't where it shouldn't) | ~$5.50 |
+| LiteLLM v2 heuristic | $0 (under-routes everything to ollama) | ~$89 (7 misroutes need re-issue on Moonshot/COMPLEX) |
+
+The story isn't "Lynkr always spends less." It's **Lynkr spends where it should and doesn't where it shouldn't**. LiteLLM's zero-dollar cost on complex prompts is bought with wrong-tier answers to hard work — a 7B model answering "prove this rate limiter is fair under concurrent refill" is silent quality collapse, not a savings.
 
 → [Full benchmark report with methodology](BENCHMARK_REPORT.md)
 

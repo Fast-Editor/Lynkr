@@ -246,6 +246,26 @@ async function start() {
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
   });
 
+  // Classifier bootstrap check — non-blocking, log-only.
+  // Detects ollama + confirms the classifier model is pulled. Never auto-
+  // installs (that's `lynkr init`'s job); warns and lets scoring fall back
+  // to anchor-only if either is missing.
+  (async () => {
+    try {
+      const { ensureClassifierReady } = require('./routing/classifier-setup');
+      const result = await ensureClassifierReady({
+        mode: 'boot',
+        log: (m) => logger.info(m),
+        warn: (m) => logger.warn(m),
+      });
+      if (result.ready) {
+        logger.info({ classifier: 'ready', warmed: result.warmed }, '[classifier-setup] Difficulty classifier ready');
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[classifier-setup] bootstrap check failed (classifier will fall back)');
+    }
+  })();
+
   // Start session cleanup manager. It also drives routing-side maintenance
   // (telemetry retention + session-pin TTL) via its runCleanup tick — see
   // src/sessions/cleanup.js.

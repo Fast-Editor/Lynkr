@@ -47,14 +47,15 @@ const ANCHORS_PATHS = [
 ];
 const VECTORS_CACHE_PATH = path.join(__dirname, '../../data/difficulty-anchors.vectors.json');
 
-// Class → representative score. Chosen so each class lands inside an
-// existing default band (SIMPLE 0-25, MEDIUM 26-50, COMPLEX 51-75) and the
-// blend can NEVER reach REASONING (76+). Calibration may later collapse
-// bands into degenerate ranges without touching these.
+// Class → representative score. Chosen so each class lands inside a tier
+// band and routing boundaries are tunable via tier edges (model-tiers.js).
+// Config B (local → GLM → Claude): substantive=MEDIUM/ollama,
+// heavyweight=COMPLEX/GLM, frontier=REASONING/Claude.
 const CLASS_VALUES = {
   trivial: 10,
   substantive: 45,
   heavyweight: 68,
+  frontier: 85,
 };
 
 // Softmax temperature over cosine sims. Real inter-class sim gaps on
@@ -77,7 +78,15 @@ const CLASS_BANDS = {
   trivial: [0, 25],
   substantive: [26, 50],
   heavyweight: [51, 75],
+  frontier: [76, 100],
 };
+
+// Frontier class (REASONING tier) requires minimum similarity — a weak
+// topical match can't jump to the expensive tier. Tuned on the validation
+// set (scripts/validate-intent-anchors.js). Below this floor, frontier is
+// excluded from the blend entirely and scoring behaves like the 3-class
+// baseline. Hardcoded constant (no env var per user directive).
+const FRONTIER_MIN_SIM = 0.50;
 
 function intentScoreMode() {
   const m = (process.env.LYNKR_INTENT_SCORE_MODE || 'anchor').toLowerCase();
@@ -191,21 +200,32 @@ function classify(embedding, centroids) {
 }
 
 /**
- * Softmax-blend class sims into a continuous score. Bounded by construction
- * to [min(CLASS_VALUES), max(CLASS_VALUES)] — REASONING stays unreachable.
+ * Softmax-blend class sims into a continuous score. Frontier class requires
+ * minimum similarity (FRONTIER_MIN_SIM) to participate — below the floor,
+ * it's excluded from the blend and scoring behaves like the 3-class baseline.
+ * Lexical fallback path stays clamped ≤75 (see _lexicalCleanScore).
  */
 function blendScore(sims) {
   const classes = Object.keys(CLASS_VALUES);
-  const max = Math.max(...classes.map((c) => sims[c] ?? -1));
+  // Frontier similarity floor: a weak topical match can't jump tiers.
+  const frontierSim = sims.frontier ?? -1;
+  const activeSims = { ...sims };
+  if (frontierSim < FRONTIER_MIN_SIM) {
+    delete activeSims.frontier; // excluded from blend
+  }
+  const activeClasses = Object.keys(CLASS_VALUES).filter(c => c in activeSims);
+  if (activeClasses.length === 0) return CLASS_VALUES.substantive; // degenerate
+
+  const max = Math.max(...activeClasses.map((c) => activeSims[c] ?? -1));
   let totalW = 0;
   let total = 0;
-  for (const cls of classes) {
-    const w = Math.exp(((sims[cls] ?? -1) - max) / BLEND_TEMPERATURE);
+  for (const cls of activeClasses) {
+    const w = Math.exp(((activeSims[cls] ?? -1) - max) / BLEND_TEMPERATURE);
     totalW += w;
     total += w * CLASS_VALUES[cls];
   }
   const score = totalW > 0 ? total / totalW : CLASS_VALUES.substantive;
-  return Math.round(Math.max(0, Math.min(75, score)));
+  return Math.round(Math.max(0, Math.min(100, score)));
 }
 
 // --- default centroids (lazy singleton, disk-cached) ------------------------
@@ -294,6 +314,46 @@ function _lexicalCleanScore(text) {
  * @returns {Promise<{score:number, mode:'anchor'|'lexical', class?:string, sims?:object, text:string}|null>}
  *   null → caller keeps its legacy score (legacy mode, or nothing to score)
  */
+// Reconcile anchor's implied tier with the LLM classifier's tier.
+// - Agreement → keep anchor score as-is.
+// - Classifier lower than anchor → trust classifier (catches embedding
+//   false-positives like "list exports" scoring REASONING). Position
+//   score at midpoint of classifier's target band.
+// - Classifier higher than anchor → safety-gate: require confidence≥0.8
+//   before trusting an escalation to a more expensive tier. Below that,
+//   keep the cheaper anchor decision.
+function _reconcile(anchorScore, anchorClass, classifierResult) {
+  if (!classifierResult) return { score: anchorScore, reconciled: false };
+  if (classifierResult.confidence < 0.6) return { score: anchorScore, reconciled: false };
+
+  // Anchor class → implied tier (matches model-tiers.js band definitions).
+  const anchorTier = anchorScore <= 19 ? 'SIMPLE'
+    : anchorScore <= 50 ? 'MEDIUM'
+    : anchorScore <= 75 ? 'COMPLEX'
+    : 'REASONING';
+  const classifierTier = classifierResult.tier;
+
+  if (anchorTier === classifierTier) return { score: anchorScore, reconciled: false };
+
+  const TIER_ORDER = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
+  const anchorIdx = TIER_ORDER.indexOf(anchorTier);
+  const classifierIdx = TIER_ORDER.indexOf(classifierTier);
+
+  // Midpoints of each tier band (from model-tiers.js defaults):
+  //   SIMPLE 0-19 → 10, MEDIUM 20-50 → 35, COMPLEX 51-75 → 63, REASONING 76-100 → 88
+  const TIER_MIDPOINT = { SIMPLE: 10, MEDIUM: 35, COMPLEX: 63, REASONING: 88 };
+
+  if (classifierIdx < anchorIdx) {
+    // Classifier says LOWER tier — trust it. Fixes over-routing.
+    return { score: TIER_MIDPOINT[classifierTier], reconciled: 'down' };
+  }
+  // Classifier says HIGHER tier — gate on confidence.
+  if (classifierResult.confidence >= 0.8) {
+    return { score: TIER_MIDPOINT[classifierTier], reconciled: 'up' };
+  }
+  return { score: anchorScore, reconciled: 'up_gated' };
+}
+
 async function scoreIntent(payload, opts = {}) {
   const mode = opts.mode ?? intentScoreMode();
   if (mode === 'legacy') return null;
@@ -314,8 +374,46 @@ async function scoreIntent(payload, opts = {}) {
       if (Array.isArray(embedding) && embedding.length > 0) {
         const { cls, sims } = classify(embedding, centroids);
         const [lo, hi] = CLASS_BANDS[cls];
-        const score = Math.max(lo, Math.min(hi, blendScore(sims)));
-        return { score, mode: 'anchor', class: cls, sims, text };
+        const anchorScore = Math.max(lo, Math.min(hi, blendScore(sims)));
+
+        // LLM classifier — second opinion. Skipped in tests (opts.skipClassifier)
+        // to keep unit tests hermetic. Runs live otherwise.
+        let classifierResult = null;
+        if (!opts.skipClassifier) {
+          try {
+            const { classifyDifficulty } = require('./difficulty-classifier');
+            classifierResult = await classifyDifficulty(text, {
+              forceMatched: opts.forceMatched,
+              riskLevel: opts.riskLevel,
+            });
+          } catch (err) {
+            logger.debug({ err: err.message }, '[IntentScore] classifier failed — anchor only');
+          }
+        }
+
+        const { score, reconciled } = _reconcile(anchorScore, cls, classifierResult);
+        if (reconciled) {
+          logger.debug({
+            text: text.slice(0, 80),
+            anchorScore,
+            anchorClass: cls,
+            classifierTier: classifierResult?.tier,
+            classifierConfidence: classifierResult?.confidence,
+            reconciled,
+            finalScore: score,
+          }, '[IntentScore] classifier reconciled anchor score');
+        }
+        return {
+          score,
+          mode: reconciled ? 'anchor+classifier' : 'anchor',
+          class: cls,
+          sims,
+          text,
+          anchorScore,
+          classifierTier: classifierResult?.tier ?? null,
+          classifierConfidence: classifierResult?.confidence ?? null,
+          reconciled,
+        };
       }
     }
   } catch (err) {
@@ -327,6 +425,8 @@ async function scoreIntent(payload, opts = {}) {
 
 module.exports = {
   CLASS_VALUES,
+  CLASS_BANDS,
+  FRONTIER_MIN_SIM,
   intentScoreMode,
   extractCleanUserText,
   cosine,
@@ -336,4 +436,6 @@ module.exports = {
   scoreIntent,
   // exposed for the replay script
   getDefaultCentroids,
+  // exposed for tests
+  _reconcile,
 };

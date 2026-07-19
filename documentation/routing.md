@@ -7,7 +7,8 @@ Lynkr automatically routes each request to the right model based on complexity �
 ## Overview
 
 ```
-Request → Force Patterns → Tool Thresholds → Complexity Analysis → Agentic Detection → Tier Selection → Cost Optimization → Provider
+Request → Thinking-Budget → Force Patterns → Risk → Anchor Score + LLM Classifier
+        → Agentic Detection → Tier Selection → Cost Optimization → kNN/Bandit → Provider
 ```
 
 **Benchmarked routing accuracy (July 15, 2026 — head-to-head vs LiteLLM Auto Router v2):**
@@ -26,20 +27,23 @@ Scenarios include the live-incident regressions (injected `<system-reminder>` im
 - Routes simple requests to cheap/local models automatically
 - Escalates complex and risk-sensitive requests to capable cloud models
 - Automatic agentic workflow detection with tier upgrades
-- Embedding-anchor intent scoring + 13-dimension weighted scorer — not just token count
+- Anchor-embedding intent classification + LLM second-opinion classifier (Phase 6, 2026-07-19) fixes topic-vs-difficulty confounding — `list the exports from this file` now correctly routes MEDIUM instead of REASONING
+- 15× reduction in expensive-tier over-routing vs anchor-only baseline (0.6% vs ~15% on eval set)
 
 ---
 
 ## 4-Tier Model System
 
-Every request is mapped to one of four complexity tiers:
+Every request is mapped to one of four complexity tiers. Bands reflect the calibrated defaults (see `data/calibrated-thresholds.json`); score to tier is a straight lookup by band.
 
 | Tier | Score Range | Description | Example Tasks |
 |------|-----------|-------------|---------------|
-| **SIMPLE** | 0-25 | Greetings, simple Q&A, confirmations | "Hello", "What is a variable?", "Yes" |
-| **MEDIUM** | 26-50 | Code reading, simple edits, research | "Read this file", "Fix this typo", "Search for X" |
-| **COMPLEX** | 51-75 | Multi-file changes, debugging, architecture | "Refactor auth module", "Debug this race condition" |
-| **REASONING** | 76-100 | Complex analysis, security audits, novel problems | "Security audit", "Design microservices architecture" |
+| **SIMPLE** | 0-19 | Greetings, simple Q&A, confirmations | "Hello", "What is a variable?", "Yes" |
+| **MEDIUM** | 20-50 | Code reading, simple edits, research | "Read this file", "Fix this typo", "List exports from X" |
+| **COMPLEX** | 51-75 | Multi-file changes, debugging, architecture | "Refactor auth module", "Debug this race condition", "Architecture review" |
+| **REASONING** | 76-100 | Formal proofs, security audits, novel algorithms | "Prove correctness", "Security audit", "Design BFT consensus variant" |
+
+The scorer produces a continuous 0-100 value from anchor-embedding classification plus (optionally) an LLM classifier's tier hint (see [Anchor Intent Scoring](#anchor-intent-scoring-ws7) and [LLM Difficulty Classifier](#llm-difficulty-classifier-phase-6) below).
 
 ### Configuration
 
@@ -111,13 +115,27 @@ To route simple requests to Ollama, use `TIER_SIMPLE=ollama:<model>` instead.
 
 ```bash
 MODEL_PROVIDER=ollama                        # Startup checks + default provider
-TIER_SIMPLE=ollama:llama3.2                  # Score 0-25 → Ollama (free, local)
-TIER_MEDIUM=openai:gpt-4o                    # Score 26-50 → OpenAI
+TIER_SIMPLE=ollama:llama3.2                  # Score 0-19 → Ollama (free, local)
+TIER_MEDIUM=openai:gpt-4o                    # Score 20-50 → OpenAI
 TIER_COMPLEX=databricks:claude-sonnet-4-5    # Score 51-75 → Databricks
 TIER_REASONING=databricks:claude-opus-4-6    # Score 76-100 → Databricks
 ```
 
-In this setup, a "Hello" message (score ~5) routes to Ollama. A "Refactor the auth module" message (score ~65) routes to Databricks. `MODEL_PROVIDER=ollama` ensures the server waits for Ollama at startup but does not affect where complex requests go.
+In this setup, a "Hello" message (score 0, force_local) routes to Ollama. A "Refactor the auth module" message (score ~65) routes to Databricks. `MODEL_PROVIDER=ollama` ensures the server waits for Ollama at startup but does not affect where complex requests go.
+
+#### Example: Config B — Local → Mid-Tier → Top-Tier Ladder
+
+Real production ladder used with the classifier: local for cheap traffic, mid-tier for substantive work, top-tier reserved for genuine deep reasoning.
+
+```bash
+MODEL_PROVIDER=ollama
+TIER_SIMPLE=ollama:minimax-m2.5:cloud             # Greetings, acks
+TIER_MEDIUM=ollama:minimax-m2.5:cloud             # One-off tasks, focused Qs
+TIER_COMPLEX=z.ai:GLM-5.2                         # Architecture, refactor, systemic
+TIER_REASONING=azure-anthropic:claude-opus-4.8    # Proofs, security audits, formal reasoning
+```
+
+Traffic distribution on this ladder after enabling the LLM classifier: most day-to-day coding traffic stays on Ollama (SIMPLE + MEDIUM), architectural / systemic work goes to GLM (COMPLEX), and only genuinely deep or governance-critical work reaches Claude (REASONING via force patterns or high confidence classifier calls). See [LLM Difficulty Classifier](#llm-difficulty-classifier-phase-6).
 
 ### Tier Config File
 
@@ -141,9 +159,98 @@ Additional tier preferences (fallback models per provider) can be defined in `co
 
 ---
 
+## Anchor Intent Scoring (WS7)
+
+The primary scorer since WS7 (2026-07). Solves the "envelope inflation" problem where the same semantic ask scored 31 offline vs 56 live once tools/history/system-reminders were attached.
+
+**Mechanism** (`src/routing/intent-score.js`):
+
+1. **Extract cleaned user text** — strip `<system-reminder>`, `<turn-context>`, `<task-notification>`, harness continuation summaries, Lynkr's own injected notices. Walk back through the message history until we find text the user actually authored this turn.
+2. **Embed** the cleaned text with nomic-embed-text (via local Ollama).
+3. **Classify** by cosine similarity against per-class anchor centroids loaded from `config/difficulty-anchors.json` (or `data/difficulty-anchors.json` if present):
+
+   | Class | Value | Band | Anchors are examples of |
+   |---|---|---|---|
+   | `trivial` | 10 | `[0, 25]` | greetings, one-word acks, trivial factoids |
+   | `substantive` | 45 | `[26, 50]` | one specific mechanical task, focused explanation |
+   | `heavyweight` | 68 | `[51, 75]` | systemic design, multi-file review, architecture |
+   | `frontier` | 85 | `[76, 100]` | formal proof, security audit, novel algorithm (added 2026-07-19) |
+
+4. **Softmax-blend** the class similarities into a continuous score with `temperature = 0.05`.
+5. **Frontier safety floor** — the `frontier` class only participates in the blend if its similarity clears `FRONTIER_MIN_SIM = 0.50`. Below the floor, scoring behaves like the 3-class baseline and the score can't reach REASONING via text alone (still reachable via triggers).
+
+**Contracts** (tested in `test/intent-score.test.js`):
+
+- **Envelope invariance**: `score(text) === score(text + fat tool schemas + reminders + long history)`. The lexical scorer can never pass this; it's the whole reason WS7 exists.
+- **Rung containment**: text-only score can only reach REASONING via the frontier class + min-sim floor. Lexical fallback path stays clamped at ≤75.
+- **Paraphrase stability**: embeddings close in cosine space produce scores within a small band.
+
+**Failure fallback**: if the embedder is down or centroids can't be built, falls back to a lexical score of the SAME cleaned text (still envelope-invariant, just noisier, clamped ≤75).
+
+---
+
+## LLM Difficulty Classifier (Phase 6)
+
+Added 2026-07-19. A second-opinion classifier that catches anchor-embedding false positives. The core problem it solves: embeddings measure *topical similarity*, not difficulty — `list the exports from this file` embedded near frontier examples because it shares technical vocabulary, and got score 76 (REASONING) even though the underlying task is trivially easy for a small model.
+
+**Mechanism** (`src/routing/difficulty-classifier.js`):
+
+1. Reads cleaned user text (same extraction as the anchor scorer).
+2. Sends a 4-way classification prompt to a small local model via Ollama with `format: 'json'`.
+3. Model returns `{"tier": "SIMPLE|MEDIUM|COMPLEX|REASONING", "confidence": 0.0-1.0}`.
+4. `_reconcile()` in `intent-score.js` combines the anchor score with the classifier's tier:
+
+   | Anchor's implied tier vs classifier | Action |
+   |---|---|
+   | Agree | Use anchor score as-is |
+   | Classifier lower, `confidence ≥ 0.6` | Trust classifier — set score to midpoint of classifier's target band (fixes over-routing) |
+   | Classifier higher, `confidence ≥ 0.8` | Trust classifier — safety-gated escalation |
+   | Classifier higher, `confidence < 0.8` | Keep anchor (don't escalate on weak signal) |
+
+**Model** — hardcoded to `qwen2.5:3b` on ollama (`CLASSIFIER_MODEL` constant in `difficulty-classifier.js`). Decoupled from the SIMPLE tier model so SIMPLE traffic can run a more capable generalist while the classifier stays fast and cheap. Latency: ~500ms warm, cache-hit 0ms.
+
+**Skip conditions** (return null, anchor-only mode):
+
+- Text length < 15 chars
+- Caller matched a `FORCE_*` regex already (deterministic path wins)
+- `risk.level === 'high'` (already forced upstream)
+- Cache hit (LRU, 500 entries, keyed by `sha256(text.trim().toLowerCase())`)
+- Ollama unavailable / model call fails / 10s timeout
+
+**Kill-switch**: `CLASSIFIER_ENABLED = true` constant at the top of `difficulty-classifier.js`. Set to `false` to fall back to anchor-only scoring. No env var per project policy.
+
+**Validation** (`scripts/validate-difficulty-classifier.js` on 381-prompt eval set):
+
+| Model | Hand-labeled accuracy | MEDIUM→REASONING misroutes | Latency |
+|---|---|---|---|
+| minimax-m2.5 (thinking model) | 85.1% | 1 (0.3%) | 4.6s |
+| qwen 1.5b (too small) | 60.6% | 24 (7.5%) | 330ms |
+| **qwen 3b (shipped)** | **87.3%** | **0 on hand-labeled** | **500ms warm** |
+| Anchor-only baseline (no classifier) | 65.7% | ~15% | 0ms |
+
+The eval set (`data/difficulty-eval.jsonl`, gitignored) is built from RouterArena + gpt4_dataset unused rows plus 85 hand-labeled coding-agent prompts. Per-source accuracy varies dramatically (hand: 87%, gpt4_dataset: 46%, RouterArena: 14%) because benchmark difficulty labels don't map cleanly to routing intent — hand labels are the trustworthy signal.
+
+**Building the eval set**: `node scripts/build-eval-set.js` (fetches HF datasets via public datasets-server API, no API key or LLM judge required).
+
+**Running validation**: `node scripts/validate-difficulty-classifier.js` — persists per-row results to `data/difficulty-eval-results.jsonl` for manual review.
+
+### Auto-provisioning (`lynkr init` + server boot)
+
+`src/routing/classifier-setup.js` handles ollama + model detection so users don't have to know the plumbing.
+
+- **`lynkr init`** — interactive: detects `ollama` on PATH; if missing, prints the platform-specific install command (brew on macOS, curl on Linux, direct download on Windows) and exits cleanly. Never auto-runs `curl | sh` — that's a supply-chain footgun. If ollama is present, prompts the user to `ollama pull qwen2.5:3b`, then warms it up.
+- **Server boot** — non-blocking: runs the same detect-and-check after `app.listen()`, but never blocks startup. If ollama or the model is missing, logs a warning and lets the classifier fall through to null (anchor-only scoring). Users see one line telling them exactly which command to run.
+
+**Deferred to a follow-up (per user directive):**
+
+- Fine-tuning `qwen2.5:3b` on labeled classification data (LoRA infra, GPU, curated training set)
+- Canary verification on every startup (assert known-good classifications succeed before accepting traffic)
+
+---
+
 ## Complexity Scoring Algorithm
 
-The complexity analyzer implements 5 phases to produce a score from 0-100.
+The legacy 5-phase scorer runs on the FULL payload and is retained as the fallback path when the anchor scorer can't run (Ollama down, no centroids). In anchor mode (default), the score from `scoreIntent()` overwrites the lexical score.
 
 ### Phase 1: Basic Scoring
 
@@ -373,21 +480,43 @@ When an agentic workflow is detected (`score >= 25`), the complexity score is bo
 
 ## Force Patterns
 
-Certain requests bypass the scoring algorithm entirely:
+Certain requests bypass the scoring algorithm entirely. Priority order (highest first):
 
-### Force Local (always local model)
+### Force REASONING (added 2026-07-19)
+
+Deterministic escalation to the REASONING tier. Checked before force_cloud. `src/routing/complexity-analyzer.js:FORCE_REASONING_PATTERNS`:
+
+| Trigger | Regex | Rationale |
+|---|---|---|
+| `security audit`, `penetration test`, `vulnerability scan` | `/\b(security\s+(audit\|review\|assessment)\|penetration\s+test\|vulnerability\s+scan)\b/i` | Security/governance work belongs on the trusted top-tier provider |
+| `ultrathink`, `ultra think`, `ultra-think` | `/\b(ultrathink\|ultra[\s-]?think)\b/i` | Claude Code's think/ultrathink modes; matches all common spellings |
+| `think hard/deeply/carefully/step-by-step/through this` | `/\b(think\s+(hard\|deeply\|carefully\|step[\s-]by[\s-]step\|through\s+this))/i` | Explicit user request for deep reasoning |
+| `prove`, `proof`, `formal proof`, `verify`, `verification` | `/\b(prove\|proof\|formal\s+proof\|verify\|verification)\b/i` | Formal reasoning tasks |
+| `from first principles` | `/\b(from\s+first\s+principles)\b/i` | First-principles reasoning |
+| `reason through/about/from the/this` | `/\b(reason\s+(through\|about\|from)\s+(the\|this))/i` | Multi-step reasoning phrasing |
+
+### Thinking-Budget Trigger — removed 2026-07-19
+
+**Not used for routing.** Claude Code Enterprise on Haiku 4.5 attaches `thinking.budget_tokens = 31999` to *every* request as its default extended-thinking behavior; it's a model-level setting, not a user routing intent. A threshold-based trigger dragged every casual `"hi"` into REASONING and out through subscription passthrough. The value is now logged at debug level only, purely informational. Explicit deep-reasoning intent is caught unambiguously by `FORCE_REASONING_PATTERNS` on the message text (`ultrathink`, `prove`, `security audit`, `from first principles`, …).
+
+### Force Local (always SIMPLE model)
 - Greetings: "hi", "hello", "thanks", "bye"
 - Time queries: "what time is it"
 - Confirmations: "yes", "no", "ok", "sure"
 - Help requests: "help", "commands"
 
-### Force Cloud (always cloud model)
-- Security audits/reviews
+### Force Cloud (always COMPLEX tier)
 - Architecture design/review
 - Complete codebase refactoring
 - Code/PR reviews
 - Complex debugging
 - Production incidents
+
+(`security audit` moved to Force REASONING as of 2026-07-19 — security/governance goes to the trusted top-tier provider under config B.)
+
+### Risk-Based Escalation
+
+High-risk requests (detected by `src/routing/risk-classifier.js` — auth/middleware paths, credential handling, unsafe eval patterns) route to REASONING under config B, not COMPLEX. Config-B rationale: security-critical asks belong on the trusted top-tier provider, not the mid-tier general model. See `src/routing/index.js:_determineProviderSmartInner` risk override branch.
 
 ---
 
@@ -535,59 +664,79 @@ Result: COMPLEX → anthropic:claude-opus-4-7
 1. Are all 4 TIER_* env vars configured?
    └─ No → Return static provider (MODEL_PROVIDER), skip all routing
 
-2. Risk analysis:
-   └─ High risk → Force COMPLEX tier
+2. Thinking-budget trigger (OAuth intent path):
+   └─ thinking.budget_tokens ≥ 10000 → REASONING tier (bypass scoring)
 
-3. Does content match FORCE_LOCAL patterns?
-   └─ Yes → Route to SIMPLE tier
+3. Risk analysis:
+   └─ High risk → REASONING tier (config B — was COMPLEX pre-2026-07-19)
 
-4. Does content match FORCE_CLOUD patterns?
-   └─ Yes → Route to best cloud provider (requires FALLBACK_ENABLED)
+4. Force patterns (priority order):
+   a. FORCE_REASONING (ultrathink / prove / security audit / …) → REASONING tier
+   b. FORCE_LOCAL (hi / thanks / yes) → SIMPLE tier
+   c. FORCE_CLOUD (architecture review / code review / …) → COMPLEX tier
 
-5. Analyze complexity:
-   └─ Calculate score 0-100 (standard or weighted mode)
+5. Anchor intent scoring (WS7):
+   └─ Extract cleaned user text (strip envelope: reminders, tool_results, harness)
+   └─ Embed with nomic-embed-text
+   └─ Cosine-classify vs 4 anchor centroids (trivial/substantive/heavyweight/frontier)
+   └─ Softmax-blend → continuous 0-100 score
+   └─ frontier requires similarity ≥ FRONTIER_MIN_SIM (0.50) to participate
 
-6. Optional: Graphify structural analysis:
+6. LLM difficulty classifier (Phase 6):
+   └─ Call qwen2.5:3b via Ollama, get {tier, confidence}
+   └─ Reconcile with anchor score:
+        agree → keep anchor score
+        classifier lower + conf ≥ 0.6 → trust classifier (fix over-routing)
+        classifier higher + conf ≥ 0.8 → trust classifier (gated escalation)
+   └─ Skipped if: text<15 chars, force-matched, risk=high, cache hit
+
+7. Fallback path if anchor scorer failed:
+   └─ Lexical clean-text score (envelope-invariant, clamped ≤75)
+
+8. Optional: Graphify structural analysis:
    └─ Query knowledge graph for blast radius, god nodes, community cohesion
    └─ Adjust score by up to +35
 
-7. Optional: Embeddings adjustment:
-   └─ Adjust score by -10 to +10 based on semantic similarity
+9. Agentic detection:
+   └─ If agentic → Enforce minimum tier via base_tier + escalation ledger
+   └─ If AUTONOMOUS → Force REASONING tier
 
-8. Agentic detection:
-   └─ If agentic → Boost score, enforce minimum tier
-   └─ If AUTONOMOUS → Force cloud provider
+10. Map score to tier via CLASS_BANDS (SIMPLE 0-19, MEDIUM 20-50, COMPLEX 51-75, REASONING 76-100)
 
-9. Map score to tier (SIMPLE/MEDIUM/COMPLEX/REASONING)
+11. Select provider:model from matching TIER_* env var
 
-10. Select provider:model from matching TIER_* env var
+12. De-escalation (evidence-based):
+    └─ If lower tier has ≥30 rows / avg quality ≥70 / errors <5% in last 7d → demote
 
-11. Cost optimization:
+13. Cost optimization:
     └─ If enabled + not high-risk → find cheaper qualifying model
 
-12. Context window escalation:
+14. Context window escalation:
     └─ If estimated tokens > model context → escalate to larger-context model
 
-13. Vision capability guard:
+15. Vision capability guard:
     └─ If payload has images + model lacks vision → upgrade to vision model
 
-14. kNN routing:
+16. kNN routing:
     └─ If confidence > 0.7 → override with kNN model
-    └─ If confidence 0.4-0.7 → escalate tier (ambiguous)
+    └─ If confidence 0.4-0.7 → escalate tier (ambiguous — evidence-leashed)
     └─ If confidence ≤ 0.4 → ignore kNN
 
-15. LinUCB bandit:
+17. LinUCB bandit:
     └─ If multiple candidates → pick best via UCB score
 
-16. Deadline filter:
+18. Deadline filter:
     └─ If LYNKR-Deadline-Ms header → pick fastest qualifying model
 
-17. Tenant policy override:
+19. Tenant policy override:
     └─ If tenant blocks model → replace via cost optimizer
 
-18. Record telemetry (provider, tier, latency, quality score)
+20. Session affinity write / tier fallback chain wraps around all of the above
+    (see src/routing/session-affinity.js and src/routing/tier-fallback.js)
 
-19. Return { provider, model, tier, score, method }
+21. Record telemetry (provider, tier, latency, quality score, classifier hint)
+
+22. Return { provider, model, tier, score, method }
 ```
 
 ---
@@ -640,14 +789,28 @@ Per-provider latency is tracked in a 200-sample circular buffer. Statistics expo
 | File | Description |
 |------|-------------|
 | `src/routing/index.js` | Main routing orchestrator (`determineProviderSmart()`) |
-| `src/routing/complexity-analyzer.js` | 5-phase complexity analysis, 13-dimension weighted scoring, Graphify integration |
+| `src/routing/intent-score.js` | WS7 anchor-embedding intent scorer + reconcile logic with classifier |
+| `src/routing/difficulty-classifier.js` | Phase 6 LLM difficulty classifier (qwen2.5:3b via Ollama) |
+| `src/routing/complexity-analyzer.js` | Legacy 5-phase complexity analysis (fallback path when anchor fails); `FORCE_*_PATTERNS` including `FORCE_REASONING_PATTERNS` |
 | `src/routing/agentic-detector.js` | Agentic workflow detection and classification |
 | `src/routing/model-tiers.js` | Tier definitions, model selection from `TIER_*` env vars |
 | `src/routing/model-registry.js` | Multi-source pricing (LiteLLM, models.dev, Databricks fallback) |
 | `src/routing/cost-optimizer.js` | Cost tracking, cheapest model finder, savings calculation |
+| `src/routing/knn-router.js` | HNSW-based nearest-historical-query router |
+| `src/routing/bandit.js` | LinUCB contextual bandit for intra-tier model selection |
 | `src/routing/telemetry.js` | SQLite-backed routing telemetry store |
 | `src/routing/quality-scorer.js` | Response quality scoring (0-100) |
 | `src/routing/latency-tracker.js` | Per-provider latency tracking with percentiles |
+| `src/routing/session-affinity.js` | Session pin (sticky provider) + drift-based re-decision |
+| `src/routing/tier-fallback.js` | Tier fallback chain when primary provider errors |
+| `config/difficulty-anchors.json` | Bundled hand-curated anchor set (13 anchors, 3 classes) |
+| `data/difficulty-anchors.json` | Local override anchor set (gitignored, wins over `config/`) |
+| `data/difficulty-anchors.vectors.json` | Embedding cache for anchor centroids |
+| `data/difficulty-eval.jsonl` | 381-prompt eval set for classifier validation (gitignored) |
+| `scripts/build-eval-set.js` | Builds `data/difficulty-eval.jsonl` from HF datasets |
+| `scripts/validate-difficulty-classifier.js` | Runs classifier against eval set, per-source accuracy report |
+| `scripts/mine-difficulty-anchors.js` | Mines RouterArena/gpt4_dataset for candidate anchor prompts |
+| `scripts/validate-intent-anchors.js` | Compares anchor sets on a small hand-labeled eval |
 | `src/tools/code-graph.js` | Graphify integration — knowledge graph queries for structural analysis |
 
 ---
