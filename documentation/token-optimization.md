@@ -10,11 +10,9 @@ Lynkr reduces tokens sent to the model through multiple independent mechanisms. 
 
 | Optimization | Measured Reduction | Scenario |
 |---|---|---|
-| **Smart tool selection** | **47–60%** | 14-tool request (read or write task) |
 | **TOON JSON compression** | **87.6%** | Large grep/file-read tool result (60-item array) |
 | **Tool-result compression (RTK)** | up to **87.6%** | grep/test/git/lint/build/log/JSON tool output |
 | **Semantic cache** | **100% on hit, 171ms** | Paraphrased repeat query |
-| MCP Code Mode | **96%** | 100+ MCP tool schemas → 4 meta-tools |
 | History compression | up to 80% | Long multi-turn sessions |
 
 At 100,000 requests/month on a tool-heavy agentic workload, this translates to **$77k–$115k annual savings**.
@@ -27,8 +25,6 @@ At 100,000 requests/month on a tool-heavy agentic workload, this translates to *
 
 | Scenario | Tokens without Lynkr | Tokens with Lynkr | Reduction |
 |---|---|---|---|
-| 14-tool read request | 1,042 | **547** | **47%** |
-| 14-tool write request | 1,043 | **412** | **60%** |
 | JSON grep result (60 items) | 3,458 | **427** | **87.6%** |
 | Semantic cache (2nd call) | 2,857 | **0** | **100%** |
 
@@ -47,83 +43,6 @@ At 100,000 requests/month on a tool-heavy agentic workload, this translates to *
 ---
 
 ## Optimization Phases
-
-### Phase 0: MCP Code Mode (96% reduction for MCP tools)
-
-**Problem:** Sending 100+ MCP tool schemas consumes massive tokens (~17,500 tokens).
-
-**Solution:** Replace all MCP tool schemas with 4 meta-tools that enable lazy tool discovery.
-
-**How it works:**
-- **Without Code Mode:** Every MCP tool schema sent on every request
-- **With Code Mode:** Only 4 meta-tools sent (~700 tokens)
-  - `mcp_list_tools` → Discover available tools (compact listing)
-  - `mcp_tool_info` → Load full schema for one specific tool
-  - `mcp_tool_docs` → Get usage examples + parameters
-  - `mcp_execute` → Execute a tool by name with JSON args
-
-**Example workflow:**
-```
-Turn 1: mcp_list_tools({ server_id: "github" })
-  → Returns: ["create_issue", "list_prs", "merge_pr", ...]
-
-Turn 2: mcp_tool_info({ server_id: "github", tool_name: "create_issue" })
-  → Returns: { inputSchema: { title: string, body: string, ... } }
-
-Turn 3: mcp_execute({
-    server_id: "github",
-    tool_name: "create_issue",
-    arguments: { title: "Bug", body: "..." }
-  })
-```
-
-**Token savings:**
-```
-Without Code Mode: 100 tools × 175 tokens = 17,500 tokens
-With Code Mode: 4 meta-tools × 175 tokens = 700 tokens
-Savings: 96% (16,800 tokens saved)
-```
-
-**Trade-off:** Requires 3 sequential tool calls (discover → inspect → execute) instead of 1 direct call. This adds latency but saves massive context in MCP-heavy setups.
-
-**Configuration:**
-```bash
-# Enable MCP Code Mode
-CODE_MODE_ENABLED=true
-
-# Tool list cache TTL in milliseconds (default: 60000 = 1 minute)
-CODE_MODE_CACHE_TTL=60000
-```
-
-**Inspired by:** Bifrost's Code Mode architecture.
-
----
-
-### Phase 1: Smart Tool Selection (47–60% measured reduction)
-
-**Problem:** Sending all tool schemas on every request wastes tokens. A read-only query doesn't need Write, Edit, Bash, or Git schemas.
-
-**Solution:** Classifies each request and strips irrelevant tool definitions before forwarding.
-
-**How it works:**
-- **Chat queries** → Only Read tool
-- **File operations** → Read, Write, Edit tools
-- **Git operations** → git_* tools
-- **Code execution** → Bash tool
-
-**Benchmarked on 14-tool Claude Code session:**
-```
-Read task:  1,042 tokens raw → 547 tokens after selection  (−47%)
-Write task: 1,043 tokens raw → 412 tokens after selection  (−60%)
-```
-
-**Configuration:**
-```bash
-# Automatic - no configuration needed
-# Lynkr detects request type and filters tools
-```
-
----
 
 ### Phase 2: Prompt Caching (30-45% reduction)
 
@@ -182,33 +101,6 @@ MEMORY_DEDUP_ENABLED=true
 
 # Lookback window for dedup (default: 5)
 MEMORY_DEDUP_LOOKBACK=5
-```
-
----
-
-### Phase 4: Tool Response Truncation (15-25% reduction)
-
-**Problem:** Long tool outputs (file contents, bash output) waste tokens.
-
-**Solution:** Intelligently truncate tool responses.
-
-**How it works:**
-- File Read: Limit to 2,000 lines
-- Bash output: Limit to 1,000 lines
-- Keep most relevant portions
-- Add truncation indicator
-
-**Example:**
-```
-Original file read: 10,000 lines = 50,000 tokens
-Truncated: 2,000 lines = 10,000 tokens
-Savings: 80% (40,000 tokens saved)
-```
-
-**Configuration:**
-```bash
-# Automatic - no configuration needed
-# Built into Read and Bash tools
 ```
 
 ---
@@ -374,7 +266,7 @@ When all phases work together:
 
 2. **After optimization**: 12,500 input tokens
    - System prompt: 0 tokens (cache hit)
-   - Tools: 450 tokens (3 relevant tools)
+   - Tools: schemas pass through unchanged (results compressed by RTK/TOON)
    - Memories: 200 tokens (deduplicated)
    - Conversation: 5,000 tokens (compressed)
    - User query: 22,500 tokens (same)

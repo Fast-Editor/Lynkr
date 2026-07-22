@@ -299,8 +299,16 @@ async function invokeAzureAnthropic(body, incomingHeaders = {}) {
   }
 
   // OAuth passthrough: prefer incoming Bearer token (Claude Pro/Max subscription)
-  // over a configured API key.
-  const incomingAuth = incomingHeaders?.authorization || incomingHeaders?.Authorization;
+  // over a configured API key — but ONLY when it is actually an Anthropic
+  // token (sk-ant-*). OpenAI-shape clients (Codex, goose) send their own
+  // provider's Bearer, and forwarding that to api.anthropic.com earns a
+  // guaranteed 401 "Invalid bearer token" (live incident 2026-07-21, Codex
+  // via tier fallback).
+  let incomingAuth = incomingHeaders?.authorization || incomingHeaders?.Authorization;
+  if (incomingAuth && incomingAuth.startsWith("Bearer ") && !incomingAuth.slice("Bearer ".length).startsWith("sk-ant-")) {
+    logger.debug({ tokenShape: incomingAuth.slice(7, 15) + "…" }, "Azure Anthropic: ignoring non-Anthropic bearer token from client");
+    incomingAuth = null;
+  }
 
   // Headers Anthropic uses to verify client identity for subscription OAuth tokens.
   // If we strip these, Anthropic returns 429 rate_limit_error with no rate-limit
@@ -1374,13 +1382,37 @@ async function invokeLlamaCpp(body, incomingHeaders = {}) {
     headers["Authorization"] = `Bearer ${config.llamacpp.apiKey}`;
   }
 
-  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+  let messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
 
   if (body.system) {
     messages.unshift({ role: "system", content: body.system });
   }
 
-  // FIX: Deduplicate consecutive messages with same role (llama.cpp rejects this)
+  // Fold EVERY system-role message into one leading system message. Claude
+  // Code 2.1.216+ sends system-role entries inside `messages` (a leading one
+  // plus a trailing billing-header-tagged one), and strict Jinja chat
+  // templates (Qwen-family, e.g. Ornith) raise "System message must be at
+  // the beginning" for any non-leading system message. Folding preserves
+  // the content the old consecutive-dedup used to silently DROP.
+  const systemParts = [];
+  const nonSystem = [];
+  for (const msg of messages) {
+    if (msg.role === "system") {
+      const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+      if (text && text.trim()) systemParts.push(text);
+    } else {
+      nonSystem.push(msg);
+    }
+  }
+  if (systemParts.length > 0) {
+    nonSystem.unshift({ role: "system", content: systemParts.join("\n\n") });
+    if (systemParts.length > 1) {
+      logger.debug({ folded: systemParts.length }, "llama.cpp: folded system messages into one leading system message");
+    }
+  }
+  messages = nonSystem;
+
+  // Deduplicate consecutive messages with same role (llama.cpp rejects this)
   const deduplicated = [];
   let lastRole = null;
   for (const msg of messages) {
@@ -1460,7 +1492,20 @@ async function invokeLlamaCpp(body, incomingHeaders = {}) {
     }))
   }, "=== LLAMA.CPP REQUEST ===");
 
-  return performJsonRequest(endpoint, { headers, body: llamacppBody }, "llama.cpp");
+  const result = await performJsonRequest(endpoint, { headers, body: llamacppBody }, "llama.cpp");
+
+  // Context overflow is a CAPACITY error, not a request error: the local
+  // model's slot is simply too small for this conversation (llama-server
+  // splits -c across --parallel slots). Returning the 400 as-is fails the
+  // request AND records a provider "success" (nothing threw), so the
+  // tier-fallback ladder never rescues it. Throw instead — same pattern as
+  // _throwIfOllamaError — so invokeModel escalates to a bigger-context tier.
+  const _llamaErrMsg = result?.json?.error?.message || "";
+  if (!result?.ok && /exceeds the available context size/i.test(_llamaErrMsg)) {
+    throw new Error(`llama.cpp context overflow: ${_llamaErrMsg}`);
+  }
+
+  return result;
 }
 
 async function invokeLMStudio(body, incomingHeaders = {}) {
@@ -2681,7 +2726,13 @@ async function invokeModel(body, options = {}) {
         _queryText: body._queryText ?? null,
       }
     : await determineProviderSmart(body, { workspace, tenantPolicy });
-  const initialProvider = routingResult.provider;
+  // Canonicalize the provider name ONCE. Tier configs write z.ai as "z-ai";
+  // every dispatch case, breaker, and health key below uses "zai". Without
+  // this the dispatch chain falls through to the Databricks default — whose
+  // base is a deliberate fail-fast dummy port in tier-routing setups — so
+  // every "z-ai" tier request died with fetch's bad-port blocklist while
+  // z.ai itself was perfectly healthy (live incident 2026-07-21/22).
+  const initialProvider = routingResult.provider === "z-ai" ? "zai" : routingResult.provider;
   const tierSelectedModel = routingResult.model;
 
   // Inject tier-selected model into body so provider functions can use it
@@ -2984,6 +3035,21 @@ async function invokeModel(body, options = {}) {
     healthTracker.recordFailure(initialProvider, err, err.status);
     getLatencyTracker().record(initialProvider, routingDecision?.model, failLatency);
 
+    // undici wraps every network failure as "TypeError: fetch failed" — the
+    // actionable detail (ENOTFOUND vs ECONNRESET vs ETIMEDOUT vs TLS) lives
+    // in err.cause. Without this line the z-ai breaker trips on repeated
+    // "fetch failed" with nothing to diagnose (live incidents 2026-07-21/22:
+    // ~5ms failures from a long-lived process while fresh processes succeed).
+    logger.warn({
+      provider: initialProvider,
+      model: routingDecision?.model ?? null,
+      error: err.message,
+      causeCode: err.cause?.code ?? null,
+      causeMessage: err.cause?.message ?? null,
+      causeErrors: Array.isArray(err.cause?.errors) ? err.cause.errors.map((e) => e.code || e.message).slice(0, 4) : null,
+      failLatencyMs: failLatency,
+    }, "Provider invocation failed");
+
     // Tier-aware escalate-then-demote fallback (TIER_FALLBACK_ENABLED).
     // On failure, try a MORE capable tier first (climb toward REASONING); only
     // if every higher tier is unavailable do we fall downward to SIMPLE/local.
@@ -3011,8 +3077,28 @@ async function invokeModel(body, options = {}) {
               _cascadeInner: true,
               workspace,
               tenantPolicy,
+              // Forward the client's headers: azure-anthropic in wrap mode
+              // authenticates with the incoming OAuth Bearer token, so a
+              // fallback attempt without headers is guaranteed to fail with
+              // "requires authentication".
+              headers: incomingHeaders,
             }
           );
+
+          // A candidate that answers with an error is a FAILED candidate,
+          // not a serve. Provider clients return {ok:false} on 4xx instead
+          // of throwing, and serving that here hands the client a 401/403
+          // while healthier rungs below never get tried (live incident
+          // 2026-07-21: Codex request served azure-anthropic's 401 while
+          // llamacpp sat idle one rung down).
+          if (attempt?.ok === false) {
+            logger.warn({
+              toProvider: cand.provider,
+              status: attempt.status,
+              error: attempt.json?.error?.message || attempt.text?.slice(0, 120) || null,
+            }, "[TierFallback] Candidate answered with an error response, trying next");
+            continue;
+          }
 
           metricsCollector.recordFallbackAttempt(initialProvider, cand.provider, "tier_fallback");
           logger.warn({
@@ -3370,6 +3456,9 @@ function destroyHttpAgents() {
 
 module.exports = {
   invokeModel,
+  invokeAzureAnthropic,
+  invokeZai,
+  invokeOllama,
   stripLynkrBadges,
   destroyHttpAgents,
   normalizeBodyForConverse,

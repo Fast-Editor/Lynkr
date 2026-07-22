@@ -347,9 +347,21 @@ function _reconcile(anchorScore, anchorClass, classifierResult) {
     // Classifier says LOWER tier — trust it. Fixes over-routing.
     return { score: TIER_MIDPOINT[classifierTier], reconciled: 'down' };
   }
-  // Classifier says HIGHER tier — gate on confidence.
+  // Classifier says HIGHER tier — gate on confidence, and cap the jump at
+  // ONE band above the anchor. The classifier is a tiebreaker, not an
+  // oracle: qwen2.5:3b's confidence is degenerate (92% of eval answers say
+  // 0.9-1.0, incl. every wrong one), so an unbounded jump let a 3B verdict
+  // catapult "Who kills him ?" from anchor 25 to 88 → REASONING →
+  // subscription passthrough (live incident 2026-07-21). Escalating past
+  // the adjacent band now takes consecutive turns that keep re-scoring
+  // higher, which is exactly the persistence a genuinely hard conversation
+  // exhibits.
   if (classifierResult.confidence >= 0.8) {
-    return { score: TIER_MIDPOINT[classifierTier], reconciled: 'up' };
+    const cappedIdx = Math.min(classifierIdx, anchorIdx + 1);
+    return {
+      score: TIER_MIDPOINT[TIER_ORDER[cappedIdx]],
+      reconciled: cappedIdx < classifierIdx ? 'up_capped' : 'up',
+    };
   }
   return { score: anchorScore, reconciled: 'up_gated' };
 }
@@ -385,6 +397,12 @@ async function scoreIntent(payload, opts = {}) {
             classifierResult = await classifyDifficulty(text, {
               forceMatched: opts.forceMatched,
               riskLevel: opts.riskLevel,
+              // Condensed prior turns, threaded by the router's window loop.
+              // Without it a short follow-up ("Who kills him ?") is
+              // unclassifiable in isolation.
+              context: typeof payload?._conversationContext === 'string'
+                ? payload._conversationContext
+                : null,
             });
           } catch (err) {
             logger.debug({ err: err.message }, '[IntentScore] classifier failed — anchor only');

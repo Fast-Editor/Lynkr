@@ -197,12 +197,9 @@ const BASELINE_ENV = {
   LYNKR_KNN_CONFIDENCE_HIGH: '0.55',
   LYNKR_KNN_CONFIDENCE_LOW: '0.30',
 
-  // ── Tool execution ────────────────────────────────────────────────────
-  TOOL_EXECUTION_MODE: 'client',
-  TOOL_INJECTION_ENABLED: 'false',
+  // ── Tool selection (routing signals) ──────────────────────────────────
   SMART_TOOL_SELECTION_MODE: 'disabled',
   SMART_TOOL_SELECTION_TOKEN_BUDGET: '2500',
-  CODE_MODE_ENABLED: 'true',
 
   // ── Caching ───────────────────────────────────────────────────────────
   PROMPT_CACHE_ENABLED: 'true',
@@ -253,7 +250,6 @@ const BASELINE_ENV = {
   MEMORY_DEDUP_LOOKBACK: '5',
   MEMORY_TTL: '3600000',
   TOKEN_TRACKING_ENABLED: 'true',
-  TOOL_TRUNCATION_ENABLED: 'true',
 
   // ── Prompt/output shaping ─────────────────────────────────────────────
   SYSTEM_PROMPT_MODE: 'dynamic',
@@ -280,12 +276,8 @@ const BASELINE_ENV = {
   POLICY_FILE_BLOCKED_PATHS: '/.env,.env,/etc/passwd,/etc/shadow',
   POLICY_SAFE_COMMANDS_ENABLED: 'true',
 
-  // ── Agents ────────────────────────────────────────────────────────────
+  // ── Agents (delegation prompt injection; execution is client-side) ────
   AGENTS_ENABLED: 'true',
-  AGENTS_MAX_CONCURRENT: '10',
-  AGENTS_DEFAULT_MODEL: 'haiku',
-  AGENTS_MAX_STEPS: '15',
-  AGENTS_TIMEOUT: '300000',
 
   // ── Rate limiting ─────────────────────────────────────────────────────
   RATE_LIMIT_ENABLED: 'true',
@@ -606,12 +598,12 @@ function buildEnvContent(env, isWrap, tierConfig) {
   // Group output by section in the order it appears in the generated file.
   // Mirrors the layout of the .env.example reference doc.
   const SERVER_KEYS = new Set(['PORT', 'NODE_ENV', 'REQUEST_JSON_LIMIT', 'SESSION_DB_PATH', 'WORKSPACE_ROOT', 'ENABLE_TOOL_SEARCH']);
-  const TOOL_EXEC_KEYS = new Set(['TOOL_EXECUTION_MODE', 'TOOL_INJECTION_ENABLED', 'SMART_TOOL_SELECTION_MODE', 'SMART_TOOL_SELECTION_TOKEN_BUDGET', 'CODE_MODE_ENABLED']);
+  const TOOL_EXEC_KEYS = new Set(['SMART_TOOL_SELECTION_MODE', 'SMART_TOOL_SELECTION_TOKEN_BUDGET']);
   const CACHE_KEYS = new Set([
     'PROMPT_CACHE_ENABLED', 'PROMPT_CACHE_MAX_ENTRIES', 'PROMPT_CACHE_TTL_MS',
     'SEMANTIC_CACHE_ENABLED', 'SEMANTIC_CACHE_THRESHOLD', 'SEMANTIC_CACHE_MAX_ENTRIES', 'SEMANTIC_CACHE_TTL_MS',
   ]);
-  const MEMORY_KEYS = new Set(Object.keys(merged).filter((k) => k.startsWith('MEMORY_') || k === 'TOKEN_TRACKING_ENABLED' || k === 'TOOL_TRUNCATION_ENABLED'));
+  const MEMORY_KEYS = new Set(Object.keys(merged).filter((k) => k.startsWith('MEMORY_') || k === 'TOKEN_TRACKING_ENABLED'));
   const SHAPING_KEYS = new Set([
     'SYSTEM_PROMPT_MODE', 'TOOL_DESCRIPTIONS',
     'HISTORY_COMPRESSION_ENABLED', 'HISTORY_KEEP_RECENT_TURNS', 'HISTORY_SUMMARIZE_OLDER',

@@ -10,7 +10,6 @@ Results from a live benchmark on real agentic coding workloads (June 2026):
 
 | Feature | Result |
 |---|---|
-| Smart tool selection | **47–60% token reduction** on tool-heavy requests |
 | TOON JSON compression | **87.6% reduction** on large JSON tool results |
 | Semantic cache hit | **171ms response, 0 tokens billed** |
 | Tier routing accuracy | Correctly escalated 4/4 test requests to the right tier |
@@ -30,7 +29,6 @@ Results from a live benchmark on real agentic coding workloads (June 2026):
 ┌──────────────────────────────┐
 │  Lynkr Proxy  (Port: 8081)   │
 │                              │
-│ • Strip unused tool schemas  │  ← 47–60% token reduction
 │ • Compress JSON tool results │  ← up to 87.6% (TOON)
 │ • Semantic cache lookup      │  ← 171ms hits, 0 tokens
 │ • Route by complexity tier   │  ← 13-dimension scorer
@@ -115,14 +113,13 @@ Provider response
 
 ### 4. Token Optimization
 
-**7 Phases Applied:**
-1. Smart tool selection
-2. Prompt caching
-3. Memory deduplication
-4. Tool response truncation (Distill-powered)
-5. Dynamic system prompts
-6. Conversation compression with structural dedup
-7. Headroom context compression (optional sidecar)
+**6 Phases Applied:**
+1. Prompt caching
+2. Memory deduplication
+3. Tool response truncation (Distill-powered)
+4. Dynamic system prompts
+5. Conversation compression with structural dedup
+6. Headroom context compression (optional sidecar)
 
 **Result:** 60-80% token reduction
 
@@ -134,12 +131,7 @@ Provider response
 
 ### 5. Tool Execution
 
-**Server Mode (default):**
-- Tools execute on Lynkr server
-- Access server filesystem
-- Server-side command execution
-
-**Client Mode (passthrough):**
+Tools always execute on the client (Claude Code CLI/Cursor) — Lynkr forwards `tool_use` blocks and the client sends results back:
 - Tools execute on CLI side
 - Access client filesystem
 - Client-side command execution
@@ -212,33 +204,21 @@ data: {}
 
 ### Orchestrator (`src/orchestrator/`)
 
-**Agent Loop:**
+**Request Loop:**
 1. Receive request
 2. Inject memories
 3. Call provider
-4. Execute tools (if requested)
-5. Return to provider
-6. Repeat until done (max 8 steps)
-7. Extract memories
-8. Return final response
+4. Forward tool_use blocks to the client (client executes and sends results back)
+5. Extract memories
+6. Return final response
 
 **Features:**
-- Tool execution modes (server/client)
 - Policy enforcement
 - Memory injection/extraction
 - Token optimization
 
-### Tools (`src/tools/`)
+### MCP Tools (`src/mcp/`)
 
-**Standard Tools:**
-- `workspace.js` - Read, Write, Edit files
-- `git.js` - Git operations
-- `bash.js` - Shell command execution
-- `test.js` - Test harness
-- `task.js` - Task tracking
-- `memory.js` - Memory management
-
-**MCP Tools:**
 - Dynamic tool registration
 - JSON-RPC 2.0 communication
 - Sandbox isolation (optional)
@@ -314,7 +294,7 @@ data: {}
 ### 2. Token Optimization
 
 **60-80% Cost Reduction:**
-- 7 optimization phases (including Distill-powered compression)
+- 6 optimization phases (including Distill-powered compression)
 - $77k-$115k annual savings
 - Automatic optimization
 - Structural dedup of repetitive tool outputs
@@ -372,6 +352,16 @@ data: {}
 - Cursor IDE (OpenAI format)
 - Continue.dev (OpenAI format)
 - Any OpenAI-compatible client
+
+### 9. Streaming
+
+**End-to-End SSE Through the Tier Router:**
+- Native passthrough for Anthropic-format upstreams (Anthropic endpoints, Z.AI, Ollama v0.14+ with `LYNKR_OLLAMA_BUFFER_RESPONSES=false`) — upstream bytes piped straight through with backpressure
+- OpenAI-format upstreams (openai, azure-openai, openrouter, databricks, llamacpp, lmstudio) transformed to Anthropic SSE in flight, including reassembly of split tool-call argument fragments into complete `tool_use` blocks
+- `LYNKR_VISIBLE_ROUTING` badge injected into live streams as the first content block after `message_start`
+- If the upstream fails before the first byte, the request falls back to the buffered path; after the first byte, errors surface as SSE error events
+- Telemetry (latency, tokens, tool calls) recorded by a stream-close finalizer
+- Kill switches: `LYNKR_NATIVE_PASSTHROUGH=false`, `LYNKR_STREAM_TRANSFORM=false` — only `MARKDOWN_RENDER_ANSI=true` forces buffering (ANSI rendering rewrites whole text blocks)
 
 ---
 
@@ -439,7 +429,7 @@ PROMPT_CACHE_MAX_ENTRIES=256
 - **[Memory System](memory-system.md)** - Long-term memory details
 - **[Token Optimization](token-optimization.md)** - Cost reduction strategies
 - **[Production Guide](production.md)** - Deploy to production
-- **[Tools Guide](tools.md)** - Tool execution modes
+- **[Tools Guide](tools.md)** - Tool calling
 
 ---
 

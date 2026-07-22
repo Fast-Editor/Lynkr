@@ -11,6 +11,7 @@ const SUBCOMMANDS = {
   trajectory: path.join(__dirname, "lynkr-trajectory.js"),
   wrap:       path.join(__dirname, "wrap.js"),
   init:       path.join(__dirname, "lynkr-init.js"),
+  reset:      path.join(__dirname, "lynkr-reset.js"),
 };
 
 const sub = process.argv[2];
@@ -53,6 +54,7 @@ Usage:
   lynkr usage [options]            Show AI spend report and tier-routing savings
   lynkr stats [options]            Shareable savings-receipt card (also: lynkr usage --card)
   lynkr trajectory [options]       Export agent trajectories as JSONL training data
+  lynkr reset <resource>           Clear a stored resource (e.g. session_pins, all)
 
 Options:
   -h, --help      Show this help message

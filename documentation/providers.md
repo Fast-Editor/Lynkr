@@ -993,7 +993,9 @@ AZURE_OPENAI_API_KEY=your-key
 | `PORT` | HTTP port for proxy server | `8081` |
 | `WORKSPACE_ROOT` | Workspace directory path | `process.cwd()` |
 | `LOG_LEVEL` | Logging level (`error`, `warn`, `info`, `debug`) | `info` |
-| `TOOL_EXECUTION_MODE` | Where tools execute (`server`, `client`) | `server` |
+| `LYNKR_NATIVE_PASSTHROUGH` | Stream Anthropic upstream SSE bytes straight through to Anthropic clients | `true` |
+| `LYNKR_STREAM_TRANSFORM` | Reshape OpenAI upstream SSE into Anthropic events in flight (`false` is the kill switch — buffers instead) | `true` |
+| `LYNKR_OLLAMA_BUFFER_RESPONSES` | Buffer Ollama responses so thinking-model `<think>` leaks can be repaired; set `false` to stream Ollama natively via its Anthropic API (v0.14+) | `true` |
 | `MODEL_DEFAULT` | Override default model/deployment name | Provider-specific |
 
 ### Provider-Specific Variables

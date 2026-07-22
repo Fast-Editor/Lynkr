@@ -276,13 +276,6 @@ async function testOption1Features() {
     if (!policy.evaluateToolCall) throw new Error("Missing evaluateToolCall");
   });
 
-  test("File read tool is registered", () => {
-    const workspace = require("./src/tools/workspace");
-    if (!workspace.registerWorkspaceTools) {
-      throw new Error("registerWorkspaceTools not found");
-    }
-  });
-
   // Feature 5: Container Sandboxing
   section("Feature 5: Container Sandboxing");
 
@@ -320,11 +313,6 @@ async function testOption1Features() {
     const sandbox = require("./src/mcp/sandbox");
     if (!sandbox.isSandboxEnabled) throw new Error("Missing isSandboxEnabled");
     if (!sandbox.runSandboxProcess) throw new Error("Missing runSandboxProcess");
-  });
-
-  test("Process module has sandbox integration", () => {
-    const process = require("./src/tools/process");
-    if (!process.runProcess) throw new Error("Missing runProcess");
   });
 
   // Feature 6: Safe Command DSL

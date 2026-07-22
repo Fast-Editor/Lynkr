@@ -70,7 +70,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 ENV NODE_ENV="production" \
     PORT="8081" \
     MODEL_PROVIDER="ollama" \
-    TOOL_EXECUTION_MODE="server" \
     LOG_LEVEL="info" \
     WORKSPACE_ROOT="/workspace" \
     REQUEST_JSON_LIMIT="1gb" \

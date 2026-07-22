@@ -18,51 +18,12 @@ const { getCircuitBreakerRegistry } = require("./clients/circuit-breaker");
 const metrics = require("./metrics");
 const logger = require("./logger");
 const { initialiseMcp } = require("./mcp");
-const { registerStubTools } = require("./tools/stubs");
-const { registerWorkspaceTools } = require("./tools/workspace");
-const { registerExecutionTools } = require("./tools/execution");
-const { registerWebTools } = require("./tools/web");
-const { registerIndexerTools } = require("./tools/indexer");
-const { registerEditTools } = require("./tools/edits");
-const { registerGitTools } = require("./tools/git");
-const { registerTaskTools } = require("./tools/tasks");
-const { registerTestTools } = require("./tools/tests");
-const { registerMcpTools } = require("./tools/mcp");
-const { registerAgentTaskTool } = require("./tools/agent-task");
-const { registerDecomposeTool } = require("./tools/decompose");
 const { initConfigWatcher, getConfigWatcher } = require("./config/watcher");
 const { initializeHeadroom, shutdownHeadroom, getHeadroomManager } = require("./headroom");
 const { getWorkerPool, isWorkerPoolReady } = require("./workers/pool");
-const lazyLoader = require("./tools/lazy-loader");
-const { setLazyLoader } = require("./tools");
 const { waitForOllama } = require("./clients/ollama-startup");
 
 initialiseMcp();
-
-setLazyLoader(lazyLoader);
-
-const LAZY_TOOLS_ENABLED = process.env.LAZY_TOOLS_ENABLED !== "false";
-
-if (LAZY_TOOLS_ENABLED) {
-  // Only load core tools at startup (stubs, workspace, execution)
-  lazyLoader.loadCoreTools();
-  logger.info({ mode: "lazy" }, "Lazy tool loading enabled - other tools will load on demand");
-} else {
-  // Backwards compatibility: load all tools at startup
-  registerStubTools();
-  registerWorkspaceTools();
-  registerExecutionTools();
-  registerWebTools();
-  registerIndexerTools();
-  registerEditTools();
-  registerGitTools();
-  registerTaskTools();
-  registerTestTools();
-  registerMcpTools();
-  registerAgentTaskTool();
-  registerDecomposeTool();
-  logger.info({ mode: "eager" }, "All tools loaded at startup");
-}
 
 function createApp() {
   const app = express();
@@ -169,13 +130,6 @@ function createApp() {
     }
     const cache = getSemanticCache();
     res.json({ enabled: true, ...cache.getStats() });
-  });
-
-  app.get("/metrics/lazy-tools", (req, res) => {
-    res.json({
-      enabled: LAZY_TOOLS_ENABLED,
-      ...lazyLoader.getLoaderStats(),
-    });
   });
 
   app.use(router);

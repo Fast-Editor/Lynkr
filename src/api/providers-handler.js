@@ -401,7 +401,6 @@ router.get("/config", (req, res) => {
       fallback_provider: config.modelProvider?.fallbackProvider || null,
       fallback_enabled: config.modelProvider?.fallbackEnabled || false,
       tier_routing_enabled: config.modelTiers?.enabled || false,
-      tool_execution_mode: config.toolExecutionMode || "server",
       configured_providers: providers.map(p => p.name),
       memory_enabled: config.memory?.enabled || false,
       smart_tool_selection: config.smartToolSelection?.enabled || false

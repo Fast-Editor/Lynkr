@@ -25,12 +25,12 @@ services:
       MODEL_PROVIDER: ${MODEL_PROVIDER:-ollama}
 
       # ============================================================
-      # TOOL EXECUTION MODE
+      # UPSTREAM SSE STREAMING (on by default; kill switches)
       # ============================================================
-      # Options: server (default), client (passthrough mode)
-      # - server: Tools execute on proxy server
-      # - client: Tools execute on Claude Code CLI (client-side)
-      TOOL_EXECUTION_MODE: ${TOOL_EXECUTION_MODE:-server}
+      LYNKR_NATIVE_PASSTHROUGH: ${LYNKR_NATIVE_PASSTHROUGH:-true}
+      LYNKR_STREAM_TRANSFORM: ${LYNKR_STREAM_TRANSFORM:-true}
+      # Buffered Ollama repairs thinking-model <think> leaks; false = stream
+      LYNKR_OLLAMA_BUFFER_RESPONSES: ${LYNKR_OLLAMA_BUFFER_RESPONSES:-true}
 
       # ============================================================
       # OLLAMA CONFIGURATION (Local Models)
@@ -255,11 +255,9 @@ services:
       # ============================================================
       # AGENTS CONFIGURATION
       # ============================================================
+      # Gates the agent-delegation instructions injected into the system
+      # prompt (the client's Task tool). Tools always execute on the client.
       AGENTS_ENABLED: ${AGENTS_ENABLED:-true}
-      AGENTS_MAX_CONCURRENT: ${AGENTS_MAX_CONCURRENT:-10}
-      AGENTS_DEFAULT_MODEL: ${AGENTS_DEFAULT_MODEL:-haiku}
-      AGENTS_MAX_STEPS: ${AGENTS_MAX_STEPS:-15}
-      AGENTS_TIMEOUT: ${AGENTS_TIMEOUT:-300000}
 
       # ============================================================
       # PROMPT & SEMANTIC CACHE
@@ -295,7 +293,6 @@ services:
       # TOKEN OPTIMIZATION (60-80% cost reduction)
       # ============================================================
       TOKEN_TRACKING_ENABLED: ${TOKEN_TRACKING_ENABLED:-true}
-      TOOL_TRUNCATION_ENABLED: ${TOOL_TRUNCATION_ENABLED:-true}
       MEMORY_FORMAT: ${MEMORY_FORMAT:-compact}
       MEMORY_DEDUP_ENABLED: ${MEMORY_DEDUP_ENABLED:-true}
       MEMORY_DEDUP_LOOKBACK: ${MEMORY_DEDUP_LOOKBACK:-5}
@@ -309,7 +306,7 @@ services:
       TOKEN_BUDGET_ENFORCEMENT: ${TOKEN_BUDGET_ENFORCEMENT:-true}
 
       # ============================================================
-      # SMART TOOL SELECTION
+      # SMART TOOL SELECTION (routing-threshold signal only)
       # ============================================================
       SMART_TOOL_SELECTION_MODE: ${SMART_TOOL_SELECTION_MODE:-heuristic}
       SMART_TOOL_SELECTION_TOKEN_BUDGET: ${SMART_TOOL_SELECTION_TOKEN_BUDGET:-2500}

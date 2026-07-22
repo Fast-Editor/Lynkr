@@ -59,7 +59,7 @@ Lynkr itself is **100% FREE** and open source (Apache 2.0 license).
 - **Databricks**: Enterprise pricing (contact Databricks)
 - **Azure/OpenAI**: Standard provider pricing
 
-**With token optimization**, Lynkr reduces provider costs by **60-80%** through smart tool selection, prompt caching, and memory deduplication.
+**With token optimization**, Lynkr reduces provider costs by **60-80%** through prompt caching, memory deduplication, and tool-result compression.
 
 ---
 
@@ -313,34 +313,29 @@ See [BEDROCK_MODELS.md](../BEDROCK_MODELS.md) for complete model catalog.
 
 ### What is token optimization and how does it save costs?
 
-Lynkr includes **6 token optimization phases** that reduce costs by **60-80%**:
+Lynkr includes **5 token optimization phases** that reduce costs by **60-80%**:
 
-1. **Smart Tool Selection** (50-70% reduction)
-   - Filters tools based on request type
-   - Only sends relevant tools to model
-   - Example: Chat query doesn't need git tools
-
-2. **Prompt Caching** (30-45% reduction)
+1. **Prompt Caching** (30-45% reduction)
    - Caches repeated prompts
    - Reuses system prompts
    - Reduces redundant token usage
 
-3. **Memory Deduplication** (20-30% reduction)
+2. **Memory Deduplication** (20-30% reduction)
    - Removes duplicate memories
    - Compresses conversation history
    - Eliminates redundant context
 
-4. **Tool Response Truncation** (15-25% reduction)
+3. **Tool Response Truncation** (15-25% reduction)
    - Truncates long tool outputs
    - Keeps only relevant portions
    - Reduces tool result tokens
 
-5. **Dynamic System Prompts** (10-20% reduction)
+4. **Dynamic System Prompts** (10-20% reduction)
    - Adapts prompts to request type
    - Shorter prompts for simple queries
    - Longer prompts only when needed
 
-6. **Conversation Compression** (15-25% reduction)
+5. **Conversation Compression** (15-25% reduction)
    - Summarizes old messages
    - Keeps recent context full
    - Compresses historical turns
@@ -380,25 +375,9 @@ See [Memory System Guide](memory-system.md) for details.
 
 ---
 
-### What are tool execution modes?
+### Where do tools execute?
 
-Lynkr supports two tool execution modes:
-
-**Server Mode (Default)**
-```bash
-export TOOL_EXECUTION_MODE=server
-```
-- Tools run on the machine running Lynkr
-- Good for: Standalone proxy, shared team server
-- File operations access server filesystem
-
-**Client Mode (Passthrough)**
-```bash
-export TOOL_EXECUTION_MODE=client
-```
-- Tools run on Claude Code CLI side (your local machine)
-- Good for: Local development, accessing local files
-- Full integration with local environment
+Always on the client. Lynkr never executes tool calls itself — it forwards `tool_use` blocks to the client (Claude Code CLI), which runs the tools on your local machine and sends the results back with the next request. Nothing to configure.
 
 ---
 
@@ -564,7 +543,6 @@ lynkr start
 **ROI:** $77k-115k/year in savings.
 
 **Token optimization breakdown:**
-- Smart tool selection: 50-70% reduction
 - Prompt caching: 30-45% reduction
 - Memory deduplication: 20-30% reduction
 - Tool truncation: 15-25% reduction

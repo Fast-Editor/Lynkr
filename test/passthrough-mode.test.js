@@ -10,9 +10,6 @@ describe("Passthrough Mode (Client-Side Tool Execution)", () => {
     // Store original environment
     originalEnv = { ...process.env };
 
-    // Ensure clean state for TOOL_EXECUTION_MODE
-    delete process.env.TOOL_EXECUTION_MODE;
-
     // Set MODEL_PROVIDER to databricks for tests (not azure-openai from .env)
     process.env.MODEL_PROVIDER = "databricks";
     process.env.DATABRICKS_API_KEY = "test-key";
@@ -26,35 +23,6 @@ describe("Passthrough Mode (Client-Side Tool Execution)", () => {
   afterEach(() => {
     // Restore environment
     process.env = originalEnv;
-  });
-
-  describe("Configuration", () => {
-    it("should accept 'client' mode", () => {
-      process.env.TOOL_EXECUTION_MODE = "client";
-      process.env.DATABRICKS_API_KEY = "test-key";
-      process.env.DATABRICKS_API_BASE = "http://test.com";
-      config = require("../src/config");
-
-      assert.strictEqual(config.toolExecutionMode, "client");
-    });
-
-    it("should accept 'passthrough' mode (alias for client)", () => {
-      process.env.TOOL_EXECUTION_MODE = "passthrough";
-      process.env.DATABRICKS_API_KEY = "test-key";
-      process.env.DATABRICKS_API_BASE = "http://test.com";
-      config = require("../src/config");
-
-      assert.strictEqual(config.toolExecutionMode, "passthrough");
-    });
-
-    it("should accept 'server' mode explicitly", () => {
-      process.env.TOOL_EXECUTION_MODE = "server";
-      process.env.DATABRICKS_API_KEY = "test-key";
-      process.env.DATABRICKS_API_BASE = "http://test.com";
-      config = require("../src/config");
-
-      assert.strictEqual(config.toolExecutionMode, "server");
-    });
   });
 
   describe("Response Format in Passthrough Mode", () => {

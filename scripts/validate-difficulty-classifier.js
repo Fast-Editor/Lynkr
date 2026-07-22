@@ -17,22 +17,29 @@ const path = require("path");
 const { classifyDifficulty, _clearCacheForTests } = require("../src/routing/difficulty-classifier");
 
 const EVAL_FILE = path.join(__dirname, "../data/difficulty-eval.jsonl");
-const RESULTS_FILE = path.join(__dirname, "../data/difficulty-eval-results.jsonl");
 const TIERS = ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"];
 
 async function main() {
+  // --file=data/xyz.jsonl runs an alternate eval set (e.g. the follow-up
+  // slice with conversation context). Results land next to the input file.
+  const fileArg = process.argv.find((a) => a.startsWith("--file="));
+  const evalFile = fileArg ? path.resolve(fileArg.slice(7)) : EVAL_FILE;
+  const resultsFile = evalFile.replace(/\.jsonl$/, "-results.jsonl");
+
   _clearCacheForTests();
-  const lines = fs.readFileSync(EVAL_FILE, "utf8").split("\n").filter(Boolean);
+  const lines = fs.readFileSync(evalFile, "utf8").split("\n").filter(Boolean);
   const rows = lines.map(l => JSON.parse(l));
-  console.log(`Loaded ${rows.length} eval rows`);
+  console.log(`Loaded ${rows.length} eval rows from ${path.basename(evalFile)}`);
 
   // Persist incrementally so a crash mid-run preserves partial data.
-  const resultsFd = fs.openSync(RESULTS_FILE, "w");
+  const resultsFd = fs.openSync(resultsFile, "w");
   const results = [];
   const t0 = Date.now();
   let done = 0;
   for (const row of rows) {
-    const r = await classifyDifficulty(row.text);
+    // context is threaded the same way production does (router window loop
+    // → scoreIntent → classifyDifficulty); absent for standalone prompts.
+    const r = await classifyDifficulty(row.text, { context: row.context });
     const record = {
       ...row,
       predicted: r?.tier ?? null,
@@ -47,7 +54,7 @@ async function main() {
     }
   }
   fs.closeSync(resultsFd);
-  console.log(`\nDone in ${((Date.now() - t0) / 1000).toFixed(0)}s (results saved to ${RESULTS_FILE})`);
+  console.log(`\nDone in ${((Date.now() - t0) / 1000).toFixed(0)}s (results saved to ${resultsFile})`);
 
   // Overall + per-tier accuracy
   const perTier = {};
@@ -107,6 +114,20 @@ async function main() {
   console.log(`MEDIUM→REASONING: ${overRouted} (must be 0 to ship)`);
   console.log(`SIMPLE→REASONING: ${simpleToReasoning}`);
   console.log(`MEDIUM→COMPLEX: ${confusion.MEDIUM?.COMPLEX || 0}`);
+
+  // Confidence histogram — validates whether the confidence gate in
+  // _reconcile carries signal. A degenerate distribution (everything ≥0.9)
+  // means confidence is decorative and the band cap is the only real guard.
+  const buckets = { "<0.6": 0, "0.6-0.8": 0, "0.8-0.9": 0, "0.9-1.0": 0 };
+  for (const r of results) {
+    if (r.confidence == null) continue;
+    if (r.confidence < 0.6) buckets["<0.6"]++;
+    else if (r.confidence < 0.8) buckets["0.6-0.8"]++;
+    else if (r.confidence < 0.9) buckets["0.8-0.9"]++;
+    else buckets["0.9-1.0"]++;
+  }
+  console.log(`\n=== Confidence histogram ===`);
+  for (const [b, n] of Object.entries(buckets)) console.log(`  ${b}: ${n}`);
 
   // List misclassifications (cap at 20 per tier)
   console.log(`\n=== Misclassifications (up to 5 per tier) ===`);
