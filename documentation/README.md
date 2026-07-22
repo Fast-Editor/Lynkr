@@ -35,7 +35,7 @@ Understand Lynkr's capabilities:
 - **[Memory System](memory-system.md)** - Titans-inspired long-term memory with surprise-based filtering and decay
 - **[Token Optimization](token-optimization.md)** - Achieve 60-80% cost reduction through 7 optimization phases including Distill-powered structural dedup, delta rendering, and smart compression
 - **[Headroom Compression](headroom.md)** - 47-92% token reduction through intelligent context compression (Smart Crusher, CCR, LLMLingua) with auto-rebuild on start
-- **[Tools & Execution Modes](tools.md)** - Tool calling, server vs client execution, custom tool integration, MCP support
+- **[Tool Calling](tools.md)** - Client-side tool execution, MCP support
 
 ---
 
@@ -92,7 +92,6 @@ Get help and contribute:
 - **Graphify Integration** — Knowledge graph-powered routing with god node detection and community cohesion
 - **Distill Compression** — Structural similarity, delta rendering, and smart dedup for tool outputs
 - **Routing Telemetry** — SQLite-backed decision recording with quality scoring and latency tracking
-- **Code Mode** — 4 MCP meta-tools replace 100+ individual definitions (~96% token savings)
 - **Admin Hot-Reload** — `POST /v1/admin/reload` reloads config + resets circuit breakers without restart
 - **Large Payload Passthrough** — Smart cloning skips base64 media that will be discarded
 - **Performance Timer** — Per-request timing breakdown with `PERF_TIMER=true`

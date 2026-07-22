@@ -68,7 +68,7 @@ The fastest path is the interactive wizard:
 lynkr init
 ```
 
-It asks four questions — usage mode (Claude Pro/Max via wrap, or direct API keys), tier picks for SIMPLE/MEDIUM/COMPLEX/REASONING across the 12 supported providers, credentials for what you chose, and a few routing-intelligence knobs — then writes a fully-populated `.env` with sensible production defaults for everything else (caching, compression, policy budgets, MCP sandbox, agents, rate limiting).
+It asks four questions — usage mode (Claude Pro/Max via wrap, or direct API keys), tier picks for SIMPLE/MEDIUM/COMPLEX/REASONING across the 12 supported providers, credentials for what you chose, and a few routing-intelligence knobs — then writes a fully-populated `.env` with sensible production defaults for everything else (caching, compression, policy budgets, MCP sandbox, rate limiting).
 
 Useful flags:
 
@@ -271,17 +271,39 @@ Tier configuration is strictly authoritative — bandit exploration is constrain
 
 ## Advanced Features
 
+### Real-time SSE streaming (all tiers)
+
+Responses stream token-by-token instead of arriving all at once — including
+through the tier router. Two mechanisms, both on by default:
+
+- **Native passthrough**: when the upstream already speaks Anthropic SSE
+  (Anthropic endpoints, Z.AI, Ollama v0.14+), Lynkr pipes the bytes straight
+  through with backpressure. Kill switch: `LYNKR_NATIVE_PASSTHROUGH=false`.
+- **Cross-format transform**: OpenAI-format upstreams (OpenAI, Azure OpenAI,
+  OpenRouter, Databricks, llama.cpp, LM Studio) are reshaped into Anthropic
+  events in flight — including reassembling tool-call argument fragments into
+  clean `tool_use` blocks. Kill switch: `LYNKR_STREAM_TRANSFORM=false`.
+
+The `LYNKR_VISIBLE_ROUTING` badge streams too (injected as the first content
+block), and telemetry is recorded on stream close with real token counts.
+Fallback safety: if an upstream fails before the first byte, the request
+falls back to the buffered path automatically.
+
+```bash
+# Ollama thinking models (MiniMax): streaming skips the <think>-leak repair.
+# If you see raw <think> text in responses, buffer that provider instead:
+LYNKR_OLLAMA_BUFFER_RESPONSES=true   # default true; false = stream Ollama
+```
+
 ### Token Optimization (60-80% savings)
 ```bash
 # Enable all optimizations
 PROMPT_CACHE_ENABLED=true
 SEMANTIC_CACHE_ENABLED=true
-TOOL_INJECTION_ENABLED=false
-CODE_MODE_ENABLED=true
 ```
 
-Always-on (no config): **smart tool selection** (server mode), **RTK tool-result
-compression** (test/git/grep/lint/build/JSON output), **MCP tool dedup** (drops
+Always-on (no config): **RTK tool-result compression**
+(test/git/grep/lint/build/JSON output), **MCP tool dedup** (drops
 built-in WebSearch/WebFetch when an Exa/Tavily MCP tool is present), and
 **request bypass** (Claude CLI Warmup / title-extraction calls are answered
 locally, never hitting a provider).
@@ -291,6 +313,25 @@ Optional **terse-output mode** to cut *output* tokens:
 CAVEMAN_ENABLED=true        # off by default — nudges the model to be concise
 CAVEMAN_LEVEL=lite          # lite | full | ultra
 ```
+
+### Built-in dashboard
+
+Open `http://localhost:8081/dashboard` while Lynkr is running. No setup, reads
+the local telemetry store:
+
+- **Spend & savings** — actual cost vs what the same traffic would have cost
+  on the flagship model (the counterfactual no pass-through gateway can show,
+  since they neither pick your model nor see local-model traffic)
+- **Tier mix** — daily request breakdown across SIMPLE/MEDIUM/COMPLEX/REASONING
+- **Routing accuracy** — over-/under-provisioned request counts, a self-audit
+  of the tier router's decisions
+- **Request logs** — filterable by provider, tier, and errors, with latency,
+  tokens, and cost per request
+- **Provider health** — configured providers, credential warnings, circuit
+  breaker states
+
+JSON APIs behind it (`/dashboard/api/overview|usage|routing|logs`) if you want
+the raw numbers.
 
 ### Cost tracking & model pricing
 Per-request cost is computed from a model-pricing registry (LiteLLM → models.dev,
@@ -419,10 +460,9 @@ Head-to-head against **LiteLLM** on the **same backends** (Ollama `minimax-m2.5`
 
 | Mechanism | Lynkr | LiteLLM | Result |
 |---|---|---|---|
-| Smart tool selection (14 tools) | **959** tokens · $0.0044 | 2,085 tokens · $0.0091 | **53% fewer tokens, 52% cheaper** |
 | TOON compression (60-item grep JSON) | **427** tokens · $0.009 | 3,458 tokens · $0.018 | **87.6% fewer tokens, 50% cheaper** |
 
-Lynkr strips irrelevant tool schemas (smart tool selection) and binary-compresses large JSON tool results (TOON) — both in-process, no added latency.
+Lynkr binary-compresses large JSON tool results (TOON) in-process, with no added latency.
 
 ### Semantic cache
 
@@ -509,10 +549,11 @@ With tier routing + token optimization: **additional 50-87% savings** on cloud p
 | **Local models** | Ollama, llama.cpp, LM Studio | Ollama only | ❌ | ❌ |
 | **Automatic tier routing** | ✅ embedding intent + 13-dimension scorer, verified cascade | ⚠️ Auto Router v2 (v1.94): heuristic under-routes, LLM classifier billed per request | ❌ | ❌ Manual metadata |
 | **TOON JSON compression** | ✅ up to 87.6% | ❌ | ❌ | ❌ |
-| **Smart tool selection** | ✅ up to 60% token reduction | ❌ | ❌ | ❌ |
+| **Upstream SSE streaming** | ✅ native passthrough + cross-format transform | ⚠️ passthrough only | ✅ | ⚠️ |
 | **Semantic cache** | ✅ 171ms hits, 0 tokens | ❌ | ❌ | ✅ Prompt cache only |
+| **Savings & routing dashboard** | ✅ spend, savings vs flagship, tier mix, routing accuracy, request logs | ⚠️ spend UI only | ⚠️ usage page | ✅ observability suite (no routing accuracy) |
 | **Long-term memory** | ✅ SQLite, per-session | ❌ | ❌ | ❌ |
-| **MCP integration** | ✅ + Code Mode (96% reduction) | ❌ | ❌ | ❌ |
+| **MCP integration** | ✅ | ❌ | ❌ | ❌ |
 | **Self-hosted** | ✅ Node.js only | ✅ Python stack | ❌ SaaS | ✅ Docker |
 | **Dependencies** | Node.js 20+ | Python, Prisma, PostgreSQL | None | Docker, Python |
 

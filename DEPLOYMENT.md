@@ -66,9 +66,6 @@ Key variables to configure in `.env`:
 # Primary provider
 MODEL_PROVIDER=ollama                # Options: ollama, databricks, azure-anthropic, openrouter
 
-# Tool execution mode
-TOOL_EXECUTION_MODE=server          # Options: server, client (passthrough)
-
 # Ollama configuration
 OLLAMA_MODEL=qwen2.5-coder:latest
 OLLAMA_MAX_TOOLS_FOR_ROUTING=3
@@ -214,7 +211,6 @@ metadata:
   namespace: lynkr
 data:
   MODEL_PROVIDER: "openrouter"
-  TOOL_EXECUTION_MODE: "server"
   LOG_LEVEL: "info"
   PORT: "8080"
   OLLAMA_MODEL: "qwen2.5-coder:latest"
@@ -269,11 +265,6 @@ spec:
             configMapKeyRef:
               name: lynkr-config
               key: MODEL_PROVIDER
-        - name: TOOL_EXECUTION_MODE
-          valueFrom:
-            configMapKeyRef:
-              name: lynkr-config
-              key: TOOL_EXECUTION_MODE
         - name: LOG_LEVEL
           valueFrom:
             configMapKeyRef:

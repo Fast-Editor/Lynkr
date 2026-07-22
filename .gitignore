@@ -37,3 +37,4 @@ marketing/
 litellm-config.yaml
 PLAN-routing-hardening.md
 HANDOFF-*.md
+tmp/

@@ -44,23 +44,54 @@ const CLASSIFIER_MODEL = 'qwen2.5:3b';
 
 const VALID_TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
 
-// One-shot classification prompt. Kept in a const so drift is diffable.
+// One-shot classification prompt (v2). Kept in a const so drift is diffable.
 // Difficulty framing (not intent) — matches config B routing goals.
-const CLASSIFY_PROMPT = `You are a classifier for an LLM routing proxy. Classify the difficulty of the user prompt below into exactly one of four tiers. Reply with ONLY valid JSON on a single line, no other text.
+//
+// v2 (2026-07-21): added the follow-up rule, negative examples under
+// REASONING, and casual-question SIMPLE examples after a live incident:
+// qwen2.5:3b read "Who kills him ?" (a Doctor Doom plot question) as
+// REASONING conf 1.0 — v1's REASONING examples were all formal-methods
+// flavored and nothing said surface vocabulary isn't the signal. Baseline
+// on data/difficulty-eval-followups.jsonl: 60% overall, 33% on SIMPLE,
+// 3 SIMPLE→REASONING criticals.
+const CLASSIFY_PROMPT = `You are a classifier for an LLM routing proxy. Classify the difficulty of the CURRENT user prompt into exactly one of four tiers. Reply with ONLY valid JSON on a single line, no other text.
 
 Tiers:
-- SIMPLE: casual acknowledgments, greetings, one-word answers, trivial factual lookups. Any tiny model handles.
-  examples: "hi", "ok thanks", "yes continue", "what time is it"
+- SIMPLE: casual acknowledgments, greetings, one-word answers, trivial factual lookups, and short conversational follow-up questions about people, stories, events, or everyday facts. Any tiny model handles.
+  examples: "hi", "ok thanks", "yes continue", "what time is it", "who is doctor doom?", "who kills him?", "why did he do that?", "and then what happened?", "does bleach kill mold?"
 - MEDIUM: one specific mechanical task or a focused explanation. Mid-size local model suffices.
-  examples: "list the exports from this file", "run the unit tests", "fix the linter warnings", "explain this regex", "add error handling to this block"
+  examples: "list the exports from this file", "run the unit tests", "fix the linter warnings", "explain this regex", "add error handling to this block", "verify the file exists before reading it"
 - COMPLEX: multi-file design, systemic refactor, architecture review, debugging that requires broad code understanding. Needs a strong general model.
   examples: "architecture review of the orchestrator", "refactor the entire ingestion pipeline", "debug this complex race condition across three services"
 - REASONING: formal proof, correctness verification, security audit, novel algorithm design, formal reasoning from first principles. Needs a frontier reasoning model.
   examples: "prove the correctness of this lock-free queue", "security audit the auth middleware", "formally verify this state machine never deadlocks", "derive the optimal eviction policy and prove its competitive ratio"
+  NOT reasoning: casual questions that merely contain words like "prove", "kill", "verify", "audit" — "who kills him?" is SIMPLE, "prove me wrong lol" is SIMPLE, "can you verify the score?" is SIMPLE, "verify the file exists" is MEDIUM.
+
+Rules:
+- Judge the TASK the model must perform, not the vocabulary. Words like kill/prove/verify/audit/security do not make a prompt REASONING unless it demands formal or expert-level analysis.
+- A short follow-up question (pronouns like he/she/it/that referring to the earlier conversation) about a casual topic is SIMPLE. A follow-up that extends a technical task inherits the difficulty of that task.
 
 Reply format (strict): {"tier":"SIMPLE|MEDIUM|COMPLEX|REASONING","confidence":0.0-1.0}
+`;
 
-User prompt: `;
+// Short prompts are where context matters: "Who kills him ?" is
+// unclassifiable in isolation but trivially SIMPLE next to its conversation.
+// Long prompts self-describe, and contextualizing them would only shrink the
+// LRU hit rate and grow latency.
+const CONTEXT_MAX_TEXT_LENGTH = 40;
+const CONTEXT_MAX_CHARS = 300;
+
+function _buildPrompt(text, context) {
+  if (context) {
+    return `${CLASSIFY_PROMPT}
+Conversation so far (context only — classify the CURRENT prompt, inheriting topic difficulty per the rules):
+${context}
+
+CURRENT user prompt: """${text}"""`;
+  }
+  return `${CLASSIFY_PROMPT}
+User prompt: """${text}"""`;
+}
 
 // --- LRU cache --------------------------------------------------------------
 
@@ -95,7 +126,7 @@ function _cacheKey(text) {
 
 // --- Ollama dispatch (only supported provider for the SIMPLE tier today) ----
 
-async function _callOllama(text, opts) {
+async function _callOllama(text, context, opts) {
   const config = require('../config');
 
   // First cut supports ollama-family classifier only. Other providers can
@@ -109,7 +140,7 @@ async function _callOllama(text, opts) {
   const url = `${endpoint.replace(/\/$/, '')}/api/chat`;
   const body = {
     model: CLASSIFIER_MODEL,
-    messages: [{ role: 'user', content: CLASSIFY_PROMPT + '"""' + text + '"""' }],
+    messages: [{ role: 'user', content: _buildPrompt(text, context) }],
     stream: false,
     format: 'json',
     // num_predict generous because thinking models (minimax-m2.5) burn
@@ -171,6 +202,9 @@ function _parseResult(raw) {
  * @param {number} [opts.timeoutMs] — override default 2500ms
  * @param {boolean} [opts.forceMatched] — caller already matched a FORCE_* pattern; skip classifier
  * @param {string} [opts.riskLevel] — 'high' | 'medium' | 'low'; skip when 'high'
+ * @param {string} [opts.context] — condensed prior conversation ("user asked:
+ *   ... → assistant replied about: ..."); used only for short prompts, where
+ *   a bare follow-up is unclassifiable in isolation
  * @returns {Promise<{tier:string,confidence:number,source:'cache'|'model'}|null>}
  *   null when: disabled, skipped, model failure, parse failure, timeout.
  */
@@ -182,11 +216,18 @@ async function classifyDifficulty(text, opts = {}) {
   if (opts.forceMatched) return null;
   if (opts.riskLevel === 'high') return null;
 
-  const key = _cacheKey(trimmed);
+  const context =
+    typeof opts.context === 'string' && opts.context.trim() && trimmed.length <= CONTEXT_MAX_TEXT_LENGTH
+      ? opts.context.trim().slice(0, CONTEXT_MAX_CHARS)
+      : null;
+
+  // Context participates in the cache key: the same follow-up text means
+  // different things in different conversations.
+  const key = _cacheKey(context ? `${trimmed} ${context}` : trimmed);
   const cached = _cache.get(key);
   if (cached) return { ...cached, source: 'cache' };
 
-  const raw = await _callOllama(trimmed, opts);
+  const raw = await _callOllama(trimmed, context, opts);
   const parsed = _parseResult(raw);
   if (!parsed) return null;
   _cache.set(key, parsed);
@@ -214,6 +255,7 @@ module.exports = {
   // internals for tests only
   _parseResult,
   _cacheKey,
+  _buildPrompt,
   _clearCacheForTests,
   _getCacheStats,
 };

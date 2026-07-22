@@ -160,6 +160,47 @@ async function pickTierByIntent(body) {
     };
   }
 
+  // Condense a message's text for classifier context: text blocks only,
+  // reminders stripped, whitespace collapsed, hard-capped. Best-effort.
+  const _condenseText = (msg, max = 140) => {
+    if (!msg) return '';
+    let text = '';
+    if (typeof msg.content === 'string') text = msg.content;
+    else if (Array.isArray(msg.content)) {
+      text = msg.content
+        .filter((b) => b?.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text)
+        .join(' ');
+    }
+    return stripReminders(text).replace(/\s+/g, ' ').trim().slice(0, max);
+  };
+
+  // Conversation context for the difficulty classifier: the nearest prior
+  // assistant reply and the user turn before it. A bare follow-up ("Who
+  // kills him ?") is unclassifiable in isolation — the single-message
+  // intentPayload below is context-blind BY DESIGN (envelope invariance),
+  // so the context travels as a separate condensed string, never as extra
+  // messages that would pollute the anchor score.
+  const _contextBefore = (msg) => {
+    const idx = messages.indexOf(msg);
+    if (idx <= 0) return null;
+    let assistantText = '';
+    let priorUserText = '';
+    for (let j = idx - 1; j >= 0; j--) {
+      const m = messages[j];
+      if (!assistantText && m?.role === 'assistant') assistantText = _condenseText(m);
+      else if (assistantText && m?.role === 'user') {
+        priorUserText = _condenseText(m);
+        if (priorUserText) break;
+      }
+    }
+    if (!assistantText && !priorUserText) return null;
+    const parts = [];
+    if (priorUserText) parts.push(`user asked: """${priorUserText}"""`);
+    if (assistantText) parts.push(`assistant replied about: """${assistantText}"""`);
+    return parts.join(' → ');
+  };
+
   // Per-message scoring intentionally omits _sessionId so session affinity
   // isn't polluted by multiple intent-only routing calls per request. The
   // FINAL provider pick (downstream of this function) uses the full body
@@ -179,6 +220,9 @@ async function pickTierByIntent(body) {
       // agentic detector inside determineProviderSmart can subtract the
       // harness's baseline tools during intent scoring too.
       _clientProfile: body?._clientProfile || null,
+      // Classifier context (see _contextBefore). Underscored — stripped at
+      // the outbound chokepoint like every internal field.
+      _conversationContext: _contextBefore(windowUserMsgs[i]),
     };
     try {
       const decision = await determineProviderSmart(intentPayload, {
@@ -365,19 +409,14 @@ async function handleOauthPassthrough(req, res, opts = {}) {
   if (contentType.includes("text/event-stream") && upstreamResp.body) {
     if (typeof res.flushHeaders === "function") res.flushHeaders();
 
-    // For SSE: emit the badge as a synthetic content_block_start +
-    // content_block_delta + content_block_stop at index 0, BEFORE the
-    // upstream stream begins. Anthropic re-indexes subsequent blocks from 1+,
-    // which is fine because Claude Code treats index as opaque and just
-    // appends to the rendered content array.
-    if (badgeText) {
-      const synthetic = [
-        `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`,
-        `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: badgeText } })}\n\n`,
-        `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`,
-      ].join('');
-      res.write(synthetic);
-    }
+    // Badge injection is frame-aware: the badge block must land AFTER the
+    // upstream's message_start, never before it — Anthropic's SSE contract
+    // opens with message_start and Claude Code's incremental parser rejects
+    // streams that lead with content_block events (it retries with
+    // "empty or malformed response"). Same processor the native-stream
+    // passthrough uses.
+    const { _createFrameProcessor } = require("../orchestrator/passthrough-stream");
+    const badgeInjector = badgeText ? _createFrameProcessor({ badgeText }) : null;
 
     const reader = upstreamResp.body.getReader();
     const decoder = new TextDecoder();
@@ -385,6 +424,15 @@ async function handleOauthPassthrough(req, res, opts = {}) {
       while (true) {
         const { value, done } = await readWithIdleTimeout(reader, "oauth-passthrough");
         if (done) break;
+        if (badgeInjector) {
+          const outText = badgeInjector(decoder.decode(value, { stream: true }));
+          if (outText) res.write(outText);
+          if (typeof res.flush === "function") res.flush();
+          if (responseTextForObservability.length < 65536) {
+            responseTextForObservability += outText;
+          }
+          continue;
+        }
         const buf = Buffer.from(value);
         res.write(buf);
         if (typeof res.flush === "function") res.flush();
@@ -392,6 +440,10 @@ async function handleOauthPassthrough(req, res, opts = {}) {
         if (responseTextForObservability.length < 65536) {
           responseTextForObservability += decoder.decode(value, { stream: true });
         }
+      }
+      if (badgeInjector) {
+        const flushed = badgeInjector(decoder.decode(), true);
+        if (flushed) res.write(flushed);
       }
     } catch (err) {
       logger.warn({ err: err.message }, "OAuth passthrough stream stalled — ending response");
@@ -466,7 +518,10 @@ async function handleOauthPassthrough(req, res, opts = {}) {
       // Tier router telemetry (so it shows up in dashboards / routing stats)
       const tlm = require("../routing/telemetry");
       tlm.record({
-        request_id: req.headers["request-id"] || req.headers["x-request-id"] || null,
+        // request_id is NOT NULL in the telemetry schema — a null id silently
+        // drops the whole row (subscription-passthrough serves were invisible
+        // in routing_telemetry whenever the client sent no request-id header).
+        request_id: req.headers["request-id"] || req.headers["x-request-id"] || require("crypto").randomUUID(),
         session_id: req.body?._sessionId || req.sessionId || null,
         timestamp: startedAt,
         tier: tier.tier || "COMPLEX",
@@ -510,6 +565,113 @@ async function handleOauthPassthrough(req, res, opts = {}) {
       logger.debug({ err: err.message }, "OAuth passthrough observability hook failed (non-fatal)");
     }
   });
+}
+
+/**
+ * One-line routing badge for LIVE streams (native passthrough + stream
+ * transform), built from the tier decision. The buffered paths build theirs
+ * from the interaction block; that block doesn't exist yet at the stream
+ * hooks, and the tier object carries the same fields.
+ */
+function _buildStreamBadge(tier) {
+  if (!config.routing?.visibleInteraction || !tier) return null;
+  const pin = typeof tier._pinScore === "number" ? ` · pin@${tier._pinScore}` : "";
+  return `*[Lynkr] ${tier.tier || "—"} → ${tier.model || "—"} (${tier.provider || "—"}) · score ${tier.score ?? "—"}${pin}*\n\n`;
+}
+
+/**
+ * Scan the entire payload for tool_use or tool_result content blocks.
+ * Unlike session-affinity.payloadHasToolHistory (which checks only the last
+ * message, targeted at mid-exchange detection), this scans every message so
+ * a side-channel replay of a tool-active conversation is detected regardless
+ * of which turn it lands on. Best-effort — returns false on malformed input.
+ */
+function _payloadCarriesToolBlocks(body) {
+  const messages = body?.messages;
+  if (!Array.isArray(messages)) return false;
+  for (const m of messages) {
+    if (!Array.isArray(m?.content)) continue;
+    for (const b of m.content) {
+      if (b?.type === 'tool_use' || b?.type === 'tool_result') return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Forward a provider SSE stream (web ReadableStream) to the client response
+ * line by line. Assumes SSE headers were already set and flushed. Mid-stream
+ * failures surface as a parseable Anthropic error event, never a silent hang.
+ */
+async function forwardProviderStream(res, stream) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  const bufferChunks = []; // Use array to avoid string concatenation overhead
+
+  try {
+    while (true) {
+      const { done, value } = await readWithIdleTimeout(reader, "provider-stream");
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      bufferChunks.push(chunk);
+
+      const buffer = bufferChunks.join('');
+      const lines = buffer.split('\n');
+
+      // Keep last incomplete line in buffer chunks
+      const remaining = lines.pop() || '';
+      bufferChunks.length = 0;
+      if (remaining) bufferChunks.push(remaining);
+
+      for (const line of lines) {
+        if (line.trim()) {
+          res.write(line + '\n');
+        } else {
+          // Blank lines are SSE event delimiters — they must survive.
+          res.write('\n');
+        }
+      }
+
+      if (typeof res.flush === 'function') {
+        res.flush();
+      }
+    }
+
+    const remaining = bufferChunks.join('');
+    if (remaining.trim()) {
+      res.write(remaining + '\n');
+    }
+
+    metrics.recordResponse(200);
+    res.end();
+  } catch (streamError) {
+    logger.error({ error: streamError }, "Error streaming response");
+
+    try {
+      await reader.cancel();
+    } catch (cancelError) {
+      logger.debug({ error: cancelError }, "Failed to cancel stream");
+    }
+
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Streaming error" });
+    } else {
+      // Mid-stream failure: emit a parseable Anthropic error event so
+      // the client fails fast and retries, instead of seeing a
+      // truncated stream it may wait on.
+      try { res.write(SSE_STALL_EVENT); } catch { /* client gone */ }
+      res.end();
+    }
+  } finally {
+    // CRITICAL: Always release lock
+    try {
+      reader.releaseLock();
+    } catch (releaseError) {
+      // Lock may already be released, ignore
+      logger.debug({ error: releaseError }, "Stream lock already released");
+    }
+  }
 }
 
 /**
@@ -969,7 +1131,48 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // (harness UA / tool fingerprint) before treating tool-less traffic as
     // side traffic; a suggestion-mode tag is harness evidence by itself.
     const isKnownHarness = !!req.body?._clientProfile;
+    // Signal 1 — message-count regression. Real turns grow the transcript
+    // monotonically; a harness replay (title-gen, recap, summary) truncates
+    // the history down to the wrapper prompt. If this payload has fewer
+    // messages than the session's pinned baseline, it cannot be a genuine
+    // follow-up. Definitive — main conversations never shrink.
+    //
+    // Only trust the pin's counts when Lynkr is ACTUALLY serving from it
+    // this turn. When pinCheck.serve === false the pin may be a stale
+    // artifact from an earlier conversation with the same session
+    // fingerprint (see the `new_conversation` and `opener_conversation`
+    // guards in session-affinity.js) — in that case msg counts and
+    // hasToolHistory are meaningless for the current session and must not
+    // fire the side-channel signals.
+    const _pinAuthoritative = pinCheck?.serve === true;
+    const _currentMsgCount = Array.isArray(req.body?.messages) ? req.body.messages.length : 0;
+    const _pinnedMsgCount = pinCheck?.pin?.messageCount ?? 0;
+    const isMsgCountRegression = _pinAuthoritative
+      && _pinnedMsgCount > 2
+      && _currentMsgCount < _pinnedMsgCount;
+    // Signal 2 — tool-history absence in a tool-active session. Once a
+    // session has accumulated tool_use blocks, the main flow always carries
+    // them forward. A payload with zero tool blocks in an active tool
+    // session is a side channel by construction.
+    const _pinHadTools = !!pinCheck?.pin?.hasToolHistory;
+    const isBareRequest = _pinAuthoritative
+      && _pinHadTools
+      && !_payloadCarriesToolBlocks(req.body);
+    // Signal 3 — first-user-message fingerprint drift. Handles the window
+    // before signals 1 & 2 have data (no pin yet, no tool blocks yet). See
+    // side-channel-detector.js — the detector caches the first observed
+    // messages[0] for each session and flags payloads whose first message
+    // no longer matches (title-gen wraps the original in <session>...</session>).
+    let isFingerprintDrift = false;
+    try {
+      const sideChannelDetector = require('../routing/side-channel-detector');
+      const sessionKey = pinCheck?.sessionId || req.body?.metadata?.user_id || null;
+      isFingerprintDrift = sideChannelDetector.check(sessionKey, req.body?.messages);
+    } catch { /* detector is best-effort */ }
     const isSideRequest = isSuggestionMode
+      || isMsgCountRegression
+      || isBareRequest
+      || isFingerprintDrift
       || ((!Array.isArray(req.body?.tools) || req.body.tools.length === 0) && isKnownHarness);
     // Side requests short-circuit to the static SIMPLE tier: no pin read
     // (a COMPLEX-pinned conversation would burn expensive tokens on
@@ -980,12 +1183,23 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     if (isSideRequest) {
       try {
         const sel = getModelTierSelector().selectModel('SIMPLE', null);
+        const _sideMethod = isSuggestionMode ? 'side_request_suggestion'
+          : isMsgCountRegression ? 'side_request_msg_regression'
+          : isBareRequest ? 'side_request_bare'
+          : isFingerprintDrift ? 'side_request_fingerprint_drift'
+          : 'side_request';
+        logger.debug({
+          method: _sideMethod,
+          currentMsgCount: _currentMsgCount,
+          pinnedMsgCount: _pinnedMsgCount,
+          pinHadTools: _pinHadTools,
+        }, '[Routing] Side-channel request detected');
         sideTier = {
           tier: 'SIMPLE',
           provider: sel.provider,
           model: sel.model || null,
           score: null,
-          method: isSuggestionMode ? 'side_request_suggestion' : 'side_request',
+          method: _sideMethod,
           reason: 'harness_side_request',
           base_tier: null,
           escalation_source: null,
@@ -1130,6 +1344,30 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         tier: tier.tier,
       }, "Subscription passthrough → api.anthropic.com");
       return handleOauthPassthrough(req, res, { tier });
+    }
+
+    // Phase 2a — native-format streaming passthrough. Client speaks
+    // Anthropic, upstream speaks Anthropic, request wants a stream: skip the
+    // buffered orchestrator and pipe upstream SSE bytes straight through.
+    // Falls back to the buffered path below when the upstream fails before
+    // the first byte. Kill switch: LYNKR_NATIVE_PASSTHROUGH=false.
+    {
+      const nativeStream = require("../orchestrator/passthrough-stream");
+      if (nativeStream.canPassthrough(req.body, tier)) {
+        metrics.recordStreamingStart();
+        const handled = await nativeStream.handleNativeStream(req, res, {
+          tier,
+          badgeText: _buildStreamBadge(tier),
+        });
+        if (handled) {
+          metrics.recordResponse(200);
+          return;
+        }
+        logger.info({
+          tier: tier.tier,
+          provider: tier.provider,
+        }, "[NativeStream] Passthrough declined before first byte — using buffered path");
+      }
     }
 
     // All other cases (subscription→non-Anthropic, payg, oauth): pin the
@@ -1334,78 +1572,14 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           maxSteps: req.body?.max_steps,
           maxDurationMs: req.body?.max_duration_ms,
           tenantPolicy: res.locals?.tenantPolicy || null,
+          clientWantsStream: wantsStream,
+          streamBadgeText: _buildStreamBadge(req._intentTier || null),
         },
       });
 
       if (result.stream) {
-        // Parse SSE stream from provider and forward to client
-        const reader = result.stream.getReader();
-        const decoder = new TextDecoder();
-        const bufferChunks = []; // Use array to avoid string concatenation overhead
-
-        try {
-          while (true) {
-            const { done, value } = await readWithIdleTimeout(reader, "provider-stream");
-            if (done) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            bufferChunks.push(chunk);
-
-            const buffer = bufferChunks.join('');
-            const lines = buffer.split('\n');
-
-            // Keep last incomplete line in buffer chunks
-            const remaining = lines.pop() || '';
-            bufferChunks.length = 0;
-            if (remaining) bufferChunks.push(remaining);
-
-            for (const line of lines) {
-              if (line.trim()) {
-                res.write(line + '\n');
-              }
-            }
-
-            if (typeof res.flush === 'function') {
-              res.flush();
-            }
-          }
-
-          const remaining = bufferChunks.join('');
-          if (remaining.trim()) {
-            res.write(remaining + '\n');
-          }
-
-          metrics.recordResponse(200);
-          res.end();
-          return;
-        } catch (streamError) {
-          logger.error({ error: streamError }, "Error streaming response");
-
-          try {
-            await reader.cancel();
-          } catch (cancelError) {
-            logger.debug({ error: cancelError }, "Failed to cancel stream");
-          }
-
-          if (!res.headersSent) {
-            res.status(500).json({ error: "Streaming error" });
-          } else {
-            // Mid-stream failure: emit a parseable Anthropic error event so
-            // the client fails fast and retries, instead of seeing a
-            // truncated stream it may wait on.
-            try { res.write(SSE_STALL_EVENT); } catch { /* client gone */ }
-            res.end();
-          }
-          return;
-        } finally {
-          // CRITICAL: Always release lock
-          try {
-            reader.releaseLock();
-          } catch (releaseError) {
-            // Lock may already be released, ignore
-            logger.debug({ error: releaseError }, "Stream lock already released");
-          }
-        }
+        await forwardProviderStream(res, result.stream);
+        return;
       }
 
       if (!result || !result.body) {
@@ -1432,17 +1606,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         }
       })}\n\n`);
 
-      // Filter out server-side tools that shouldn't reach the client
-      // Server-tool filtering is server-mode only: in client mode Task and
-      // WebSearch are the CLIENT'S tools, and stripping them emits a
-      // malformed turn (stop_reason tool_use with no tool_use block).
-      const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
-      const _clientOwnsTools = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
-      let contentBlocks = _clientOwnsTools
-        ? (msg.content || []).slice()
-        : (msg.content || []).filter(b =>
-            !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
-          );
+      // The client owns all its tools — every tool_use block passes through
+      // untouched (stripping any would emit a malformed turn: stop_reason
+      // tool_use with no tool_use block).
+      let contentBlocks = (msg.content || []).slice();
 
       // When LYNKR_VISIBLE_ROUTING=true, prepend a one-line routing badge so
       // users can see which tier/provider/model handled the request inside
@@ -1584,6 +1751,8 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         maxSteps: req.body?.max_steps,
         maxDurationMs: req.body?.max_duration_ms,
         tenantPolicy: res.locals?.tenantPolicy || null,
+        clientWantsStream: wantsStream,
+        streamBadgeText: _buildStreamBadge(req._intentTier || null),
       },
     });
     timer.mark("processMessage");
@@ -1596,9 +1765,17 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
+        ...routingHeaders,
       });
       if (typeof res.flushHeaders === "function") {
         res.flushHeaders();
+      }
+
+      // Phase 2b: the orchestrator returned a live (already Anthropic-shaped)
+      // stream instead of a buffered body — forward it as-is.
+      if (result && result.stream) {
+        await forwardProviderStream(res, result.stream);
+        return;
       }
 
       if (!result || !result.body) {
@@ -1625,17 +1802,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         }
       })}\n\n`);
 
-      // Filter out server-side tools that shouldn't reach the client
-      // Server-tool filtering is server-mode only: in client mode Task and
-      // WebSearch are the CLIENT'S tools, and stripping them emits a
-      // malformed turn (stop_reason tool_use with no tool_use block).
-      const _serverTools = new Set(["task", "websearch", "webfetch", "web_search", "web_fetch", "web_agent"]);
-      const _clientOwnsTools = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
-      let contentBlocks = _clientOwnsTools
-        ? (msg.content || []).slice()
-        : (msg.content || []).filter(b =>
-            !(b.type === "tool_use" && _serverTools.has((b.name || "").toLowerCase()))
-          );
+      // The client owns all its tools — every tool_use block passes through
+      // untouched (stripping any would emit a malformed turn: stop_reason
+      // tool_use with no tool_use block).
+      let contentBlocks = (msg.content || []).slice();
 
       // When LYNKR_VISIBLE_ROUTING=true, prepend a one-line routing badge so
       // users can see which tier/provider/model handled the request inside
@@ -1802,61 +1972,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     res.status(result.status).send(finalBody);
   } catch (error) {
     next(error);
-  }
-});
-
-// List available agents (must come before parameterized routes)
-router.get("/v1/agents", (req, res) => {
-  try {
-    const { listAgents } = require("../agents");
-    const agents = listAgents();
-    res.json({ agents });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Agent stats endpoint (specific path before parameterized)
-router.get("/v1/agents/stats", (req, res) => {
-  try {
-    const { getAgentStats } = require("../agents");
-    const stats = getAgentStats();
-    res.json({ stats });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Read agent transcript (specific path with param before catch-all)
-router.get("/v1/agents/:agentId/transcript", (req, res) => {
-  try {
-    const ContextManager = require("../agents/context-manager");
-    const cm = new ContextManager();
-    const transcript = cm.readTranscript(req.params.agentId);
-
-    if (!transcript) {
-      return res.status(404).json({ error: "Transcript not found" });
-    }
-
-    res.json({ transcript });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Agent execution details (parameterized - must come last)
-router.get("/v1/agents/:executionId", (req, res) => {
-  try {
-    const { getAgentExecution } = require("../agents");
-    const details = getAgentExecution(req.params.executionId);
-
-    if (!details) {
-      return res.status(404).json({ error: "Execution not found" });
-    }
-
-    res.json(details);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
 });
 

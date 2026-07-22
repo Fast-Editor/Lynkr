@@ -228,9 +228,6 @@ WORKSPACE_ROOT=/path/to/your/projects
 DATABRICKS_API_BASE=https://your-workspace.cloud.databricks.com
 DATABRICKS_API_KEY=dapi1234567890abcdef
 
-# Tool Execution
-TOOL_EXECUTION_MODE=server
-
 # Memory System (optional)
 MEMORY_ENABLED=true
 MEMORY_RETRIEVAL_LIMIT=5
@@ -671,7 +668,9 @@ See [Provider Configuration Guide](providers.md) for complete environment variab
 | `PORT` | HTTP port for proxy server | `8081` |
 | `WORKSPACE_ROOT` | Workspace directory path | `process.cwd()` |
 | `LOG_LEVEL` | Logging level (`error`, `warn`, `info`, `debug`) | `info` |
-| `TOOL_EXECUTION_MODE` | Where tools execute (`server`, `client`) | `server` |
+| `LYNKR_NATIVE_PASSTHROUGH` | Stream Anthropic upstream SSE bytes straight through to Anthropic clients | `true` |
+| `LYNKR_STREAM_TRANSFORM` | Reshape OpenAI upstream SSE into Anthropic events in flight (`false` is the kill switch — buffers instead) | `true` |
+| `LYNKR_OLLAMA_BUFFER_RESPONSES` | Buffer Ollama responses so thinking-model `<think>` leaks can be repaired; set `false` to stream Ollama natively via its Anthropic API (v0.14+) | `true` |
 
 ### Provider-Specific Variables
 

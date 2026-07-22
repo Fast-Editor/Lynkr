@@ -173,27 +173,14 @@ All Claude Code CLI features work through Lynkr:
 | **Error handling** | ✅ Works | Automatic retries, fallbacks |
 | **Token counting** | ✅ Works | Accurate usage tracking |
 
-### Tool Execution Modes
+### Tool Execution
 
-Lynkr supports two tool execution modes:
+Tools always execute on the Claude Code CLI side. Lynkr forwards `tool_use` blocks to the CLI, which runs them and sends the results back with the next request.
 
-**Server Mode (Default)**
-```bash
-# Tools execute on Lynkr server
-export TOOL_EXECUTION_MODE=server
-```
-- Tools run on the machine running Lynkr
-- Good for: Standalone proxy, shared team server
-- File operations access server filesystem
-
-**Client Mode (Passthrough)**
-```bash
-# Tools execute on Claude Code CLI side
-export TOOL_EXECUTION_MODE=client
-```
 - Tools run on your local machine (where you run `claude`)
-- Good for: Local development, accessing local files
+- Local file system access with your own permissions
 - Full integration with local environment
+- Nothing to configure
 
 ---
 
@@ -484,11 +471,7 @@ claude "What files are in the current directory?"
 
 **Solutions:**
 
-1. **Check tool execution mode:**
-   ```bash
-   echo $TOOL_EXECUTION_MODE
-   # Should be: server (default) or client
-   ```
+1. **Remember where tools run:** tools execute on the CLI side (your machine), not on Lynkr — check the CLI's output for the underlying error
 
 2. **Verify workspace root:**
    ```bash
@@ -498,7 +481,7 @@ claude "What files are in the current directory?"
 
 3. **Check file permissions:**
    ```bash
-   # For server mode, Lynkr needs read/write access
+   # The CLI needs read/write access to your workspace
    ls -la $WORKSPACE_ROOT
    ```
 
@@ -635,7 +618,6 @@ See [Memory System Guide](memory-system.md) for details.
 | **Ollama (Local)** | API costs + compute | Local compute only | **$12,000+** |
 
 **Token optimization includes:**
-- Smart tool selection (50-70% reduction for simple queries)
 - Prompt caching (30-45% reduction for repeated prompts)
 - Memory deduplication (20-30% reduction for long conversations)
 - Tool truncation (15-25% reduction for tool responses)

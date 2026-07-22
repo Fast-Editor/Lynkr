@@ -179,14 +179,6 @@ if (!SUPPORTED_MODEL_PROVIDERS.has(rawFallbackProvider)) {
 
 const fallbackProvider = rawFallbackProvider;
 
-// Tool execution mode: server (default), client, or passthrough
-const toolExecutionMode = (process.env.TOOL_EXECUTION_MODE ?? "server").toLowerCase();
-if (!["server", "client", "passthrough"].includes(toolExecutionMode)) {
-  throw new Error(
-    "TOOL_EXECUTION_MODE must be one of: server, client, passthrough (default: server)"
-  );
-}
-
 // Memory system configuration (Titans-inspired long-term memory)
 const memoryEnabled = process.env.MEMORY_ENABLED !== "false"; // default true
 const memoryRetrievalLimit = Number.parseInt(process.env.MEMORY_RETRIEVAL_LIMIT ?? "5", 10);
@@ -201,7 +193,6 @@ const memoryDecayHalfLifeDays = Number.parseInt(process.env.MEMORY_DECAY_HALF_LI
 
 // Token optimization settings
 const tokenTrackingEnabled = process.env.TOKEN_TRACKING_ENABLED !== "false"; // default true
-const toolTruncationEnabled = process.env.TOOL_TRUNCATION_ENABLED !== "false"; // default true
 const memoryFormat = (process.env.MEMORY_FORMAT ?? "compact").toLowerCase();
 const memoryDedupEnabled = process.env.MEMORY_DEDUP_ENABLED !== "false"; // default true
 const memoryDedupLookback = Number.parseInt(process.env.MEMORY_DEDUP_LOOKBACK ?? "5", 10);
@@ -526,14 +517,9 @@ const testProfiles = parseJson(process.env.WORKSPACE_TEST_PROFILES ?? "", null);
 
 // Agents configuration
 const agentsEnabled = process.env.AGENTS_ENABLED === "true";
-const agentsMaxConcurrent = Number.parseInt(process.env.AGENTS_MAX_CONCURRENT ?? "10", 10);
-const agentsDefaultModel = process.env.AGENTS_DEFAULT_MODEL ?? "haiku";
-const agentsMaxSteps = Number.parseInt(process.env.AGENTS_MAX_STEPS ?? "15", 10);
-const agentsTimeout = Number.parseInt(process.env.AGENTS_TIMEOUT ?? "120000", 10);
 
 // Task decomposition configuration (opt-in; builds on the agents subsystem).
 // Single env toggle; everything else is hardcoded below.
-const taskDecompositionEnabled = process.env.TASK_DECOMPOSITION_ENABLED === "true";
 
 // Tier-aware fallback (escalate-then-demote) is always on (hardcoded).
 
@@ -667,7 +653,6 @@ var config = {
     openRouterMaxToolsForRouting,
     fallbackProvider,
   },
-  toolExecutionMode,
   toolResultCompression: {
     enabled: true,
   },
@@ -777,10 +762,6 @@ var config = {
       manifestPath: sandboxManifestPath,
       manifestDirs: sandboxManifestDirs,
     },
-    codeMode: {
-      enabled: process.env.CODE_MODE_ENABLED === 'true',
-      toolListCacheTtl: parseInt(process.env.CODE_MODE_CACHE_TTL, 10) || 60_000,
-    },
   },
   promptCache: {
     enabled: promptCacheEnabled,
@@ -794,25 +775,10 @@ var config = {
     ttlMs: Number.parseInt(process.env.SEMANTIC_CACHE_TTL_MS ?? "300000", 10),  // 5 minutes (was 1 hour)
   },
   agents: {
+    // Sole remaining knob: gates the agent-delegation instructions injected
+    // into the system prompt (the CLIENT's Task tool). Execution-related
+    // agent config died with server-mode tool execution.
     enabled: agentsEnabled,
-    maxConcurrent: Number.isNaN(agentsMaxConcurrent) ? 10 : agentsMaxConcurrent,
-    defaultModel: agentsDefaultModel,
-    maxSteps: Number.isNaN(agentsMaxSteps) ? 15 : agentsMaxSteps,
-    timeout: Number.isNaN(agentsTimeout) ? 120000 : agentsTimeout,
-  },
-  taskDecomposition: {
-    enabled: taskDecompositionEnabled, // only env-driven knob (TASK_DECOMPOSITION_ENABLED)
-    // Hardcoded defaults — tune here if needed.
-    shadow: false,
-    planModel: "sonnet",
-    synthModel: "sonnet",
-    minConfidence: 0.5,
-    gate: {
-      minComplexity: 60,
-      minTokens: 3000,
-      maxSubtasks: 6,
-      minIndependentUnits: 2,
-    },
   },
   tierFallback: {
     enabled: true, // always on (hardcoded): escalate-then-demote on provider failure; floor = SIMPLE
@@ -850,9 +816,6 @@ var config = {
   },
   tokenTracking: {
     enabled: tokenTrackingEnabled,
-  },
-  toolTruncation: {
-    enabled: toolTruncationEnabled,
   },
   systemPrompt: {
     mode: systemPromptMode,
@@ -1091,9 +1054,6 @@ function reloadConfig() {
 
   // Graphify
   config.codeGraph.enabled = process.env.CODE_GRAPH_ENABLED === 'true';
-
-  // Code Mode
-  config.mcp.codeMode.enabled = process.env.CODE_MODE_ENABLED === 'true';
 
   // Log level
   config.logger.level = process.env.LOG_LEVEL ?? "info";

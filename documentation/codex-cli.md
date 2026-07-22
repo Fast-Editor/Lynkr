@@ -222,9 +222,6 @@ MODEL_PROVIDER=azure-openai
 # MODEL_PROVIDER=ollama
 # MODEL_PROVIDER=bedrock
 
-# Tool execution mode - let Codex handle tools locally
-TOOL_EXECUTION_MODE=client
-
 # Increase tool loop threshold for complex multi-step tasks
 POLICY_TOOL_LOOP_THRESHOLD=15
 

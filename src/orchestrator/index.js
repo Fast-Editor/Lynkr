@@ -2,10 +2,8 @@ const config = require("../config");
 const { invokeModel } = require("../clients/databricks");
 const { appendTurnToSession } = require("../sessions/record");
 const { upsertSession } = require("../sessions/store");
-const { executeToolCall } = require("../tools");
 const policy = require("../policy");
 const logger = require("../logger");
-const { needsWebFallback } = require("../policy/web-fallback");
 const promptCache = require("../cache/prompt");
 const tokens = require("../utils/tokens");
 const systemPrompt = require("../prompts/system");
@@ -13,7 +11,6 @@ const historyCompression = require("../context/compression");
 const tokenBudget = require("../context/budget");
 const { applyToonCompression } = require("../context/toon");
 const { applyGcfCompression } = require("../context/gcf");
-const { classifyRequestType, selectToolsSmartly } = require("../tools/smart-selection");
 const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = require("../headroom");
 const { createAuditLogger } = require("../logger/audit-logger");
 const { getResolvedIp, runWithDnsContext } = require("../clients/dns-logger");
@@ -22,7 +19,6 @@ const { tryPreflight, buildSatisfiedResponse: buildPreflightResponse } = require
 const { detectBypass, buildBypassResponse } = require("./bypass");
 const crypto = require("crypto");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
-const lazyLoader = require("../tools/lazy-loader");
 const { areSimilarToolCalls } = require("../clients/gpt-utils");
 const { getModelRegistrySync } = require("../routing/model-registry");
 
@@ -359,49 +355,11 @@ function removeMatchingAssistantToolUse(cleanMessages, toolUseId) {
   }
 }
 
-const WEB_SEARCH_NORMALIZED = new Set(["websearch", "web_search", "web-search"]);
 
 function normaliseToolIdentifier(name = "") {
   return String(name).toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-function buildWebSearchSummary(rawContent, options = {}) {
-  if (rawContent === undefined || rawContent === null) return null;
-  let data = rawContent;
-  if (typeof data === "string") {
-    const trimmed = data.trim();
-    if (!trimmed) return null;
-    try {
-      data = JSON.parse(trimmed);
-    } catch {
-      return null;
-    }
-  }
-  if (!data || typeof data !== "object") return null;
-  const results = Array.isArray(data.results) ? data.results : [];
-  if (results.length === 0) return null;
-  const maxItems =
-    Number.isInteger(options.maxItems) && options.maxItems > 0 ? options.maxItems : 5;
-  const lines = [];
-  for (let i = 0; i < results.length && lines.length < maxItems; i += 1) {
-    const item = results[i];
-    if (!item || typeof item !== "object") continue;
-    const title = item.title || item.name || item.url || item.href;
-    const url = item.url || item.href || "";
-    const snippet = item.snippet || item.summary || item.excerpt || "";
-    if (!title && !snippet) continue;
-    let line = `${lines.length + 1}. ${title ?? snippet}`;
-    if (snippet && snippet !== title) {
-      line += ` — ${snippet}`;
-    }
-    if (url) {
-      line += ` (${url})`;
-    }
-    lines.push(line);
-  }
-  if (lines.length === 0) return null;
-  return `Top search hits:\n${lines.join("\n")}`;
-}
 
 /**
  * Count tool_use and tool_result blocks in message history.
@@ -708,205 +666,6 @@ function sanitiseAzureTools(tools) {
     });
   }
   return cleaned.size > 0 ? Array.from(cleaned.values()) : undefined;
-}
-
-function parseToolArguments(toolCall) {
-  if (!toolCall?.function?.arguments) return {};
-  const raw = toolCall.function.arguments;
-  if (typeof raw !== "string") return raw ?? {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-function parseExecutionContent(content) {
-  if (content === undefined || content === null) {
-    return null;
-  }
-  if (typeof content === "string") {
-    const trimmed = content.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        // Handle Anthropic content blocks array - extract text
-        if (Array.isArray(parsed)) {
-          const textParts = parsed
-            .filter(block => block && typeof block === 'object')
-            .map(block => {
-              if (block.type === 'text' && typeof block.text === 'string') {
-                return block.text;
-              }
-              if (block.text) return block.text;
-              if (block.content) return typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-              return null;
-            })
-            .filter(text => text !== null);
-
-          if (textParts.length > 0) {
-            return textParts.join('\n');
-          }
-        }
-        return parsed;
-      } catch {
-        return content;
-      }
-    }
-    return content;
-  }
-  // Handle content that's already an array (content blocks)
-  if (Array.isArray(content)) {
-    const textParts = content
-      .filter(block => block && typeof block === 'object')
-      .map(block => {
-        if (block.type === 'text' && typeof block.text === 'string') {
-          return block.text;
-        }
-        if (block.text) return block.text;
-        if (block.content) return typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-        return null;
-      })
-      .filter(text => text !== null);
-
-    if (textParts.length > 0) {
-      return textParts.join('\n');
-    }
-  }
-  return content;
-}
-
-function createFallbackAssistantMessage(providerType, { text, toolCall }) {
-  if (providerType === "azure-anthropic") {
-    const blocks = [];
-    if (typeof text === "string" && text.trim().length > 0) {
-      blocks.push({ type: "text", text: text.trim() });
-    }
-    blocks.push({
-      type: "tool_use",
-      id: toolCall.id ?? `tool_${Date.now()}`,
-      name: toolCall.function?.name ?? "tool",
-      input: parseToolArguments(toolCall),
-    });
-    return {
-      role: "assistant",
-      content: blocks,
-    };
-  }
-  return {
-    role: "assistant",
-    content: text ?? "",
-    tool_calls: [
-      {
-        id: toolCall.id,
-        function: toolCall.function,
-      },
-    ],
-  };
-}
-
-function createFallbackToolResultMessage(providerType, { toolCall, execution }) {
-  const toolName = execution.name ?? toolCall.function?.name ?? "tool";
-  const toolId = execution.id ?? toolCall.id ?? `tool_${Date.now()}`;
-  if (providerType === "azure-anthropic") {
-    const parsed = parseExecutionContent(execution.content);
-    let contentBlocks;
-    if (typeof parsed === "string" || parsed === null) {
-      contentBlocks = [
-        {
-          type: "tool_result",
-          tool_use_id: toolId,
-          content: parsed ?? "",
-          is_error: execution.ok === false,
-        },
-      ];
-    } else {
-      contentBlocks = [
-        {
-          type: "tool_result",
-          tool_use_id: toolId,
-          content: JSON.stringify(parsed),
-          is_error: execution.ok === false,
-        },
-      ];
-    }
-    return {
-      role: "user",
-      content: contentBlocks,
-    };
-  }
-  return {
-    role: "tool",
-    tool_call_id: toolId,
-    name: toolCall.function?.name ?? toolName,
-    content: execution.content,
-  };
-}
-
-function extractWebSearchUrls(messages, options = {}, toolNameLookup = new Map()) {
-  const max = Number.isInteger(options.max) && options.max > 0 ? options.max : 10;
-  const urls = [];
-  const seen = new Set();
-  if (!Array.isArray(messages)) return urls;
-
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (!message) continue;
-    if (Array.isArray(message.content)) {
-      for (const part of message.content) {
-        if (!part || part.type !== "tool_result") continue;
-        const toolIdentifier = toolNameLookup.get(part.tool_use_id ?? "") ?? null;
-        if (!toolIdentifier || !WEB_SEARCH_NORMALIZED.has(toolIdentifier)) continue;
-        let data = part.content;
-        if (typeof data === "string") {
-          try {
-            data = JSON.parse(data);
-          } catch {
-            continue;
-          }
-        }
-        if (!data || typeof data !== "object") continue;
-        const results = Array.isArray(data.results) ? data.results : [];
-        for (const entry of results) {
-          if (!entry || typeof entry !== "object") continue;
-          const url = entry.url ?? entry.href ?? null;
-          if (!url) continue;
-          if (seen.has(url)) continue;
-          seen.add(url);
-          urls.push(url);
-          if (urls.length >= max) return urls;
-        }
-      }
-      continue;
-    }
-
-    if (message.role === "tool") {
-      const toolIdentifier = normaliseToolIdentifier(message.name ?? "");
-      if (!WEB_SEARCH_NORMALIZED.has(toolIdentifier)) continue;
-      let data = message.content;
-      if (typeof data === "string") {
-        try {
-          data = JSON.parse(data);
-        } catch {
-          continue;
-        }
-      }
-      if (!data || typeof data !== "object") continue;
-      const results = Array.isArray(data.results) ? data.results : [];
-      for (const entry of results) {
-        if (!entry || typeof entry !== "object") continue;
-        const url = entry.url ?? entry.href ?? null;
-        if (!url) continue;
-        if (seen.has(url)) continue;
-        seen.add(url);
-        urls.push(url);
-        if (urls.length >= max) return urls;
-      }
-      continue;
-    }
-  }
-
-  return urls;
 }
 
 function normaliseToolChoice(choice) {
@@ -1381,34 +1140,13 @@ function sanitizePayload(payload) {
     delete clean.tool_choice;
   }
 
-  // Smart tool selection (server mode only). In client/passthrough mode the
-  // client (e.g. Claude Code) owns tool execution, so stripping its tools would
-  // make the model emit calls for tools we removed — they then get dropped as
-  // "hallucinated" and the session makes no progress. Pass tools through intact.
-  const inClientMode = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
-  if (!inClientMode && config.smartToolSelection?.enabled && Array.isArray(clean.tools) && clean.tools.length > 0) {
-    const classification = classifyRequestType(clean);
-    const selectedTools = selectToolsSmartly(clean.tools, classification, {
-      provider: providerType,
-      tokenBudget: config.smartToolSelection.tokenBudget,
-      config: config.smartToolSelection
-    });
+  // The client owns tool execution — its tools always pass through intact.
+  // Stripping any would make the model emit calls for tools we removed; they
+  // then get dropped as "hallucinated" and the session makes no progress.
 
-    // Only log if tools were actually filtered (avoid logging overhead)
-    if (selectedTools.length !== clean.tools.length) {
-      logger.info({
-        requestType: classification.type,
-        originalCount: clean.tools.length,
-        selectedCount: selectedTools.length,
-        provider: providerType
-      }, "Smart tool selection applied");
-    }
-
-    clean.tools = selectedTools.length > 0 ? selectedTools : undefined;
-  }
-
-  // Always false: the agent loop needs buffered JSON to parse tool calls.
-  // Lynkr synthesises SSE back to the client from the buffered response.
+  // Default false: the buffered path parses tool calls from complete JSON
+  // and Lynkr synthesises SSE back to the client. runAgentLoop flips this to
+  // true per-step when the Phase-2b stream transform is active.
   clean.stream = false;
 
   if (
@@ -1504,8 +1242,10 @@ function sanitizePayload(payload) {
   return clean;
 }
 
+// maxSteps default is 2, not 1: the loop no longer executes tools (the client
+// owns them), but hallucination recovery still needs one re-prompt iteration.
 const DEFAULT_LOOP_OPTIONS = {
-  maxSteps: config.policy.maxStepsPerTurn ?? 6,
+  maxSteps: config.policy.maxStepsPerTurn ?? 2,
   maxDurationMs: 120000,
   maxToolCallsPerRequest: config.policy.maxToolCallsPerRequest ?? 20, // Prevent runaway tool calling
 };
@@ -1605,11 +1345,6 @@ async function runAgentLoop({
   const auditLogger = createAuditLogger(config.audit);
   const start = Date.now();
   let steps = 0;
-  let toolCallsExecuted = 0;
-  let fallbackPerformed = false;
-  const toolCallNames = new Map();
-  const toolCallHistory = new Map(); // Track tool calls to detect loops: signature -> count
-  let loopWarningInjected = false; // Track if we've already warned about loops
 
   while (steps < settings.maxSteps) {
     if (Date.now() - start > settings.maxDurationMs) {
@@ -1622,7 +1357,6 @@ async function runAgentLoop({
         {
           sessionId: session?.id ?? null,
           steps,
-          toolCallsExecuted,
           durationMs: Date.now() - start,
         },
         "Agent loop interrupted - system shutting down",
@@ -2087,6 +1821,17 @@ IMPORTANT TOOL USAGE RULES:
     logger.debug({ providerType }, 'Caveman injection skipped (provider not in safe set)');
   }
 
+  // Phase 2b — cross-format streaming (opt-in via LYNKR_STREAM_TRANSFORM).
+  // When the client wants a stream and the upstream speaks OpenAI SSE,
+  // request a streamed upstream response and reshape it in flight instead of
+  // buffering. Only on the first step: a hallucination-recovery re-prompt
+  // needs a parsed, buffered response.
+  const sseTransform = require("./sse-transformer");
+  const _streamProvider = cleanPayload._forceProvider || providerType;
+  const _wantsTransformStream =
+    steps === 1 && sseTransform.shouldTransform(options?.clientWantsStream, _streamProvider);
+  cleanPayload.stream = _wantsTransformStream;
+
   if (agentTimer) agentTimer.mark("preInvokeModel");
   let databricksResponse;
   // Honor a body-level forceProvider marker (set by the OAuth tier-routing
@@ -2186,15 +1931,76 @@ IMPORTANT TOOL USAGE RULES:
     }
   }
 
-    // Handle streaming responses (pass through without buffering)
-    if (databricksResponse.stream) {
+    // Handle streaming responses (pass through without buffering). An
+    // ok:false "stream" is a provider error whose body was already consumed
+    // for logging — let it fall through to the error branches below instead
+    // of synthesizing an empty completion from a spent stream.
+    if (databricksResponse.stream && databricksResponse.ok !== false) {
       logger.debug(
         {
           sessionId: session?.id ?? null,
           status: databricksResponse.status,
+          transform: _wantsTransformStream,
         },
         "Streaming response received, passing through"
       );
+
+      // Phase 2b: reshape OpenAI SSE into Anthropic SSE in flight. All
+      // telemetry moves to the onClose finalizer — tool names/arg sizes are
+      // accumulated DURING the stream, usage arrives with the final chunks.
+      if (_wantsTransformStream) {
+        const streamStartedAt = Date.now();
+        const routingDecision = databricksResponse.routingDecision || {};
+        const transformed = sseTransform.openaiToAnthropicSSE(databricksResponse.stream, {
+          model: requestedModel,
+          badgeText: config.routing?.visibleInteraction ? options?.streamBadgeText || null : null,
+          onClose: (stats) => {
+            try {
+              const telemetry = require("../routing/telemetry");
+              telemetry.record({
+                // request_id is NOT NULL in the telemetry schema — a null id
+                // silently drops the whole row.
+                request_id: options?.correlationId || crypto.randomUUID(),
+                session_id: session?.id ?? null,
+                timestamp: streamStartedAt,
+                tier: routingDecision.tier ?? null,
+                provider: (routingDecision.provider || _streamProvider) + "",
+                model: routingDecision.model ?? cleanPayload.model ?? null,
+                routing_method: "stream-transform",
+                status_code: stats.stopReason === "stream_error" ? 599 : 200,
+                latency_ms: Date.now() - streamStartedAt,
+                input_tokens: stats.usage.input_tokens,
+                output_tokens: stats.usage.output_tokens,
+                message_count: cleanPayload.messages?.length ?? null,
+                tool_count: Array.isArray(cleanPayload.tools) ? cleanPayload.tools.length : 0,
+                tool_calls_made: stats.toolCalls.length,
+                error_type: stats.stopReason === "stream_error" ? "stream_error" : null,
+                was_fallback: false,
+              });
+              logger.info({
+                provider: routingDecision.provider || _streamProvider,
+                stopReason: stats.stopReason,
+                toolCalls: stats.toolCalls.map((t) => t.name),
+                outputTokens: stats.usage.output_tokens,
+              }, "[SSETransform] Stream closed");
+            } catch (err) {
+              logger.debug({ err: err.message }, "[SSETransform] Telemetry finalizer failed (non-fatal)");
+            }
+          },
+        });
+        return {
+          response: {
+            status: databricksResponse.status,
+            headers: { "Content-Type": "text/event-stream" },
+            stream: transformed,
+            terminationReason: "streaming",
+          },
+          steps,
+          durationMs: Date.now() - start,
+          terminationReason: "streaming",
+        };
+      }
+
       return {
         response: buildStreamingResponse(databricksResponse),
         steps,
@@ -2346,11 +2152,7 @@ IMPORTANT TOOL USAGE RULES:
         ? (databricksResponse.json?.content ?? []).some(b => b?.type === "text" && String(b.text || "").trim().length > 0)
         : (typeof message.content === "string" && message.content.trim().length > 0);
 
-      // The artifact redirect is an open-design (SERVER-mode) feature; in
-      // client mode, drop the hallucinated calls and return whatever text
-      // exists — never instruct the model to emit artifacts.
-      const _clientOwnsOutput = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
-      if (!hasTextContent && steps < settings.maxSteps - 1 && !_clientOwnsOutput) {
+      if (!hasTextContent && steps < settings.maxSteps) {
         logger.info({
           sessionId: session?.id ?? null,
           step: steps,
@@ -2429,663 +2231,38 @@ IMPORTANT TOOL USAGE RULES:
         },
       });
 
-      let assistantToolMessage;
-      if (providerType === "azure-anthropic" || isAnthropicFormat) {
-        // For Anthropic-format responses (azure-anthropic, Ollama native API,
-        // azure-openai Responses API), use the content array directly —
-        // it already contains both text and tool_use blocks in the correct format
-        assistantToolMessage = {
-          role: "assistant",
-          content: databricksResponse.json?.content ?? [],
-        };
-      } else {
-        assistantToolMessage = {
-          role: "assistant",
-          content: message.content ?? "",
-          tool_calls: message.tool_calls,
-        };
-      }
-
-      // Only add fallback content for OpenAI-format responses (Anthropic format already has content)
-      if (
-        providerType !== "azure-anthropic" && !isAnthropicFormat &&
-        (!assistantToolMessage.content ||
-          (typeof assistantToolMessage.content === "string" &&
-            assistantToolMessage.content.trim().length === 0)) &&
-        toolCalls.length > 0
-      ) {
-        const toolNames = toolCalls
-          .map((call) => call.function?.name ?? "tool")
-          .join(", ");
-        assistantToolMessage.content = `Invoking tool(s): ${toolNames}`;
-      }
-
-      cleanPayload.messages.push(assistantToolMessage);
-
-      const executionMode = config.toolExecutionMode || "server";
-
-      // Server-side tool split: in SERVER mode task/web tools run on Lynkr.
-      // In CLIENT mode the client owns ALL its tools — its "Task" (subagent
-      // spawner) and WebSearch collide with Lynkr's same-named internal
-      // tools, which have entirely different semantics.
-      const serverSideToolCalls = [];
-      const clientSideToolCalls = [];
-
-      const SERVER_SIDE_TOOLS = (executionMode === "passthrough" || executionMode === "client")
-        ? new Set()
-        : new Set(["task", "Task", "web_search", "web_fetch", "websearch", "webfetch", "web_agent", "WebSearch", "WebFetch", "WebAgent"]);
-
-      for (const call of toolCalls) {
-        const toolName = (call.function?.name ?? call.name ?? "").toLowerCase();
-        if (SERVER_SIDE_TOOLS.has(toolName)) {
-          serverSideToolCalls.push(call);
-        } else {
-          clientSideToolCalls.push(call);
-        }
-      }
-
-      // If in passthrough/client mode and there are client-side tools, return them to client
-      // Server-side tools (Task, Web) will be executed below
-      if ((executionMode === "passthrough" || executionMode === "client") && clientSideToolCalls.length > 0) {
-        logger.debug(
-          {
-            sessionId: session?.id ?? null,
-            totalToolCount: toolCalls.length,
-            serverToolCount: serverSideToolCalls.length,
-            clientToolCount: clientSideToolCalls.length,
-            executionMode,
-            clientTools: clientSideToolCalls.map((c) => c.function?.name ?? c.name),
-          },
-          clientSideToolCalls.length > 1
-            ? `Parallel tool passthrough: ${clientSideToolCalls.length} tools → client`
-            : "Hybrid mode: returning non-Task tools to client, executing Task tools on server"
-        );
-
-        // Filter sessionContent to only include client-side tool_use blocks
-        const clientContent = sessionContent.filter(block => {
-          if (block.type !== "tool_use") return true; // Keep text blocks
-          const toolName = (block.name ?? "").toLowerCase();
-          return !SERVER_SIDE_TOOLS.has(toolName); // Keep client-side tool_use blocks
-        });
-
-        // Convert OpenRouter response to Anthropic format for CLI
-        const anthropicResponse = {
-          id: databricksResponse.json?.id || `msg_${Date.now()}`,
-          type: "message",
-          role: "assistant",
-          content: clientContent,
-          model: databricksResponse.json?.model || cleanPayload.model,
-          stop_reason: "tool_use",
-          usage: databricksResponse.json?.usage || {
-            input_tokens: 0,
-            output_tokens: 0,
-          },
-        };
-
-        logger.debug(
-          {
-            sessionId: session?.id ?? null,
-            clientContentLength: clientContent.length,
-            clientContentTypes: clientContent.map(b => b.type),
-          },
-          "Passthrough: returning client-side tools to client"
-        );
-
-        // If there are server-side tools, we need to execute them server-side first
-        // then continue the conversation loop. For now, let's fall through to execute server-side tools.
-        if (serverSideToolCalls.length === 0) {
-          // No server-side tools - pure passthrough
-          // Do NOT record outbound tool calls here — the inbound recording
-          // on the next request (when the client sends results back) is
-          // enough to detect real loops.  Recording both outbound + inbound
-          // for the same call double-counts and triggers the dedup warning
-          // on the very first normal tool round-trip.
-
-          return {
-            response: {
-              status: 200,
-              body: anthropicResponse,
-              terminationReason: "tool_use",
-            },
-            steps,
-            durationMs: Date.now() - start,
-            terminationReason: "tool_use",
-          };
-        }
-
-        // Has Server-side tools - we need to execute them and continue
-        // Override toolCalls to only include Server-side tools for server execution
-        toolCalls = serverSideToolCalls;
-
-        logger.debug(
-          {
-            sessionId: session?.id ?? null,
-            serverToolCount: serverSideToolCalls.length,
-          },
-          "Executing server-side tools in hybrid mode"
-        );
-      } else if (executionMode === "passthrough" || executionMode === "client") {
-        // Only Server-side tools, no Client-side tools - execute all server-side
-        logger.debug(
-          {
-            sessionId: session?.id ?? null,
-            serverToolCount: serverSideToolCalls.length,
-          },
-          "All tools are server-side tools - executing server-side"
-        );
-      }
-
-      logger.debug(
-        {
-          sessionId: session?.id ?? null,
-          toolCount: toolCalls.length,
-          executionMode,
+      // The client owns every tool: forward the tool_use turn untouched and
+      // end this request — the client executes the tools and sends the
+      // results back as a fresh request.
+      //
+      // Do NOT record outbound tool calls here — the inbound recording on
+      // the next request (when the client sends results back) is enough to
+      // detect real loops. Recording both outbound + inbound for the same
+      // call double-counts and triggers the dedup warning on the very first
+      // normal tool round-trip.
+      const anthropicResponse = {
+        id: databricksResponse.json?.id || `msg_${Date.now()}`,
+        type: "message",
+        role: "assistant",
+        content: sessionContent,
+        model: databricksResponse.json?.model || cleanPayload.model,
+        stop_reason: "tool_use",
+        usage: databricksResponse.json?.usage || {
+          input_tokens: 0,
+          output_tokens: 0,
         },
-        "Server mode: executing tools on server"
-      );
+      };
 
-      // Evaluate policy for all tools first (must be sequential for rate limiting)
-      const toolCallsWithPolicy = [];
-      for (const call of toolCalls) {
-        const callId =
-          call.id ??
-          `tool_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        if (!call.id) {
-          call.id = callId;
-        }
-        toolCallNames.set(
-          callId,
-          normaliseToolIdentifier(call.function?.name ?? call.name ?? "tool"),
-        );
-        const decision = policy.evaluateToolCall({
-          call,
-          toolCallsExecuted: toolCallsExecuted + toolCallsWithPolicy.length,
-        });
-        toolCallsWithPolicy.push({ call, decision });
-      }
-
-      // Identify Task tool calls for parallel execution
-      const taskCalls = [];
-      const nonTaskCalls = [];
-
-      for (const item of toolCallsWithPolicy) {
-        const toolName = (item.call.function?.name ?? item.call.name ?? "").toLowerCase();
-        if (toolName === "task" && item.decision.allowed) {
-          taskCalls.push(item);
-        } else {
-          nonTaskCalls.push(item);
-        }
-      }
-
-      // Execute Task tools in parallel if multiple exist
-      if (taskCalls.length > 1) {
-        logger.info({
-          taskCount: taskCalls.length,
-          sessionId: session?.id
-        }, "Executing multiple Task tools in parallel");
-
-        try {
-          const taskExecutions = await Promise.all(
-            taskCalls.map(({ call }) => executeToolCall(call, {
-              session,
-              cwd,
-              requestMessages: cleanPayload.messages,
-              provider: providerType,  // Pass provider for GPT-specific formatting
-            }))
-          );
-
-          taskExecutions.forEach((execution, index) => {
-            const call = taskCalls[index].call;
-            toolCallsExecuted += 1;
-
-            let toolMessage;
-            if (providerType === "azure-anthropic") {
-              const parsedContent = parseExecutionContent(execution.content);
-              const serialisedContent =
-                typeof parsedContent === "string" || parsedContent === null
-                  ? parsedContent ?? ""
-                  : JSON.stringify(parsedContent);
-
-              toolMessage = {
-                role: "user",
-                content: [
-                  {
-                    type: "tool_result",
-                    tool_use_id: call.id ?? execution.id,
-                    content: serialisedContent,
-                    is_error: execution.ok === false,
-                  },
-                ],
-              };
-
-              toolCallNames.set(
-                call.id ?? execution.id,
-                normaliseToolIdentifier(
-                  call.function?.name ?? call.name ?? execution.name ?? "tool",
-                ),
-              );
-            } else {
-              // OpenAI format: tool_call_id MUST match the id from assistant's tool_call
-              toolMessage = {
-                role: "tool",
-                tool_call_id: call.id ?? execution.id,
-                name: call.function?.name ?? call.name ?? execution.name,
-                content: execution.content,
-              };
-            }
-
-            cleanPayload.messages.push(toolMessage);
-
-            // Convert to Anthropic format for session storage
-            let sessionToolResultContent;
-            if (providerType === "azure-anthropic") {
-              sessionToolResultContent = toolMessage.content;
-            } else {
-              sessionToolResultContent = [
-                {
-                  type: "tool_result",
-                  tool_use_id: toolMessage.tool_call_id,
-                  content: toolMessage.content,
-                  is_error: execution.ok === false,
-                },
-              ];
-            }
-
-            appendTurnToSession(session, {
-              role: "tool",
-              type: "tool_result",
-              status: execution.status,
-              content: sessionToolResultContent,
-              metadata: {
-                tool: execution.name,
-                ok: execution.ok,
-                parallel: true,
-                parallelIndex: index,
-                totalParallel: taskExecutions.length
-              },
-            });
-          });
-
-          logger.info({
-            completedTasks: taskExecutions.length,
-            sessionId: session?.id
-          }, "Completed parallel Task execution");
-
-          // Check if we've exceeded the max tool calls limit after parallel execution
-          if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
-            logger.error(
-              {
-                sessionId: session?.id ?? null,
-                toolCallsExecuted,
-                maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
-                steps,
-              },
-              "Maximum tool calls per request exceeded after parallel Task execution - terminating",
-            );
-
-            return {
-              response: {
-                status: 500,
-                body: {
-                  error: {
-                    type: "max_tool_calls_exceeded",
-                    message: `Maximum tool calls per request exceeded. The model attempted to execute ${toolCallsExecuted} tool calls, but the limit is ${settings.maxToolCallsPerRequest}. This may indicate a complex task that requires breaking down into smaller steps.`,
-                  },
-                },
-                terminationReason: "max_tool_calls_exceeded",
-              },
-              steps,
-              durationMs: Date.now() - start,
-              terminationReason: "max_tool_calls_exceeded",
-            };
-          }
-        } catch (error) {
-          logger.error({
-            error: error.message,
-            taskCount: taskCalls.length
-          }, "Error in parallel Task execution");
-
-          // Fall back to sequential execution on error
-          taskCalls.forEach(item => nonTaskCalls.push(item));
-        }
-      } else if (taskCalls.length === 1) {
-        // Single Task tool - add back to non-task calls for normal processing
-        nonTaskCalls.push(...taskCalls);
-      }
-
-      // Now process results (sequential for non-Task tools or blocked tools)
-      for (const { call, decision } of nonTaskCalls) {
-
-        if (!decision.allowed) {
-          policy.logPolicyDecision(decision, {
-            sessionId: session?.id ?? null,
-            toolCall: call,
-          });
-
-          const denialContent = JSON.stringify(
-            {
-              error: decision.code ?? "tool_blocked",
-              message: decision.reason ?? "Tool invocation blocked by policy.",
-            },
-            null,
-            2,
-          );
-
-          let toolResultMessage;
-          if (providerType === "azure-anthropic") {
-            // Anthropic format: tool_result in user message content array
-            toolResultMessage = {
-              role: "user",
-              content: [
-                {
-                  type: "tool_result",
-                  tool_use_id: call.id ?? `${call.function?.name ?? "tool"}_${Date.now()}`,
-                  content: denialContent,
-                  is_error: true,
-                },
-              ],
-            };
-          } else {
-            // OpenAI format
-            toolResultMessage = {
-              role: "tool",
-              tool_call_id: call.id ?? `${call.function?.name ?? "tool"}_${Date.now()}`,
-              name: call.function?.name ?? call.name,
-              content: denialContent,
-            };
-          }
-
-          cleanPayload.messages.push(toolResultMessage);
-
-          let sessionToolResult;
-          if (providerType === "azure-anthropic") {
-            sessionToolResult = toolResultMessage.content;
-          } else {
-            // Convert OpenRouter tool message to Anthropic format
-            sessionToolResult = [
-              {
-                type: "tool_result",
-                tool_use_id: toolResultMessage.tool_call_id,
-                content: toolResultMessage.content,
-                is_error: true,
-              },
-            ];
-          }
-
-          appendTurnToSession(session, {
-            role: "tool",
-            type: "tool_result",
-            status: decision.status ?? 403,
-            content: sessionToolResult,
-            metadata: {
-              tool: toolResultMessage.name,
-              ok: false,
-              blocked: true,
-              reason: decision.reason ?? "Policy violation",
-            },
-          });
-          continue;
-        }
-
-        toolCallsExecuted += 1;
-
-        if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
-          logger.error(
-            {
-              sessionId: session?.id ?? null,
-              toolCallsExecuted,
-              maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
-              steps,
-            },
-            "Maximum tool calls per request exceeded - terminating",
-          );
-
-          return {
-            response: {
-              status: 500,
-              body: {
-                error: {
-                  type: "max_tool_calls_exceeded",
-                  message: `Maximum tool calls per request exceeded. The model attempted to execute ${toolCallsExecuted} tool calls, but the limit is ${settings.maxToolCallsPerRequest}. This may indicate a complex task that requires breaking down into smaller steps.`,
-                },
-              },
-              terminationReason: "max_tool_calls_exceeded",
-            },
-            steps,
-            durationMs: Date.now() - start,
-            terminationReason: "max_tool_calls_exceeded",
-          };
-        }
-
-        const execution = await executeToolCall(call, {
-          session,
-          cwd,
-          requestMessages: cleanPayload.messages,
-          provider: providerType,  // Pass provider for GPT-specific formatting
-        });
-
-        let toolMessage;
-        if (providerType === "azure-anthropic" || isAnthropicFormat) {
-          // Anthropic-format tool result for providers whose responses use
-          // Anthropic tool_use blocks (azure-anthropic, Ollama native API,
-          // azure-openai Responses API)
-          const parsedContent = parseExecutionContent(execution.content);
-          const serialisedContent =
-            typeof parsedContent === "string" || parsedContent === null
-              ? parsedContent ?? ""
-              : JSON.stringify(parsedContent);
-          let contentForToolResult = serialisedContent;
-          if (execution.ok) {
-            const toolIdentifier = normaliseToolIdentifier(
-              call.function?.name ?? call.name ?? execution.name ?? "tool",
-            );
-            if (WEB_SEARCH_NORMALIZED.has(toolIdentifier)) {
-              const summary = buildWebSearchSummary(parsedContent, {
-                maxItems: options?.webSearchSummaryLimit ?? 5,
-              });
-              if (summary) {
-                try {
-                  const structured =
-                    typeof parsedContent === "object" && parsedContent !== null
-                      ? { ...parsedContent, summary }
-                      : { raw: serialisedContent, summary };
-                  contentForToolResult = JSON.stringify(structured, null, 2);
-                } catch {
-                  contentForToolResult = `${serialisedContent}\n\nSummary:\n${summary}`;
-                }
-              }
-            }
-          }
-          toolMessage = {
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: call.id ?? execution.id,
-                content: contentForToolResult,
-                is_error: execution.ok === false,
-              },
-            ],
-          };
-          toolCallNames.set(
-            call.id ?? execution.id,
-            normaliseToolIdentifier(
-              call.function?.name ?? call.name ?? execution.name ?? "tool",
-            ),
-          );
-
-        } else {
-          // OpenAI format: tool_call_id MUST match the id from assistant's tool_call
-          toolMessage = {
-            role: "tool",
-            tool_call_id: call.id ?? execution.id,
-            name: call.function?.name ?? call.name ?? execution.name,
-            content: execution.content,
-          };
-        }
-
-        cleanPayload.messages.push(toolMessage);
-
-        let sessionToolResultContent;
-        if (providerType === "azure-anthropic") {
-          // Azure Anthropic already has content in correct format
-          sessionToolResultContent = toolMessage.content;
-        } else {
-          // Convert OpenRouter tool message to Anthropic format
-          sessionToolResultContent = [
-            {
-              type: "tool_result",
-              tool_use_id: toolMessage.tool_call_id,
-              content: toolMessage.content,
-              is_error: execution.ok === false,
-            },
-          ];
-        }
-
-        appendTurnToSession(session, {
-          role: "tool",
-          type: "tool_result",
-          status: execution.status,
-          content: sessionToolResultContent,
-          metadata: {
-            tool: execution.name,
-            ok: execution.ok,
-            registered: execution.metadata?.registered ?? null,
-          },
-        });
-
-        if (execution.ok) {
-          logger.debug(
-            {
-              sessionId: session?.id ?? null,
-              tool: execution.name,
-              toolCallId: execution.id,
-            },
-            "Tool executed successfully",
-          );
-        } else {
-          logger.warn(
-            {
-              sessionId: session?.id ?? null,
-              tool: execution.name,
-              toolCallId: execution.id,
-              status: execution.status,
-            },
-            "Tool execution returned an error response",
-          );
-        }
-      }
-
-      // === TOOL CALL LOOP DETECTION ===
-      // Track tool calls to detect infinite loops where the model calls the same tool
-      // repeatedly with identical or similar parameters
-      // All providers use threshold 2 and similarity-based detection
-      const loopThreshold = 2;
-
-      for (const call of toolCalls) {
-        const signature = getToolCallSignature(call);
-        const existingEntry = toolCallHistory.get(signature);
-        let count = (existingEntry?.count || 0) + 1;
-        toolCallHistory.set(signature, { count, call });
-
-        const toolName = call.function?.name ?? call.name ?? 'unknown';
-
-        // Check for similar (not just identical) tool calls across all providers
-        // This catches cases where the model slightly varies parameters but is essentially looping
-        for (const [existingSig, existingData] of toolCallHistory.entries()) {
-          if (existingSig !== signature && areSimilarToolCalls(call, existingData.call)) {
-            // Found a similar call - increase count to trigger loop detection earlier
-            count = Math.max(count, existingData.count + 1);
-            logger.debug({
-              tool: toolName,
-              currentSignature: signature,
-              similarSignature: existingSig,
-              combinedCount: count,
-            }, "Similar tool call detected - combining counts");
-          }
-        }
-
-        if (count === loopThreshold && !loopWarningInjected) {
-          logger.warn(
-            {
-              sessionId: session?.id ?? null,
-              correlationId: options?.correlationId,
-              tool: toolName,
-              loopCount: count,
-              loopThreshold,
-              signature: signature,
-              action: 'warning_injected',
-              totalSteps: steps,
-              remainingSteps: settings.maxSteps - steps,
-            },
-            `Tool call loop detected - same tool called ${loopThreshold} times with identical/similar parameters`,
-          );
-
-          loopWarningInjected = true;
-          const warningMessage = {
-            role: "user",
-            content: `⚠️ CRITICAL SYSTEM WARNING: You have called the "${toolName}" tool ${count} times with identical or similar parameters. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response to the user based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Summarize your findings and respond.`,
-          };
-
-          cleanPayload.messages.push(warningMessage);
-
-          if (session) {
-            appendTurnToSession(session, {
-              role: "user",
-              type: "system_warning",
-              status: 200,
-              content: warningMessage.content,
-              metadata: {
-                reason: "tool_call_loop_warning",
-                toolName,
-                loopCount: count,
-                loopThreshold,
-              },
-            });
-          }
-        } else if (count > loopThreshold) {
-          // Force termination after threshold exceeded
-          // Log FULL context for debugging why the loop occurred
-          logger.error(
-            {
-              sessionId: session?.id ?? null,
-              correlationId: options?.correlationId,
-              tool: toolName,
-              loopCount: count,
-              loopThreshold,
-              signature: signature,
-              action: 'request_terminated',
-              totalSteps: steps,
-              maxSteps: settings.maxSteps,
-              // FULL CONTEXT for debugging
-              myPrompt: cleanPayload.messages, // Full conversation sent to LLM
-              systemPrompt: cleanPayload.system, // Full system prompt
-              llmResponse: databricksResponse?.data || databricksResponse?.json, // Full LLM response that triggered loop
-              repeatedToolCalls: toolCalls, // The actual repeated tool calls
-              toolCallHistory: Array.from(toolCallHistory.entries()), // Full history of all tool calls in this request
-            },
-            "Tool call loop limit exceeded - forcing termination (FULL CONTEXT CAPTURED)",
-          );
-
-          return {
-            response: {
-              status: 500,
-              body: {
-                error: {
-                  type: "tool_call_loop_detected",
-                  message: `Tool call loop detected: The model called the same tool ("${toolName}") with identical parameters ${count} times (threshold: ${loopThreshold}). This indicates an infinite loop and execution has been terminated. Please try rephrasing your request or provide different parameters.`,
-                },
-              },
-              terminationReason: "tool_call_loop",
-            },
-            steps,
-            durationMs: Date.now() - start,
-            terminationReason: "tool_call_loop",
-          };
-        }
-      }
-
-      continue;
+      return {
+        response: {
+          status: 200,
+          body: anthropicResponse,
+          terminationReason: "tool_use",
+        },
+        steps,
+        durationMs: Date.now() - start,
+        terminationReason: "tool_use",
+      };
     }
 
     let anthropicPayload;
@@ -3367,280 +2544,6 @@ IMPORTANT TOOL USAGE RULES:
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     }
 
-    // Ensure content is an array before calling .find()
-    const content = Array.isArray(anthropicPayload.content) ? anthropicPayload.content : [];
-    const fallbackCandidate = content.find(
-      (item) => item.type === "text" && needsWebFallback(item.text),
-    );
-
-    // Web fallback is SERVER-mode only: in client mode the client owns
-    // WebSearch/WebFetch, and a server-side fetch would duplicate it.
-    const _clientOwnsWeb = config.toolExecutionMode === "client" || config.toolExecutionMode === "passthrough";
-    if (fallbackCandidate && !fallbackPerformed && !_clientOwnsWeb) {
-      if (providerType === "azure-anthropic") {
-        anthropicPayload.content.push({
-          type: "text",
-          text: "Automatic web fetch policy fallback is not supported with the Azure-hosted Anthropic provider.",
-        });
-        fallbackPerformed = true;
-        continue;
-      }
-      const lastUserMessage = cleanPayload.messages
-        .slice()
-        .reverse()
-        .find((msg) => msg.role === "user" && typeof msg.content === "string");
-
-      let queryUrl = null;
-      if (lastUserMessage) {
-        const urlMatch = lastUserMessage.content.match(/(https?:\/\/[^\s"']+)/i);
-        if (urlMatch) {
-          queryUrl = urlMatch[1];
-        }
-      }
-
-      if (!queryUrl) {
-        const text = lastUserMessage?.content ?? "";
-        queryUrl = `https://www.google.com/search?q=${encodeURIComponent(text)}`;
-      }
-
-      if (
-        lastUserMessage &&
-        /https?:\/\/[^\s"']+/.test(lastUserMessage.content) === false &&
-        /price|stock|data|quote/i.test(lastUserMessage.content)
-      ) {
-        queryUrl = "https://query1.finance.yahoo.com/v8/finance/chart/NVDA";
-      }
-
-      logger.info(
-        {
-          sessionId: session?.id ?? null,
-          queryUrl,
-        },
-        "Policy web fallback triggered",
-      );
-
-      const toolCallId = `policy_web_fetch_${Date.now()}`;
-      const toolCall = {
-        id: toolCallId,
-        function: {
-          name: "web_fetch",
-          arguments: JSON.stringify({ url: queryUrl }),
-        },
-      };
-
-      const decision = policy.evaluateToolCall({
-        call: toolCall,
-        toolCallsExecuted,
-      });
-
-      if (!decision.allowed) {
-        anthropicPayload.content.push({
-          type: "text",
-          text: `Automatic web fetch was blocked: ${decision.reason ?? "policy denied."}`,
-        });
-      } else {
-        const candidateUrls = extractWebSearchUrls(
-          cleanPayload.messages,
-          { max: 5 },
-          toolCallNames,
-        );
-        const orderedCandidates = [];
-        const seenCandidates = new Set();
-
-        const pushCandidate = (url) => {
-          if (typeof url !== "string") return;
-          const trimmed = url.trim();
-          if (!/^https?:\/\//i.test(trimmed)) return;
-          if (seenCandidates.has(trimmed)) return;
-          seenCandidates.add(trimmed);
-          orderedCandidates.push(trimmed);
-        };
-
-        pushCandidate(queryUrl);
-        for (const candidate of candidateUrls) {
-          pushCandidate(candidate);
-        }
-
-        if (orderedCandidates.length === 0 && typeof queryUrl === "string") {
-          pushCandidate(queryUrl);
-        }
-
-        if (orderedCandidates.length === 0) {
-          anthropicPayload.content.push({
-            type: "text",
-            text: "Automatic web fetch was skipped: no candidate URLs were available.",
-          });
-          continue;
-        }
-
-        let attemptSucceeded = false;
-
-        for (let attemptIndex = 0; attemptIndex < orderedCandidates.length; attemptIndex += 1) {
-          const targetUrl = orderedCandidates[attemptIndex];
-          const attemptId = `${toolCallId}_${attemptIndex}`;
-          const attemptCall = {
-            id: attemptId,
-            function: {
-              name: "web_fetch",
-              arguments: JSON.stringify({ url: targetUrl }),
-            },
-          };
-          toolCallNames.set(attemptId, "web_fetch");
-
-          const assistantToolMessage = createFallbackAssistantMessage(providerType, {
-            text: orderedCandidates.length > 1
-              ? `Attempting to fetch data via web_fetch fallback (${attemptIndex + 1}/${orderedCandidates.length}).`
-              : "Attempting to fetch data via web_fetch fallback.",
-            toolCall: attemptCall,
-          });
-
-          cleanPayload.messages.push(assistantToolMessage);
-
-          let sessionFallbackContent;
-          if (providerType === "azure-anthropic") {
-            // Already in Anthropic format
-            sessionFallbackContent = assistantToolMessage.content;
-          } else {
-            // Convert OpenRouter format to Anthropic format
-            const contentBlocks = [];
-            if (assistantToolMessage.content && typeof assistantToolMessage.content === 'string' && assistantToolMessage.content.trim()) {
-              contentBlocks.push({
-                type: "text",
-                text: assistantToolMessage.content
-              });
-            }
-
-            if (Array.isArray(assistantToolMessage.tool_calls)) {
-              for (const tc of assistantToolMessage.tool_calls) {
-                const func = tc.function || {};
-                let input = {};
-                if (func.arguments) {
-                  try {
-                    input = typeof func.arguments === "string" ? JSON.parse(func.arguments) : func.arguments;
-                  } catch (err) {
-                    logger.warn({ error: err.message }, "Failed to parse fallback tool arguments");
-                    input = {};
-                  }
-                }
-
-                contentBlocks.push({
-                  type: "tool_use",
-                  id: tc.id || `toolu_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                  name: func.name || "unknown",
-                  input
-                });
-              }
-            }
-
-            sessionFallbackContent = contentBlocks;
-          }
-
-          appendTurnToSession(session, {
-            role: "assistant",
-            type: "tool_request",
-            status: 200,
-            content: sessionFallbackContent,
-            metadata: {
-              termination: "tool_use",
-              toolCalls: [{ id: attemptCall.id, name: attemptCall.function.name }],
-              fallback: true,
-              query: targetUrl,
-              attempt: attemptIndex + 1,
-            },
-          });
-
-          const execution = await executeToolCall(attemptCall, {
-            session,
-            cwd,
-            requestMessages: cleanPayload.messages,
-            provider: providerType,  // Pass provider for GPT-specific formatting
-          });
-
-          const toolResultMessage = createFallbackToolResultMessage(providerType, {
-            toolCall: attemptCall,
-            execution,
-          });
-
-          cleanPayload.messages.push(toolResultMessage);
-
-          let sessionFallbackToolResult;
-          if (providerType === "azure-anthropic") {
-            // Already in Anthropic format
-            sessionFallbackToolResult = toolResultMessage.content;
-          } else {
-            // Convert OpenRouter tool message to Anthropic format
-            sessionFallbackToolResult = [
-              {
-                type: "tool_result",
-                tool_use_id: toolResultMessage.tool_call_id,
-                content: toolResultMessage.content,
-                is_error: execution.ok === false,
-              },
-            ];
-          }
-
-          appendTurnToSession(session, {
-            role: "tool",
-            type: "tool_result",
-            status: execution.status,
-            content: sessionFallbackToolResult,
-            metadata: {
-              tool: attemptCall.function.name,
-              ok: execution.ok,
-              registered: execution.metadata?.registered ?? true,
-              fallback: true,
-              query: targetUrl,
-              attempt: attemptIndex + 1,
-            },
-          });
-
-          toolCallsExecuted += 1;
-
-          if (settings.maxToolCallsPerRequest && toolCallsExecuted > settings.maxToolCallsPerRequest) {
-            logger.error(
-              {
-                sessionId: session?.id ?? null,
-                toolCallsExecuted,
-                maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
-                steps,
-              },
-              "Maximum tool calls per request exceeded during fallback - terminating",
-            );
-
-            return {
-              response: {
-                status: 500,
-                body: {
-                  error: {
-                    type: "max_tool_calls_exceeded",
-                    message: `Maximum tool calls per request exceeded. The model attempted to execute ${toolCallsExecuted} tool calls, but the limit is ${settings.maxToolCallsPerRequest}. This may indicate a complex task that requires breaking down into smaller steps.`,
-                  },
-                },
-                terminationReason: "max_tool_calls_exceeded",
-              },
-              steps,
-              durationMs: Date.now() - start,
-              terminationReason: "max_tool_calls_exceeded",
-            };
-          }
-
-          if (execution.ok) {
-            fallbackPerformed = true;
-            attemptSucceeded = true;
-            break;
-          }
-        }
-
-        if (!attemptSucceeded) {
-          anthropicPayload.content.push({
-            type: "text",
-            text: "Automatic web fetch could not retrieve data from any candidate URLs.",
-          });
-        }
-        continue;
-      }
-    }
-
     // Attach routing metadata for OpenClaw model name rewriting
     if (databricksResponse.routingDecision) {
       anthropicPayload._routingMeta = {
@@ -3659,7 +2562,7 @@ IMPORTANT TOOL USAGE RULES:
       metadata: { termination: "completion" },
     });
 
-    if (cacheKey && steps === 1 && toolCallsExecuted === 0) {
+    if (cacheKey && steps === 1) {
       const storedKey = promptCache.storeResponse(cacheKey, databricksResponse);
       if (storedKey) {
         const promptTokens = databricksResponse.json?.usage?.prompt_tokens ?? 0;
@@ -3696,9 +2599,6 @@ IMPORTANT TOOL USAGE RULES:
       {
         sessionId: session?.id ?? null,
         steps,
-        toolCallsExecuted,
-        uniqueToolSignatures: toolCallHistory.size,
-        toolCallLoopWarnings: loopWarningInjected ? 1 : 0,
         durationMs: finalDurationMs,
         avgDurationPerStep: steps > 0 ? Math.round(finalDurationMs / steps) : 0,
       },
@@ -3736,12 +2636,9 @@ IMPORTANT TOOL USAGE RULES:
     {
       sessionId: session?.id ?? null,
       steps,
-      toolCallsExecuted,
-      uniqueToolSignatures: toolCallHistory.size,
       durationMs: finalDurationMs,
       maxSteps: settings.maxSteps,
       maxDurationMs: settings.maxDurationMs,
-      maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
     },
     "Agent loop exceeded limits",
   );
@@ -3755,11 +2652,9 @@ IMPORTANT TOOL USAGE RULES:
         limits: {
           maxSteps: settings.maxSteps,
           maxDurationMs: settings.maxDurationMs,
-          maxToolCallsPerRequest: settings.maxToolCallsPerRequest,
         },
         metrics: {
           steps,
-          toolCallsExecuted,
           durationMs: finalDurationMs,
         },
       },
@@ -3866,11 +2761,8 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   // === TOOL LOOP GUARD (EARLY CHECK) ===
   // Check BEFORE sanitization since sanitizePayload removes conversation history
-  const executionMode = config.toolExecutionMode || "server";
-  const isClientMode = executionMode === "client" || executionMode === "passthrough";
-
-  if (isClientMode && session) {
-    // === CROSS-REQUEST DEDUP (CLIENT/PASSTHROUGH MODE) ===
+  if (session) {
+    // === CROSS-REQUEST DEDUP ===
     // The inner-loop guard resets each HTTP request so repeated calls across
     // requests escape detection. Track signatures in session metadata instead.
     ensureDedupStructure(session);
@@ -4010,16 +2902,6 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   const cleanPayload = sanitizePayload(payload);
   pTimer.mark("sanitizePayload");
-
-  try {
-    const { loaded } = lazyLoader.ensureToolsForPrompt(cleanPayload.messages);
-    if (loaded.length > 0) {
-      logger.debug({ loaded }, "Proactively loaded tool categories for prompt");
-    }
-  } catch (err) {
-    logger.debug({ error: err.message }, "Lazy tool loading check failed");
-  }
-  pTimer.mark("lazyToolLoad");
 
   appendTurnToSession(session, {
     role: "user",

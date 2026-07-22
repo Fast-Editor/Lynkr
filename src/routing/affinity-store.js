@@ -49,6 +49,13 @@ function _db() {
       if (!cols.has("score")) {
         db.exec("ALTER TABLE session_pins ADD COLUMN score REAL");
       }
+      // Additive migration for the side-channel detector's Signal 2 —
+      // once a session has ever carried tool_use/tool_result blocks, this
+      // flag stays 1 for the pin's lifetime. Payloads that arrive later
+      // without tool blocks in a flagged session are side-channel replays.
+      if (!cols.has("has_tool_history")) {
+        db.exec("ALTER TABLE session_pins ADD COLUMN has_tool_history INTEGER DEFAULT 0");
+      }
       schemaEnsured = true;
     } catch (err) {
       degradation.record("feedback", err);
@@ -81,7 +88,7 @@ function load(sessionId, ttlMs) {
     const row = _stmt(
       db,
       "load",
-      "SELECT provider, model, tier, score, message_count, prompt_tokens_est, ts FROM session_pins WHERE session_id = ?"
+      "SELECT provider, model, tier, score, message_count, prompt_tokens_est, has_tool_history, ts FROM session_pins WHERE session_id = ?"
     ).get(sessionId);
     if (!row) return null;
     if (ttlMs && Date.now() - row.ts > ttlMs) {
@@ -98,6 +105,7 @@ function load(sessionId, ttlMs) {
       score: row.score,
       messageCount: row.message_count,
       promptTokensEst: row.prompt_tokens_est,
+      hasToolHistory: !!row.has_tool_history,
       ts: row.ts,
     };
   } catch (err) {
@@ -121,8 +129,12 @@ function save(sessionId, pin) {
     _stmt(
       db,
       "upsert",
-      `INSERT INTO session_pins (session_id, provider, model, tier, score, message_count, prompt_tokens_est, ts)
-       VALUES (@session_id, @provider, @model, @tier, @score, @message_count, @prompt_tokens_est, @ts)
+      // has_tool_history is sticky-true: once the session has ever carried
+      // tool blocks it stays flagged for the pin's lifetime. Use MAX so an
+      // update from a tool-less request (e.g. compaction refresh) can never
+      // clear the flag once set.
+      `INSERT INTO session_pins (session_id, provider, model, tier, score, message_count, prompt_tokens_est, has_tool_history, ts)
+       VALUES (@session_id, @provider, @model, @tier, @score, @message_count, @prompt_tokens_est, @has_tool_history, @ts)
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          model = excluded.model,
@@ -130,6 +142,7 @@ function save(sessionId, pin) {
          score = excluded.score,
          message_count = excluded.message_count,
          prompt_tokens_est = excluded.prompt_tokens_est,
+         has_tool_history = MAX(has_tool_history, excluded.has_tool_history),
          ts = excluded.ts`
     ).run({
       session_id: sessionId,
@@ -139,6 +152,7 @@ function save(sessionId, pin) {
       score: typeof pin.score === 'number' ? pin.score : null,
       message_count: pin.messageCount ?? null,
       prompt_tokens_est: pin.promptTokensEst ?? null,
+      has_tool_history: pin.hasToolHistory ? 1 : 0,
       ts: pin.ts ?? Date.now(),
     });
   } catch (err) {

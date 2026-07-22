@@ -12,10 +12,12 @@ const {
   classifyDifficulty,
   _parseResult,
   _cacheKey,
+  _buildPrompt,
   _clearCacheForTests,
   _getCacheStats,
   VALID_TIERS,
 } = require("../src/routing/difficulty-classifier");
+const { _reconcile } = require("../src/routing/intent-score");
 
 describe("difficulty-classifier — parsing", () => {
   it("parses clean JSON", () => {
@@ -108,5 +110,80 @@ describe("difficulty-classifier — cache LRU bookkeeping", () => {
 describe("difficulty-classifier — VALID_TIERS contract", () => {
   it("exposes the 4 canonical tier names", () => {
     assert.deepStrictEqual(VALID_TIERS, ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"]);
+  });
+});
+
+describe("difficulty-classifier — context handling (prompt v2)", () => {
+  it("includes conversation context in the prompt for short texts", () => {
+    const prompt = _buildPrompt("Who kills him ?", 'user asked: """Who is doctor doom?""" → assistant replied about: """the Marvel villain"""');
+    assert.ok(prompt.includes("Conversation so far"));
+    assert.ok(prompt.includes("Who is doctor doom?"));
+    assert.ok(prompt.includes('CURRENT user prompt: """Who kills him ?"""'));
+  });
+
+  it("omits the context block when no context is given", () => {
+    const prompt = _buildPrompt("explain this regex", null);
+    assert.ok(!prompt.includes("Conversation so far"));
+    assert.ok(prompt.includes('User prompt: """explain this regex"""'));
+  });
+
+  it("teaches the vocabulary-trap rule", () => {
+    const prompt = _buildPrompt("anything", null);
+    assert.ok(prompt.includes("NOT reasoning"), "negative examples present");
+    assert.ok(prompt.includes("not the vocabulary"), "task-not-vocabulary rule present");
+  });
+
+  it("same follow-up in different conversations gets different cache entries", () => {
+    // Cache keys must diverge when context diverges — "Who kills him ?"
+    // means different things next to Doctor Doom vs. next to a mutex design.
+    const a = _cacheKey("Who kills him ? ctx-doom");
+    const b = _cacheKey("Who kills him ? ctx-mutex");
+    assert.notStrictEqual(a, b);
+  });
+});
+
+describe("intent-score — _reconcile band cap (Phase A)", () => {
+  // Live incident 2026-07-21: anchor 25 (MEDIUM band) + classifier
+  // REASONING conf 1.0 jumped straight to 88 → subscription passthrough.
+  it("caps an upward reconcile at ONE band above the anchor", () => {
+    const r = _reconcile(25, "trivial", { tier: "REASONING", confidence: 1.0 });
+    assert.strictEqual(r.reconciled, "up_capped");
+    assert.strictEqual(r.score, 63, "MEDIUM anchor caps at COMPLEX midpoint, never REASONING");
+  });
+
+  it("still allows a single-band upward move", () => {
+    const r = _reconcile(25, "substantive", { tier: "COMPLEX", confidence: 0.9 });
+    assert.strictEqual(r.reconciled, "up");
+    assert.strictEqual(r.score, 63);
+  });
+
+  it("REASONING stays reachable from a COMPLEX anchor", () => {
+    const r = _reconcile(60, "frontier", { tier: "REASONING", confidence: 0.9 });
+    assert.strictEqual(r.reconciled, "up");
+    assert.strictEqual(r.score, 88);
+  });
+
+  it("trusts downward reconciles unconditionally", () => {
+    const r = _reconcile(88, "frontier", { tier: "SIMPLE", confidence: 0.7 });
+    assert.strictEqual(r.reconciled, "down");
+    assert.strictEqual(r.score, 10);
+  });
+
+  it("gates low-confidence upward moves (unchanged)", () => {
+    const r = _reconcile(25, "substantive", { tier: "COMPLEX", confidence: 0.7 });
+    assert.strictEqual(r.reconciled, "up_gated");
+    assert.strictEqual(r.score, 25);
+  });
+
+  it("ignores sub-0.6-confidence verdicts entirely (unchanged)", () => {
+    const r = _reconcile(25, "substantive", { tier: "REASONING", confidence: 0.5 });
+    assert.strictEqual(r.reconciled, false);
+    assert.strictEqual(r.score, 25);
+  });
+
+  it("agreement is a no-op (unchanged)", () => {
+    const r = _reconcile(35, "substantive", { tier: "MEDIUM", confidence: 1.0 });
+    assert.strictEqual(r.reconciled, false);
+    assert.strictEqual(r.score, 35);
   });
 });

@@ -398,6 +398,19 @@ Error: Cannot find module 'xxx'
    export FALLBACK_PROVIDER=databricks
    ```
 
+**Issue:** Raw `<think>` text appears in responses (thinking models)
+
+**Symptoms:**
+- Leaked `<think>...</think>` blocks or chain-of-thought text in the output
+
+**Solutions:**
+
+1. **Buffer Ollama responses:**
+   ```bash
+   export LYNKR_OLLAMA_BUFFER_RESPONSES=true  # default
+   ```
+   Buffered responses get the thinking-leak repair. Streamed responses strip thinking blocks instead, but buffering is the robust fallback if leaks still get through.
+
 ---
 
 ### Moonshot AI (Kimi)
@@ -577,11 +590,7 @@ This happens when using `kimi-k2-thinking` model. Lynkr should automatically str
 
 **Solutions:**
 
-1. **Check tool execution mode:**
-   ```bash
-   echo $TOOL_EXECUTION_MODE
-   # Should be: server (default) or client
-   ```
+1. **Remember where tools run:** Lynkr never executes tools itself — it forwards `tool_use` blocks to the client (Claude Code CLI), which runs them locally and sends the results back. Tool failures are almost always on the CLI side.
 
 2. **Check workspace root:**
    ```bash
@@ -592,17 +601,10 @@ This happens when using `kimi-k2-thinking` model. Lynkr should automatically str
    ls -la $WORKSPACE_ROOT
    ```
 
-3. **For server mode:**
+3. **Verify the CLI has access:**
    ```bash
-   # Lynkr needs read/write access to workspace
+   # The CLI needs read/write access to the workspace it operates on
    chmod -R u+rw $WORKSPACE_ROOT
-   ```
-
-4. **Switch to client mode:**
-   ```bash
-   # Tools execute on CLI side
-   export TOOL_EXECUTION_MODE=client
-   lynkr start
    ```
 
 ---
@@ -888,6 +890,36 @@ WARN: Potential cold start detected - duration: 14088
 | `0` | Unload immediately |
 
 **Note:** The cold start warning is informational - it helps identify latency issues but is not an error.
+
+---
+
+### Responses Arrive All at Once Instead of Streaming
+
+**Issue:** Output appears in a single chunk at the end instead of streaming token-by-token
+
+**Solutions:**
+
+1. **Check the streaming kill switches:**
+   ```bash
+   echo $LYNKR_NATIVE_PASSTHROUGH  # default: true
+   echo $LYNKR_STREAM_TRANSFORM    # default: true
+   # If either is false, that streaming path is disabled
+   ```
+
+2. **Check ANSI markdown rendering:**
+   ```bash
+   echo $MARKDOWN_RENDER_ANSI
+   # true forces buffering (ANSI rendering rewrites whole text blocks)
+   ```
+
+3. **For Ollama, opt in to native streaming:**
+   ```bash
+   # Ollama responses are buffered by default
+   export LYNKR_OLLAMA_BUFFER_RESPONSES=false
+
+   # Requires Ollama daemon v0.14+ (Anthropic-format API)
+   ollama --version
+   ```
 
 ---
 

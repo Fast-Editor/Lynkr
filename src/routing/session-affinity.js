@@ -114,12 +114,18 @@ function getPin(sessionId) {
  * Accepts a routing decision plus session-scoped stats used by the re-pin
  * heuristics.
  *
+ * `hasToolHistory` is sticky-true: once set to true it stays true for the
+ * pin's lifetime — a follow-up refresh that didn't carry tool blocks (e.g.
+ * a plain-text turn between tool exchanges) must not clear the flag, or the
+ * Signal-2 side-channel check would flip open again.
+ *
  * @param {string} sessionId
  * @param {{provider:string, model?:string|null, tier?:string|null}} decision
- * @param {{messageCount?:number|null, promptTokensEst?:number|null}} [stats]
+ * @param {{messageCount?:number|null, promptTokensEst?:number|null, hasToolHistory?:boolean}} [stats]
  */
 function setPin(sessionId, decision, stats = {}) {
   if (!sessionId || !decision?.provider) return;
+  const prev = pins.get(sessionId);
   const pin = {
     provider: decision.provider,
     model: decision.model ?? null,
@@ -127,6 +133,7 @@ function setPin(sessionId, decision, stats = {}) {
     score: typeof decision.score === 'number' ? decision.score : null,
     messageCount: stats.messageCount ?? null,
     promptTokensEst: stats.promptTokensEst ?? null,
+    hasToolHistory: !!(stats.hasToolHistory || prev?.hasToolHistory),
     ts: Date.now(),
   };
   // Refresh insertion order so active sessions aren't evicted.

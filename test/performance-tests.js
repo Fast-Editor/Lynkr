@@ -49,8 +49,6 @@ async function asyncBenchmark(name, fn) {
 const results = {
   database: {},
   cache: {},
-  regex: {},
-  lazy: {},
   http: {},
   compression: {},
 };
@@ -249,97 +247,6 @@ async function testPromptCache() {
   log(`\n✅ Cache Tests Complete`, 'green');
 }
 
-// =============================================================================
-// TEST 3: Regex Pattern Caching
-// =============================================================================
-async function testRegexCaching() {
-  section('TEST 3: Regex Pattern Caching');
-
-  log('\n📊 Testing Regex Caching Implementation...', 'cyan');
-
-  // Read indexer file to verify implementation
-  const indexerCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'indexer', 'index.js'), 'utf8');
-
-  const hasRegexCache = indexerCode.includes('regexCache') && indexerCode.includes('getCachedRegex');
-  const hasCacheLimit = indexerCode.includes('MAX_REGEX_CACHE_SIZE');
-
-  log(`${hasRegexCache ? '✅' : '❌'} Regex cache implemented`, hasRegexCache ? 'green' : 'red');
-  log(`${hasCacheLimit ? '✅' : '❌'} Cache size limit implemented`, hasCacheLimit ? 'green' : 'red');
-
-  results.regex.implemented = hasRegexCache && hasCacheLimit;
-
-  // Benchmark regex creation with and without cache
-  log('\n📊 Benchmarking Regex Performance...', 'cyan');
-
-  const testSymbols = ['testFunction', 'MyClass', 'handleClick', 'useState', 'getServerSideProps'];
-
-  // Without cache (create new regex each time)
-  const { duration: withoutCacheDuration } = benchmark('Without cache (100 iterations)', () => {
-    for (let i = 0; i < 100; i++) {
-      testSymbols.forEach(symbol => {
-        const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        new RegExp(`\\b${escaped}\\b`, "g");
-      });
-    }
-  });
-
-  // With cache simulation
-  const cache = new Map();
-  const { duration: withCacheDuration } = benchmark('With cache (100 iterations)', () => {
-    for (let i = 0; i < 100; i++) {
-      testSymbols.forEach(symbol => {
-        if (!cache.has(symbol)) {
-          const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          cache.set(symbol, new RegExp(`\\b${escaped}\\b`, "g"));
-        }
-        cache.get(symbol);
-      });
-    }
-  });
-
-  const speedup = (withoutCacheDuration / withCacheDuration).toFixed(1);
-
-  log(`⏱️  Without cache: ${withoutCacheDuration.toFixed(2)}ms`, 'cyan');
-  log(`⏱️  With cache: ${withCacheDuration.toFixed(2)}ms`, 'cyan');
-  log(`🚀 Speedup: ${speedup}x faster`, 'green');
-
-  results.regex.speedup = speedup;
-  results.regex.timeWithout = withoutCacheDuration.toFixed(2);
-  results.regex.timeWith = withCacheDuration.toFixed(2);
-
-  log(`\n✅ Regex Tests Complete: ${speedup}x faster`, 'green');
-}
-
-// =============================================================================
-// TEST 4: Lazy Loading Performance
-// =============================================================================
-async function testLazyLoading() {
-  section('TEST 4: Lazy Loading Performance');
-
-  log('\n📊 Testing Lazy Loading Implementation...', 'cyan');
-
-  // Check parser.js for lazy loading
-  const parserCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'indexer', 'parser.js'), 'utf8');
-
-  const hasLazyLoading = parserCode.includes('let Parser = null') &&
-                         parserCode.includes('getTreeSitterParser') &&
-                         parserCode.includes('getLanguageModule');
-
-  log(`${hasLazyLoading ? '✅' : '❌'} Lazy loading implemented`, hasLazyLoading ? 'green' : 'red');
-
-  results.lazy.implemented = hasLazyLoading;
-
-  // Measure startup time improvement
-  log('\n📊 Measuring Startup Performance...', 'cyan');
-
-  // This is a simulation since we can't easily measure actual cold start
-  log('⏱️  Estimated startup improvement: 2-4x faster', 'cyan');
-  log('📦 Tree-sitter modules load on-demand only', 'cyan');
-
-  results.lazy.benefit = 'Loads only when indexing is triggered';
-
-  log(`\n✅ Lazy Loading Tests Complete`, 'green');
-}
 
 // =============================================================================
 // TEST 5: HTTP Connection Pooling
@@ -435,22 +342,6 @@ function printFinalReport() {
 
   console.log('├─────────────────────────────────────────────────────────┤');
 
-  // Regex
-  log(`│ 3. Regex Pattern Caching      ${results.regex.implemented ? '✅ Implemented' : '❌ Missing'} │`,
-      results.regex.implemented ? 'green' : 'red');
-  if (results.regex.speedup) {
-    log(`│    - Speedup: ${results.regex.speedup}x faster                        │`, 'green');
-  }
-
-  console.log('├─────────────────────────────────────────────────────────┤');
-
-  // Lazy Loading
-  log(`│ 4. Lazy Loading               ${results.lazy.implemented ? '✅ Implemented' : '❌ Missing'} │`,
-      results.lazy.implemented ? 'green' : 'red');
-  log(`│    - Tree-sitter loads on-demand                        │`, 'cyan');
-
-  console.log('├─────────────────────────────────────────────────────────┤');
-
   // HTTP Pooling
   log(`│ 5. HTTP Connection Pooling    ${results.http.implemented ? '✅ Implemented' : '❌ Missing'} │`,
       results.http.implemented ? 'green' : 'red');
@@ -469,8 +360,6 @@ function printFinalReport() {
   const optimizations = [
     results.database.indexScore >= 80,
     results.cache.enabled,
-    results.regex.implemented,
-    results.lazy.implemented,
     results.http.implemented,
     results.compression.implemented,
   ];
@@ -486,8 +375,6 @@ function printFinalReport() {
   console.log('\n📈 Expected Performance Improvements:');
   log('  • Database queries: 5-10x faster', 'green');
   log('  • Cache hits: Near-instant (vs 500ms+ API calls)', 'green');
-  log('  • Symbol indexing: 5x faster regex operations', 'green');
-  log('  • Server startup: 2-4x faster', 'green');
   log('  • API latency: 2x faster with connection pooling', 'green');
   log('  • Network transfer: 3x smaller payloads', 'green');
   log('\n  🚀 Combined: 5-10x overall performance improvement!', 'bright');
@@ -504,8 +391,6 @@ async function runAllTests() {
   try {
     await testDatabaseIndexes();
     await testPromptCache();
-    await testRegexCaching();
-    await testLazyLoading();
     await testHTTPPooling();
     await testCompression();
 

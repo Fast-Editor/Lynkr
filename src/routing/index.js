@@ -584,6 +584,8 @@ function checkSessionPin(payload, options = {}) {
         // the new_conversation guard for everyone after it.
         messageCount: Math.max(messageCount, pin.messageCount ?? 0),
         promptTokensEst: pin.promptTokensEst,
+        // We're inside payloadHasToolHistory(payload) — session has committed.
+        hasToolHistory: true,
       });
     }
     return { serve: true, pin, reason: 'tool_history', sessionId };
@@ -599,9 +601,28 @@ function checkSessionPin(payload, options = {}) {
     sessionAffinity.setPin(sessionId, pin, {
       messageCount: Math.max(messageCount, pin.messageCount ?? 0),
       promptTokensEst: guards.promptTokensEst ?? pin.promptTokensEst,
+      // setPin OR-merges with the existing pin's flag, so a plain-text turn
+      // between tool exchanges keeps the sticky-true property.
+      hasToolHistory: _payloadHasAnyToolBlocks(payload),
     });
   }
   return { serve: true, pin, reason: 'guards_passed', sessionId };
+}
+
+/** Whole-payload scan for tool_use/tool_result blocks. Unlike
+ * sessionAffinity.payloadHasToolHistory (last message only), this checks
+ * every message so we correctly flag sessions where the last frame is a
+ * plain text turn but earlier turns carried tools. */
+function _payloadHasAnyToolBlocks(payload) {
+  const msgs = payload?.messages;
+  if (!Array.isArray(msgs)) return false;
+  for (const m of msgs) {
+    if (!Array.isArray(m?.content)) continue;
+    for (const b of m.content) {
+      if (b?.type === 'tool_use' || b?.type === 'tool_result') return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -642,7 +663,11 @@ function writeSessionPin(sessionId, decision, payload) {
     return;
   }
   const promptTokensEst = _tryCountTokens(payload, decision.model);
-  sessionAffinity.setPin(sessionId, decision, { messageCount, promptTokensEst });
+  sessionAffinity.setPin(sessionId, decision, {
+    messageCount,
+    promptTokensEst,
+    hasToolHistory: _payloadHasAnyToolBlocks(payload),
+  });
 }
 
 async function _determineProviderSmartInner(payload, options = {}) {
@@ -1088,10 +1113,17 @@ async function _determineProviderSmartInner(payload, options = {}) {
 
   // Phase 1.2 — cost-optimizer override.
   // Only kick in when:
-  //  - feature flag enabled (default true, disable with LYNKR_COST_OPTIMIZE=false)
+  //  - feature flag EXPLICITLY enabled with LYNKR_COST_OPTIMIZE=true (default OFF)
   //  - risk level is not high (high-risk keeps the explicitly-configured model)
   //  - the optimizer finds a meaningfully cheaper qualifying model
-  const costOptimizeEnabled = process.env.LYNKR_COST_OPTIMIZE !== 'false'
+  //
+  // Default changed to OFF (2026-07-20): the optimizer silently overrides
+  // explicit TIER_* config with the cheapest model in the tier pool, which
+  // surprised operators who expected their tier settings to be authoritative
+  // (e.g. TIER_REASONING=azure-anthropic:claude-opus-4.7 was being swapped
+  // for openrouter:deepseek/deepseek-reasoner — which was also a typo that
+  // 400'd upstream). Opt-in only.
+  const costOptimizeEnabled = process.env.LYNKR_COST_OPTIMIZE === 'true'
     && config.routing?.costOptimize !== false;
   if (costOptimizeEnabled && risk?.level !== 'high') {
     try {
