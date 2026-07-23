@@ -7,16 +7,22 @@ describe("OpenAI Integration", () => {
   beforeEach(() => {
     originalEnv = { ...process.env };
 
-    // Clear module cache
-    delete require.cache[require.resolve("../src/config")];
-    delete require.cache[require.resolve("../src/clients/routing")];
-    delete require.cache[require.resolve("../src/clients/openrouter-utils")];
+    // Set to empty strings to override .env values (deleting would cause dotenv to reload them)
+    process.env.OPENAI_API_KEY = "";
+    process.env.OPENAI_MODEL = "";
+    process.env.OPENAI_ENDPOINT = "";
+    process.env.OPENAI_ORGANIZATION = "";
 
     // Prevent .env TIER_* values from being picked up by dotenv
     process.env.TIER_SIMPLE = "";
     process.env.TIER_MEDIUM = "";
     process.env.TIER_COMPLEX = "";
     process.env.TIER_REASONING = "";
+
+    // Clear module cache
+    delete require.cache[require.resolve("../src/config")];
+    delete require.cache[require.resolve("../src/clients/routing")];
+    delete require.cache[require.resolve("../src/clients/openrouter-utils")];
   });
 
   afterEach(() => {
@@ -34,7 +40,8 @@ describe("OpenAI Integration", () => {
 
     it("should throw error when OPENAI_API_KEY is missing", () => {
       process.env.MODEL_PROVIDER = "openai";
-      delete process.env.OPENAI_API_KEY;
+      // Use empty string instead of delete to prevent dotenv from reloading from .env
+      process.env.OPENAI_API_KEY = "";
 
       assert.throws(
         () => require("../src/config"),
@@ -45,7 +52,8 @@ describe("OpenAI Integration", () => {
     it("should use default model when OPENAI_MODEL is not set", () => {
       process.env.MODEL_PROVIDER = "openai";
       process.env.OPENAI_API_KEY = "sk-test-key";
-      delete process.env.OPENAI_MODEL;
+      // Use empty string instead of delete to prevent dotenv from reloading from .env
+      process.env.OPENAI_MODEL = "";
 
       const config = require("../src/config");
       assert.strictEqual(config.openai.model, "gpt-4o");
@@ -63,7 +71,8 @@ describe("OpenAI Integration", () => {
     it("should use default endpoint when OPENAI_ENDPOINT is not set", () => {
       process.env.MODEL_PROVIDER = "openai";
       process.env.OPENAI_API_KEY = "sk-test-key";
-      delete process.env.OPENAI_ENDPOINT;
+      // Use empty string instead of delete to prevent dotenv from reloading from .env
+      process.env.OPENAI_ENDPOINT = "";
 
       const config = require("../src/config");
       assert.strictEqual(config.openai.endpoint, "https://api.openai.com/v1/chat/completions");
@@ -90,7 +99,8 @@ describe("OpenAI Integration", () => {
     it("should have null organization when OPENAI_ORGANIZATION is not set", () => {
       process.env.MODEL_PROVIDER = "openai";
       process.env.OPENAI_API_KEY = "sk-test-key";
-      delete process.env.OPENAI_ORGANIZATION;
+      // Use empty string instead of delete to prevent dotenv from reloading from .env
+      process.env.OPENAI_ORGANIZATION = "";
 
       const config = require("../src/config");
       assert.strictEqual(config.openai.organization, null);
