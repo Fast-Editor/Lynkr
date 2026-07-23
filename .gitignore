@@ -38,3 +38,6 @@ litellm-config.yaml
 PLAN-routing-hardening.md
 HANDOFF-*.md
 tmp/
+
+# ai-sdk-provider build output
+packages/ai-sdk-provider/dist/

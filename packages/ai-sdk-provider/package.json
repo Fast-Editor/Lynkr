@@ -1,0 +1,65 @@
+{
+  "name": "@lynkr/ai-sdk-provider",
+  "version": "0.1.0",
+  "description": "Vercel AI SDK provider for Lynkr, a self-hosted LLM gateway and tier-routing proxy. Route AI SDK apps across Ollama, AWS Bedrock, OpenRouter, Databricks, Azure OpenAI, llama.cpp, and LM Studio.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "npm run build && node --test test/index.test.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "keywords": [
+    "ai",
+    "ai-sdk",
+    "vercel-ai-sdk",
+    "llm",
+    "llm-gateway",
+    "llm-router",
+    "lynkr",
+    "self-hosted",
+    "openai-compatible"
+  ],
+  "author": "Vishal Veera Reddy",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fast-Editor/Lynkr.git",
+    "directory": "packages/ai-sdk-provider"
+  },
+  "bugs": {
+    "url": "https://github.com/Fast-Editor/Lynkr/issues"
+  },
+  "homepage": "https://github.com/Fast-Editor/Lynkr/tree/main/packages/ai-sdk-provider",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.14"
+  },
+  "devDependencies": {
+    "ai": "^7.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "zod": "^4.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
