@@ -200,6 +200,15 @@ async function start() {
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
   });
 
+  // Surface bind failures to the caller. Without this, EADDRINUSE from a
+  // stale instance is swallowed, and `lynkr wrap`'s readiness probe then
+  // gets answered by the OLD server still holding the port — the new
+  // session silently runs against stale code.
+  await new Promise((resolve, reject) => {
+    server.once("listening", resolve);
+    server.once("error", reject);
+  });
+
   // Classifier bootstrap check — non-blocking, log-only.
   // Detects ollama + confirms the classifier model is pulled. Never auto-
   // installs (that's `lynkr init`'s job); warns and lets scoring fall back
