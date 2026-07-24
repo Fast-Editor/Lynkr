@@ -2019,13 +2019,17 @@ async function invokeMoonshot(body, incomingHeaders = {}) {
 
   // Model mapping: Anthropic names → Moonshot/Kimi names
   const modelMap = {
-    "claude-sonnet-4-5-20250929": "kimi-k2-turbo-preview",
-    "claude-sonnet-4-5": "kimi-k2-turbo-preview",
-    "claude-sonnet-4.5": "kimi-k2-turbo-preview",
-    "claude-3-5-sonnet": "kimi-k2-turbo-preview",
-    "claude-haiku-4-5-20251001": "kimi-k2-turbo-preview",
-    "claude-haiku-4-5": "kimi-k2-turbo-preview",
-    "claude-3-haiku": "kimi-k2-turbo-preview",
+    "claude-sonnet-4-5-20250929": "kimi-k2.6",
+    "claude-sonnet-4-5": "kimi-k2.6",
+    "claude-sonnet-4.5": "kimi-k2.6",
+    "claude-3-5-sonnet": "kimi-k2.6",
+    "claude-haiku-4-5-20251001": "kimi-k2.6",
+    "claude-haiku-4-5": "kimi-k2.6",
+    "claude-3-haiku": "kimi-k2.6",
+    // Retired ids (gone from /v1/models as of 2026-07: "Not found the model")
+    // that older tier configs may still reference.
+    "kimi-k2-turbo-preview": "kimi-k2.6",
+    "kimi-k2-thinking": "kimi-k3",
     // moonshot-v1-auto 400s with "tokenization failed" (its server-side auto
     // context-size pass fails on large tool-bearing payloads). Remap to a
     // fixed model that's broadly available on api.moonshot.ai.
@@ -2033,7 +2037,12 @@ async function invokeMoonshot(body, incomingHeaders = {}) {
   };
 
   const requestedModel = body._tierModel || body.model || config.moonshot.model;
-  let mappedModel = modelMap[requestedModel] || config.moonshot.model || "kimi-k2-turbo-preview";
+  // Honor tier-selected Moonshot ids (e.g. TIER_REASONING=moonshot:kimi-k2.6)
+  // instead of silently swapping in the .env default model.
+  let mappedModel = modelMap[requestedModel]
+    || (/^(kimi-|moonshot-v1)/i.test(requestedModel || "") ? requestedModel : null)
+    || config.moonshot.model
+    || "kimi-k3";
   // Guard against the deprecated auto model arriving via config too.
   if (mappedModel === "moonshot-v1-auto") mappedModel = "moonshot-v1-128k";
 
@@ -2047,18 +2056,18 @@ async function invokeMoonshot(body, incomingHeaders = {}) {
     messages.unshift({ role: "system", content: systemContent });
   }
 
-  // kimi-k2.x (k2.5 / k2.6 …) are thinking models that only accept
-  // temperature: 1 — any other value 400s with "invalid temperature".
-  const isKimiThinking = /^kimi-k2/i.test(mappedModel);
+  // Every current kimi-k* model (k2.5, k2.6, k2.7-code, k3, …) pins sampling
+  // params: temperature must be 1 — any other value 400s with "invalid
+  // temperature: only 1 is allowed for this model" (probed live 2026-07-23).
+  // Only the moonshot-v1-* models accept caller-supplied values.
+  const isKimiPinned = /^kimi-k/i.test(mappedModel);
 
   const moonshotBody = {
     model: mappedModel,
     messages,
     max_tokens: body.max_tokens || 16384,
-    // kimi-k2.x thinking models pin sampling params: temperature must be 1
-    // and top_p must be 0.95 — any other value 400s.
-    temperature: isKimiThinking ? 1 : (body.temperature ?? 0.7),
-    top_p: isKimiThinking ? 0.95 : (body.top_p ?? 1.0),
+    temperature: isKimiPinned ? 1 : (body.temperature ?? 0.7),
+    top_p: isKimiPinned ? 0.95 : (body.top_p ?? 1.0),
     stream: false,  // Force non-streaming - OpenAI SSE to Anthropic SSE conversion not implemented
   };
 
@@ -3459,6 +3468,7 @@ module.exports = {
   invokeAzureAnthropic,
   invokeZai,
   invokeOllama,
+  invokeMoonshot,
   stripLynkrBadges,
   destroyHttpAgents,
   normalizeBodyForConverse,
