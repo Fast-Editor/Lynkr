@@ -205,6 +205,28 @@ function contentScore(userText, answerText, responseBody) {
 }
 
 // ---------------------------------------------------------------------------
+// Caveman detection
+// ---------------------------------------------------------------------------
+
+// context/caveman.js appends a brevity instruction tagged with this literal
+// marker whenever CAVEMAN is enabled. Presence in the outbound system prompt
+// is a reliable, config-independent signal that the model was told to be
+// terse — so the length-based effort penalty in contentScore() is a false
+// negative here (short answer = compliant, not lazy) and must not fire.
+const CAVEMAN_MARKER = "[brevity]";
+
+function _cavemanActive(payload) {
+  const s = payload?.system;
+  if (typeof s === "string") return s.includes(CAVEMAN_MARKER);
+  if (Array.isArray(s)) {
+    for (const b of s) {
+      if (typeof b?.text === "string" && b.text.includes(CAVEMAN_MARKER)) return true;
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -240,11 +262,26 @@ function verify({ payload, responseBody } = {}) {
     ].filter(Boolean);
 
     const score = contentScore(userText, answerText, responseBody);
-    if (reasons.length === 0 && score < CONTENT_SCORE_FAIL_THRESHOLD) {
+    const cavemanActive = _cavemanActive(payload);
+    // When caveman brevity is active the model was explicitly told to be
+    // terse; a short answer is compliant, not lazy, so the length-driven
+    // low-score check would misfire and thrash the cascade. Structural
+    // checks above (language drift, degeneration, truncation, malformed
+    // tools, echo) still run — those catch real failures regardless.
+    if (
+      reasons.length === 0 &&
+      score < CONTENT_SCORE_FAIL_THRESHOLD &&
+      !cavemanActive
+    ) {
       reasons.push(`low-content-score (${score} < ${CONTENT_SCORE_FAIL_THRESHOLD})`);
     }
 
-    return { verdict: reasons.length ? 'fail' : 'pass', score, reasons };
+    return {
+      verdict: reasons.length ? 'fail' : 'pass',
+      score,
+      reasons,
+      cavemanActive,
+    };
   } catch (err) {
     // Fail-open: a broken verifier must never block serving.
     logger.debug({ err: err.message }, '[Verifier] error — failing open');
@@ -263,5 +300,7 @@ module.exports = {
     checkMalformedToolCalls,
     checkEmptyOrEcho,
     contentScore,
+    _cavemanActive,
+    CAVEMAN_MARKER,
   },
 };

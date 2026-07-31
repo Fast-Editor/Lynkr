@@ -560,9 +560,20 @@ async function invokeOllama(body, incomingHeaders = {}) {
     if (body.tool_choice) ollamaBody.tool_choice = body.tool_choice;
     if (body.metadata) ollamaBody.metadata = body.metadata;
 
-    // Tools (already Anthropic format — no conversion needed)
+    // Tools: normalize to Anthropic shape. Callers that stayed OpenAI-format
+    // upstream (OpenWorker, aisuite, any client hitting /v1/chat/completions)
+    // otherwise ship {type:"function", function:{...}} which Ollama's
+    // /v1/messages endpoint rejects with 400 "can't find closing '}' symbol".
     if (supportsTools && Array.isArray(toolsToSend) && toolsToSend.length > 0) {
-      ollamaBody.tools = toolsToSend;
+      ollamaBody.tools = toolsToSend.map(tool =>
+        tool?.type === "function" && tool.function
+          ? {
+              name: tool.function.name,
+              description: tool.function.description || "",
+              input_schema: tool.function.parameters || { type: "object", properties: {} },
+            }
+          : tool
+      );
     }
 
     if (config.ollama.keepAlive !== undefined) {
@@ -1934,6 +1945,21 @@ async function invokeZai(body, incomingHeaders = {}) {
       }, "=== INJECTING STANDARD TOOLS (Z.AI Anthropic) ===");
     }
 
+    // Normalize to Anthropic tool shape — the /anthropic/v1/messages endpoint
+    // rejects OpenAI-nested tools ({type:"function", function:{name,...}}) with
+    // 422 missing body.tools[0].name. Callers that stayed OpenAI-format upstream
+    // (OpenWorker, aisuite, any client hitting /v1/chat/completions with an
+    // unusual tool shape) get unwrapped here.
+    zaiBody.tools = zaiBody.tools.map(tool =>
+      tool?.type === "function" && tool.function
+        ? {
+            name: tool.function.name,
+            description: tool.function.description || "",
+            input_schema: tool.function.parameters || { type: "object", properties: {} },
+          }
+        : tool
+    );
+
     headers = {
       "Content-Type": "application/json",
       "x-api-key": config.zai.apiKey,
@@ -2687,6 +2713,43 @@ function stripLynkrBadges(messages) {
   return mutated ? out : messages;
 }
 
+// Single source of truth for provider dispatch. Both the initial call and the
+// fallback ladder MUST route through invokeProvider — the previous duplicated
+// if/else chains drifted (the fallback chain was missing ollama, bedrock,
+// lmstudio and codex), and unknown providers silently dialed databricks,
+// which under tier routing is a deliberate dead number (see .env note about
+// the 2026-07-07 self-loop incident). Add new providers HERE, nowhere else;
+// the registry-coverage unit test fails if this map and
+// SUPPORTED_MODEL_PROVIDERS fall out of sync.
+const PROVIDER_INVOKERS = {
+  "azure-openai": invokeAzureOpenAI,
+  "azure-anthropic": invokeAzureAnthropic,
+  ollama: invokeOllama,
+  openrouter: invokeOpenRouter,
+  edenai: invokeEdenAI,
+  openai: invokeOpenAI,
+  llamacpp: invokeLlamaCpp,
+  lmstudio: invokeLMStudio,
+  bedrock: invokeBedrock,
+  zai: invokeZai,
+  vertex: invokeVertex,
+  moonshot: invokeMoonshot,
+  codex: invokeCodex,
+};
+
+function invokeProvider(provider, body, incomingHeaders) {
+  const invoke = PROVIDER_INVOKERS[provider];
+  if (!invoke) {
+    // databricks itself, or an unknown name. Loud, not silent: under tier
+    // routing this path used to swallow misconfigured providers.
+    if (provider !== "databricks") {
+      logger.warn({ provider }, "No invoker registered for provider — defaulting to databricks");
+    }
+    return invokeDatabricks(body, incomingHeaders);
+  }
+  return invoke(body, incomingHeaders);
+}
+
 async function invokeModel(body, options = {}) {
   const { determineProviderSmart, isFallbackEnabled, getFallbackProvider } = require("./routing");
   const metricsCollector = getMetricsCollector();
@@ -2843,34 +2906,7 @@ async function invokeModel(body, options = {}) {
 
   try {
     const result = await breaker.execute(async () => {
-      if (initialProvider === "azure-openai") {
-        return await invokeAzureOpenAI(body, incomingHeaders);
-      } else if (initialProvider === "azure-anthropic") {
-        return await invokeAzureAnthropic(body, incomingHeaders);
-      } else if (initialProvider === "ollama") {
-        return await invokeOllama(body, incomingHeaders);
-      } else if (initialProvider === "openrouter") {
-        return await invokeOpenRouter(body, incomingHeaders);
-      } else if (initialProvider === "edenai") {
-        return await invokeEdenAI(body, incomingHeaders);
-      } else if (initialProvider === "openai") {
-        return await invokeOpenAI(body, incomingHeaders);
-      } else if (initialProvider === "llamacpp") {
-        return await invokeLlamaCpp(body, incomingHeaders);
-      } else if (initialProvider === "lmstudio") {
-        return await invokeLMStudio(body, incomingHeaders);
-      } else if (initialProvider === "bedrock") {
-        return await invokeBedrock(body, incomingHeaders);
-      } else if (initialProvider === "zai") {
-        return await invokeZai(body, incomingHeaders);
-      } else if (initialProvider === "vertex") {
-        return await invokeVertex(body, incomingHeaders);
-      } else if (initialProvider === "moonshot") {
-        return await invokeMoonshot(body, incomingHeaders);
-      } else if (initialProvider === "codex") {
-        return await invokeCodex(body, incomingHeaders);
-      }
-      return await invokeDatabricks(body, incomingHeaders);
+      return await invokeProvider(initialProvider, body, incomingHeaders);
     });
 
     const latency = Date.now() - startTime;
@@ -3044,6 +3080,14 @@ async function invokeModel(body, options = {}) {
     healthTracker.recordFailure(initialProvider, err, err.status);
     getLatencyTracker().record(initialProvider, routingDecision?.model, failLatency);
 
+    // Accumulate every provider failure for this request so the terminal
+    // error can tell the client WHY nothing answered (quota exhausted vs
+    // context overflow vs dead config) instead of only the last rung's
+    // error. Rendered by the SSE writer when the whole chain fails.
+    const failureTrail = [
+      `${initialProvider}${routingDecision?.model ? ` (${routingDecision.model})` : ""}: ${err.status ? `HTTP ${err.status} — ` : ""}${err.message}`,
+    ];
+
     // undici wraps every network failure as "TypeError: fetch failed" — the
     // actionable detail (ENOTFOUND vs ECONNRESET vs ETIMEDOUT vs TLS) lives
     // in err.cause. Without this line the z-ai breaker trips on repeated
@@ -3106,6 +3150,7 @@ async function invokeModel(body, options = {}) {
               status: attempt.status,
               error: attempt.json?.error?.message || attempt.text?.slice(0, 120) || null,
             }, "[TierFallback] Candidate answered with an error response, trying next");
+            failureTrail.push(`${cand.provider} (${cand.model}): HTTP ${attempt.status} — ${attempt.json?.error?.message || attempt.text?.slice(0, 120) || "error response"}`);
             continue;
           }
 
@@ -3136,6 +3181,7 @@ async function invokeModel(body, options = {}) {
             { toProvider: cand.provider, error: innerErr.message },
             "[TierFallback] Candidate failed, trying next"
           );
+          failureTrail.push(`${cand.provider} (${cand.model}): ${innerErr.message}`);
         }
       }
       logger.warn(
@@ -3203,6 +3249,7 @@ async function invokeModel(body, options = {}) {
         },
       });
 
+      err.lynkrFailureTrail = failureTrail;
       throw err;
     }
 
@@ -3230,26 +3277,7 @@ async function invokeModel(body, options = {}) {
       const fallbackStart = Date.now();
 
       const fallbackResult = await fallbackBreaker.execute(async () => {
-        if (fallbackProvider === "azure-openai") {
-          return await invokeAzureOpenAI(body, incomingHeaders);
-        } else if (fallbackProvider === "azure-anthropic") {
-          return await invokeAzureAnthropic(body, incomingHeaders);
-        } else if (fallbackProvider === "openrouter") {
-          return await invokeOpenRouter(body, incomingHeaders);
-        } else if (fallbackProvider === "edenai") {
-          return await invokeEdenAI(body, incomingHeaders);
-        } else if (fallbackProvider === "openai") {
-          return await invokeOpenAI(body, incomingHeaders);
-        } else if (fallbackProvider === "llamacpp") {
-          return await invokeLlamaCpp(body, incomingHeaders);
-        } else if (fallbackProvider === "zai") {
-          return await invokeZai(body, incomingHeaders);
-        } else if (fallbackProvider === "vertex") {
-          return await invokeVertex(body, incomingHeaders);
-        } else if (fallbackProvider === "moonshot") {
-          return await invokeMoonshot(body, incomingHeaders);
-        }
-        return await invokeDatabricks(body, incomingHeaders);
+        return await invokeProvider(fallbackProvider, body, incomingHeaders);
       });
 
       const fallbackLatency = Date.now() - fallbackStart;
@@ -3339,6 +3367,16 @@ async function invokeModel(body, options = {}) {
         },
       });
 
+      // The last rung also answered with an error — thread the whole trail
+      // into the error payload so the client sees every failure, not just
+      // this one (e.g. "moonshot: quota" matters more than "azure: 404").
+      if (fallbackResult?.ok === false) {
+        failureTrail.push(`${fallbackProvider}: HTTP ${fallbackResult.status} — ${fallbackResult.json?.error?.message || String(fallbackResult.text || "").slice(0, 120) || "error response"}`);
+        if (fallbackResult.json && typeof fallbackResult.json === "object") {
+          fallbackResult.json._lynkr_failure_trail = failureTrail;
+        }
+      }
+
       return {
         ...fallbackResult,
         actualProvider: fallbackProvider,
@@ -3403,6 +3441,8 @@ async function invokeModel(body, options = {}) {
       }, "Both primary and fallback provider failed");
 
       // Return fallback error (more actionable than Ollama error)
+      failureTrail.push(`${fallbackProvider}: ${fallbackErr.message}`);
+      fallbackErr.lynkrFailureTrail = failureTrail;
       throw fallbackErr;
     }
   }
@@ -3469,6 +3509,7 @@ module.exports = {
   invokeZai,
   invokeOllama,
   invokeMoonshot,
+  PROVIDER_INVOKERS,
   stripLynkrBadges,
   destroyHttpAgents,
   normalizeBodyForConverse,

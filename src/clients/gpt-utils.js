@@ -61,7 +61,14 @@ function areSimilarToolCalls(call1, call2) {
 
   // Only search-style tools get fuzzy matching; mutating tools with
   // near-identical args may be intentional repeats.
-  const searchTools = ['grep', 'glob', 'search', 'find', 'read', 'bash', 'shell'];
+  // 'read' is deliberately NOT fuzzy-matched: its argument is a file path, and
+  // absolute paths in one repo share nearly every Jaccard token
+  // (/Users/x/project/src/…), so reads of DIFFERENT files scored ≥0.8 and
+  // merged into one "repeated call" signature (live incident: an opencode
+  // code-trace reading server.js, openai-router.js and orchestrator/index.js
+  // was flagged as a loop). A genuine re-read of the same file is caught by
+  // the exact-match branch above.
+  const searchTools = ['grep', 'glob', 'search', 'find', 'bash', 'shell'];
   const toolName = (name1 || '').toLowerCase();
   const isSearchTool = searchTools.some(t => toolName.includes(t));
 

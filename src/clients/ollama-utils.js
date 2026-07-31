@@ -128,17 +128,26 @@ function convertAnthropicToolsToOllama(anthropicTools) {
     return [];
   }
 
-  return anthropicTools.map(tool => ({
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description || "",
-      parameters: tool.input_schema || {
-        type: "object",
-        properties: {},
+  return anthropicTools.map(tool => {
+    // Shape-detect: already OpenAI/Ollama-format tools pass through untouched.
+    // Without this, an OpenAI-shape tool ({type:"function", function:{...}})
+    // reaching this helper produces {function:{name:undefined,...}}, which
+    // Ollama's legacy /api/chat endpoint rejects.
+    if (tool?.type === "function" && tool.function) {
+      return tool;
+    }
+    return {
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description || "",
+        parameters: tool.input_schema || {
+          type: "object",
+          properties: {},
+        },
       },
-    },
-  }));
+    };
+  });
 }
 
 module.exports = {

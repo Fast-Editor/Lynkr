@@ -70,13 +70,27 @@ function compressToolDescriptions(tools, mode = null) {
     return tools; // Return unmodified if not in minimal mode
   }
 
+  // Normalize to Anthropic shape: OpenAI-format callers (OpenWorker, aisuite,
+  // any OpenAI SDK) send {type:"function", function:{name, description, parameters}}.
+  // Unwrap once here so the compression logic below can assume input_schema exists.
+  tools = tools.map(tool =>
+    tool?.type === "function" && tool.function
+      ? {
+          name: tool.function.name,
+          description: tool.function.description,
+          input_schema: tool.function.parameters || { type: "object", properties: {} },
+        }
+      : tool
+  );
+
   return tools.map(tool => {
+    const input_schema = tool.input_schema || { type: "object", properties: {} };
     const compressed = {
       name: tool.name,
       input_schema: {
-        type: tool.input_schema.type,
+        type: input_schema.type || "object",
         properties: {},
-        required: tool.input_schema.required || [],
+        required: input_schema.required || [],
       }
     };
 
@@ -86,8 +100,8 @@ function compressToolDescriptions(tools, mode = null) {
     }
 
     // Compress property descriptions
-    if (tool.input_schema.properties) {
-      for (const [key, value] of Object.entries(tool.input_schema.properties)) {
+    if (input_schema.properties) {
+      for (const [key, value] of Object.entries(input_schema.properties)) {
         compressed.input_schema.properties[key] = {
           type: value.type,
         };
@@ -108,8 +122,8 @@ function compressToolDescriptions(tools, mode = null) {
     }
 
     // Preserve additionalProperties if set
-    if (tool.input_schema.additionalProperties !== undefined) {
-      compressed.input_schema.additionalProperties = tool.input_schema.additionalProperties;
+    if (input_schema.additionalProperties !== undefined) {
+      compressed.input_schema.additionalProperties = input_schema.additionalProperties;
     }
 
     return compressed;

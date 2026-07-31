@@ -580,6 +580,30 @@ function _buildStreamBadge(tier) {
 }
 
 /**
+ * Terminal upstream errors carry no content array — without this, the synth
+ * SSE writers render an empty message and the turn goes silent in the TUI
+ * (only the routing badge shows). Returns visible-text content blocks for an
+ * error result, using the fallback chain's failure trail when the provider
+ * layer recorded one (so "moonshot: quota exhausted" isn't hidden behind the
+ * last rung's unrelated error), or null for normal responses.
+ */
+function _buildFailureBlocks(result, msg) {
+  if (result.terminationReason !== "api_error" && Array.isArray(msg?.content)) return null;
+  const trail = Array.isArray(msg?._lynkr_failure_trail) ? msg._lynkr_failure_trail : null;
+  const lastErr = msg?.error?.message || msg?.message
+    || (typeof msg === "string" ? msg : JSON.stringify(msg ?? {}).slice(0, 200));
+  const trailText = (trail || [String(lastErr)]).map((t) => `  · ${t}`).join("\n");
+  const quotaHit = result.status === 429 || /rate.?limit|quota|TPD|TPM/i.test(trailText);
+  return [{
+    type: "text",
+    text:
+      `⚠ [Lynkr] ${quotaHit ? "Provider quota exhausted — no fallback could serve this request" : "No provider could serve this request"} (HTTP ${result.status ?? "?"}).\n\n` +
+      `${trailText}\n` +
+      (quotaHit ? `\nAll fallback candidates failed after the quota hit. Wait for the quota window to reset or repoint the affected tier in .env.\n` : ""),
+  }];
+}
+
+/**
  * Scan the entire payload for tool_use or tool_result content blocks.
  * Unlike session-affinity.payloadHasToolHistory (which checks only the last
  * message, targeted at mid-exchange detection), this scans every message so
@@ -1611,6 +1635,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       // tool_use with no tool_use block).
       let contentBlocks = (msg.content || []).slice();
 
+      const failureBlocks = _buildFailureBlocks(result, msg);
+      if (failureBlocks) contentBlocks = failureBlocks;
+
       // When LYNKR_VISIBLE_ROUTING=true, prepend a one-line routing badge so
       // users can see which tier/provider/model handled the request inside
       // Claude Code's TUI (TUI only renders content blocks; unknown top-level
@@ -1807,6 +1834,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       // tool_use with no tool_use block).
       let contentBlocks = (msg.content || []).slice();
 
+      const failureBlocks = _buildFailureBlocks(result, msg);
+      if (failureBlocks) contentBlocks = failureBlocks;
+
       // When LYNKR_VISIBLE_ROUTING=true, prepend a one-line routing badge so
       // users can see which tier/provider/model handled the request inside
       // Claude Code's TUI (TUI only renders content blocks; unknown top-level
@@ -1969,6 +1999,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     }
 
     metrics.recordResponse(result.status);
+    // finalBody is usually a JSON string; Express defaults string bodies to
+    // text/html, which Claude Code rejects as a malformed 200. Only default —
+    // an upstream content-type copied from result.headers above still wins.
+    if (!res.getHeader("Content-Type")) res.type("application/json");
     res.status(result.status).send(finalBody);
   } catch (error) {
     next(error);

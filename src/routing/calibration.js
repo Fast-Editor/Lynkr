@@ -146,7 +146,8 @@ function runCalibration({ days = DEFAULT_DAYS, dryRun = false, dbPath, outputPat
       continue;
     }
     const ordered = Array.from(tierBuckets.entries()).sort((a, b) => a[0] - b[0]);
-    let suggestedUpper = DEFAULT_RANGES[tier][1];
+    const [defaultLower, defaultUpper] = DEFAULT_RANGES[tier];
+    let suggestedUpper = defaultUpper;
     const bucketsSummary = [];
     for (const [lo, vals] of ordered) {
       if (vals.length < 5) {
@@ -155,6 +156,12 @@ function runCalibration({ days = DEFAULT_DAYS, dryRun = false, dbPath, outputPat
       }
       const med = _median(vals);
       bucketsSummary.push({ bucket: lo, samples: vals.length, median: med });
+      // Buckets outside the tier's own default range come from fallback-served
+      // requests (another tier's scores recorded under the serving tier). They
+      // say nothing about this tier's real range, and letting them shrink the
+      // upper bound below the lower bound collapses the tier to a single point
+      // in re-stitching (observed 2026-07-26: MEDIUM → [20,20]).
+      if (lo + 4 < defaultLower || lo > defaultUpper) continue;
       if (med < floor && lo + 4 < suggestedUpper) {
         // shrink tier upper bound just below the failing bucket
         suggestedUpper = lo + 4;

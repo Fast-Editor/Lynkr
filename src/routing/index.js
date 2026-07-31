@@ -258,28 +258,52 @@ function _economicDowngradeAllowed(promptTokensEst, pinModel, freshModel) {
   }
 }
 
-function _pinToDecision(pin, { reason, risk }) {
+/**
+ * Canonical routing-decision constructor. Every code path that returns a
+ * routing decision MUST build it here — the previous ten hand-assembled
+ * object literals had drifted (e.g. the non-tier agentic branch omitted
+ * `model`; only session_pin carried the full telemetry field set), and the
+ * reward pipeline requires `propensity` present on every decision it logs.
+ * Defaults first, caller's fields override; unknown extras (e.g.
+ * `_queryEmbedding`) pass through untouched.
+ */
+function buildDecision(fields = {}) {
+  if (!fields.provider || !fields.method) {
+    // Fail-open (routing must never throw on shape problems) but loud.
+    logger.error({ keys: Object.keys(fields) }, '[Routing] buildDecision called without provider/method');
+  }
   return {
+    model: null,
+    tier: null,
+    reason: null,
+    score: null,
+    analysis: null,
+    embeddingsResult: null,
+    agenticResult: null,
+    knnResult: null,
+    costOptimized: false,
+    risk: null,
+    base_tier: null,
+    escalations: [],
+    escalation_source: null,
+    pinned: false,
+    switch_reason: null,
+    propensity: 1.0,
+    candidates: [{ provider: fields.provider, model: fields.model ?? null }],
+    ...fields,
+  };
+}
+
+function _pinToDecision(pin, { reason, risk }) {
+  return buildDecision({
     provider: pin.provider,
     model: pin.model,
     tier: pin.tier,
     method: 'session_pin',
     reason,
-    score: null,
-    analysis: null,
-    embeddingsResult: null,
-    agenticResult: null,
-    costOptimized: false,
     risk: risk ?? null,
-    knnResult: null,
-    base_tier: null,
-    escalations: [],
-    escalation_source: null,
     pinned: true,
-    switch_reason: null,
-    propensity: 1.0,
-    candidates: [{ provider: pin.provider, model: pin.model }],
-  };
+  });
 }
 
 /**
@@ -713,17 +737,14 @@ async function _determineProviderSmartInner(payload, options = {}) {
 
   // If tier routing is disabled, use static configuration
   if (!config.modelTiers?.enabled) {
-    return {
+    return buildDecision({
       provider: primaryProvider,
-      model: null,
       method: 'static',
       reason: 'tier_routing_disabled',
       risk,
-      propensity: 1.0,
-      candidates: [{ provider: primaryProvider, model: null }],
       _queryEmbedding: queryEmbedding,
       _queryText: queryText,
-    };
+    });
   }
 
   // High-risk requests jump straight to COMPLEX and skip the rest of
@@ -736,7 +757,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
       // trusted provider (Claude) via REASONING, not the mid-tier GLM.
       // Security/auth/middleware changes belong on the governance path.
       const modelSelection = selector.selectModel('REASONING', null);
-      const decision = {
+      const decision = buildDecision({
         provider: modelSelection.provider,
         model: modelSelection.model,
         tier: 'REASONING',
@@ -744,7 +765,6 @@ async function _determineProviderSmartInner(payload, options = {}) {
         reason: 'high_risk_forced_tier',
         score: 100,
         risk,
-        base_tier: null,
         escalations: [{
           source: 'risk',
           fromTier: null,
@@ -753,11 +773,9 @@ async function _determineProviderSmartInner(payload, options = {}) {
           toModel: modelSelection.model,
         }],
         escalation_source: 'risk',
-        propensity: 1.0,
-        candidates: [{ provider: modelSelection.provider, model: modelSelection.model }],
         _queryEmbedding: queryEmbedding,
         _queryText: queryText,
-      };
+      });
       routingMetrics.record(decision);
       logger.debug({
         tier: 'REASONING',
@@ -778,7 +796,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
       try {
         const selector = getModelTierSelector();
         const modelSelection = selector.selectModel('SIMPLE', null);
-        const decision = {
+        const decision = buildDecision({
           provider: modelSelection.provider,
           model: modelSelection.model,
           tier: 'SIMPLE',
@@ -786,11 +804,9 @@ async function _determineProviderSmartInner(payload, options = {}) {
           reason: 'force_local_pattern',
           score: 0,
           risk,
-          propensity: 1.0,
-          candidates: [{ provider: modelSelection.provider, model: modelSelection.model }],
           _queryEmbedding: queryEmbedding,
           _queryText: queryText,
-        };
+        });
         routingMetrics.record(decision);
         return decision;
       } catch (err) {
@@ -798,18 +814,15 @@ async function _determineProviderSmartInner(payload, options = {}) {
       }
     }
     const provider = getBestLocalProvider();
-    const decision = {
+    const decision = buildDecision({
       provider,
-      model: null,
       method: 'force',
       reason: 'force_local_pattern',
       score: 0,
       risk,
-      propensity: 1.0,
-      candidates: [{ provider, model: null }],
       _queryEmbedding: queryEmbedding,
       _queryText: queryText,
-    };
+    });
     routingMetrics.record(decision);
     return decision;
   }
@@ -821,7 +834,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
     try {
       const selector = getModelTierSelector();
       const modelSelection = selector.selectModel('REASONING', null);
-      const decision = {
+      const decision = buildDecision({
         provider: modelSelection.provider,
         model: modelSelection.model,
         tier: 'REASONING',
@@ -829,11 +842,9 @@ async function _determineProviderSmartInner(payload, options = {}) {
         reason: 'force_reasoning_pattern',
         score: 100,
         risk,
-        propensity: 1.0,
-        candidates: [{ provider: modelSelection.provider, model: modelSelection.model }],
         _queryEmbedding: queryEmbedding,
         _queryText: queryText,
-      };
+      });
       routingMetrics.record(decision);
       return decision;
     } catch (err) {
@@ -854,7 +865,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
       try {
         const selector = getModelTierSelector();
         const modelSelection = selector.selectModel('COMPLEX', null);
-        const decision = {
+        const decision = buildDecision({
           provider: modelSelection.provider,
           model: modelSelection.model,
           tier: 'COMPLEX',
@@ -862,11 +873,9 @@ async function _determineProviderSmartInner(payload, options = {}) {
           reason: 'force_cloud_pattern',
           score: 100,
           risk,
-          propensity: 1.0,
-          candidates: [{ provider: modelSelection.provider, model: modelSelection.model }],
           _queryEmbedding: queryEmbedding,
           _queryText: queryText,
-        };
+        });
         routingMetrics.record(decision);
         return decision;
       } catch (err) {
@@ -874,18 +883,15 @@ async function _determineProviderSmartInner(payload, options = {}) {
       }
     }
     const provider = getBestCloudProvider();
-    const decision = {
+    const decision = buildDecision({
       provider,
-      model: null,
       method: 'force',
       reason: 'force_cloud_pattern',
       score: 100,
       risk,
-      propensity: 1.0,
-      candidates: [{ provider, model: null }],
       _queryEmbedding: queryEmbedding,
       _queryText: queryText,
-    };
+    });
     routingMetrics.record(decision);
     return decision;
   }
@@ -973,7 +979,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
             try {
               const selector = getModelTierSelector();
               const modelSelection = selector.selectModel('REASONING', null);
-              const decision = {
+              const decision = buildDecision({
                 provider: modelSelection.provider,
                 model: modelSelection.model,
                 tier: 'REASONING',
@@ -986,11 +992,9 @@ async function _determineProviderSmartInner(payload, options = {}) {
                 score: 100,
                 agenticResult,
                 risk,
-                propensity: 1.0,
-                candidates: [{ provider: modelSelection.provider, model: modelSelection.model }],
                 _queryEmbedding: queryEmbedding,
                 _queryText: queryText,
-              };
+              });
               routingMetrics.record(decision);
               return decision;
             } catch (err) {
@@ -998,18 +1002,16 @@ async function _determineProviderSmartInner(payload, options = {}) {
             }
           }
           const provider = getBestCloudProvider();
-          const decision = {
+          const decision = buildDecision({
             provider,
             method: 'agentic',
             reason: 'autonomous_workflow',
             score: 100, // trigger score matches forced tier — see comment above
             agenticResult,
             risk,
-            propensity: 1.0,
-            candidates: [{ provider, model: null }],
             _queryEmbedding: queryEmbedding,
             _queryText: queryText,
-          };
+          });
           routingMetrics.record(decision);
           return decision;
         }
@@ -1445,7 +1447,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
     }
   }
 
-  const decision = {
+  const decision = buildDecision({
     provider,
     model: selectedModel,
     tier,
@@ -1468,7 +1470,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
     escalation_source: escalations[0]?.source
       ?? (demotedFrom ? 'deescalation' : null),
     demoted_from: demotedFrom,
-  };
+  });
 
   // WS4.2 — propensity/candidates for off-policy evaluation from telemetry.
   // Bandit picks populate both. If a deterministic downstream override
@@ -1613,6 +1615,10 @@ module.exports = {
   writeSessionPin,
   // WS1.5: upward-drift detection for pinned sessions
   checkPinScoreDrift,
+
+  // Canonical decision constructor — every routing decision must be built
+  // through this (see the anti-drift shape test in test/routing.test.js).
+  buildDecision,
 
   // WS1: test-only internals (exercised by test/sticky-routing.test.js)
   _internals: {

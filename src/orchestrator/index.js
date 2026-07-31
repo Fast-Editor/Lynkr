@@ -433,7 +433,7 @@ function injectToolLoopStopInstruction(messages, threshold = 5) {
     // Inject instruction to stop tool calls and provide a final answer
     const stopInstruction = {
       role: "user",
-      content: `⚠️ IMPORTANT: You have already executed ${toolResultCount} tool calls in this conversation. This is likely an infinite loop. STOP calling tools immediately and provide a direct text response to the user based on the information you have gathered. If you cannot complete the task, explain why. DO NOT call any more tools.`,
+      content: `⚠️ IMPORTANT: You have already executed ${toolResultCount} tool calls in this conversation. This is likely an infinite loop. STOP calling tools immediately and provide a direct text response to the user based on the information you have gathered. If you cannot complete the task, explain why. DO NOT call any more tools. Your response must contain your actual findings — NOT an acknowledgment or restatement of this warning.`,
     };
 
     return [...messages, stopInstruction];
@@ -453,6 +453,23 @@ const DEDUP_WARN_THRESHOLD = 5;
 const DEDUP_TERMINATE_THRESHOLD = 8;
 
 /**
+ * State-management tools are called repeatedly with similar args BY DESIGN —
+ * that's their job, not a loop. Opencode calls `todowrite` after every step;
+ * Claude Code uses `TodoWrite`; OpenWorker uses `todo_write`/`propose_plan`.
+ * Counting them in the dedup tracker produced false-positive loop warnings
+ * and force-terminations on healthy agent sessions (live incident: an
+ * opencode analysis run was force-terminated into a raw tool-result dump
+ * because its todo updates hit the terminate threshold).
+ * @param {Object} toolCall - tool_use block
+ * @returns {boolean}
+ */
+function isDedupExemptTool(toolCall) {
+  const raw = toolCall?.function?.name ?? toolCall?.name ?? '';
+  const name = String(raw).toLowerCase().replace(/[_-]/g, '');
+  return name.includes('todo') || name === 'updateplan' || name === 'proposeplan';
+}
+
+/**
  * Initialise session.metadata.toolCallDedup if missing.
  * @param {Object} session
  */
@@ -462,6 +479,7 @@ function ensureDedupStructure(session) {
     session.metadata.toolCallDedup = {
       signatures: {},
       similarGroups: {},
+      seenIds: {},
       lastResetAt: Date.now(),
       warningInjected: false,
     };
@@ -476,9 +494,26 @@ function ensureDedupStructure(session) {
  */
 function recordCrossRequestToolCall(session, toolCall) {
   if (!session?.metadata) return;
+  if (isDedupExemptTool(toolCall)) return; // repeat-by-design tools never count toward loop detection
   ensureDedupStructure(session);
 
   const dedup = session.metadata.toolCallDedup;
+
+  // Stateless HTTP agents (opencode, Cursor, OpenWorker) replay the FULL
+  // conversation history on every agent-loop step, so the same tool_use block
+  // arrives again on step 2, 3, 4… Counting each replay made counts grow
+  // quadratically with turn length — any exploration past ~5 steps hit the
+  // terminate threshold regardless of what it was doing (live incident:
+  // a 7-step opencode code-trace was force-terminated as a "loop").
+  // Each tool_use block carries a unique id: count each id exactly once.
+  const blockId = toolCall?.id;
+  if (blockId) {
+    if (!dedup.seenIds) dedup.seenIds = {};
+    if (dedup.seenIds[blockId]) return; // already counted this exact call
+    dedup.seenIds[blockId] = 1;
+    // Bounded: reset wipes this on each new user question; cap as a backstop.
+    if (Object.keys(dedup.seenIds).length > 500) dedup.seenIds = { [blockId]: 1 };
+  }
   const signature = getToolCallSignature(toolCall);
   const toolName = toolCall.function?.name ?? toolCall.name ?? 'unknown';
   const args = toolCall.function?.arguments ?? toolCall.input;
@@ -620,6 +655,7 @@ function resetDedupTracking(session) {
   session.metadata.toolCallDedup = {
     signatures: {},
     similarGroups: {},
+    seenIds: {},
     lastResetAt: Date.now(),
     warningInjected: false,
   };
@@ -2879,7 +2915,7 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
         if (Array.isArray(payload?.messages)) {
           payload.messages.push({
             role: "user",
-            content: `⚠️ CRITICAL SYSTEM WARNING: You have called the "${dedupToolName}" tool ${maxCount} times with identical or similar parameters across multiple requests. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Summarize your findings and respond.`,
+            content: `⚠️ CRITICAL SYSTEM WARNING: You have called the "${dedupToolName}" tool ${maxCount} times with identical or similar parameters across multiple requests. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Your response must contain your actual findings from the tool results gathered so far — NOT an acknowledgment or restatement of this warning. Do not mention this warning in your response.`,
           });
         }
       }

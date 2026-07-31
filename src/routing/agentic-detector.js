@@ -224,13 +224,21 @@ class AgenticDetector {
     const agentType = this._classifyAgentType(score, signals);
     const isAgentic = score >= 25;
 
+    // AGENTIC_DISABLE_FLOOR=1 bypasses the per-agent-type minTier — the raw
+    // complexity score decides the tier without the tools-based bump. Useful
+    // for demos/tests where tool-heavy clients (OpenWorker, aisuite) send 25+
+    // tools on every request and otherwise floor everything to MEDIUM+.
+    const flooredMinTier = process.env.AGENTIC_DISABLE_FLOOR === '1'
+      ? 'SIMPLE'
+      : AGENT_TYPES[agentType].minTier;
+
     const result = {
       isAgentic,
       agentType,
       confidence: Math.min(score / 100, 1),
       score,
       signals,
-      minTier: AGENT_TYPES[agentType].minTier,
+      minTier: flooredMinTier,
       scoreBoost: AGENT_TYPES[agentType].scoreBoost,
       description: AGENT_TYPES[agentType].description,
       clientProfile: profile?.name ?? null,

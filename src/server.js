@@ -196,7 +196,11 @@ async function start() {
     }
   }
 
-  const server = app.listen(config.port, () => {
+  const server = app.listen(config.port, (err) => {
+    // Express 5 invokes this callback on bind errors too (it wires the
+    // callback to the server 'error' event) — without the guard, a failed
+    // bind prints "listening" right before the EADDRINUSE failure.
+    if (err) return;
     console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
   });
 
