@@ -10,7 +10,9 @@ const modelCapabilitiesCache = new Map();
 const TOOL_CAPABLE_MODELS = new Set([
   "llama3.1",
   "llama3.2",
+  "llama3.3",
   "qwen2.5",
+  "qwen3",
   "mistral",
   "mistral-nemo",
   "firefunction-v2",
