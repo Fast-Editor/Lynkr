@@ -5,36 +5,40 @@ const logger = require("../logger");
 const modelCapabilitiesCache = new Map();
 
 /**
- * Known models with tool calling support
+ * Known models with tool calling support.
+ * A model name matches a family if it starts with the family string
+ * (case-insensitive), so "llama3.1:latest" and "llama3.1-instruct" both match.
  */
 const TOOL_CAPABLE_MODELS = new Set([
   "llama3.1",
   "llama3.2",
-  "llama3.3",
   "qwen2.5",
-  "qwen3",
   "mistral",
   "mistral-nemo",
   "firefunction-v2",
+  "kimi-k2.5",
+  "nemotron",
 ]);
 
 /**
- * Check if a model name indicates tool support
+ * Check if a model name indicates tool support.
+ * Safe to call with any input — returns false rather than throwing for
+ * non-string or empty values.
  */
 function modelNameSupportsTools(modelName) {
-  if (!modelName) return false;
+  if (!modelName || typeof modelName !== "string") return false;
 
   const normalized = modelName.toLowerCase();
 
-  // Check if model name starts with any known tool-capable model
+  // Check if model name starts with any known tool-capable model family
   return Array.from(TOOL_CAPABLE_MODELS).some(prefix =>
     normalized.startsWith(prefix)
   );
 }
 
 /**
- * Check if Ollama model supports tool calling
- * Uses heuristics and caching to avoid repeated API calls
+ * Check if Ollama model supports tool calling.
+ * Uses heuristics and caching to avoid repeated API calls.
  */
 async function checkOllamaToolSupport(modelName = config.ollama?.model) {
   if (!modelName) return false;
@@ -53,6 +57,21 @@ async function checkOllamaToolSupport(modelName = config.ollama?.model) {
   modelCapabilitiesCache.set(modelName, supportsTools);
 
   return supportsTools;
+}
+
+/**
+ * Clear the capability cache.
+ * Useful after pulling a new model or updating TOOL_CAPABLE_MODELS
+ * so the next call to checkOllamaToolSupport re-evaluates the model name.
+ * @param {string} [modelName] - If provided, clears only that entry;
+ *   otherwise clears the entire cache.
+ */
+function clearCapabilityCache(modelName) {
+  if (modelName !== undefined) {
+    modelCapabilitiesCache.delete(modelName);
+  } else {
+    modelCapabilitiesCache.clear();
+  }
 }
 
 /**
@@ -213,6 +232,7 @@ function buildAnthropicResponseFromOllama(ollamaResponse, requestedModel) {
 
 module.exports = {
   checkOllamaToolSupport,
+  clearCapabilityCache,
   convertAnthropicToolsToOllama,
   convertOllamaToolCallsToAnthropic,
   buildAnthropicResponseFromOllama,

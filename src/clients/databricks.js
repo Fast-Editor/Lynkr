@@ -297,8 +297,9 @@ async function invokeOllama(body) {
     }, 'Ollama: Removed consecutive duplicate roles from message sequence');
   }
 
+  const resolvedModel = (body.model && body.model.trim()) || config.ollama.model;
   const ollamaBody = {
-    model: config.ollama.model,
+    model: resolvedModel,
     messages: deduplicated,
     stream: false,  // Force non-streaming for Ollama - streaming format conversion not yet implemented
     options: {
@@ -326,11 +327,11 @@ async function invokeOllama(body) {
   }
 
   // Check if model supports tools
-  const supportsTools = await checkOllamaToolSupport(config.ollama.model);
+  const supportsTools = await checkOllamaToolSupport(resolvedModel);
 
   if (!supportsTools) {
     logger.warn({
-      model: config.ollama.model,
+      model: resolvedModel,
       toolCount: toolsToSend?.length || 0
     }, "Model does not support tool calling - stripping tools from request");
   }
