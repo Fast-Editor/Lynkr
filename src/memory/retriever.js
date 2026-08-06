@@ -3,6 +3,10 @@ const search = require("./search");
 const logger = require("../logger");
 const format = require("./format");
 
+// Infrastructure memory types (wiki registry, compression skills) are used
+// by the distillation pipeline, never injected as conversational context
+const INTERNAL_MEMORY_TYPES = new Set(["wiki", "skill"]);
+
 /**
  * Retrieve relevant memories using multi-signal ranking
  *
@@ -41,8 +45,9 @@ function retrieveRelevantMemories(query, options = {}) {
       sessionId: includeGlobal ? null : sessionId,
     });
 
-    // 4. Merge and deduplicate
-    const candidates = mergeUnique([ftsResults, recentMemories, importantMemories]);
+    // 4. Merge and deduplicate, dropping infrastructure entries
+    const candidates = mergeUnique([ftsResults, recentMemories, importantMemories])
+      .filter(m => !INTERNAL_MEMORY_TYPES.has(m.type));
 
     // 5. Score and rank
     const scored = candidates.map(memory => ({

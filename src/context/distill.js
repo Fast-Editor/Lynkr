@@ -342,6 +342,7 @@ function deduplicateBlocks(blocks, options = {}) {
  * @param {Object} options
  * @param {string} options.previousResult - Previous tool result for delta rendering
  * @param {number} options.maxLength - Max output length (default 1000)
+ * @param {boolean} options.skipDedup - Skip section dedup (known-futile shapes)
  * @returns {Object} { text, method, stats }
  */
 function compressToolResult(text, options = {}) {
@@ -380,7 +381,7 @@ function compressToolResult(text, options = {}) {
   }
 
   // Step 3: Internal dedup — split into logical sections and dedup
-  const sections = result.split(/\n{2,}/);
+  const sections = options.skipDedup ? [] : result.split(/\n{2,}/);
   if (sections.length > 3) {
     const { compressed, stats } = deduplicateBlocks(sections);
     if (stats.duplicatesRemoved > 0) {

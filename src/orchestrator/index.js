@@ -1457,6 +1457,30 @@ async function runAgentLoop({
 
 
     if (steps === 1 && agentTimer) agentTimer.mark("preCompression");
+
+    // === CONVERSATION DISTILLATION (TencentDB-inspired L0-L3 pipeline) ===
+    // Long conversations collapse older turns into one distilled block
+    // (persona + scenario summary) before history compression runs.
+    if (steps === 1 && config.memory?.enabled !== false && config.memory?.distillation?.enabled !== false) {
+      try {
+        const distiller = require('../memory/distiller');
+        if (distiller.needsDistillation(cleanPayload.messages)) {
+          const result = distiller.distillMessages(cleanPayload.messages, {
+            sessionId: session?.id,
+          });
+          if (result.applied) {
+            cleanPayload.messages = result.messages;
+            logger.debug({
+              sessionId: session?.id ?? null,
+              ...result.stats,
+            }, '[distiller] Conversation distillation applied');
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, sessionId: session?.id }, 'Distillation failed, continuing with full history');
+      }
+    }
+
     if (steps === 1 && config.historyCompression?.enabled !== false) {
       try {
         if (historyCompression.needsCompression(cleanPayload.messages)) {

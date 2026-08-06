@@ -13,6 +13,13 @@ const logger = require('../logger');
 const config = require('../config');
 const distill = require('./distill');
 
+// Lazy-loaded so requiring this module doesn't pull in the SQLite store
+let skillsCache = null;
+function getSkillsCache() {
+  if (!skillsCache) skillsCache = require('../memory/skills-cache');
+  return skillsCache;
+}
+
 /**
  * Compress conversation history to fit within token budget
  *
@@ -277,14 +284,26 @@ function compressToolResultBlock(block, options = {}) {
     tool_use_id: block.tool_use_id,
   };
 
-  // Compress content using Distill when content is large enough to benefit
+  // Compress content using Distill when content is large enough to benefit.
+  // The skills cache remembers how each output shape compressed before:
+  // known-futile shapes skip dedup work, proven-compressible shapes get a
+  // tighter length budget.
+  const compressWithSkills = (text, previousResult) => {
+    const skills = getSkillsCache();
+    const hints = skills.getCompressionHints(text);
+    const result = distill.compressToolResult(text, {
+      previousResult,
+      maxLength: Math.floor(500 * hints.maxLengthFactor),
+      skipDedup: hints.skipDedup,
+    });
+    const savings = text.length > 0 ? 1 - result.text.length / text.length : 0;
+    skills.record(hints.signature, result.method, savings);
+    return result.text;
+  };
+
   if (typeof block.content === 'string') {
     if (block.content.length > 500) {
-      const result = distill.compressToolResult(block.content, {
-        previousResult: options.previousResult,
-        maxLength: 500,
-      });
-      compressed.content = result.text;
+      compressed.content = compressWithSkills(block.content, options.previousResult);
     } else {
       compressed.content = block.content;
     }
@@ -292,14 +311,14 @@ function compressToolResultBlock(block, options = {}) {
     compressed.content = block.content.map(item => {
       if (typeof item === 'string') {
         if (item.length > 500) {
-          return distill.compressToolResult(item, { maxLength: 500 }).text;
+          return compressWithSkills(item);
         }
         return item;
       } else if (item.type === 'text') {
         if (item.text && item.text.length > 500) {
           return {
             type: 'text',
-            text: distill.compressToolResult(item.text, { maxLength: 500 }).text,
+            text: compressWithSkills(item.text),
           };
         }
         return item;

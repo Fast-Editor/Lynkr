@@ -15,6 +15,9 @@ const retriever = require("./retriever");
 const extractor = require("./extractor");
 const surprise = require("./surprise");
 const tools = require("./tools");
+const distiller = require("./distiller");
+const wiki = require("./wiki");
+const skillsCache = require("./skills-cache");
 
 module.exports = {
   // Store operations
@@ -52,4 +55,11 @@ module.exports = {
   // Tools
   tools,
   MEMORY_TOOLS: tools.MEMORY_TOOLS,
+
+  // TencentDB-inspired L0-L3 token optimization
+  distiller,
+  needsDistillation: distiller.needsDistillation,
+  distillMessages: distiller.distillMessages,
+  wiki,
+  skillsCache,
 };

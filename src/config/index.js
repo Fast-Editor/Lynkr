@@ -809,6 +809,22 @@ var config = {
     extraction: {
       enabled: memoryExtractionEnabled,
     },
+    // TencentDB-Agent-Memory-inspired token optimization (L0-L3 pipeline).
+    // Fixed defaults by design — tune here, not via env.
+    distillation: {
+      enabled: true,
+      turnThreshold: 10, // distill once conversation reaches 10 user turns
+      keepRecentTurns: 3, // last 3 user turns stay verbatim
+    },
+    skills: {
+      enabled: true,
+      minSavings: 0.6, // compression outcome must save 60%+ to be cached
+    },
+    wiki: {
+      enabled: true,
+      minTokens: 500, // register blocks larger than ~500 tokens
+      similarityThreshold: 0.85,
+    },
     decay: {
       enabled: memoryDecayEnabled,
       halfLifeDays: Number.isNaN(memoryDecayHalfLifeDays) ? 30 : memoryDecayHalfLifeDays,
@@ -973,6 +989,8 @@ var config = {
     command: process.env.CODE_GRAPH_COMMAND || 'graphify',
     workspace: process.env.CODE_GRAPH_WORKSPACE || process.cwd(),
     timeout: parseInt(process.env.CODE_GRAPH_TIMEOUT, 10) || 10000,
+    maxDepth: 2, // symbol dependency depth for graph queries
+    maxFiles: 5, // max files returned as relevant context
   },
 
   // Large payload optimization (skip cloning media blocks that get discarded)
