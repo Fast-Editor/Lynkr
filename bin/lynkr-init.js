@@ -237,10 +237,11 @@ const BASELINE_ENV = {
   HEADROOM_CCR_TTL: '300',
 
   // ── TencentDB-Agent-Memory sidecar (team memory hub) ──────────────────
-  // Opt-in: launches agentmemory/memory-core + memory-hub containers on
-  // `lynkr start` (Panel UI :8125). Off by default — pulls two Docker Hub
-  // images and runs a persistent stack. See .env.example for all knobs.
-  TENCENTDB_MEMORY_ENABLED: 'false',
+  // Launches agentmemory/memory-core + memory-hub containers on
+  // `lynkr start` (Panel UI :8125). First start pulls two Docker Hub
+  // images; skips gracefully when Docker isn't running. See .env.example
+  // for all knobs.
+  TENCENTDB_MEMORY_ENABLED: 'true',
 
   // ── Memory + token tracking ───────────────────────────────────────────
   MEMORY_ENABLED: 'true',
