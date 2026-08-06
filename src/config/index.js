@@ -904,6 +904,41 @@ var config = {
     provider: headroomProvider,
     logLevel: headroomLogLevel,
   },
+  // TencentDB-Agent-Memory sidecar (memory-core + memory-hub, Docker Hub
+  // `agentmemory/*` images). Opt-in like Headroom; when enabled, `lynkr start`
+  // launches both containers. Their internal LLM calls default to routing
+  // back through Lynkr itself, so no extra API key is needed.
+  tencentdbMemory: {
+    enabled: process.env.TENCENTDB_MEMORY_ENABLED === "true",
+    docker: {
+      enabled: process.env.TENCENTDB_MEMORY_DOCKER_ENABLED !== "false", // default true when sidecar enabled
+      network: "tdai-memory-stack",
+      core: {
+        image: process.env.TENCENTDB_MEMORY_CORE_IMAGE ?? "agentmemory/memory-core:latest",
+        containerName: "tdai-memory-core",
+        port: Number.parseInt(process.env.TENCENTDB_MEMORY_CORE_PORT ?? "8420", 10),
+        volume: "tdai-memory-core-data",
+      },
+      hub: {
+        image: process.env.TENCENTDB_MEMORY_HUB_IMAGE ?? "agentmemory/memory-hub:latest",
+        containerName: "tdai-memory-hub",
+        panelPort: Number.parseInt(process.env.TENCENTDB_MEMORY_PANEL_PORT ?? "8125", 10),
+        knowledgePort: Number.parseInt(process.env.TENCENTDB_MEMORY_KNOWLEDGE_PORT ?? "8424", 10),
+        volume: "tdai-panel-data",
+      },
+    },
+    // LLM the memory services use for extraction/summarization/wiki ingest.
+    // Defaults route through Lynkr's own OpenAI-compatible endpoint (tier
+    // routing decides the actual model), so local Ollama setups run free.
+    llm: {
+      baseUrl: process.env.TENCENTDB_MEMORY_LLM_BASE_URL
+        ?? `http://host.docker.internal:${Number.isNaN(port) ? 8080 : port}/v1`,
+      apiKey: process.env.TENCENTDB_MEMORY_LLM_API_KEY ?? "lynkr-local",
+      model: process.env.TENCENTDB_MEMORY_LLM_MODEL ?? "auto",
+      protocol: process.env.TENCENTDB_MEMORY_LLM_PROTOCOL ?? "openai",
+    },
+    promptMode: process.env.TENCENTDB_MEMORY_PROMPT_MODE ?? "code", // code | chat
+  },
   security: {
     // Content filtering
     contentFilterEnabled: process.env.SECURITY_CONTENT_FILTER_ENABLED !== "false", // default true
