@@ -84,6 +84,41 @@ describe("Conversation Distiller", () => {
       assert.strictEqual(distiller.needsDistillation(null), false);
     });
 
+    it("fires the size-based rescue trigger before the turn threshold", () => {
+      // 5 turns (below the 10-turn threshold) but with a huge pasted block
+      // — the scenario that overflows a 4k-context local model
+      const bigBlock = "config line: value = setting\n".repeat(500); // ~14.5k chars ≈ 3.6k tokens
+      const messages = [
+        ...turn("Review this config:\n" + bigBlock, "Looks mostly fine."),
+        ...turn("What about the timeout?", "Timeout is 65s."),
+        ...turn("And the gzip settings?", "Enabled globally."),
+        ...turn("Should I change keepalive?", "No, 65 is standard."),
+        ...turn("What about worker processes?", "Set to auto."),
+      ];
+      assert.strictEqual(distiller.needsDistillation(messages), true);
+
+      const result = distiller.distillMessages(messages);
+      assert.strictEqual(result.applied, true);
+      // Last 3 turns verbatim + distilled block
+      assert.strictEqual(result.messages.length, 7);
+      assert.ok(result.messages[0].content.startsWith("[Distilled context"));
+    });
+
+    it("does not fire the size trigger when turns fit in the keep window", () => {
+      const bigBlock = "config line: value = setting\n".repeat(500);
+      // Only 3 turns — everything is in the keep window, nothing to distill
+      const messages = [
+        ...turn("Review this:\n" + bigBlock, "OK."),
+        ...turn("Question two?", "Answer two."),
+        ...turn("Question three?", "Answer three."),
+      ];
+      assert.strictEqual(distiller.needsDistillation(messages), false);
+    });
+
+    it("does not fire the size trigger on small conversations", () => {
+      assert.strictEqual(distiller.needsDistillation(conversation(5)), false);
+    });
+
     it("does not count tool_result-only user messages as turns", () => {
       const messages = [];
       for (let i = 0; i < 6; i++) {

@@ -815,6 +815,10 @@ var config = {
       enabled: true,
       turnThreshold: 10, // distill once conversation reaches 10 user turns
       keepRecentTurns: 3, // last 3 user turns stay verbatim
+      // Size-based rescue trigger: fires regardless of turn count once the
+      // history alone hits this many estimated tokens, so small-context
+      // local models (4k-8k) don't overflow before the turn threshold.
+      tokenThreshold: 3000,
     },
     skills: {
       enabled: true,

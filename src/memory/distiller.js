@@ -51,15 +51,54 @@ function realUserTurnIndices(messages) {
   return indices;
 }
 
+const CHARS_PER_TOKEN = 4;
+
 /**
- * Whether the conversation is long enough to distill.
+ * Rough token estimate for the message history (text + tool content).
+ */
+function estimateHistoryTokens(messages) {
+  let chars = 0;
+  for (const msg of messages) {
+    if (typeof msg.content === "string") {
+      chars += msg.content.length;
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block?.text) chars += block.text.length;
+        else if (typeof block?.content === "string") chars += block.content.length;
+        else if (Array.isArray(block?.content)) {
+          for (const item of block.content) {
+            chars += typeof item === "string" ? item.length : (item?.text?.length ?? 0);
+          }
+        }
+        if (block?.input) chars += JSON.stringify(block.input).length;
+      }
+    }
+  }
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
+/**
+ * Whether the conversation should be distilled. Two triggers:
+ *  - turn count: conversation reached turnThreshold user turns, OR
+ *  - size rescue: history alone exceeds tokenThreshold estimated tokens
+ *    (protects small-context models that overflow long before the turn
+ *    threshold — observed with 4k-context Ollama models dying at turn 8).
+ * Either way there must be at least one turn older than the keep window,
+ * or there is nothing to distill.
  */
 function needsDistillation(messages) {
-  if (distillConfig().enabled === false) return false;
+  const cfg = distillConfig();
+  if (cfg.enabled === false) return false;
   if (!messages?.length) return false;
 
-  const threshold = distillConfig().turnThreshold ?? 10;
-  return realUserTurnIndices(messages).length >= threshold;
+  const turns = realUserTurnIndices(messages).length;
+  const keepRecent = cfg.keepRecentTurns ?? 3;
+  if (turns <= keepRecent) return false;
+
+  if (turns >= (cfg.turnThreshold ?? 10)) return true;
+
+  const tokenThreshold = cfg.tokenThreshold ?? 3000;
+  return estimateHistoryTokens(messages) >= tokenThreshold;
 }
 
 function extractText(msg) {
@@ -221,4 +260,5 @@ module.exports = {
   buildScenario,
   buildPersona,
   isRealUserTurn,
+  estimateHistoryTokens,
 };
