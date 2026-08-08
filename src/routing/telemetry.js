@@ -791,6 +791,54 @@ function _resetForTests() {
   _testDbDisabled = false;
 }
 
+// Cache-aware routing (Phase 3) — expected remaining turns.
+//
+// Conditional median: given a session has already reached `currentTurns`
+// messages, how many MORE messages do comparable sessions run? Uses the max
+// message_count each recent session reached. Conditional (len > current)
+// rather than a global median because long sessions systematically outlive
+// the average — exactly the sessions whose warm prefixes are worth pricing.
+const _remainingTurnsCache = new Map();
+const REMAINING_TURNS_CACHE_TTL_MS = 60 * 1000;
+const REMAINING_TURNS_MIN_SESSIONS = 20;
+
+/**
+ * @param {number} currentTurns - message_count the session has reached now.
+ * @returns {number|null} median remaining messages, or null when telemetry
+ *   is too sparse (< 20 comparable sessions in the last 7 days).
+ */
+function getExpectedRemainingTurns(currentTurns = 0) {
+  if (!init()) return null;
+  const bucket = Math.max(0, Math.floor((Number(currentTurns) || 0) / 5) * 5);
+  const cached = _remainingTurnsCache.get(bucket);
+  if (cached && Date.now() - cached.ts < REMAINING_TURNS_CACHE_TTL_MS) {
+    return cached.value;
+  }
+  try {
+    const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const rows = db
+      .prepare(
+        `SELECT MAX(message_count) AS len
+         FROM routing_telemetry
+         WHERE timestamp > ? AND session_id IS NOT NULL AND message_count IS NOT NULL
+         GROUP BY session_id
+         HAVING len > ?
+         LIMIT 5000`
+      )
+      .all(since, bucket);
+    let value = null;
+    if (rows.length >= REMAINING_TURNS_MIN_SESSIONS) {
+      const remaining = rows.map((r) => r.len - bucket).sort((a, b) => a - b);
+      value = remaining[Math.floor(remaining.length / 2)];
+    }
+    _remainingTurnsCache.set(bucket, { value, ts: Date.now() });
+    return value;
+  } catch (err) {
+    logger.debug({ err: err.message }, "Telemetry getExpectedRemainingTurns failed");
+    return null;
+  }
+}
+
 module.exports = {
   record,
   query,
@@ -799,6 +847,7 @@ module.exports = {
   getRoutingAccuracy,
   getEscalationStats,
   getQualityByTierAndType,
+  getExpectedRemainingTurns,
   recordSavings,
   getSavingsSummary,
   cleanup,

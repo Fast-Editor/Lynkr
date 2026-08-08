@@ -1004,6 +1004,21 @@ var config = {
     // If all exit 0, short-circuit the request with zero LLM cost.
     preflightEnabled: process.env.LYNKR_PREFLIGHT_ENABLED === 'true',
     preflightTimeoutMs: Number(process.env.LYNKR_PREFLIGHT_TIMEOUT_MS) || 120000,
+    // Cache-aware routing (Phases 1-3). Fixed defaults by design — tune
+    // here, not via env (same policy as memory.distillation).
+    cacheAware: {
+      enabled: true,
+      // Median remaining turns assumed when telemetry is too sparse to
+      // estimate — conservative so a warm pin isn't dropped for a switch
+      // that only pays off over a long horizon that may not happen.
+      defaultRemainingTurns: 10,
+      // Per-turn size assumptions when the payload gives no better signal.
+      newTokensPerTurn: 2000,
+      outputTokensPerTurn: 800,
+      // Local models: switching costs prefill latency, not dollars. Hold
+      // the pin while the warm prefix exceeds this many tokens.
+      localMaxSwitchPrefixTokens: 16000,
+    },
   },
 
   // Model Tier Configuration (REQUIRED)
