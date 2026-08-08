@@ -1950,9 +1950,14 @@ IMPORTANT TOOL USAGE RULES:
   // the response path.
   if (session?.id && actualUsage) {
     try {
+      // Prefer the ROUTED provider/model over the request-level default:
+      // the tier router inside invokeModel may have diverged from
+      // providerType, and the cache lives with whoever actually served
+      // (verified live: databricks default label on ollama-served turns).
+      const served = databricksResponse.routingDecision || {};
       sessionAffinity.recordCacheUsage(session.id, {
-        provider: providerType,
-        model: cleanPayload.model,
+        provider: served.provider || providerType,
+        model: served.model || cleanPayload.model,
         cacheReadTokens: actualUsage.cacheReadTokens,
         cacheCreationTokens: actualUsage.cacheCreationTokens,
       });
