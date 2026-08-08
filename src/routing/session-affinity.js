@@ -172,6 +172,64 @@ function shouldRepin(pin, payload) {
   return { repin: false, reason: null };
 }
 
+// ---------------------------------------------------------------------------
+// Cache-aware routing (Phase 1) — per-session prompt-cache state.
+//
+// After every upstream response we record how much of the session's prefix
+// is warm on the provider side: cache_read + cache_creation tokens together
+// describe the cached prefix as of that response. Anthropic-style explicit
+// caches refresh their TTL on every read, so `lastRequestAt + ttlMs` is a
+// live cache clock the switch-timing logic (Phase 2) can consult.
+// ---------------------------------------------------------------------------
+
+/**
+ * Record prompt-cache usage from an upstream response. No-ops when the
+ * response carried no cache signal (both counters zero/absent) so providers
+ * without cache reporting simply never accrue state.
+ *
+ * Overwrites unconditionally on signal: if the session switched models, the
+ * new response's numbers ARE the new model's cache state (caches are
+ * model-scoped — never carry a warm-prefix figure across a switch).
+ *
+ * @param {string} sessionId
+ * @param {{provider:string, model?:string|null, cacheReadTokens?:number, cacheCreationTokens?:number}} usage
+ */
+function recordCacheUsage(sessionId, usage) {
+  if (!sessionId || !usage?.provider) return;
+  const read = Number(usage.cacheReadTokens) || 0;
+  const created = Number(usage.cacheCreationTokens) || 0;
+  const warm = read + created;
+  if (warm <= 0) return; // no cache signal — state stays absent
+
+  let ttlMs = 5 * 60 * 1000;
+  try {
+    const { resolveCacheEconomics } = require("./cache-economics");
+    ttlMs = resolveCacheEconomics(usage.provider, usage.model ?? null).ttlMs;
+  } catch { /* keep default */ }
+
+  store.saveCacheState(sessionId, {
+    warmPrefixTokens: warm,
+    provider: usage.provider,
+    model: usage.model ?? null,
+    lastRequestAt: Date.now(),
+    ttlMs,
+  });
+}
+
+/**
+ * Load the session's cache state, annotated with liveness. Returns null when
+ * no state exists (provider reports no cache usage, or no response yet).
+ *
+ * @param {string} sessionId
+ * @returns {({warmPrefixTokens:number, provider:string, model:string|null, lastRequestAt:number, ttlMs:number, cold:boolean})|null}
+ */
+function getCacheState(sessionId) {
+  const state = store.loadCacheState(sessionId);
+  if (!state || typeof state.lastRequestAt !== "number") return null;
+  const ttl = typeof state.ttlMs === "number" ? state.ttlMs : 5 * 60 * 1000;
+  return { ...state, cold: Date.now() - state.lastRequestAt > ttl };
+}
+
 /** Test/maintenance helper — clear the in-memory Map only. */
 function _clear() {
   pins.clear();
@@ -223,6 +281,8 @@ module.exports = {
   setPin,
   removePin,
   shouldRepin,
+  recordCacheUsage,
+  getCacheState,
   // legacy
   getPinned,
   setPinned,

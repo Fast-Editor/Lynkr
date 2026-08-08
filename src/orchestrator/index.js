@@ -21,6 +21,7 @@ const crypto = require("crypto");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
 const { areSimilarToolCalls } = require("../clients/gpt-utils");
 const { getModelRegistrySync } = require("../routing/model-registry");
+const sessionAffinity = require("../routing/session-affinity");
 
 /**
  * Get destination URL for audit logging based on provider type
@@ -1940,6 +1941,23 @@ IMPORTANT TOOL USAGE RULES:
     // Record in session metadata
     if (session) {
       tokens.recordTokenUsage(session, steps, estimatedTokens, actualUsage, cleanPayload.model);
+    }
+  }
+
+  // Cache-aware routing (Phase 1): persist the session's warm-prefix state
+  // from the response's cache counters so the router can price a mid-session
+  // model switch against the live cache clock. Best-effort — never blocks
+  // the response path.
+  if (session?.id && actualUsage) {
+    try {
+      sessionAffinity.recordCacheUsage(session.id, {
+        provider: providerType,
+        model: cleanPayload.model,
+        cacheReadTokens: actualUsage.cacheReadTokens,
+        cacheCreationTokens: actualUsage.cacheCreationTokens,
+      });
+    } catch (err) {
+      logger.debug({ err: err.message }, "[Orchestrator] cache-state update failed");
     }
   }
 
