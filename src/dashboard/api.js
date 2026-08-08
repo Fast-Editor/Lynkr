@@ -205,7 +205,11 @@ function routing(req, res) {
       if (s) providerStats[p] = s;
     }
 
-    res.json({ tierDefinitions: TIER_DEFINITIONS, accuracy, stats, providerStats, circuitBreakers: cbStates, window: win.label });
+    // Cache-aware routing (Phase 6): per-decision switch/hold economics,
+    // aggregated into "cache dollars saved by routing".
+    const cacheEconomics = telemetry.getCacheEconomics({ since });
+
+    res.json({ tierDefinitions: TIER_DEFINITIONS, accuracy, stats, providerStats, circuitBreakers: cbStates, cacheEconomics, window: win.label });
   } catch (e) {
     res.status(500).json({ error: 'routing_api_error', detail: e.message });
   }

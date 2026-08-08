@@ -165,6 +165,11 @@ function init() {
       ["candidates", "TEXT"],
       ["pinned", "INTEGER DEFAULT 0"],
       ["switch_reason", "TEXT"],
+      // Phase 6 (cache-aware routing) — per-decision cache economics
+      // receipt: {decision, reason, warmPrefixTokens, breakEvenTurns,
+      // projectedSwitchCostUsd, projectedStaySavingsUsd,
+      // expectedRemainingTurns} as JSON.
+      ["cache_decision", "TEXT"],
     ];
     for (const [col, type] of additiveCols) {
       if (!existingCols.has(col)) {
@@ -226,7 +231,8 @@ function record(data) {
           latency_ms, status_code, error_type, cost_usd, tool_calls_made,
           retry_count, circuit_breaker_state, quality_score, tokens_per_second,
           cost_efficiency, request_text, response_text,
-          base_tier, escalation_source, propensity, candidates, pinned, switch_reason
+          base_tier, escalation_source, propensity, candidates, pinned, switch_reason,
+          cache_decision
         ) VALUES (
           @request_id, @session_id, @timestamp, @complexity_score, @tier,
           @agentic_type, @tool_count, @input_tokens, @message_count, @request_type,
@@ -234,7 +240,8 @@ function record(data) {
           @latency_ms, @status_code, @error_type, @cost_usd, @tool_calls_made,
           @retry_count, @circuit_breaker_state, @quality_score, @tokens_per_second,
           @cost_efficiency, @request_text, @response_text,
-          @base_tier, @escalation_source, @propensity, @candidates, @pinned, @switch_reason
+          @base_tier, @escalation_source, @propensity, @candidates, @pinned, @switch_reason,
+          @cache_decision
         )`
       );
       if (!insert) return;
@@ -280,6 +287,11 @@ function record(data) {
         candidates: candidatesJson,
         pinned: data.pinned ? 1 : 0,
         switch_reason: data.switch_reason ?? null,
+        cache_decision: data.cache_decision == null
+          ? null
+          : (typeof data.cache_decision === "string"
+            ? data.cache_decision
+            : JSON.stringify(data.cache_decision)),
       });
     } catch (err) {
       logger.debug({ err: err.message }, "Telemetry record failed");
@@ -791,6 +803,81 @@ function _resetForTests() {
   _testDbDisabled = false;
 }
 
+// Cache-aware routing (Phase 6) — "cache dollars saved / burned by routing".
+//
+// Every gated switch/hold decision carries a receipt. Aggregating them
+// answers the public question "does model routing break prefix caching?"
+// with a dollar figure:
+//   - a HOLD avoided a switch whose one-time cache write exceeded its
+//     projected per-turn savings over the expected horizon
+//     (saved = switchOnce − savings × remainingTurns)
+//   - a SWITCH cleared break-even; its projected net gain is
+//     (savings × remainingTurns − switchOnce)
+/**
+ * @param {Object} [opts]
+ * @param {number} [opts.since] - default: last 7 days.
+ * @returns {{decisions:number, holds:number, switches:number,
+ *   dollarsSavedByHolds:number, dollarsSavedBySwitches:number,
+ *   totalDollarsSaved:number, byReason:Object}|null}
+ */
+function getCacheEconomics(opts = {}) {
+  if (!init()) return null;
+  const since = opts.since ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
+  try {
+    const rows = db
+      .prepare(
+        `SELECT cache_decision FROM routing_telemetry
+         WHERE timestamp > ? AND cache_decision IS NOT NULL
+         LIMIT 20000`
+      )
+      .all(since);
+
+    const out = {
+      decisions: 0,
+      holds: 0,
+      switches: 0,
+      dollarsSavedByHolds: 0,
+      dollarsSavedBySwitches: 0,
+      totalDollarsSaved: 0,
+      byReason: {},
+    };
+
+    for (const row of rows) {
+      let d;
+      try {
+        d = JSON.parse(row.cache_decision);
+      } catch {
+        continue;
+      }
+      if (!d || typeof d !== "object") continue;
+      out.decisions++;
+      out.byReason[d.reason ?? "unknown"] = (out.byReason[d.reason ?? "unknown"] ?? 0) + 1;
+
+      const savings = typeof d.projectedStaySavingsUsd === "number" ? d.projectedStaySavingsUsd : null;
+      const once = typeof d.projectedSwitchCostUsd === "number" ? d.projectedSwitchCostUsd : null;
+      const horizon = typeof d.expectedRemainingTurns === "number" ? d.expectedRemainingTurns : null;
+
+      if (d.decision === "hold") {
+        out.holds++;
+        if (savings != null && once != null && horizon != null) {
+          out.dollarsSavedByHolds += Math.max(0, once - savings * horizon);
+        }
+      } else if (d.decision === "switch") {
+        out.switches++;
+        if (savings != null && once != null && horizon != null) {
+          out.dollarsSavedBySwitches += Math.max(0, savings * horizon - once);
+        }
+      }
+    }
+
+    out.totalDollarsSaved = out.dollarsSavedByHolds + out.dollarsSavedBySwitches;
+    return out;
+  } catch (err) {
+    logger.debug({ err: err.message }, "Telemetry getCacheEconomics failed");
+    return null;
+  }
+}
+
 // Cache-aware routing (Phase 3) — expected remaining turns.
 //
 // Conditional median: given a session has already reached `currentTurns`
@@ -848,6 +935,7 @@ module.exports = {
   getEscalationStats,
   getQualityByTierAndType,
   getExpectedRemainingTurns,
+  getCacheEconomics,
   recordSavings,
   getSavingsSummary,
   cleanup,

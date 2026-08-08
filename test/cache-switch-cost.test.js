@@ -187,6 +187,50 @@ describe("cache-switch-cost: local models (latency, not dollars)", () => {
   });
 });
 
+describe("telemetry: cache_decision receipt + getCacheEconomics (Phase 6)", () => {
+  it("persists cache_decision via record() and aggregates dollars saved", async () => {
+    telemetry.record({
+      request_id: "cd-1",
+      provider: "databricks",
+      cache_decision: {
+        decision: "hold",
+        reason: "break_even_blocked",
+        warmPrefixTokens: 100000,
+        breakEvenTurns: 11.95,
+        projectedSwitchCostUsd: 0.3825,
+        projectedStaySavingsUsd: 0.032,
+        expectedRemainingTurns: 10,
+      },
+    });
+    telemetry.record({
+      request_id: "cd-2",
+      provider: "databricks",
+      cache_decision: {
+        decision: "switch",
+        reason: "break_even_cleared",
+        warmPrefixTokens: 100000,
+        breakEvenTurns: 1.99,
+        projectedSwitchCostUsd: 0.1275,
+        projectedStaySavingsUsd: 0.064,
+        expectedRemainingTurns: 10,
+      },
+    });
+    // record() writes on setImmediate — let the queue drain.
+    await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+
+    const econ = telemetry.getCacheEconomics();
+    assert.strictEqual(econ.decisions, 2);
+    assert.strictEqual(econ.holds, 1);
+    assert.strictEqual(econ.switches, 1);
+    // hold: 0.3825 - 0.032*10 = 0.0625; switch: 0.064*10 - 0.1275 = 0.5125
+    assert.ok(Math.abs(econ.dollarsSavedByHolds - 0.0625) < 1e-9);
+    assert.ok(Math.abs(econ.dollarsSavedBySwitches - 0.5125) < 1e-9);
+    assert.ok(Math.abs(econ.totalDollarsSaved - 0.575) < 1e-9);
+    assert.strictEqual(econ.byReason.break_even_blocked, 1);
+    assert.strictEqual(econ.byReason.break_even_cleared, 1);
+  });
+});
+
 describe("telemetry: getExpectedRemainingTurns", () => {
   it("returns null on sparse data, conditional median with enough sessions", () => {
     assert.strictEqual(telemetry.getExpectedRemainingTurns(0), null);
