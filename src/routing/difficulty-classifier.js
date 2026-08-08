@@ -7,11 +7,13 @@
  * hard problems. An LLM reading the actual sentence knows better.
  *
  * DESIGN:
- *  - Uses whatever model is configured for the SIMPLE tier (fetched at call
- *    time via getModelTierSelector). When the user later swaps in a
- *    fine-tuned classifier as SIMPLE, this picks it up automatically.
+ *  - Dedicated classifier model (CLASSIFIER_MODEL below), deliberately
+ *    decoupled from tier serving — swapping TIER_* env vars does not change
+ *    what classifies prompts. The tier DEPLOYMENT (which models the tiers
+ *    route to) is surfaced to the classifier as tie-breaker context; see
+ *    _buildTierContext.
  *  - Structured JSON output; parse failure → null → caller falls back.
- *  - Hard 2500ms timeout; on timeout → null → caller falls back.
+ *  - Hard timeout (TIMEOUT_MS); on timeout → null → caller falls back.
  *  - LRU cache keyed by sha256(text.trim().toLowerCase()); capacity 500.
  *  - Skip conditions surface via classifyDifficulty returning null with
  *    reason=skipped: text.length<15, force-pattern matched, risk=high,
@@ -81,15 +83,101 @@ Reply format (strict): {"tier":"SIMPLE|MEDIUM|COMPLEX|REASONING","confidence":0.
 const CONTEXT_MAX_TEXT_LENGTH = 40;
 const CONTEXT_MAX_CHARS = 300;
 
+// --- Tier deployment context -------------------------------------------------
+//
+// Tells the classifier WHAT each tier routes to (model + coarse traits from
+// the registry), so borderline verdicts can weigh the actual fleet — e.g.
+// prefer MEDIUM when its configured model is a large cloud model, or lean
+// away from a tier whose model lacks the needed capability.
+//
+// Constraints that shape the design:
+//  - TIE-BREAKER ONLY. The difficulty rubric in CLASSIFY_PROMPT governs;
+//    the deployment block must not redefine what the tiers mean, or eval
+//    labels (data/difficulty-eval*.jsonl) stop being comparable.
+//  - BYTE-STABLE per process. Tier config is env-driven and fixed for the
+//    process lifetime, so the block is built once and memoized. It also
+//    participates in the LRU cache key (fingerprint) so a reconfigured
+//    deployment never serves verdicts cached under the old one.
+//  - FAIL-SAFE. Registry misses or config errors degrade to provider-type
+//    traits or to no block at all — classification proceeds regardless.
+// MEASURED OFF (2026-08-08): A/B on data/difficulty-eval-followups.jsonl —
+// baseline 84.0% overall / 0 SIMPLE→REASONING criticals; with the block
+// 76.0% / 1 critical ('prove me wrong lol' → REASONING conf 1.0, the exact
+// failure class prompt v2 was built to kill). qwen2.5:3b can't use fleet
+// info — it dilutes the rubric. Machinery kept dark for a future stronger
+// classifier: flip this flag, then re-run
+// scripts/validate-difficulty-classifier.js on BOTH eval files and hold
+// the ship bar (>=85% overall, zero MEDIUM→REASONING false positives).
+const TIER_CONTEXT_ENABLED = false;
+const LOCAL_PROVIDERS = new Set(['ollama', 'llamacpp', 'lmstudio']);
+
+/** Pure builder — exported for tests. @param {Object} tiers {TIER: 'provider:model'} */
+function _buildTierContext(tiers) {
+  const lines = [];
+  for (const tier of VALID_TIERS) {
+    const spec = tiers?.[tier];
+    if (typeof spec !== 'string' || !spec.includes(':')) continue;
+    const sep = spec.indexOf(':');
+    const provider = spec.slice(0, sep);
+    const model = spec.slice(sep + 1);
+    const traits = [LOCAL_PROVIDERS.has(provider) ? 'local' : 'cloud'];
+    try {
+      const { getModelRegistrySync } = require('./model-registry');
+      const cost = getModelRegistrySync().getCost(model);
+      if (cost && !cost.unknown) {
+        if (Number.isFinite(cost.context) && cost.context >= 1000) {
+          traits.push(`${Math.round(cost.context / 1000)}k ctx`);
+        }
+        if (cost.reasoning) traits.push('reasoning');
+        if (cost.vision) traits.push('vision');
+      }
+    } catch { /* registry unavailable — provider trait only */ }
+    lines.push(`- ${tier} routes to ${model} (${traits.join(', ')})`);
+  }
+  if (!lines.length) return null;
+  const block = `Deployment (what each tier currently routes to — use only as a tie-breaker between adjacent tiers; the tier definitions above still govern):
+${lines.join('\n')}`;
+  return {
+    block,
+    fingerprint: crypto.createHash('sha256').update(block).digest('hex').slice(0, 16),
+  };
+}
+
+/** @type {{block:string, fingerprint:string}|null|undefined} undefined = not built yet */
+let _tierContext;
+
+function _tierDeploymentContext() {
+  // Test override (set via _setTierContextForTests) wins over the flag so
+  // the machinery stays exercised while shipping dark.
+  if (_tierContext !== undefined) return _tierContext;
+  if (!TIER_CONTEXT_ENABLED) { _tierContext = null; return null; }
+  try {
+    const config = require('../config');
+    _tierContext = _buildTierContext(config.modelTiers);
+  } catch {
+    _tierContext = null;
+  }
+  return _tierContext;
+}
+
+/** Test helper — override or reset (pass undefined) the memoized block. */
+function _setTierContextForTests(tiers) {
+  _tierContext = tiers === undefined ? undefined : _buildTierContext(tiers);
+}
+
 function _buildPrompt(text, context) {
+  const tierCtx = _tierDeploymentContext();
+  const preamble = tierCtx ? `${CLASSIFY_PROMPT}
+${tierCtx.block}
+` : CLASSIFY_PROMPT;
   if (context) {
-    return `${CLASSIFY_PROMPT}
+    return `${preamble}
 Conversation so far (context only — classify the CURRENT prompt, inheriting topic difficulty per the rules):
 ${context}
 
 CURRENT user prompt: """${text}"""`;
   }
-  return `${CLASSIFY_PROMPT}
+  return `${preamble}
 User prompt: """${text}"""`;
 }
 
@@ -222,8 +310,11 @@ async function classifyDifficulty(text, opts = {}) {
       : null;
 
   // Context participates in the cache key: the same follow-up text means
-  // different things in different conversations.
-  const key = _cacheKey(context ? `${trimmed} ${context}` : trimmed);
+  // different things in different conversations. The tier-deployment
+  // fingerprint participates too (NUL separators are collision-proof), so
+  // verdicts cached under one deployment never serve a reconfigured one.
+  const tierFp = _tierDeploymentContext()?.fingerprint ?? "";
+  const key = _cacheKey(`${tierFp} ${context ? `${trimmed} ${context}` : trimmed}`);
   const cached = _cache.get(key);
   if (cached) return { ...cached, source: 'cache' };
 
@@ -256,6 +347,8 @@ module.exports = {
   _parseResult,
   _cacheKey,
   _buildPrompt,
+  _buildTierContext,
+  _setTierContextForTests,
   _clearCacheForTests,
   _getCacheStats,
 };

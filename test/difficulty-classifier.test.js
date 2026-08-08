@@ -13,6 +13,8 @@ const {
   _parseResult,
   _cacheKey,
   _buildPrompt,
+  _buildTierContext,
+  _setTierContextForTests,
   _clearCacheForTests,
   _getCacheStats,
   VALID_TIERS,
@@ -185,5 +187,60 @@ describe("intent-score — _reconcile band cap (Phase A)", () => {
     const r = _reconcile(35, "substantive", { tier: "MEDIUM", confidence: 1.0 });
     assert.strictEqual(r.reconciled, false);
     assert.strictEqual(r.score, 35);
+  });
+});
+describe("difficulty-classifier — tier deployment context", () => {
+  const TIERS = {
+    SIMPLE: "ollama:tiny-model-zz",
+    MEDIUM: "ollama:mid-model-zz",
+    COMPLEX: "azure-openai:big-model-zz",
+    REASONING: "moonshot:frontier-model-zz",
+  };
+
+  it("builds one line per configured tier with provider locality", () => {
+    const ctx = _buildTierContext(TIERS);
+    assert.ok(ctx.block.includes("- SIMPLE routes to tiny-model-zz (local"));
+    assert.ok(ctx.block.includes("- MEDIUM routes to mid-model-zz (local"));
+    assert.ok(ctx.block.includes("- COMPLEX routes to big-model-zz (cloud"));
+    assert.ok(ctx.block.includes("- REASONING routes to frontier-model-zz (cloud"));
+    // Rubric primacy must be stated in the block itself.
+    assert.ok(ctx.block.includes("tie-breaker"));
+    assert.strictEqual(typeof ctx.fingerprint, "string");
+    assert.strictEqual(ctx.fingerprint.length, 16);
+  });
+
+  it("returns null when no tiers are configured", () => {
+    assert.strictEqual(_buildTierContext({}), null);
+    assert.strictEqual(_buildTierContext(null), null);
+    assert.strictEqual(_buildTierContext({ SIMPLE: "not-a-spec" }), null);
+  });
+
+  it("fingerprint changes when the deployment changes", () => {
+    const a = _buildTierContext(TIERS);
+    const b = _buildTierContext({ ...TIERS, COMPLEX: "ollama:other-model-zz" });
+    assert.notStrictEqual(a.fingerprint, b.fingerprint);
+  });
+
+  it("_buildPrompt embeds the block between the rubric and the prompt", () => {
+    _setTierContextForTests(TIERS);
+    try {
+      const p = _buildPrompt("refactor the entire ingestion pipeline", null);
+      const depIdx = p.indexOf("Deployment (what each tier currently routes to");
+      assert.ok(depIdx > 0, "deployment block missing");
+      assert.ok(depIdx > p.indexOf("Reply format"), "block must come after the rubric");
+      assert.ok(depIdx < p.indexOf("User prompt:"), "block must come before the prompt");
+    } finally {
+      _setTierContextForTests(undefined); // reset memo for other tests
+    }
+  });
+
+  it("_buildPrompt omits the block when no deployment is known", () => {
+    _setTierContextForTests(null);
+    try {
+      const p = _buildPrompt("refactor the entire ingestion pipeline", null);
+      assert.ok(!p.includes("Deployment ("));
+    } finally {
+      _setTierContextForTests(undefined);
+    }
   });
 });
