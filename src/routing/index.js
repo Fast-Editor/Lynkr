@@ -273,12 +273,25 @@ function buildDecision(fields = {}) {
     // Fail-open (routing must never throw on shape problems) but loud.
     logger.error({ keys: Object.keys(fields) }, '[Routing] buildDecision called without provider/method');
   }
+  // WS2.3 repair: the telemetry record sites read `analysis.requestType`,
+  // but nothing ever set that field — every routing_telemetry row recorded
+  // request_type NULL (verified live: 4052/4052 rows), so the evidence-based
+  // deescalator (keyed on tier + request_type) could never accumulate
+  // demotion evidence. Derive it here at the canonical constructor, using
+  // the SAME derivation the deescalator applies, so telemetry rows and
+  // demotion queries group by identical values.
+  let analysis = fields.analysis ?? null;
+  if (analysis && typeof analysis === 'object' && analysis.requestType == null) {
+    const requestType = analysis.breakdown?.taskType?.reason ?? analysis.taskType ?? null;
+    if (requestType != null) analysis = { ...analysis, requestType };
+  }
   return {
     model: null,
     tier: null,
     reason: null,
     score: null,
-    analysis: null,
+    // `analysis` is appended after the ...fields spread (requestType
+    // derivation above); it defaults to null there.
     embeddingsResult: null,
     agenticResult: null,
     knnResult: null,
@@ -292,6 +305,7 @@ function buildDecision(fields = {}) {
     propensity: 1.0,
     candidates: [{ provider: fields.provider, model: fields.model ?? null }],
     ...fields,
+    analysis,
   };
 }
 
