@@ -819,6 +819,13 @@ var config = {
       // history alone hits this many estimated tokens, so small-context
       // local models (4k-8k) don't overflow before the turn threshold.
       tokenThreshold: 3000,
+      // Cache-aware routing (Phase 5): once emitted, the distilled block is
+      // frozen and only re-distilled every this-many user turns, so the
+      // block stays byte-identical between refreshes and compounds provider
+      // prompt-cache hits instead of rewriting history on every request.
+      // The stable-breakpoint hierarchy in prompt-cache-injection.js shares
+      // this K for its frozen history boundary.
+      refreshEveryTurns: 5,
     },
     skills: {
       enabled: true,

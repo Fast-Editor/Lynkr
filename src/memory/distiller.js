@@ -25,9 +25,60 @@ const logger = require("../logger");
 const MAX_SCENARIO_POINTS = 12;
 const MAX_PERSONA_ITEMS = 5;
 const MAX_POINT_CHARS = 140;
+const DEFAULT_REFRESH_EVERY_TURNS = 5;
+const MAX_FROZEN_SESSIONS = 500;
 
 function distillConfig() {
   return config.memory?.distillation ?? {};
+}
+
+// ---------------------------------------------------------------------------
+// Frozen distilled blocks (Phase 5, cache-aware routing).
+//
+// Re-distilling on every request rewrites the front of the conversation each
+// turn, which invalidates the provider's prompt cache wholesale — on exactly
+// the long sessions where caching matters most. Once emitted, a session's
+// distilled block is frozen: the same block bytes and the same split point
+// are served verbatim until K more user turns have accumulated
+// (config.memory.distillation.refreshEveryTurns, default 5). Each refresh is
+// then ONE deliberate, scheduled cache write instead of one per request.
+// ---------------------------------------------------------------------------
+
+/** @type {Map<string, {frozenAtTurns:number, splitIdx:number, boundaryFp:string, distilledContent:string, stats:Object}>} */
+const _frozen = new Map();
+
+function _refreshEveryTurns() {
+  const k = distillConfig().refreshEveryTurns;
+  return Number.isFinite(k) && k > 0 ? k : DEFAULT_REFRESH_EVERY_TURNS;
+}
+
+/**
+ * Cheap byte-stability fingerprint for the frozen prefix: split position
+ * plus samples of the first and boundary messages. Detects client-side
+ * history rewrites (compaction, edits) that make the frozen block stale.
+ */
+function _boundaryFingerprint(messages, splitIdx) {
+  const sample = (m) => {
+    if (!m) return "?";
+    const c = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+    return `${m.role}:${c.slice(0, 80)}`;
+  };
+  return `${splitIdx}|${sample(messages[0])}|${sample(messages[splitIdx - 1])}`;
+}
+
+function _rememberFrozen(sessionId, entry) {
+  if (!sessionId) return;
+  _frozen.delete(sessionId);
+  _frozen.set(sessionId, entry);
+  if (_frozen.size > MAX_FROZEN_SESSIONS) {
+    const oldest = _frozen.keys().next().value;
+    if (oldest !== undefined) _frozen.delete(oldest);
+  }
+}
+
+/** Test helper — drop all frozen blocks. */
+function _clearFrozen() {
+  _frozen.clear();
 }
 
 /**
@@ -206,6 +257,30 @@ function distillMessages(messages, options = {}) {
 
   const keepRecent = distillConfig().keepRecentTurns ?? 3;
   const turnIndices = realUserTurnIndices(messages);
+
+  // Phase 5 freeze: serve the session's frozen block verbatim while it is
+  // still fresh (fewer than K user turns since it was built) and the
+  // history prefix it covers is byte-stable. The block and split point are
+  // identical across requests, so the provider prompt cache keeps hitting.
+  if (sessionId) {
+    const cached = _frozen.get(sessionId);
+    if (
+      cached
+      && cached.splitIdx < messages.length
+      && turnIndices.length - cached.frozenAtTurns < _refreshEveryTurns()
+      && _boundaryFingerprint(messages, cached.splitIdx) === cached.boundaryFp
+    ) {
+      return {
+        messages: [
+          { role: "user", content: cached.distilledContent },
+          ...messages.slice(cached.splitIdx),
+        ],
+        applied: true,
+        stats: { ...cached.stats, fromFrozenCache: true },
+      };
+    }
+  }
+
   const splitIdx = turnIndices[Math.max(0, turnIndices.length - keepRecent)];
 
   if (!splitIdx) {
@@ -247,6 +322,16 @@ function distillMessages(messages, options = {}) {
 
   logger.debug({ sessionId, ...stats }, "[distiller] Conversation distilled");
 
+  // Freeze the block for the next K user turns (Phase 5). Keyed by the
+  // split fingerprint so a client-side history rewrite invalidates it.
+  _rememberFrozen(sessionId, {
+    frozenAtTurns: turnIndices.length,
+    splitIdx,
+    boundaryFp: _boundaryFingerprint(messages, splitIdx),
+    distilledContent: distilledBlock.content,
+    stats,
+  });
+
   return {
     messages: [distilledBlock, ...recentMessages],
     applied: true,
@@ -261,4 +346,5 @@ module.exports = {
   buildPersona,
   isRealUserTurn,
   estimateHistoryTokens,
+  _clearFrozen,
 };
