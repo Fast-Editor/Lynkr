@@ -309,9 +309,21 @@ class ModelRegistry {
       this.modelIndex.set(modelId, info);
     }
 
-    // Add LiteLLM (highest priority)
+    // Add LiteLLM (highest priority) — but merge cache economics from the
+    // entry it shadows: LiteLLM wins on base prices, while cacheRead/
+    // cacheWrite survive from models.dev when LiteLLM doesn't carry them.
+    // Without this, a LiteLLM entry missing cache prices hides the
+    // models.dev cache data and the switch-cost math degrades to
+    // provider-multiplier approximations (observed live: 0 LiteLLM entries
+    // with cacheRead shadowing 4.9k models.dev entries that had it).
     for (const [modelId, info] of Object.entries(this.litellmPrices)) {
-      this.modelIndex.set(modelId, info);
+      const prev = this.modelIndex.get(modelId);
+      const merged = { ...info };
+      if (prev) {
+        if (merged.cacheRead == null && typeof prev.cacheRead === 'number') merged.cacheRead = prev.cacheRead;
+        if (merged.cacheWrite == null && typeof prev.cacheWrite === 'number') merged.cacheWrite = prev.cacheWrite;
+      }
+      this.modelIndex.set(modelId, merged);
     }
   }
 
