@@ -79,9 +79,11 @@ describe("difficulty-classifier — cache key stability", () => {
 describe("difficulty-classifier — skip conditions", () => {
   beforeEach(() => _clearCacheForTests());
 
-  it("returns null for text shorter than 15 chars", async () => {
-    const r = await classifyDifficulty("hi");
-    assert.strictEqual(r, null);
+  it("returns null only for empty/whitespace text (min-length gate removed)", async () => {
+    // Short prompts are now classified (with conversation context when
+    // available) — only genuinely empty input skips.
+    assert.strictEqual(await classifyDifficulty(""), null);
+    assert.strictEqual(await classifyDifficulty("   "), null);
   });
 
   it("returns null when caller signals a force pattern matched", async () => {

@@ -16,7 +16,7 @@
  *  - Hard timeout (TIMEOUT_MS); on timeout → null → caller falls back.
  *  - LRU cache keyed by sha256(text.trim().toLowerCase()); capacity 500.
  *  - Skip conditions surface via classifyDifficulty returning null with
- *    reason=skipped: text.length<15, force-pattern matched, risk=high,
+ *    reason=skipped: empty text, force-pattern matched, risk=high,
  *    cache hit is transparent (returns cached).
  *  - Hardcoded kill-switch CLASSIFIER_ENABLED — no env var per user policy.
  *
@@ -33,7 +33,6 @@ const CLASSIFIER_ENABLED = true;
 // LRU cache to keep amortized latency low.
 const TIMEOUT_MS = 10000;
 const CACHE_CAPACITY = 500;
-const MIN_TEXT_LENGTH = 15;
 
 // Classifier model — decoupled from tier serving so SIMPLE tier can run a
 // more capable model for real traffic while the classifier stays fast and
@@ -46,7 +45,7 @@ const CLASSIFIER_MODEL = 'qwen2.5:3b';
 
 const VALID_TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
 
-// One-shot classification prompt (v2). Kept in a const so drift is diffable.
+// One-shot classification prompt (v3). Kept in a const so drift is diffable.
 // Difficulty framing (not intent) — matches config B routing goals.
 //
 // v2 (2026-07-21): added the follow-up rule, negative examples under
@@ -56,11 +55,16 @@ const VALID_TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
 // flavored and nothing said surface vocabulary isn't the signal. Baseline
 // on data/difficulty-eval-followups.jsonl: 60% overall, 33% on SIMPLE,
 // 3 SIMPLE→REASONING criticals.
+//
+// v3 (2026-08-09): added trivial-arithmetic SIMPLE examples after a live
+// over-route: "12+21" scored anchor 25 (MEDIUM band) and qwen ALSO said
+// MEDIUM conf 1.0 — bare arithmetic read as "a specific mechanical task".
+// Any tiny model adds two numbers; it belongs in SIMPLE.
 const CLASSIFY_PROMPT = `You are a classifier for an LLM routing proxy. Classify the difficulty of the CURRENT user prompt into exactly one of four tiers. Reply with ONLY valid JSON on a single line, no other text.
 
 Tiers:
 - SIMPLE: casual acknowledgments, greetings, one-word answers, trivial factual lookups, and short conversational follow-up questions about people, stories, events, or everyday facts. Any tiny model handles.
-  examples: "hi", "ok thanks", "yes continue", "what time is it", "who is doctor doom?", "who kills him?", "why did he do that?", "and then what happened?", "does bleach kill mold?"
+  examples: "hi", "ok thanks", "yes continue", "what time is it", "who is doctor doom?", "who kills him?", "why did he do that?", "and then what happened?", "does bleach kill mold?", "12+21", "what is 15% of 80?", "convert 3km to miles"
 - MEDIUM: one specific mechanical task or a focused explanation. Mid-size local model suffices.
   examples: "list the exports from this file", "run the unit tests", "fix the linter warnings", "explain this regex", "add error handling to this block", "verify the file exists before reading it"
 - COMPLEX: multi-file design, systemic refactor, architecture review, debugging that requires broad code understanding. Needs a strong general model.
@@ -300,7 +304,12 @@ async function classifyDifficulty(text, opts = {}) {
   if (!CLASSIFIER_ENABLED) return null;
   if (typeof text !== 'string') return null;
   const trimmed = text.trim();
-  if (trimmed.length < MIN_TEXT_LENGTH) return null;
+  // No minimum length (removed 2026-08-09): short prompts are exactly what
+  // the v2 context feature was built for, and the 15-char gate meant the
+  // classifier could never rescue anchor over-reads like '12+21' -> MEDIUM.
+  // Greetings still skip upstream via force patterns (opts.forceMatched),
+  // and the LRU absorbs repeats, so the added model calls are bounded.
+  if (!trimmed) return null;
   if (opts.forceMatched) return null;
   if (opts.riskLevel === 'high') return null;
 
