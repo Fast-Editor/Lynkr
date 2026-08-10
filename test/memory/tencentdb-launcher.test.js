@@ -36,10 +36,10 @@ describe("TencentDB Memory Launcher", () => {
   });
 
   describe("config defaults", () => {
-    it("is disabled by default", () => {
+    it("is enabled by default", () => {
       delete process.env.TENCENTDB_MEMORY_ENABLED;
       const config = require("../../src/config");
-      assert.strictEqual(config.tencentdbMemory.enabled, false);
+      assert.strictEqual(config.tencentdbMemory.enabled, true);
     });
 
     it("enables via TENCENTDB_MEMORY_ENABLED=true", () => {
@@ -69,7 +69,7 @@ describe("TencentDB Memory Launcher", () => {
 
   describe("ensureRunning() gating", () => {
     it("skips when disabled", async () => {
-      delete process.env.TENCENTDB_MEMORY_ENABLED;
+      process.env.TENCENTDB_MEMORY_ENABLED = "false";
       const launcher = require("../../src/memory/tencentdb-launcher");
       const result = await launcher.ensureRunning();
       assert.strictEqual(result.started, false);
