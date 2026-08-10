@@ -208,8 +208,12 @@ function routing(req, res) {
     // Cache-aware routing (Phase 6): per-decision switch/hold economics,
     // aggregated into "cache dollars saved by routing".
     const cacheEconomics = telemetry.getCacheEconomics({ since });
+    // Lens money-framing: the MEASURED companion — cache reads actually
+    // served this window, auditable against the bill (vs the projected
+    // figures above). null until cache counters have accrued.
+    const cacheMeasured = telemetry.getMeasuredCacheSavings({ since });
 
-    res.json({ tierDefinitions: TIER_DEFINITIONS, accuracy, stats, providerStats, circuitBreakers: cbStates, cacheEconomics, window: win.label });
+    res.json({ tierDefinitions: TIER_DEFINITIONS, accuracy, stats, providerStats, circuitBreakers: cbStates, cacheEconomics, cacheMeasured, window: win.label });
   } catch (e) {
     res.status(500).json({ error: 'routing_api_error', detail: e.message });
   }
@@ -233,4 +237,76 @@ function logs(req, res) {
   }
 }
 
-module.exports = { overview, usage, routing, logs };
+/* ── Lens endpoints (feature/lens-dashboard) ─────────────────────────── */
+
+// Recommendations — analyzer findings ranked by past overspend.
+function recommendations(req, res) {
+  try {
+    const engine = require('./recommendations');
+    const windowMs = req.query.window === '30d' ? 30 * 86400000
+      : req.query.window === '24h' ? 86400000
+      : 7 * 86400000;
+    res.json(engine.run({ windowMs, force: req.query.force === 'true' }));
+  } catch (e) {
+    res.status(500).json({ error: 'recommendations_api_error', detail: e.message });
+  }
+}
+
+// Session drill-down: per-model mix + context-growth series + raw rows.
+function sessionDetail(req, res) {
+  try {
+    const detail = telemetry.getSessionDetail(req.params.id);
+    if (!detail) return res.status(404).json({ error: 'session_not_found' });
+    res.json(detail);
+  } catch (e) {
+    res.status(500).json({ error: 'session_api_error', detail: e.message });
+  }
+}
+
+// Pivot explorer: metric × dimension (× stack), whitelisted server-side.
+function analytics(req, res) {
+  try {
+    const days = Math.min(90, Math.max(1, parseInt(req.query.days || '7', 10) || 7));
+    const data = telemetry.getAnalytics({
+      metric: req.query.metric,
+      by: req.query.by,
+      stack: req.query.stack || null,
+      since: Date.now() - days * 86400000,
+    });
+    if (!data) return res.status(503).json({ error: 'telemetry_unavailable' });
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: 'analytics_api_error', detail: e.message });
+  }
+}
+
+// Statusline: one cheap snapshot for the zero-token status line — last
+// routed request, today's spend, measured cache re-read share.
+function statusline(req, res) {
+  try {
+    const last = telemetry.query({ limit: 1 })[0] ?? null;
+    const since = Date.now() - 86400000;
+    const db = telemetry.getDb();
+    let today = null;
+    if (db) {
+      today = db.prepare(
+        `SELECT SUM(COALESCE(cost_usd,0)) spend,
+                SUM(COALESCE(cache_read_tokens,0)) rd,
+                SUM(COALESCE(cache_read_tokens,0)+COALESCE(cache_creation_tokens,0)+COALESCE(input_tokens,0)) total
+         FROM routing_telemetry WHERE timestamp > ?`
+      ).get(since);
+    }
+    res.json({
+      last: last && {
+        tier: last.tier, provider: last.provider, model: last.model,
+        pinned: !!last.pinned, at: last.timestamp,
+      },
+      todaySpendUsd: today?.spend ?? null,
+      cacheReadPct: today && today.total > 0 ? Math.round((today.rd / today.total) * 100) : null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'statusline_api_error', detail: e.message });
+  }
+}
+
+module.exports = { overview, usage, routing, logs, recommendations, sessionDetail, analytics, statusline };

@@ -18,5 +18,10 @@ router.get('/api/overview', api.overview);
 router.get('/api/usage',    api.usage);
 router.get('/api/routing',  api.routing);
 router.get('/api/logs',     api.logs);
+// Lens (feature/lens-dashboard)
+router.get('/api/recommendations', api.recommendations);
+router.get('/api/sessions/:id',    api.sessionDetail);
+router.get('/api/analytics',       api.analytics);
+router.get('/api/statusline',      api.statusline);
 
 module.exports = router;

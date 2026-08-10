@@ -170,6 +170,11 @@ function init() {
       // projectedSwitchCostUsd, projectedStaySavingsUsd,
       // expectedRemainingTurns} as JSON.
       ["cache_decision", "TEXT"],
+      // Lens dashboard — per-request cache counters from the provider's
+      // usage payload. NULL on rows recorded before capture began (or by
+      // providers that report none) — "not measured" is distinct from 0.
+      ["cache_read_tokens", "INTEGER"],
+      ["cache_creation_tokens", "INTEGER"],
     ];
     for (const [col, type] of additiveCols) {
       if (!existingCols.has(col)) {
@@ -232,7 +237,7 @@ function record(data) {
           retry_count, circuit_breaker_state, quality_score, tokens_per_second,
           cost_efficiency, request_text, response_text,
           base_tier, escalation_source, propensity, candidates, pinned, switch_reason,
-          cache_decision
+          cache_decision, cache_read_tokens, cache_creation_tokens
         ) VALUES (
           @request_id, @session_id, @timestamp, @complexity_score, @tier,
           @agentic_type, @tool_count, @input_tokens, @message_count, @request_type,
@@ -241,7 +246,7 @@ function record(data) {
           @retry_count, @circuit_breaker_state, @quality_score, @tokens_per_second,
           @cost_efficiency, @request_text, @response_text,
           @base_tier, @escalation_source, @propensity, @candidates, @pinned, @switch_reason,
-          @cache_decision
+          @cache_decision, @cache_read_tokens, @cache_creation_tokens
         )`
       );
       if (!insert) return;
@@ -292,6 +297,8 @@ function record(data) {
           : (typeof data.cache_decision === "string"
             ? data.cache_decision
             : JSON.stringify(data.cache_decision)),
+        cache_read_tokens: data.cache_read_tokens ?? null,
+        cache_creation_tokens: data.cache_creation_tokens ?? null,
       });
     } catch (err) {
       logger.debug({ err: err.message }, "Telemetry record failed");
@@ -926,6 +933,200 @@ function getExpectedRemainingTurns(currentTurns = 0) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Lens dashboard queries
+// ---------------------------------------------------------------------------
+
+/**
+ * MEASURED cache savings — backward-looking, auditable against the bill:
+ * for rows that carried cache counters, what did cache reads actually save
+ * vs. paying full input price? Distinct from the projected figures in
+ * getCacheEconomics. Also reports the hit ratio per (provider, model).
+ *
+ * @param {Object} [opts] {since}
+ * @returns {{measuredSavedUsd:number, rowsMeasured:number, perModel:Array}|null}
+ */
+function getMeasuredCacheSavings(opts = {}) {
+  if (!init()) return null;
+  const since = opts.since ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
+  try {
+    const rows = db
+      .prepare(
+        `SELECT provider, model, COUNT(*) n,
+                SUM(COALESCE(cache_read_tokens,0)) rd,
+                SUM(COALESCE(cache_creation_tokens,0)) cr,
+                SUM(COALESCE(input_tokens,0)) inp
+         FROM routing_telemetry
+         WHERE timestamp > ? AND cache_read_tokens IS NOT NULL
+         GROUP BY provider, model`
+      )
+      .all(since);
+    const { resolveCacheEconomics } = require("./cache-economics");
+    let saved = 0;
+    let measured = 0;
+    const perModel = [];
+    for (const r of rows) {
+      measured += r.n;
+      const econ = resolveCacheEconomics(r.provider, r.model);
+      const savedUsd = econ.unknownPricing
+        ? null
+        : (r.rd * Math.max(0, econ.inputPerM - econ.cacheReadPerM)) / 1_000_000;
+      if (savedUsd != null) saved += savedUsd;
+      const total = r.rd + r.cr + r.inp;
+      perModel.push({
+        provider: r.provider,
+        model: r.model,
+        requests: r.n,
+        cacheReadTokens: r.rd,
+        hitRatio: total > 0 ? r.rd / total : null,
+        savedUsd,
+      });
+    }
+    perModel.sort((a, b) => (a.hitRatio ?? 1) - (b.hitRatio ?? 1));
+    return { measuredSavedUsd: saved, rowsMeasured: measured, perModel };
+  } catch (err) {
+    logger.debug({ err: err.message }, "Telemetry getMeasuredCacheSavings failed");
+    return null;
+  }
+}
+
+/**
+ * Session drill-down: per-model mix, context-growth series, tool totals.
+ * @param {string} sessionId
+ */
+function getSessionDetail(sessionId) {
+  if (!sessionId || !init()) return null;
+  try {
+    const rows = db
+      .prepare(
+        `SELECT timestamp, provider, model, tier, routing_method, input_tokens,
+                output_tokens, cost_usd, latency_ms, tool_count, tool_calls_made,
+                cache_read_tokens, cache_creation_tokens, status_code, error_type,
+                pinned, switch_reason, message_count
+         FROM routing_telemetry WHERE session_id = ? ORDER BY timestamp ASC LIMIT 2000`
+      )
+      .all(sessionId);
+    if (!rows.length) return null;
+
+    const perModel = new Map();
+    let toolCalls = 0;
+    let cost = 0;
+    for (const r of rows) {
+      const key = `${r.provider}:${r.model}`;
+      const m = perModel.get(key) ?? {
+        provider: r.provider, model: r.model, requests: 0,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0,
+      };
+      m.requests++;
+      m.inputTokens += r.input_tokens ?? 0;
+      m.outputTokens += r.output_tokens ?? 0;
+      m.cacheReadTokens += r.cache_read_tokens ?? 0;
+      m.costUsd += r.cost_usd ?? 0;
+      perModel.set(key, m);
+      toolCalls += r.tool_calls_made ?? 0;
+      cost += r.cost_usd ?? 0;
+    }
+
+    return {
+      sessionId,
+      requests: rows.length,
+      totalCostUsd: cost,
+      toolCalls,
+      firstSeen: rows[0].timestamp,
+      lastSeen: rows[rows.length - 1].timestamp,
+      models: [...perModel.values()].sort((a, b) => b.costUsd - a.costUsd),
+      // Input (context) tokens per call over the session — the distiller
+      // cliff and frozen-block plateau are visible here.
+      contextSeries: rows.map((r) => ({
+        t: r.timestamp,
+        inputTokens: r.input_tokens ?? 0,
+        cacheReadTokens: r.cache_read_tokens ?? null,
+        tier: r.tier,
+        model: r.model,
+      })),
+      rows,
+    };
+  } catch (err) {
+    logger.debug({ err: err.message }, "Telemetry getSessionDetail failed");
+    return null;
+  }
+}
+
+// Pivot explorer — every metric/dimension is whitelisted; params never reach
+// SQL as strings.
+const ANALYTICS_METRICS = {
+  spend: "SUM(COALESCE(cost_usd,0))",
+  tokens: "SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0))",
+  requests: "COUNT(*)",
+  sessions: "COUNT(DISTINCT session_id)",
+};
+const ANALYTICS_DIMS = {
+  provider: "provider",
+  model: "model",
+  tier: "tier",
+  request_type: "request_type",
+  routing_method: "routing_method",
+  switch_reason: "switch_reason",
+  day: "date(timestamp/1000, 'unixepoch')",
+};
+
+/**
+ * Generic Metric × Dimension (× Stack) pivot with KPI row and
+ * period-over-period deltas (suppressed when the prior window is thin).
+ *
+ * @param {Object} [opts] {metric, by, stack, since, until}
+ */
+function getAnalytics(opts = {}) {
+  if (!init()) return null;
+  const metricExpr = ANALYTICS_METRICS[opts.metric] ?? ANALYTICS_METRICS.spend;
+  const metric = ANALYTICS_METRICS[opts.metric] ? opts.metric : "spend";
+  const byExpr = ANALYTICS_DIMS[opts.by] ?? ANALYTICS_DIMS.provider;
+  const by = ANALYTICS_DIMS[opts.by] ? opts.by : "provider";
+  const stackExpr = opts.stack && ANALYTICS_DIMS[opts.stack] ? ANALYTICS_DIMS[opts.stack] : null;
+  const until = opts.until ?? Date.now();
+  const since = opts.since ?? until - 7 * 24 * 60 * 60 * 1000;
+
+  try {
+    const groupCols = stackExpr ? `${byExpr} AS dim, ${stackExpr} AS stack` : `${byExpr} AS dim`;
+    const groupBy = stackExpr ? "GROUP BY dim, stack" : "GROUP BY dim";
+    const rows = db
+      .prepare(
+        `SELECT ${groupCols}, ${metricExpr} AS value
+         FROM routing_telemetry
+         WHERE timestamp BETWEEN ? AND ?
+         ${groupBy} ORDER BY value DESC LIMIT 500`
+      )
+      .all(since, until);
+
+    const kpiRow = (lo, hi) =>
+      db
+        .prepare(
+          `SELECT SUM(COALESCE(cost_usd,0)) spend,
+                  SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) tokens,
+                  COUNT(*) requests,
+                  COUNT(DISTINCT session_id) sessions
+           FROM routing_telemetry WHERE timestamp BETWEEN ? AND ?`
+        )
+        .get(lo, hi);
+    const kpis = kpiRow(since, until);
+    const prev = kpiRow(since - (until - since), since);
+    // Thin prior window → deltas are noise, suppress rather than mislead.
+    const kpiDeltas = (prev?.requests ?? 0) >= 10
+      ? {
+        spend: kpis.spend - (prev.spend ?? 0),
+        tokens: kpis.tokens - (prev.tokens ?? 0),
+        requests: kpis.requests - prev.requests,
+        sessions: kpis.sessions - (prev.sessions ?? 0),
+      }
+      : null;
+
+    return { metric, by, stack: stackExpr ? opts.stack : null, since, until, rows, kpis, kpiDeltas };
+  } catch (err) {
+    logger.debug({ err: err.message }, "Telemetry getAnalytics failed");
+    return null;
+  }
+}
+
 module.exports = {
   record,
   query,
@@ -936,6 +1137,9 @@ module.exports = {
   getQualityByTierAndType,
   getExpectedRemainingTurns,
   getCacheEconomics,
+  getMeasuredCacheSavings,
+  getSessionDetail,
+  getAnalytics,
   recordSavings,
   getSavingsSummary,
   cleanup,

@@ -5,7 +5,7 @@
 **84% fewer tokens on JSON tool results. 53% fewer tokens on tool-heavy requests. Sub-300ms semantic cache hits. Zero code changes.**
 
 [![npm version](https://img.shields.io/npm/v/lynkr.svg)](https://www.npmjs.com/package/lynkr)
-[![Tests](https://img.shields.io/badge/tests-1041%20passing-brightgreen)](https://github.com/Fast-Editor/Lynkr)
+[![Tests](https://img.shields.io/badge/tests-1249%20passing-brightgreen)](https://github.com/Fast-Editor/Lynkr)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-20%2B-green)](https://nodejs.org)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Fast-Editor/Lynkr)
@@ -326,12 +326,45 @@ the local telemetry store:
 - **Routing accuracy** — over-/under-provisioned request counts, a self-audit
   of the tier router's decisions
 - **Request logs** — filterable by provider, tier, and errors, with latency,
-  tokens, and cost per request
+  tokens, and cost per request; every session id links to a drill-down
 - **Provider health** — configured providers, credential warnings, circuit
   breaker states
+- **Insights** — analyzer findings ranked by *past overspend* (auditable
+  against spend already recorded, never projected savings): dead tool
+  schemas paying rent, harness side-traffic served on expensive tiers,
+  weak prompt-cache hit ratios, and Wilson-bounded tier-downsize verdicts.
+  Each finding ships its evidence rows, the fix, the caveat, and how the
+  figure was computed. "Not measured yet" is rendered distinctly from
+  zero — an un-run scan is not an all-clear.
+- **Explore** — a Metric × Dimension (× Stack) pivot over routing telemetry
+  (spend/tokens/requests/sessions by provider, model, tier, request type,
+  day…) with preset views, period-over-period deltas, and CSV export
+- **Session drill-down** — per-model cost mix and an input-context-per-call
+  chart where distillation and cache behavior are directly visible
+- **Cache receipts** — projected switch/hold economics from cache-aware
+  routing next to the *measured* companion (dollars saved by cache reads
+  actually served)
 
-JSON APIs behind it (`/dashboard/api/overview|usage|routing|logs`) if you want
-the raw numbers.
+JSON APIs behind it
+(`/dashboard/api/overview|usage|routing|logs|recommendations|analytics|sessions/:id|statusline`)
+if you want the raw numbers.
+
+### Status line for Claude Code
+
+One line after every turn — routed tier, served model, today's spend, and
+cache re-read share — with zero token cost (out-of-band, never enters model
+context). Add to `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "lynkr-statusline" }
+```
+
+```
+◆ Opus 4.8 · MEDIUM → minimax-m3:cloud (ollama) · today $0.06 · cache 67%
+```
+
+Always prints exactly one line and always exits 0 — a down proxy can never
+break the harness. Set `LYNKR_PORT` if Lynkr isn't on 8081.
 
 ### Cost tracking & model pricing
 Per-request cost is computed from a model-pricing registry (LiteLLM → models.dev,
@@ -551,7 +584,8 @@ With tier routing + token optimization: **additional 50-87% savings** on cloud p
 | **TOON JSON compression** | ✅ up to 87.6% | ❌ | ❌ | ❌ |
 | **Upstream SSE streaming** | ✅ native passthrough + cross-format transform | ⚠️ passthrough only | ✅ | ⚠️ |
 | **Semantic cache** | ✅ 171ms hits, 0 tokens | ❌ | ❌ | ✅ Prompt cache only |
-| **Savings & routing dashboard** | ✅ spend, savings vs flagship, tier mix, routing accuracy, request logs | ⚠️ spend UI only | ⚠️ usage page | ✅ observability suite (no routing accuracy) |
+| **Savings & routing dashboard** | ✅ spend, savings vs flagship, tier mix, routing accuracy, request logs, pivot explorer, session drill-down | ⚠️ spend UI only | ⚠️ usage page | ✅ observability suite (no routing accuracy) |
+| **Cost recommendations** | ✅ evidence-backed findings (dead tool schemas, side-traffic, cache weak spots, Wilson-proven downsizes) ranked by past overspend | ❌ | ❌ | ⚠️ alerts, no findings |
 | **Long-term memory** | ✅ SQLite, per-session | ❌ | ❌ | ❌ |
 | **MCP integration** | ✅ | ❌ | ❌ | ❌ |
 | **Self-hosted** | ✅ Node.js only | ✅ Python stack | ❌ SaaS | ✅ Docker |

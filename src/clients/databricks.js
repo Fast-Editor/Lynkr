@@ -3000,6 +3000,8 @@ async function invokeModel(body, options = {}) {
       pinned: routingResult.pinned ? 1 : 0,
       switch_reason: routingResult.switch_reason ?? null,
       cache_decision: routingResult._cacheDecision ?? null,
+      cache_read_tokens: result.json?.usage?.cache_read_input_tokens ?? null,
+      cache_creation_tokens: result.json?.usage?.cache_creation_input_tokens ?? null,
     });
 
     // WS5.4 — feedback loop (success path).
@@ -3351,6 +3353,8 @@ async function invokeModel(body, options = {}) {
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
       cache_decision: routingResult._cacheDecision ?? null,
+      cache_read_tokens: fallbackResult.json?.usage?.cache_read_input_tokens ?? null,
+      cache_creation_tokens: fallbackResult.json?.usage?.cache_creation_input_tokens ?? null,
       });
 
       // WS5.4 — feedback loop (fallback success). The served provider
