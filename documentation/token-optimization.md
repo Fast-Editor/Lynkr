@@ -289,6 +289,27 @@ curl http://localhost:8081/metrics | grep lynkr_tokens
 # lynkr_tokens_cached_total 500000
 ```
 
+### Insights — where the remaining waste is
+
+The dashboard's **Insights** tab (`/dashboard/api/recommendations`) runs
+analyzers over routing telemetry and reports *past overspend* — figures you
+can check against spend already recorded, never projections:
+
+- **deadweight** — sessions that carried tool schemas on every request and
+  never called a tool (schema rent, priced per session)
+- **side-requests** — harness bookkeeping (title generation, topic
+  detection) served above the SIMPLE tier
+- **cache-weakspots** — prompt-cache hit ratio per (provider, model), from
+  per-request cache counters; weak pairs priced as an explicit ceiling
+- **downsize** — request types where the tier below has statistically
+  proven itself (Wilson 95% lower bound ≥ 0.7 on ≥ 20 quality-scored
+  samples — a raw 70% average on a small sample stays "unproven")
+
+Each finding carries its evidence rows, the fix, a caveat, and how the
+figure was computed. The Routing tab additionally shows the **measured**
+cache companion — dollars saved by cache reads actually served — beside the
+projected switch/hold receipts from cache-aware routing.
+
 ### Per-Request Logging
 
 ```bash
