@@ -25,7 +25,8 @@
   "main": "index.js",
   "bin": {
     "lynkr": "bin/cli.js",
-    "lynkr-setup": "scripts/setup.js"
+    "lynkr-setup": "scripts/setup.js",
+    "lynkr-statusline": "bin/statusline.js"
   },
   "scripts": {
     "postinstall": "node scripts/check-native.js",
