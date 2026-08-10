@@ -358,19 +358,11 @@ function calculateInitialImportance(type, surpriseScore) {
   return Math.min(1.0, base + (surpriseScore * 0.3));
 }
 
-/**
- * Parse entities from content
- */
-function parseEntities(content) {
-  return extractEntities(content);
-}
-
 module.exports = {
   extractMemories,
   extractContent,
   extractByType,
   extractEntities,
   extractRelationships,
-  parseEntities,
   classifyCategory,
 };

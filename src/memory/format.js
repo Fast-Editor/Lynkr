@@ -21,10 +21,25 @@ function formatMemoriesForContext(memories, format = 'compact') {
 }
 
 /**
+ * Deterministic render order (cache-aware routing, Phase 5): retrieval
+ * returns equal-relevance memories in unstable order, and the rendered
+ * bullets sit in the system prompt — the very front of the provider's
+ * prompt-cache prefix. A reordered bullet list is a byte change that
+ * silently invalidates the entire cached prefix (observed live: identical
+ * memory sets flipping order between consecutive requests). Sorting by
+ * content pins the bytes; presentation order carries no meaning here.
+ */
+function stableOrder(memories) {
+  return [...memories].sort((a, b) =>
+    String(a.content) < String(b.content) ? -1 : String(a.content) > String(b.content) ? 1 : 0
+  );
+}
+
+/**
  * Compact memory format - 75% fewer tokens
  */
 function formatCompact(memories) {
-  const items = memories
+  const items = stableOrder(memories)
     .map(mem => `- ${mem.content}`)
     .join('\n');
 
@@ -35,7 +50,7 @@ function formatCompact(memories) {
  * Verbose XML format (original)
  */
 function formatVerbose(memories) {
-  const items = memories.map((mem, idx) => {
+  const items = stableOrder(memories).map((mem, idx) => {
     const age = formatAge(mem.createdAt);
     const type = mem.type ? `[${mem.type}] ` : '';
     return `${idx + 1}. ${type}${mem.content} (${age})`;

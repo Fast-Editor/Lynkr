@@ -65,7 +65,7 @@ describe('injectAnthropicCacheBreakpoints', () => {
     assert.deepEqual(body.system[1].cache_control, { type: 'ephemeral' });
   });
 
-  it('marks last 3 messages', () => {
+  it('marks only the newest message on a young conversation (stable hierarchy)', () => {
     const body = {
       messages: [
         { role: 'user', content: 'msg1' },
@@ -76,20 +76,21 @@ describe('injectAnthropicCacheBreakpoints', () => {
       ],
     };
     const count = injectAnthropicCacheBreakpoints(body);
-    assert.equal(count, 3); // last 3 messages (no system = 3 breakpoints max)
+    // 3 user turns < K(5): no frozen boundary yet — rolling marker only.
+    assert.equal(count, 1);
 
-    // First 2 messages: no cache_control
-    assert.equal(body.messages[0].content, 'msg1'); // unchanged string
+    // Earlier messages untouched (they'd churn the cache if marked+moved).
+    assert.equal(body.messages[0].content, 'msg1');
     assert.equal(body.messages[1].content, 'msg2');
+    assert.equal(body.messages[2].content, 'msg3');
+    assert.equal(body.messages[3].content, 'msg4');
 
-    // Last 3 messages: converted to array with cache_control
-    assert.ok(Array.isArray(body.messages[2].content));
-    assert.ok(Array.isArray(body.messages[3].content));
+    // Newest message carries the rolling marker.
     assert.ok(Array.isArray(body.messages[4].content));
     assert.deepEqual(body.messages[4].content[0].cache_control, { type: 'ephemeral' });
   });
 
-  it('marks system + last 3 messages = 4 total breakpoints', () => {
+  it('marks system + rolling = 2 on a young conversation', () => {
     const body = {
       system: 'System prompt',
       messages: [
@@ -101,7 +102,69 @@ describe('injectAnthropicCacheBreakpoints', () => {
       ],
     };
     const count = injectAnthropicCacheBreakpoints(body);
-    assert.equal(count, 4); // 1 system + 3 messages = 4 (max)
+    assert.equal(count, 2); // system + rolling newest
+  });
+
+  it('marks the tools block as its own breakpoint', () => {
+    const body = {
+      system: 'System',
+      tools: [
+        { name: 'read', input_schema: { type: 'object' } },
+        { name: 'write', input_schema: { type: 'object' } },
+      ],
+      messages: [{ role: 'user', content: 'hi' }],
+    };
+    const count = injectAnthropicCacheBreakpoints(body);
+    assert.equal(count, 3); // tools + system + rolling
+    assert.equal(body.tools[0].cache_control, undefined);
+    assert.deepEqual(body.tools[1].cache_control, { type: 'ephemeral' });
+  });
+
+  function conversationWithUserTurns(n) {
+    const messages = [];
+    for (let i = 1; i <= n; i++) {
+      messages.push({ role: 'user', content: `question ${i}` });
+      messages.push({ role: 'assistant', content: `answer ${i}` });
+    }
+    return messages;
+  }
+
+  it('places a frozen boundary at the K-turn bucket once the conversation is old enough', () => {
+    const body = { messages: conversationWithUserTurns(12) }; // K default 5 → bucket 10
+    const count = injectAnthropicCacheBreakpoints(body);
+    assert.equal(count, 2); // boundary + rolling
+
+    // 10th user message is messages[18] (user turns at even indices).
+    assert.ok(Array.isArray(body.messages[18].content));
+    assert.deepEqual(body.messages[18].content[0].cache_control, { type: 'ephemeral' });
+  });
+
+  it('keeps the boundary byte-stable across turns inside a bucket', () => {
+    // Turn 12 and turn 14 of the same conversation must mark the SAME
+    // message — that stability is what compounds provider cache hits.
+    const at12 = { messages: conversationWithUserTurns(12) };
+    const at14 = { messages: conversationWithUserTurns(14) };
+    injectAnthropicCacheBreakpoints(at12);
+    injectAnthropicCacheBreakpoints(at14);
+
+    const marked = (body) => body.messages
+      .map((m, i) => (Array.isArray(m.content) && m.content.some(b => b.cache_control) ? i : -1))
+      .filter(i => i >= 0);
+
+    const m12 = marked(at12);
+    const m14 = marked(at14);
+    // Boundary (first marked index) identical; rolling marker differs.
+    assert.equal(m12[0], 18);
+    assert.equal(m14[0], 18);
+  });
+
+  it('advances the boundary only when the bucket rolls over', () => {
+    const at15 = { messages: conversationWithUserTurns(15) };
+    injectAnthropicCacheBreakpoints(at15);
+    // bucket = 15 → boundary at the 15th user message... which is also
+    // covered by the rolling marker region; boundary lands at index 28.
+    assert.ok(Array.isArray(at15.messages[28].content));
+    assert.deepEqual(at15.messages[28].content[0].cache_control, { type: 'ephemeral' });
   });
 
   it('respects max 4 breakpoints', () => {

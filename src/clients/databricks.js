@@ -2999,6 +2999,7 @@ async function invokeModel(body, options = {}) {
       candidates: routingResult.candidates ?? null,
       pinned: routingResult.pinned ? 1 : 0,
       switch_reason: routingResult.switch_reason ?? null,
+      cache_decision: routingResult._cacheDecision ?? null,
     });
 
     // WS5.4 — feedback loop (success path).
@@ -3230,6 +3231,7 @@ async function invokeModel(body, options = {}) {
         candidates: routingResult.candidates ?? null,
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
+      cache_decision: routingResult._cacheDecision ?? null,
       });
 
       // WS5.4 — feedback loop (primary-failed, no fallback). Low quality
@@ -3348,6 +3350,7 @@ async function invokeModel(body, options = {}) {
         candidates: routingResult.candidates ?? null,
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
+      cache_decision: routingResult._cacheDecision ?? null,
       });
 
       // WS5.4 — feedback loop (fallback success). The served provider
@@ -3415,6 +3418,7 @@ async function invokeModel(body, options = {}) {
         candidates: routingResult.candidates ?? null,
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
+      cache_decision: routingResult._cacheDecision ?? null,
       });
 
       // WS5.4 — feedback loop (double failure). quality=0 is a hard

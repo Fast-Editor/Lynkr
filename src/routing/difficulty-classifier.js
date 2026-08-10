@@ -7,14 +7,16 @@
  * hard problems. An LLM reading the actual sentence knows better.
  *
  * DESIGN:
- *  - Uses whatever model is configured for the SIMPLE tier (fetched at call
- *    time via getModelTierSelector). When the user later swaps in a
- *    fine-tuned classifier as SIMPLE, this picks it up automatically.
+ *  - Dedicated classifier model (CLASSIFIER_MODEL below), deliberately
+ *    decoupled from tier serving — swapping TIER_* env vars does not change
+ *    what classifies prompts. The tier DEPLOYMENT (which models the tiers
+ *    route to) is surfaced to the classifier as tie-breaker context; see
+ *    _buildTierContext.
  *  - Structured JSON output; parse failure → null → caller falls back.
- *  - Hard 2500ms timeout; on timeout → null → caller falls back.
+ *  - Hard timeout (TIMEOUT_MS); on timeout → null → caller falls back.
  *  - LRU cache keyed by sha256(text.trim().toLowerCase()); capacity 500.
  *  - Skip conditions surface via classifyDifficulty returning null with
- *    reason=skipped: text.length<15, force-pattern matched, risk=high,
+ *    reason=skipped: empty text, force-pattern matched, risk=high,
  *    cache hit is transparent (returns cached).
  *  - Hardcoded kill-switch CLASSIFIER_ENABLED — no env var per user policy.
  *
@@ -31,7 +33,6 @@ const CLASSIFIER_ENABLED = true;
 // LRU cache to keep amortized latency low.
 const TIMEOUT_MS = 10000;
 const CACHE_CAPACITY = 500;
-const MIN_TEXT_LENGTH = 15;
 
 // Classifier model — decoupled from tier serving so SIMPLE tier can run a
 // more capable model for real traffic while the classifier stays fast and
@@ -44,7 +45,7 @@ const CLASSIFIER_MODEL = 'qwen2.5:3b';
 
 const VALID_TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
 
-// One-shot classification prompt (v2). Kept in a const so drift is diffable.
+// One-shot classification prompt (v3). Kept in a const so drift is diffable.
 // Difficulty framing (not intent) — matches config B routing goals.
 //
 // v2 (2026-07-21): added the follow-up rule, negative examples under
@@ -54,11 +55,16 @@ const VALID_TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
 // flavored and nothing said surface vocabulary isn't the signal. Baseline
 // on data/difficulty-eval-followups.jsonl: 60% overall, 33% on SIMPLE,
 // 3 SIMPLE→REASONING criticals.
+//
+// v3 (2026-08-09): added trivial-arithmetic SIMPLE examples after a live
+// over-route: "12+21" scored anchor 25 (MEDIUM band) and qwen ALSO said
+// MEDIUM conf 1.0 — bare arithmetic read as "a specific mechanical task".
+// Any tiny model adds two numbers; it belongs in SIMPLE.
 const CLASSIFY_PROMPT = `You are a classifier for an LLM routing proxy. Classify the difficulty of the CURRENT user prompt into exactly one of four tiers. Reply with ONLY valid JSON on a single line, no other text.
 
 Tiers:
 - SIMPLE: casual acknowledgments, greetings, one-word answers, trivial factual lookups, and short conversational follow-up questions about people, stories, events, or everyday facts. Any tiny model handles.
-  examples: "hi", "ok thanks", "yes continue", "what time is it", "who is doctor doom?", "who kills him?", "why did he do that?", "and then what happened?", "does bleach kill mold?"
+  examples: "hi", "ok thanks", "yes continue", "what time is it", "who is doctor doom?", "who kills him?", "why did he do that?", "and then what happened?", "does bleach kill mold?", "12+21", "what is 15% of 80?", "convert 3km to miles"
 - MEDIUM: one specific mechanical task or a focused explanation. Mid-size local model suffices.
   examples: "list the exports from this file", "run the unit tests", "fix the linter warnings", "explain this regex", "add error handling to this block", "verify the file exists before reading it"
 - COMPLEX: multi-file design, systemic refactor, architecture review, debugging that requires broad code understanding. Needs a strong general model.
@@ -81,15 +87,101 @@ Reply format (strict): {"tier":"SIMPLE|MEDIUM|COMPLEX|REASONING","confidence":0.
 const CONTEXT_MAX_TEXT_LENGTH = 40;
 const CONTEXT_MAX_CHARS = 300;
 
+// --- Tier deployment context -------------------------------------------------
+//
+// Tells the classifier WHAT each tier routes to (model + coarse traits from
+// the registry), so borderline verdicts can weigh the actual fleet — e.g.
+// prefer MEDIUM when its configured model is a large cloud model, or lean
+// away from a tier whose model lacks the needed capability.
+//
+// Constraints that shape the design:
+//  - TIE-BREAKER ONLY. The difficulty rubric in CLASSIFY_PROMPT governs;
+//    the deployment block must not redefine what the tiers mean, or eval
+//    labels (data/difficulty-eval*.jsonl) stop being comparable.
+//  - BYTE-STABLE per process. Tier config is env-driven and fixed for the
+//    process lifetime, so the block is built once and memoized. It also
+//    participates in the LRU cache key (fingerprint) so a reconfigured
+//    deployment never serves verdicts cached under the old one.
+//  - FAIL-SAFE. Registry misses or config errors degrade to provider-type
+//    traits or to no block at all — classification proceeds regardless.
+// MEASURED OFF (2026-08-08): A/B on data/difficulty-eval-followups.jsonl —
+// baseline 84.0% overall / 0 SIMPLE→REASONING criticals; with the block
+// 76.0% / 1 critical ('prove me wrong lol' → REASONING conf 1.0, the exact
+// failure class prompt v2 was built to kill). qwen2.5:3b can't use fleet
+// info — it dilutes the rubric. Machinery kept dark for a future stronger
+// classifier: flip this flag, then re-run
+// scripts/validate-difficulty-classifier.js on BOTH eval files and hold
+// the ship bar (>=85% overall, zero MEDIUM→REASONING false positives).
+const TIER_CONTEXT_ENABLED = false;
+const LOCAL_PROVIDERS = new Set(['ollama', 'llamacpp', 'lmstudio']);
+
+/** Pure builder — exported for tests. @param {Object} tiers {TIER: 'provider:model'} */
+function _buildTierContext(tiers) {
+  const lines = [];
+  for (const tier of VALID_TIERS) {
+    const spec = tiers?.[tier];
+    if (typeof spec !== 'string' || !spec.includes(':')) continue;
+    const sep = spec.indexOf(':');
+    const provider = spec.slice(0, sep);
+    const model = spec.slice(sep + 1);
+    const traits = [LOCAL_PROVIDERS.has(provider) ? 'local' : 'cloud'];
+    try {
+      const { getModelRegistrySync } = require('./model-registry');
+      const cost = getModelRegistrySync().getCost(model);
+      if (cost && !cost.unknown) {
+        if (Number.isFinite(cost.context) && cost.context >= 1000) {
+          traits.push(`${Math.round(cost.context / 1000)}k ctx`);
+        }
+        if (cost.reasoning) traits.push('reasoning');
+        if (cost.vision) traits.push('vision');
+      }
+    } catch { /* registry unavailable — provider trait only */ }
+    lines.push(`- ${tier} routes to ${model} (${traits.join(', ')})`);
+  }
+  if (!lines.length) return null;
+  const block = `Deployment (what each tier currently routes to — use only as a tie-breaker between adjacent tiers; the tier definitions above still govern):
+${lines.join('\n')}`;
+  return {
+    block,
+    fingerprint: crypto.createHash('sha256').update(block).digest('hex').slice(0, 16),
+  };
+}
+
+/** @type {{block:string, fingerprint:string}|null|undefined} undefined = not built yet */
+let _tierContext;
+
+function _tierDeploymentContext() {
+  // Test override (set via _setTierContextForTests) wins over the flag so
+  // the machinery stays exercised while shipping dark.
+  if (_tierContext !== undefined) return _tierContext;
+  if (!TIER_CONTEXT_ENABLED) { _tierContext = null; return null; }
+  try {
+    const config = require('../config');
+    _tierContext = _buildTierContext(config.modelTiers);
+  } catch {
+    _tierContext = null;
+  }
+  return _tierContext;
+}
+
+/** Test helper — override or reset (pass undefined) the memoized block. */
+function _setTierContextForTests(tiers) {
+  _tierContext = tiers === undefined ? undefined : _buildTierContext(tiers);
+}
+
 function _buildPrompt(text, context) {
+  const tierCtx = _tierDeploymentContext();
+  const preamble = tierCtx ? `${CLASSIFY_PROMPT}
+${tierCtx.block}
+` : CLASSIFY_PROMPT;
   if (context) {
-    return `${CLASSIFY_PROMPT}
+    return `${preamble}
 Conversation so far (context only — classify the CURRENT prompt, inheriting topic difficulty per the rules):
 ${context}
 
 CURRENT user prompt: """${text}"""`;
   }
-  return `${CLASSIFY_PROMPT}
+  return `${preamble}
 User prompt: """${text}"""`;
 }
 
@@ -212,7 +304,12 @@ async function classifyDifficulty(text, opts = {}) {
   if (!CLASSIFIER_ENABLED) return null;
   if (typeof text !== 'string') return null;
   const trimmed = text.trim();
-  if (trimmed.length < MIN_TEXT_LENGTH) return null;
+  // No minimum length (removed 2026-08-09): short prompts are exactly what
+  // the v2 context feature was built for, and the 15-char gate meant the
+  // classifier could never rescue anchor over-reads like '12+21' -> MEDIUM.
+  // Greetings still skip upstream via force patterns (opts.forceMatched),
+  // and the LRU absorbs repeats, so the added model calls are bounded.
+  if (!trimmed) return null;
   if (opts.forceMatched) return null;
   if (opts.riskLevel === 'high') return null;
 
@@ -222,8 +319,11 @@ async function classifyDifficulty(text, opts = {}) {
       : null;
 
   // Context participates in the cache key: the same follow-up text means
-  // different things in different conversations.
-  const key = _cacheKey(context ? `${trimmed} ${context}` : trimmed);
+  // different things in different conversations. The tier-deployment
+  // fingerprint participates too (NUL separators are collision-proof), so
+  // verdicts cached under one deployment never serve a reconfigured one.
+  const tierFp = _tierDeploymentContext()?.fingerprint ?? "";
+  const key = _cacheKey(`${tierFp} ${context ? `${trimmed} ${context}` : trimmed}`);
   const cached = _cache.get(key);
   if (cached) return { ...cached, source: 'cache' };
 
@@ -256,6 +356,8 @@ module.exports = {
   _parseResult,
   _cacheKey,
   _buildPrompt,
+  _buildTierContext,
+  _setTierContextForTests,
   _clearCacheForTests,
   _getCacheStats,
 };

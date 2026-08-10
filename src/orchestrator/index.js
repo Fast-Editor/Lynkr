@@ -21,6 +21,7 @@ const crypto = require("crypto");
 const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
 const { areSimilarToolCalls } = require("../clients/gpt-utils");
 const { getModelRegistrySync } = require("../routing/model-registry");
+const sessionAffinity = require("../routing/session-affinity");
 
 /**
  * Get destination URL for audit logging based on provider type
@@ -1457,6 +1458,30 @@ async function runAgentLoop({
 
 
     if (steps === 1 && agentTimer) agentTimer.mark("preCompression");
+
+    // === CONVERSATION DISTILLATION (TencentDB-inspired L0-L3 pipeline) ===
+    // Long conversations collapse older turns into one distilled block
+    // (persona + scenario summary) before history compression runs.
+    if (steps === 1 && config.memory?.enabled !== false && config.memory?.distillation?.enabled !== false) {
+      try {
+        const distiller = require('../memory/distiller');
+        if (distiller.needsDistillation(cleanPayload.messages)) {
+          const result = distiller.distillMessages(cleanPayload.messages, {
+            sessionId: session?.id,
+          });
+          if (result.applied) {
+            cleanPayload.messages = result.messages;
+            logger.debug({
+              sessionId: session?.id ?? null,
+              ...result.stats,
+            }, '[distiller] Conversation distillation applied');
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, sessionId: session?.id }, 'Distillation failed, continuing with full history');
+      }
+    }
+
     if (steps === 1 && config.historyCompression?.enabled !== false) {
       try {
         if (historyCompression.needsCompression(cleanPayload.messages)) {
@@ -1916,6 +1941,28 @@ IMPORTANT TOOL USAGE RULES:
     // Record in session metadata
     if (session) {
       tokens.recordTokenUsage(session, steps, estimatedTokens, actualUsage, cleanPayload.model);
+    }
+  }
+
+  // Cache-aware routing (Phase 1): persist the session's warm-prefix state
+  // from the response's cache counters so the router can price a mid-session
+  // model switch against the live cache clock. Best-effort — never blocks
+  // the response path.
+  if (session?.id && actualUsage) {
+    try {
+      // Prefer the ROUTED provider/model over the request-level default:
+      // the tier router inside invokeModel may have diverged from
+      // providerType, and the cache lives with whoever actually served
+      // (verified live: databricks default label on ollama-served turns).
+      const served = databricksResponse.routingDecision || {};
+      sessionAffinity.recordCacheUsage(session.id, {
+        provider: served.provider || providerType,
+        model: served.model || cleanPayload.model,
+        cacheReadTokens: actualUsage.cacheReadTokens,
+        cacheCreationTokens: actualUsage.cacheCreationTokens,
+      });
+    } catch (err) {
+      logger.debug({ err: err.message }, "[Orchestrator] cache-state update failed");
     }
   }
 

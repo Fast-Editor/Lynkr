@@ -17,16 +17,19 @@ const CACHE_FILE = path.join(__dirname, '../../data/model-prices-cache.json');
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const REFRESH_RETRY_MS = 5 * 60 * 1000; // backoff between failed refresh attempts
 
-// Databricks fallback pricing (based on Anthropic direct API prices)
+// Databricks fallback pricing (based on Anthropic direct API prices).
+// cacheRead/cacheWrite are absolute USD/1M (0.1x / 1.25x input — Anthropic
+// explicit caching, 5-min TTL); non-Claude rows omit them and inherit the
+// provider-type multipliers in cache-economics.js.
 const DATABRICKS_FALLBACK = {
   // Claude models
-  'databricks-claude-opus-4-6': { input: 5.0, output: 25.0, context: 1000000 },
-  'databricks-claude-opus-4-5': { input: 5.0, output: 25.0, context: 200000 },
-  'databricks-claude-opus-4-1': { input: 15.0, output: 75.0, context: 200000 },
-  'databricks-claude-sonnet-4-5': { input: 3.0, output: 15.0, context: 200000 },
-  'databricks-claude-sonnet-4': { input: 3.0, output: 15.0, context: 200000 },
-  'databricks-claude-3-7-sonnet': { input: 3.0, output: 15.0, context: 200000 },
-  'databricks-claude-haiku-4-5': { input: 1.0, output: 5.0, context: 200000 },
+  'databricks-claude-opus-4-6': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25, context: 1000000 },
+  'databricks-claude-opus-4-5': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25, context: 200000 },
+  'databricks-claude-opus-4-1': { input: 15.0, output: 75.0, cacheRead: 1.5, cacheWrite: 18.75, context: 200000 },
+  'databricks-claude-sonnet-4-5': { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75, context: 200000 },
+  'databricks-claude-sonnet-4': { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75, context: 200000 },
+  'databricks-claude-3-7-sonnet': { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75, context: 200000 },
+  'databricks-claude-haiku-4-5': { input: 1.0, output: 5.0, cacheRead: 0.1, cacheWrite: 1.25, context: 200000 },
 
   // Llama models
   'databricks-llama-4-maverick': { input: 1.0, output: 1.0, context: 128000 },
@@ -208,6 +211,16 @@ class ModelRegistry {
       prices[modelId.toLowerCase()] = {
         input: inputCost,
         output: outputCost,
+        // Cache economics (Phase 4) — LiteLLM publishes per-token cache
+        // read/write costs for providers that price them. Absent fields
+        // stay undefined so cache-economics.js falls back to its
+        // provider-type multiplier table.
+        ...(info.cache_read_input_token_cost != null
+          ? { cacheRead: info.cache_read_input_token_cost * 1_000_000 }
+          : {}),
+        ...(info.cache_creation_input_token_cost != null
+          ? { cacheWrite: info.cache_creation_input_token_cost * 1_000_000 }
+          : {}),
         context: info.max_input_tokens || info.max_tokens || 128000,
         maxOutput: info.max_output_tokens || 4096,
         toolCall: info.supports_function_calling ?? true,
@@ -296,9 +309,21 @@ class ModelRegistry {
       this.modelIndex.set(modelId, info);
     }
 
-    // Add LiteLLM (highest priority)
+    // Add LiteLLM (highest priority) — but merge cache economics from the
+    // entry it shadows: LiteLLM wins on base prices, while cacheRead/
+    // cacheWrite survive from models.dev when LiteLLM doesn't carry them.
+    // Without this, a LiteLLM entry missing cache prices hides the
+    // models.dev cache data and the switch-cost math degrades to
+    // provider-multiplier approximations (observed live: 0 LiteLLM entries
+    // with cacheRead shadowing 4.9k models.dev entries that had it).
     for (const [modelId, info] of Object.entries(this.litellmPrices)) {
-      this.modelIndex.set(modelId, info);
+      const prev = this.modelIndex.get(modelId);
+      const merged = { ...info };
+      if (prev) {
+        if (merged.cacheRead == null && typeof prev.cacheRead === 'number') merged.cacheRead = prev.cacheRead;
+        if (merged.cacheWrite == null && typeof prev.cacheWrite === 'number') merged.cacheWrite = prev.cacheWrite;
+      }
+      this.modelIndex.set(modelId, merged);
     }
   }
 

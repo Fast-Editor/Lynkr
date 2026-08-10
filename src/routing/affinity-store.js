@@ -56,6 +56,12 @@ function _db() {
       if (!cols.has("has_tool_history")) {
         db.exec("ALTER TABLE session_pins ADD COLUMN has_tool_history INTEGER DEFAULT 0");
       }
+      // Additive migration for cache-aware routing (Phase 1): JSON blob
+      // holding {warmPrefixTokens, provider, model, lastRequestAt, ttlMs},
+      // updated after every upstream response that reports cache usage.
+      if (!cols.has("cache_state")) {
+        db.exec("ALTER TABLE session_pins ADD COLUMN cache_state TEXT");
+      }
       schemaEnsured = true;
     } catch (err) {
       degradation.record("feedback", err);
@@ -161,6 +167,67 @@ function save(sessionId, pin) {
 }
 
 /**
+ * Persist per-session prompt-cache state (Phase 1, cache-aware routing).
+ * Piggybacks on the session_pins row; creates a minimal row when the session
+ * has no pin yet (possible when sticky sessions are disabled but tracking
+ * is on). Best-effort like everything else in this module.
+ *
+ * @param {string} sessionId
+ * @param {{warmPrefixTokens:number, provider:string, model:string|null, lastRequestAt:number, ttlMs:number}} state
+ */
+function saveCacheState(sessionId, state) {
+  if (!sessionId || !state?.provider) return;
+  const db = _db();
+  if (!db) return;
+  try {
+    const json = JSON.stringify(state);
+    const res = _stmt(
+      db,
+      "cache_state_update",
+      "UPDATE session_pins SET cache_state = ? WHERE session_id = ?"
+    ).run(json, sessionId);
+    if (res.changes === 0) {
+      _stmt(
+        db,
+        "cache_state_insert",
+        `INSERT INTO session_pins (session_id, provider, model, ts, cache_state)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET cache_state = excluded.cache_state`
+      ).run(sessionId, state.provider, state.model ?? null, Date.now(), json);
+    }
+  } catch (err) {
+    degradation.record("feedback", err);
+  }
+}
+
+/**
+ * Load per-session cache state. Returns null when absent, unparsable, or the
+ * DB is unavailable — callers treat null as "no cache signal for this
+ * session" (provider doesn't report cache usage, or no response seen yet).
+ *
+ * @param {string} sessionId
+ * @returns {{warmPrefixTokens:number, provider:string, model:string|null, lastRequestAt:number, ttlMs:number}|null}
+ */
+function loadCacheState(sessionId) {
+  if (!sessionId) return null;
+  const db = _db();
+  if (!db) return null;
+  try {
+    const row = _stmt(
+      db,
+      "cache_state_load",
+      "SELECT cache_state FROM session_pins WHERE session_id = ?"
+    ).get(sessionId);
+    if (!row?.cache_state) return null;
+    const parsed = JSON.parse(row.cache_state);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (err) {
+    degradation.record("feedback", err);
+    return null;
+  }
+}
+
+/**
  * Remove a pin.
  * @param {string} sessionId
  */
@@ -205,4 +272,4 @@ function _clear() {
   } catch { /* best-effort */ }
 }
 
-module.exports = { load, save, remove, cleanup, _clear };
+module.exports = { load, save, remove, cleanup, saveCacheState, loadCacheState, _clear };

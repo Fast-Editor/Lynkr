@@ -1,5 +1,4 @@
 const express = require("express");
-const compression = require("compression");
 const config = require("./config");
 const loggingMiddleware = require("./api/middleware/logging");
 const router = require("./api/router");
@@ -19,7 +18,7 @@ const metrics = require("./metrics");
 const logger = require("./logger");
 const { initialiseMcp } = require("./mcp");
 const { initConfigWatcher, getConfigWatcher } = require("./config/watcher");
-const { initializeHeadroom, shutdownHeadroom, getHeadroomManager } = require("./headroom");
+const { initializeHeadroom, shutdownHeadroom } = require("./headroom");
 const { getWorkerPool, isWorkerPoolReady } = require("./workers/pool");
 const { waitForOllama } = require("./clients/ollama-startup");
 
@@ -212,6 +211,27 @@ async function start() {
     server.once("listening", resolve);
     server.once("error", reject);
   });
+
+  // TencentDB-Agent-Memory sidecar — non-blocking (first start pulls two
+  // Docker images). Launched after listen so the proxy is usable immediately;
+  // the memory stack's LLM calls route back through Lynkr, which is why
+  // Lynkr must already be accepting requests when the containers come up.
+  if (config.tencentdbMemory?.enabled) {
+    (async () => {
+      try {
+        const tencentdbLauncher = require("./memory/tencentdb-launcher");
+        const result = await tencentdbLauncher.ensureRunning();
+        if (result.started) {
+          logger.info(result.endpoints, "[tdai] TencentDB Agent Memory stack ready");
+          console.log(`TencentDB Agent Memory ready — Panel UI: ${result.endpoints.panel}`);
+        } else {
+          logger.debug({ reason: result.reason }, "[tdai] Sidecar not started");
+        }
+      } catch (err) {
+        logger.warn({ err }, "[tdai] TencentDB memory sidecar failed to start — continuing without it");
+      }
+    })();
+  }
 
   // Classifier bootstrap check — non-blocking, log-only.
   // Detects ollama + confirms the classifier model is pulled. Never auto-

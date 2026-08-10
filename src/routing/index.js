@@ -156,6 +156,7 @@ function getBestLocalProvider() {
  * @returns {Object} Routing decision with provider and metadata
  */
 const sessionAffinity = require('./session-affinity');
+const { evaluateSwitch: evaluateCacheSwitch } = require('./cache-switch-cost');
 
 // ---------------------------------------------------------------------------
 // WS1 — sticky sessions
@@ -272,12 +273,25 @@ function buildDecision(fields = {}) {
     // Fail-open (routing must never throw on shape problems) but loud.
     logger.error({ keys: Object.keys(fields) }, '[Routing] buildDecision called without provider/method');
   }
+  // WS2.3 repair: the telemetry record sites read `analysis.requestType`,
+  // but nothing ever set that field — every routing_telemetry row recorded
+  // request_type NULL (verified live: 4052/4052 rows), so the evidence-based
+  // deescalator (keyed on tier + request_type) could never accumulate
+  // demotion evidence. Derive it here at the canonical constructor, using
+  // the SAME derivation the deescalator applies, so telemetry rows and
+  // demotion queries group by identical values.
+  let analysis = fields.analysis ?? null;
+  if (analysis && typeof analysis === 'object' && analysis.requestType == null) {
+    const requestType = analysis.breakdown?.taskType?.reason ?? analysis.taskType ?? null;
+    if (requestType != null) analysis = { ...analysis, requestType };
+  }
   return {
     model: null,
     tier: null,
     reason: null,
     score: null,
-    analysis: null,
+    // `analysis` is appended after the ...fields spread (requestType
+    // derivation above); it defaults to null there.
     embeddingsResult: null,
     agenticResult: null,
     knnResult: null,
@@ -291,6 +305,61 @@ function buildDecision(fields = {}) {
     propensity: 1.0,
     candidates: [{ provider: fields.provider, model: fields.model ?? null }],
     ...fields,
+    analysis,
+  };
+}
+
+/**
+ * Cache-aware switch gate (Phases 2+3).
+ *
+ * Prices a DOWNWARD (cost-motivated) model change against the session's warm
+ * prompt-cache prefix: inside the provider's cache TTL, the pin holds unless
+ * the break-even math clears within the session's expected remaining turns.
+ * A cold prefix (TTL elapsed — Phase 2) or absent cache state makes the
+ * switch cache-free and it passes.
+ *
+ * Upward/lateral moves (guard escalations, risk, drift to a higher tier)
+ * MUST NOT route through here — correctness beats cost, and the math can
+ * never favor a pricier model anyway.
+ *
+ * @returns {object|null} evaluation result, or null when gating doesn't
+ *   apply (same model, missing data, or evaluator failure — fail-open).
+ */
+function _cacheAwareSwitchGate(sessionId, pin, fresh, payload) {
+  if (!sessionId || !pin?.model || !fresh?.model) return null;
+  if (pin.provider === fresh.provider && pin.model === fresh.model) return null;
+  try {
+    const cacheState = sessionAffinity.getCacheState(sessionId);
+    const currentTurns = Array.isArray(payload?.messages) ? payload.messages.length : 0;
+    let expectedRemainingTurns = null;
+    try {
+      expectedRemainingTurns = telemetry.getExpectedRemainingTurns(currentTurns);
+    } catch { /* sparse-data default applies */ }
+    return evaluateCacheSwitch({
+      cacheState,
+      current: { provider: pin.provider, model: pin.model },
+      target: { provider: fresh.provider, model: fresh.model },
+      expectedRemainingTurns,
+    });
+  } catch (err) {
+    degradation.record('cache_switch_cost', err);
+    return null; // fail-open: gate must never block routing on an internal error
+  }
+}
+
+/** Shape the gate result into the telemetry receipt (Phase 6). */
+function _cacheDecisionReceipt(evaluation, decision) {
+  if (!evaluation) return null;
+  return {
+    decision,
+    reason: evaluation.reason,
+    warmPrefixTokens: evaluation.warmPrefixTokens,
+    breakEvenTurns: Number.isFinite(evaluation.breakEvenTurns)
+      ? Number(evaluation.breakEvenTurns.toFixed(2))
+      : evaluation.breakEvenTurns === Infinity ? -1 : null,
+    projectedSwitchCostUsd: evaluation.switchOnceUsd,
+    projectedStaySavingsUsd: evaluation.projectedStaySavingsUsd,
+    expectedRemainingTurns: evaluation.expectedRemainingTurns,
   };
 }
 
@@ -349,7 +418,28 @@ async function determineProviderSmart(payload, options = {}) {
         fresh.switch_reason = 'score_drift';
         if (_tierPriority(fresh.tier) >= _tierPriority(pinCheck.pin.tier)) {
           writeSessionPin(pinCheck.sessionId, fresh, payload);
+          return fresh;
         }
+        // Fresh decision came back BELOW the pin on a drift re-decide —
+        // that's a cost-motivated downgrade (deescalator/bandit inside the
+        // fresh decision), so it must clear the cache break-even gate
+        // (Phases 2+3) before abandoning the warm prefix.
+        const gate = _cacheAwareSwitchGate(pinCheck.sessionId, pinCheck.pin, fresh, payload);
+        if (gate && !gate.switchAllowed) {
+          logger.info({
+            sessionId: pinCheck.sessionId,
+            pinModel: pinCheck.pin.model,
+            freshModel: fresh.model,
+            reason: gate.reason,
+            breakEvenTurns: gate.breakEvenTurns,
+            warmPrefixTokens: gate.warmPrefixTokens,
+          }, '[Routing] Cache break-even holds pin — downgrade suppressed');
+          const served = _pinToDecision(pinCheck.pin, { reason: 'cache_hold', risk: null });
+          served._cacheDecision = _cacheDecisionReceipt(gate, 'hold');
+          writeSessionPin(pinCheck.sessionId, pinCheck.pin, payload);
+          return served;
+        }
+        if (gate) fresh._cacheDecision = _cacheDecisionReceipt(gate, 'switch');
         return fresh;
       }
     }
@@ -376,6 +466,18 @@ async function determineProviderSmart(payload, options = {}) {
   // fires on the compaction path — guard escalations are mandatory.
   if (pinCheck.reason === 'compaction') {
     fresh.switch_reason = 'compaction';
+    // Compaction reset the provider-side prefix upstream (Phase 2: the
+    // cache is cold by construction), so the break-even gate doesn't apply;
+    // record the receipt so the dashboard can attribute the free switch.
+    fresh._cacheDecision = {
+      decision: 'switch',
+      reason: 'compaction_cache_reset',
+      warmPrefixTokens: 0,
+      breakEvenTurns: 0,
+      projectedSwitchCostUsd: null,
+      projectedStaySavingsUsd: null,
+      expectedRemainingTurns: null,
+    };
     const promptTokensEst = _tryCountTokens(payload, pin.model || fresh.model);
     if (!_economicDowngradeAllowed(promptTokensEst, pin.model, fresh.model)) {
       logger.debug({

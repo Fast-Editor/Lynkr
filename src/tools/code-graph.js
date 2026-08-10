@@ -313,9 +313,10 @@ async function getBlastRadius(filePaths, options = {}) {
   if (cached) return cached;
 
   // Query neighbors for each file to estimate blast radius
+  const depth = String(config.codeGraph?.maxDepth ?? 2);
   const result = await execGraph(
     "query",
-    ["get_neighbors", "--files", ...filePaths, "--depth", "2", "--json"],
+    ["get_neighbors", "--files", ...filePaths, "--depth", depth, "--json"],
     ws
   );
   if (!result) return null;
@@ -364,11 +365,11 @@ async function getBlastRadius(filePaths, options = {}) {
  * Uses Graphify's BFS-based query to find related nodes.
  *
  * @param {string[]} filePaths — seed file paths
- * @param {number} [maxFiles=20] — maximum files to return
+ * @param {number} [maxFiles] — maximum files to return (default from config.codeGraph.maxFiles)
  * @param {CodeGraphOptions} [options]
  * @returns {Promise<string[]|null>}
  */
-async function getRelevantContext(filePaths, maxFiles = 20, options = {}) {
+async function getRelevantContext(filePaths, maxFiles = config.codeGraph?.maxFiles ?? 5, options = {}) {
   if (!Array.isArray(filePaths) || filePaths.length === 0) return null;
 
   const ws = resolveWorkspace({ ...options, filePaths });
@@ -419,8 +420,9 @@ async function getComplexitySignals(filePaths, options = {}) {
   if (cached) return cached;
 
   // Run parallel queries: neighbors (blast radius) + god_nodes + graph_stats
+  const signalDepth = String(config.codeGraph?.maxDepth ?? 2);
   const [neighborsResult, godNodesResult, statsResult] = await Promise.all([
-    execGraph("query", ["get_neighbors", "--files", ...filePaths, "--depth", "2", "--json"], ws),
+    execGraph("query", ["get_neighbors", "--files", ...filePaths, "--depth", signalDepth, "--json"], ws),
     execGraph("query", ["god_nodes", "--json"], ws),
     execGraph("query", ["graph_stats", "--json"], ws),
   ]);

@@ -795,7 +795,13 @@ async function analyzeComplexity(payload, options = {}) {
       threshold,
       mode: 'weighted',
       recommendation,
-      breakdown: weighted.dimensions,
+      // taskType rides alongside the numeric dimensions. The legacy path
+      // has always carried breakdown.taskType, and both the deescalator
+      // (tier + request_type evidence key) and the telemetry request_type
+      // column derive from it — without it here, weighted-mode requests
+      // (the default) recorded request_type NULL and could never
+      // accumulate demotion evidence.
+      breakdown: { ...weighted.dimensions, taskType: taskTypeResult },
       weights: weighted.weights,
       meta: weighted.meta,
       forceReason: taskTypeResult.reason?.startsWith('force_') ? taskTypeResult.reason : null,

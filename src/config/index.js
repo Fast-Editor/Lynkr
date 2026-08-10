@@ -809,6 +809,33 @@ var config = {
     extraction: {
       enabled: memoryExtractionEnabled,
     },
+    // TencentDB-Agent-Memory-inspired token optimization (L0-L3 pipeline).
+    // Fixed defaults by design — tune here, not via env.
+    distillation: {
+      enabled: true,
+      turnThreshold: 10, // distill once conversation reaches 10 user turns
+      keepRecentTurns: 3, // last 3 user turns stay verbatim
+      // Size-based rescue trigger: fires regardless of turn count once the
+      // history alone hits this many estimated tokens, so small-context
+      // local models (4k-8k) don't overflow before the turn threshold.
+      tokenThreshold: 3000,
+      // Cache-aware routing (Phase 5): once emitted, the distilled block is
+      // frozen and only re-distilled every this-many user turns, so the
+      // block stays byte-identical between refreshes and compounds provider
+      // prompt-cache hits instead of rewriting history on every request.
+      // The stable-breakpoint hierarchy in prompt-cache-injection.js shares
+      // this K for its frozen history boundary.
+      refreshEveryTurns: 5,
+    },
+    skills: {
+      enabled: true,
+      minSavings: 0.6, // compression outcome must save 60%+ to be cached
+    },
+    wiki: {
+      enabled: true,
+      minTokens: 500, // register blocks larger than ~500 tokens
+      similarityThreshold: 0.85,
+    },
     decay: {
       enabled: memoryDecayEnabled,
       halfLifeDays: Number.isNaN(memoryDecayHalfLifeDays) ? 30 : memoryDecayHalfLifeDays,
@@ -888,6 +915,41 @@ var config = {
     provider: headroomProvider,
     logLevel: headroomLogLevel,
   },
+  // TencentDB-Agent-Memory sidecar (memory-core + memory-hub, Docker Hub
+  // `agentmemory/*` images). Opt-in like Headroom; when enabled, `lynkr start`
+  // launches both containers. Their internal LLM calls default to routing
+  // back through Lynkr itself, so no extra API key is needed.
+  tencentdbMemory: {
+    enabled: process.env.TENCENTDB_MEMORY_ENABLED === "true",
+    docker: {
+      enabled: process.env.TENCENTDB_MEMORY_DOCKER_ENABLED !== "false", // default true when sidecar enabled
+      network: "tdai-memory-stack",
+      core: {
+        image: process.env.TENCENTDB_MEMORY_CORE_IMAGE ?? "agentmemory/memory-core:latest",
+        containerName: "tdai-memory-core",
+        port: Number.parseInt(process.env.TENCENTDB_MEMORY_CORE_PORT ?? "8420", 10),
+        volume: "tdai-memory-core-data",
+      },
+      hub: {
+        image: process.env.TENCENTDB_MEMORY_HUB_IMAGE ?? "agentmemory/memory-hub:latest",
+        containerName: "tdai-memory-hub",
+        panelPort: Number.parseInt(process.env.TENCENTDB_MEMORY_PANEL_PORT ?? "8125", 10),
+        knowledgePort: Number.parseInt(process.env.TENCENTDB_MEMORY_KNOWLEDGE_PORT ?? "8424", 10),
+        volume: "tdai-panel-data",
+      },
+    },
+    // LLM the memory services use for extraction/summarization/wiki ingest.
+    // Defaults route through Lynkr's own OpenAI-compatible endpoint (tier
+    // routing decides the actual model), so local Ollama setups run free.
+    llm: {
+      baseUrl: process.env.TENCENTDB_MEMORY_LLM_BASE_URL
+        ?? `http://host.docker.internal:${Number.isNaN(port) ? 8080 : port}/v1`,
+      apiKey: process.env.TENCENTDB_MEMORY_LLM_API_KEY ?? "lynkr-local",
+      model: process.env.TENCENTDB_MEMORY_LLM_MODEL ?? "auto",
+      protocol: process.env.TENCENTDB_MEMORY_LLM_PROTOCOL ?? "openai",
+    },
+    promptMode: process.env.TENCENTDB_MEMORY_PROMPT_MODE ?? "code", // code | chat
+  },
   security: {
     // Content filtering
     contentFilterEnabled: process.env.SECURITY_CONTENT_FILTER_ENABLED !== "false", // default true
@@ -949,6 +1011,21 @@ var config = {
     // If all exit 0, short-circuit the request with zero LLM cost.
     preflightEnabled: process.env.LYNKR_PREFLIGHT_ENABLED === 'true',
     preflightTimeoutMs: Number(process.env.LYNKR_PREFLIGHT_TIMEOUT_MS) || 120000,
+    // Cache-aware routing (Phases 1-3). Fixed defaults by design — tune
+    // here, not via env (same policy as memory.distillation).
+    cacheAware: {
+      enabled: true,
+      // Median remaining turns assumed when telemetry is too sparse to
+      // estimate — conservative so a warm pin isn't dropped for a switch
+      // that only pays off over a long horizon that may not happen.
+      defaultRemainingTurns: 10,
+      // Per-turn size assumptions when the payload gives no better signal.
+      newTokensPerTurn: 2000,
+      outputTokensPerTurn: 800,
+      // Local models: switching costs prefill latency, not dollars. Hold
+      // the pin while the warm prefix exceeds this many tokens.
+      localMaxSwitchPrefixTokens: 16000,
+    },
   },
 
   // Model Tier Configuration (REQUIRED)
@@ -973,6 +1050,8 @@ var config = {
     command: process.env.CODE_GRAPH_COMMAND || 'graphify',
     workspace: process.env.CODE_GRAPH_WORKSPACE || process.cwd(),
     timeout: parseInt(process.env.CODE_GRAPH_TIMEOUT, 10) || 10000,
+    maxDepth: 2, // symbol dependency depth for graph queries
+    maxFiles: 5, // max files returned as relevant context
   },
 
   // Large payload optimization (skip cloning media blocks that get discarded)

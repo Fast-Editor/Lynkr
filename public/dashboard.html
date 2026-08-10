@@ -493,6 +493,35 @@ const App = {
         ` : emptyState('No routing data for last 24h')}
       `, 'mb-6')}
 
+      <!-- Cache Economics (cache-aware routing receipt) -->
+      ${card(`
+        <h3 class="text-sm font-semibold text-slate-300 mb-4">Cache Economics (last ${d.window || '24h'})</h3>
+        ${d.cacheEconomics && d.cacheEconomics.decisions > 0 ? `
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="text-center">
+              <p class="text-2xl font-bold text-green-400">${fmt.usd(d.cacheEconomics.totalDollarsSaved)}</p>
+              <p class="text-xs text-slate-500 mt-1">Cache $ saved by routing</p>
+              <p class="text-xs text-slate-600">(holds + cleared switches)</p>
+            </div>
+            <div class="text-center">
+              <p class="text-2xl font-bold">${fmt.num(d.cacheEconomics.holds)}</p>
+              <p class="text-xs text-slate-500 mt-1">Switches held</p>
+              <p class="text-xs text-slate-600">(warm prefix protected)</p>
+            </div>
+            <div class="text-center">
+              <p class="text-2xl font-bold">${fmt.num(d.cacheEconomics.switches)}</p>
+              <p class="text-xs text-slate-500 mt-1">Switches cleared</p>
+              <p class="text-xs text-slate-600">(break-even ≤ remaining turns)</p>
+            </div>
+            <div class="text-center">
+              <p class="text-2xl font-bold text-amber-400">${fmt.usd(d.cacheEconomics.dollarsSavedByHolds)}</p>
+              <p class="text-xs text-slate-500 mt-1">Saved by holding pins</p>
+              <p class="text-xs text-slate-600">(cache re-writes avoided)</p>
+            </div>
+          </div>
+        ` : emptyState('No gated switch decisions yet — appears once a pinned session hits a downgrade decision')}
+      `, 'mb-6')}
+
       <!-- Provider Stats -->
       ${card(`
         <h3 class="text-sm font-semibold text-slate-300 mb-3">Provider Stats (last ${d.window || '24h'})</h3>

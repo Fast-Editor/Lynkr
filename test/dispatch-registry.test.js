@@ -91,3 +91,38 @@ test('buildDecision caller fields override defaults, extras pass through', () =>
   assert.strictEqual(d.model, 'ornith');
   assert.deepStrictEqual(d._queryEmbedding, [0.1, 0.2]);
 });
+
+test('buildDecision derives analysis.requestType (WS2.3 telemetry repair)', () => {
+  const { buildDecision } = require('../src/routing');
+
+  // The telemetry record sites read analysis.requestType; before this fix
+  // nothing set it and every routing_telemetry row recorded request_type
+  // NULL, starving the evidence-based deescalator. Derivation must match
+  // the deescalator's: breakdown.taskType.reason ?? taskType.
+  const fromBreakdown = buildDecision({
+    provider: 'ollama',
+    method: 'tier_config',
+    analysis: { score: 63, breakdown: { taskType: { reason: 'code_generation', score: 40 } } },
+  });
+  assert.strictEqual(fromBreakdown.analysis.requestType, 'code_generation');
+
+  const fromTaskType = buildDecision({
+    provider: 'ollama',
+    method: 'tier_config',
+    analysis: { score: 20, taskType: 'conversational' },
+  });
+  assert.strictEqual(fromTaskType.analysis.requestType, 'conversational');
+
+  // Pre-set requestType is preserved, not overwritten.
+  const preset = buildDecision({
+    provider: 'ollama',
+    method: 'tier_config',
+    analysis: { requestType: 'already_set', breakdown: { taskType: { reason: 'other' } } },
+  });
+  assert.strictEqual(preset.analysis.requestType, 'already_set');
+
+  // No analysis / no task-type signal → no crash, no fabricated value.
+  assert.strictEqual(buildDecision({ provider: 'ollama', method: 'x' }).analysis, null);
+  const bare = buildDecision({ provider: 'ollama', method: 'x', analysis: { score: 5 } });
+  assert.ok(!('requestType' in bare.analysis) || bare.analysis.requestType == null);
+});
