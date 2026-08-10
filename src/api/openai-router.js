@@ -341,6 +341,111 @@ function lynkrBadge(resultBody) {
   return `*[Lynkr] ${m.tier} → ${m.model || "—"} (${m.provider || "—"})${score}*\n\n`;
 }
 
+/**
+ * Phase 2b, OpenAI surface — reshape a live Anthropic Messages SSE stream
+ * (the orchestrator's transform output) into OpenAI chat.completion.chunk
+ * events in flight. Mirrors the buffered synthesis below in event structure:
+ * text streams as deltas; each tool_use is emitted as ONE complete tool_calls
+ * delta at its content_block_stop (clients never see partial JSON args).
+ * Thinking/reasoning deltas are dropped — OpenAI chunk format has no field
+ * for them and the buffered path is where thinking-lift lives.
+ */
+async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel) {
+  const id = `chatcmpl-lynkr-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  const model = requestedModel || "lynkr";
+
+  const chunk = (delta, finish = null) => `data: ${JSON.stringify({
+    id, object: "chat.completion.chunk", created, model,
+    system_fingerprint: "fp_lynkr",
+    choices: [{ index: 0, delta, logprobs: null, finish_reason: finish }],
+  })}\n\n`;
+
+  const mapStop = (r) => r === "tool_use" ? "tool_calls" : r === "max_tokens" ? "length" : "stop";
+
+  // Normalize Node Readable / web ReadableStream / async iterable to chunks.
+  async function* iterate(s) {
+    if (s && typeof s[Symbol.asyncIterator] === "function") { yield* s; return; }
+    const reader = s.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      yield value;
+    }
+  }
+
+  let buf = "";
+  const toolsByBlock = {};   // content-block index → {id, name, args}
+  let emittedTools = 0;
+  let finishReason = null;
+  let started = false;
+  const decoder = new TextDecoder();
+
+  try {
+    for await (const raw of iterate(stream)) {
+      buf += typeof raw === "string" ? raw : decoder.decode(raw, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, sep); buf = buf.slice(sep + 2);
+        const dataLine = block.split("\n").find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+        let ev;
+        try { ev = JSON.parse(dataLine.slice(6)); } catch { continue; }
+
+        switch (ev.type) {
+          case "message_start":
+            if (!started) { started = true; res.write(chunk({ role: "assistant", content: "" })); }
+            break;
+          case "content_block_start":
+            if (ev.content_block?.type === "tool_use") {
+              toolsByBlock[ev.index] = { id: ev.content_block.id, name: ev.content_block.name, args: "" };
+            }
+            break;
+          case "content_block_delta":
+            if (ev.delta?.type === "text_delta" && ev.delta.text) {
+              if (!started) { started = true; res.write(chunk({ role: "assistant", content: "" })); }
+              res.write(chunk({ content: ev.delta.text }));
+            } else if (ev.delta?.type === "input_json_delta" && toolsByBlock[ev.index]) {
+              toolsByBlock[ev.index].args += ev.delta.partial_json || "";
+            }
+            break;
+          case "content_block_stop": {
+            const t = toolsByBlock[ev.index];
+            if (t) {
+              res.write(chunk({ tool_calls: [{ index: emittedTools++, id: t.id, type: "function",
+                function: { name: t.name, arguments: t.args || "{}" } }] }));
+              delete toolsByBlock[ev.index];
+            }
+            break;
+          }
+          case "message_delta":
+            if (ev.delta?.stop_reason) finishReason = mapStop(ev.delta.stop_reason);
+            break;
+          case "message_stop":
+            res.write(chunk({}, finishReason || "stop"));
+            res.write("data: [DONE]\n\n");
+            res.end();
+            return;
+          default:
+            break; // ping, thinking deltas, unknown events — skip
+        }
+        if (res.writableEnded || res.destroyed) return;
+      }
+    }
+    // Upstream closed without message_stop — still terminate the client stream cleanly.
+    if (!res.writableEnded) {
+      res.write(chunk({}, finishReason || "stop"));
+      res.write("data: [DONE]\n\n");
+      res.end();
+    }
+  } catch (err) {
+    logger.warn({ err: err.message }, "OpenAI-surface stream forward failed mid-flight");
+    if (!res.writableEnded) {
+      try { res.write(chunk({}, "stop")); res.write("data: [DONE]\n\n"); res.end(); } catch { /* client gone */ }
+    }
+  }
+}
+
 router.post("/chat/completions", async (req, res) => {
   const startTime = Date.now();
   const sessionId = req.headers["x-session-id"] || req.headers["authorization"]?.split(" ")[1] || "openai-session";
@@ -423,7 +528,11 @@ router.post("/chat/completions", async (req, res) => {
       res.flushHeaders();
 
       try {
-        // For streaming, we need to handle it differently - convert to non-streaming temporarily
+        // The orchestrator decides the real upstream streaming mode: with
+        // clientWantsStream=true and a transform-eligible provider it returns
+        // a live Anthropic-shaped SSE stream (Phase 2b); otherwise it buffers
+        // and we synthesize chunks below, as before. Body-level stream stays
+        // false so buffered fallbacks parse cleanly.
         anthropicRequest.stream = false;
 
         const result = await orchestrator.processMessage({
@@ -431,9 +540,18 @@ router.post("/chat/completions", async (req, res) => {
           headers: req.headers,
           session: session,
           options: {
-            maxSteps: req.body?.max_steps
+            maxSteps: req.body?.max_steps,
+            clientWantsStream: true
           }
         });
+
+        // Phase 2b live stream: reshape Anthropic SSE events into OpenAI
+        // chat.completion.chunk events in flight — first token reaches the
+        // client at upstream TTFB instead of after the full generation.
+        if (result && result.stream) {
+          await forwardAnthropicStreamAsOpenAIChunks(res, result.stream, req.body.model);
+          return;
+        }
 
         logger.debug({
           hasResult: !!result,

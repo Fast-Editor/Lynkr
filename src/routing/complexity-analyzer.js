@@ -16,6 +16,7 @@ const logger = require('../logger');
 const config = require('../config');
 const codeGraph = require('../tools/code-graph');
 const clientProfiles = require('./client-profiles');
+const { compressMessages, shouldCompress } = require('./context-compressor');
 
 /**
  * Return the tools the user actually added beyond the client harness's
@@ -769,13 +770,31 @@ function getThreshold() {
  * @returns {Object} Complexity analysis result
  */
 async function analyzeComplexity(payload, options = {}) {
-  const content = extractContent(payload);
-  const messageCount = payload?.messages?.length ?? 0;
+  // Phase 0: Context Compression (TencentDB-inspired)
+  // Compress conversation before scoring to account for token reduction
+  let workingPayload = payload;
+  let compressionStats = null;
+
+  const useCompression = options.compression ?? config.routing?.compression ?? true;
+  if (useCompression && shouldCompress(payload)) {
+    const { compressed, stats } = compressMessages(payload.messages);
+    compressionStats = stats;
+    workingPayload = { ...payload, messages: compressed };
+
+    logger.debug({
+      reduction: stats.reduction,
+      originalTokens: stats.original,
+      compressedTokens: stats.compressed,
+    }, '[complexity] Context compressed');
+  }
+
+  const content = extractContent(workingPayload);
+  const messageCount = workingPayload?.messages?.length ?? 0;
   const useWeighted = options.weighted ?? config.routing?.weightedScoring ?? false;
 
   // Use weighted scoring if enabled
   if (useWeighted) {
-    const weighted = calculateWeightedScore(payload, content);
+    const weighted = calculateWeightedScore(workingPayload, content);
     const threshold = getThreshold();
     const mode = config.smartToolSelection?.mode ?? 'heuristic';
 
@@ -807,6 +826,7 @@ async function analyzeComplexity(payload, options = {}) {
       forceReason: taskTypeResult.reason?.startsWith('force_') ? taskTypeResult.reason : null,
       content: content.slice(0, 100) + (content.length > 100 ? '...' : ''),
       graphSignals: null,
+      compression: compressionStats, // Add compression stats
     };
 
     // Phase 5: Structural Analysis (code-review-graph, optional)
@@ -841,9 +861,9 @@ async function analyzeComplexity(payload, options = {}) {
     return result;
   }
 
-  // Standard scoring (original logic)
-  const tokenScore = scoreTokens(payload);
-  const toolScore = scoreTools(payload);
+  // Standard scoring (original logic) - use compressed payload
+  const tokenScore = scoreTokens(workingPayload);
+  const toolScore = scoreTools(workingPayload);
   const taskTypeResult = scoreTaskType(content);
   const codeComplexityResult = scoreCodeComplexity(content);
   const reasoningResult = scoreReasoning(content);
@@ -881,8 +901,8 @@ async function analyzeComplexity(payload, options = {}) {
     mode,
     recommendation,
     breakdown: {
-      tokens: { score: tokenScore, estimated: estimateTokens(payload) },
-      tools: { score: toolScore, count: _effectiveTools(payload).length },
+      tokens: { score: tokenScore, estimated: estimateTokens(workingPayload) },
+      tools: { score: toolScore, count: _effectiveTools(workingPayload).length },
       taskType: taskTypeResult,
       codeComplexity: codeComplexityResult,
       reasoning: reasoningResult,
@@ -890,11 +910,12 @@ async function analyzeComplexity(payload, options = {}) {
     },
     content: content.slice(0, 100) + (content.length > 100 ? '...' : ''),
     graphSignals: null,
+    compression: compressionStats, // Add compression stats
   };
 
   // Phase 5: Structural Analysis (code-review-graph, optional)
   try {
-    const filePaths = extractFilePaths(payload);
+    const filePaths = extractFilePaths(workingPayload);
     const graphOpts = { filePaths, workspace: options?.workspace };
     const graphAvailable = await codeGraph.isAvailable(graphOpts);
     if (graphAvailable && filePaths.length > 0) {

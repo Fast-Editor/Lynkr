@@ -114,12 +114,15 @@ async function wrapClaude() {
 
   let server;
   try {
-    const { start } = require('../src/server');
-
-    // Override port if specified
+    // Override port BEFORE requiring the server: src/config reads
+    // process.env.PORT at module-load time, so setting it after the require
+    // is a no-op — the server binds the .env port and --port silently fails
+    // (printed 8082, bound 8081).
     if (port !== 8081) {
       process.env.PORT = String(port);
     }
+
+    const { start } = require('../src/server');
 
     server = await start();
 
@@ -381,12 +384,13 @@ async function wrapGeneric(opts) {
 
   let server;
   try {
-    const { start } = require('../src/server');
-
-    // Override port if specified
+    // Set PORT before requiring the server — src/config freezes
+    // process.env.PORT at module-load time (same fix as the claude path).
     if (port !== 8081) {
       process.env.PORT = String(port);
     }
+
+    const { start } = require('../src/server');
 
     server = await start();
 

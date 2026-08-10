@@ -20,9 +20,14 @@
  */
 const logger = require("../logger");
 
-// Upstreams whose streaming wire format is OpenAI Chat Completions SSE.
-// ollama is excluded (own format + buffering quirks), moonshot/zai are
-// excluded (their invoke fns convert buffered responses to Anthropic).
+// Upstreams whose streaming streaming wire format is OpenAI Chat Completions SSE.
+// ollama is excluded (own format + buffering quirks); zai is excluded (its
+// invoke fn converts buffered responses to Anthropic, and its Anthropic-format
+// endpoint has the native passthrough path instead). moonshot joined the list
+// once invokeMoonshot learned to return the raw stream (its old forced
+// stream:false predated this transformer). Caveat: reasoning_content deltas
+// (kimi thinking) are not reshaped — thinking text is dropped from streamed
+// responses; the buffered path still lifts it into thinking blocks.
 const DEFAULT_OPENAI_SSE_PROVIDERS = [
   "openai",
   "azure-openai",
@@ -30,6 +35,7 @@ const DEFAULT_OPENAI_SSE_PROVIDERS = [
   "databricks",
   "lmstudio",
   "llamacpp",
+  "moonshot",
 ];
 
 function _transformProviders() {

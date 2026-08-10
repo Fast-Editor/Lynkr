@@ -310,6 +310,18 @@ async function invokeAzureAnthropic(body, incomingHeaders = {}) {
     incomingAuth = null;
   }
 
+  // Anthropic OAuth tokens are only meaningful at api.anthropic.com. When this
+  // provider points at any OTHER Anthropic-compatible host (Azure AI Foundry
+  // Claude, a corporate gateway), forwarding Claude Code's sk-ant-oat token
+  // earns a 401 there — and the configured x-api-key below is the right auth.
+  // This also means a subscription token never leaves the box unless the
+  // endpoint is Anthropic itself.
+  const isAnthropicDirect = String(config.azureAnthropic.endpoint || "").includes("api.anthropic.com");
+  if (incomingAuth && !isAnthropicDirect) {
+    logger.debug({ endpoint: config.azureAnthropic.endpoint }, "Azure Anthropic: non-Anthropic endpoint — using configured API key instead of client OAuth token");
+    incomingAuth = null;
+  }
+
   // Headers Anthropic uses to verify client identity for subscription OAuth tokens.
   // If we strip these, Anthropic returns 429 rate_limit_error with no rate-limit
   // headers (its terse anti-proxy response). Forward every Anthropic-relevant
@@ -2094,7 +2106,11 @@ async function invokeMoonshot(body, incomingHeaders = {}) {
     max_tokens: body.max_tokens || 16384,
     temperature: isKimiPinned ? 1 : (body.temperature ?? 0.7),
     top_p: isKimiPinned ? 0.95 : (body.top_p ?? 1.0),
-    stream: false,  // Force non-streaming - OpenAI SSE to Anthropic SSE conversion not implemented
+    // Streaming honored since the Phase-2b sse-transformer landed: the raw
+    // OpenAI SSE stream is returned below and reshaped in flight by the
+    // orchestrator (moonshot is in DEFAULT_OPENAI_SSE_PROVIDERS). Buffered
+    // requests keep the Anthropic conversion path unchanged.
+    stream: body.stream ?? false,
   };
 
   if (Array.isArray(body.tools) && body.tools.length > 0) {
@@ -2130,6 +2146,13 @@ async function invokeMoonshot(body, incomingHeaders = {}) {
     const err = new Error(`Moonshot rate-limited (org quota): ${String(response.json?.error?.message || '').slice(0, 120)}`);
     err.status = 429;
     throw err;
+  }
+
+  // Streaming request: hand the raw OpenAI SSE stream to the orchestrator's
+  // stream branch (sse-transformer reshapes it). The Anthropic conversion
+  // below is buffered-only — it would consume the stream.
+  if (response?.stream) {
+    return response;
   }
 
   const rawMsg = response?.json?.choices?.[0]?.message;

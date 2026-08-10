@@ -93,6 +93,7 @@
     "@babel/parser": "^7.29.0",
     "@babel/traverse": "^7.29.0",
     "@blackwell-systems/gcf": "2.4.0",
+    "@tencentdb-agent-memory/memory-tencentdb": "^1.0.1",
     "@toon-format/toon": "^2.1.0",
     "cockatiel": "^3.2.1",
     "compression": "^1.7.4",
@@ -124,5 +125,8 @@
     "eslint": "^8.57.0",
     "nodemon": "^3.1.0",
     "pino-pretty": "^10.2.0"
+  },
+  "allowScripts": {
+    "@tencentdb-agent-memory/memory-tencentdb@1.0.1": true
   }
 }
