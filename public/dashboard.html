@@ -50,6 +50,14 @@
         class="ring-tab px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700">
         Logs
       </button>
+      <button onclick="App.navigate('insights')" data-page="insights"
+        class="ring-tab px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700">
+        Insights
+      </button>
+      <button onclick="App.navigate('explore')" data-page="explore"
+        class="ring-tab px-4 py-2 rounded-md text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700">
+        Explore
+      </button>
     </nav>
 
     <div class="ml-auto flex items-center gap-3">
@@ -137,13 +145,18 @@ const App = {
   data: {},
   usageWindow: '7d',
   logFilters: { provider: '', tier: '', error: false },
+  insightOpen: null,
+  sessionId: null,
+  explore: { metric: 'spend', by: 'tier', stack: '', days: 7 },
   _refreshTimer: null,
   _countdownTimer: null,
   _countdown: 30,
   _charts: {},
 
   init() {
-    const hash = location.hash.slice(1) || 'overview';
+    let hash = location.hash.slice(1) || 'overview';
+    // Session detail needs in-memory state — a cold load on that hash has none.
+    if (hash === 'session' && !this.sessionId) hash = 'logs';
     this.navigate(hash, true);
     this._startCountdown();
   },
@@ -198,6 +211,14 @@ const App = {
         if (this.logFilters.error)    q.set('error',    'true');
         data = await this._fetch('/dashboard/api/logs?' + q);
       }
+      if (this.page === 'insights') data = await this._fetch('/dashboard/api/recommendations');
+      if (this.page === 'explore') {
+        const e = this.explore;
+        const q = new URLSearchParams({ metric: e.metric, by: e.by, days: e.days });
+        if (e.stack) q.set('stack', e.stack);
+        data = await this._fetch('/dashboard/api/analytics?' + q);
+      }
+      if (this.page === 'session') data = await this._fetch('/dashboard/api/sessions/' + encodeURIComponent(this.sessionId));
 
       this.data[this.page] = data;
       this._render(data);
@@ -228,6 +249,9 @@ const App = {
       usage:    () => this._renderUsage(data),
       routing:  () => this._renderRouting(data),
       logs:     () => this._renderLogs(data),
+      insights: () => this._renderInsights(data),
+      explore:  () => this._renderExplore(data),
+      session:  () => this._renderSession(data),
     }[this.page]?.() || '';
     document.getElementById('content').innerHTML = `<div class="fade-in">${html}</div>`;
     this._afterRender(data);
@@ -520,6 +544,13 @@ const App = {
             </div>
           </div>
         ` : emptyState('No gated switch decisions yet — appears once a pinned session hits a downgrade decision')}
+        <div class="border-t border-slate-700/60 mt-4 pt-3 flex flex-wrap items-baseline gap-x-6 gap-y-1">
+          <span class="text-xs uppercase tracking-wide text-slate-500">Measured (past tense, auditable)</span>
+          ${d.cacheMeasured && d.cacheMeasured.rowsMeasured > 0 ? `
+            <span class="text-sm text-green-400 font-semibold">${fmt.usd2(d.cacheMeasured.measuredSavedUsd)} saved by cache reads actually served</span>
+            <span class="text-xs text-slate-500">${fmt.num(d.cacheMeasured.rowsMeasured)} requests measured · weakest: ${d.cacheMeasured.perModel[0] ? `${d.cacheMeasured.perModel[0].model} at ${d.cacheMeasured.perModel[0].hitRatio != null ? Math.round(d.cacheMeasured.perModel[0].hitRatio * 100) + '%' : '—'}` : '—'}</span>
+          ` : `<span class="text-xs text-slate-600">not measured yet — cache counters accrue from this version onward (not the same as zero savings)</span>`}
+        </div>
       `, 'mb-6')}
 
       <!-- Provider Stats -->
@@ -589,6 +620,7 @@ const App = {
         <td class="py-2 px-3 text-xs ${r.error_type?'text-red-400':'text-slate-500'}">${r.error_type||'—'}</td>
         <td class="py-2 px-3 text-xs text-amber-300">${r.cost_usd!=null?fmt.usd(r.cost_usd):'—'}</td>
         <td class="py-2 px-3">${r.was_fallback?'<span class="badge bg-amber-900/40 text-amber-300">fallback</span>':'—'}</td>
+        <td class="py-2 px-3">${r.session_id ? `<button onclick="App.showSession('${String(r.session_id).replace(/'/g,'')}')" class="text-xs font-mono text-blue-400 hover:text-blue-200">${String(r.session_id).slice(0,10)}…</button>` : '—'}</td>
       </tr>`).join('');
 
     return `
@@ -632,6 +664,7 @@ const App = {
               <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Error</th>
               <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Cost</th>
               <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Flags</th>
+              <th class="py-2 px-3 text-xs text-slate-500 font-medium text-left">Session</th>
             </tr></thead>
             <tbody>${tableRows}</tbody>
           </table>
@@ -645,6 +678,297 @@ const App = {
     if (this.page === 'usage' && data?.daily?.length && data.totals?.requests > 0) {
       this._drawUsageChart(data.daily);
     }
+    if (this.page === 'explore' && data?.rows?.length) this._drawExploreChart(data);
+    if (this.page === 'session' && data?.contextSeries?.length) this._drawContextChart(data.contextSeries);
+  },
+
+  /* ── INSIGHTS (Lens recommendations) ─────────── */
+  openInsight(id) {
+    this.insightOpen = this.insightOpen === id ? null : id;
+    this._render(this.data.insights);
+  },
+
+  showSession(id) {
+    if (!id) return;
+    this.sessionId = id;
+    this.navigate('session');
+  },
+
+  _renderInsights(d) {
+    if (!d) return emptyState('No data');
+    const f = d.findings || [];
+    const actionable = f.filter(x => x.state === 'actionable');
+    const sharePct = d.spendUsd > 0 ? Math.min(100, (d.totalRecoverableUsd / d.spendUsd) * 100) : 0;
+    const TONES = ['bg-amber-500','bg-blue-500','bg-purple-500','bg-green-500','bg-rose-500'];
+
+    // Hero — one netted, backward-looking figure. Past tense on purpose.
+    const segments = actionable.filter(x => x.pastOverspendUsd > 0);
+    const segTotal = segments.reduce((a, x) => a + x.pastOverspendUsd, 0) || 1;
+    const shareBar = segments.length ? `
+      <div class="flex h-2 rounded-full overflow-hidden bg-slate-700 mt-3">
+        ${segments.map((x, i) => `<div class="${TONES[i % TONES.length]}" style="width:${(x.pastOverspendUsd / segTotal) * 100}%" title="${x.title}"></div>`).join('')}
+      </div>
+      <div class="flex flex-wrap gap-3 mt-2 text-xs text-slate-500">
+        ${segments.map((x, i) => `<span><span class="inline-block w-2 h-2 rounded-full ${TONES[i % TONES.length]} mr-1"></span>${x.title}</span>`).join('')}
+      </div>` : '';
+
+    const hero = card(`
+      <p class="text-xs uppercase tracking-wide text-slate-500 mb-1">Past overspend found (last ${Math.round(d.windowMs / 86400000)}d)</p>
+      <div class="flex items-baseline gap-3">
+        <span class="text-3xl font-bold ${d.totalRecoverableUsd > 0 ? 'text-amber-300' : 'text-green-400'}">${fmt.usd2(d.totalRecoverableUsd)}</span>
+        <span class="text-sm text-slate-500">of ${fmt.usd2(d.spendUsd)} spent · ${sharePct.toFixed(1)}%</span>
+      </div>
+      ${shareBar}
+      <p class="text-xs text-slate-600 mt-3">Figures are backward-looking — checkable against spend already recorded. Ceilings are labeled in each finding's basis.</p>
+    `, 'mb-6');
+
+    const mechBadge = m => ({
+      auto:    '<span class="badge bg-green-900/40 text-green-300">lynkr can act</span>',
+      snippet: '<span class="badge bg-blue-900/40 text-blue-300">client-side fix</span>',
+      info:    '<span class="badge bg-slate-700 text-slate-300">diagnosis</span>',
+    }[m] || '');
+    const stateBadge = s => ({
+      actionable:   '',
+      clean:        '<span class="badge bg-green-900/30 text-green-400">ran — found nothing</span>',
+      not_measured: '<span class="badge bg-slate-700 text-slate-400">not measured yet</span>',
+    }[s] || '');
+
+    const tiles = `<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      ${f.map(x => `
+        <div onclick="${x.state === 'actionable' ? `App.openInsight('${x.id}')` : ''}"
+          class="border rounded-xl p-4 ${x.state === 'actionable' ? 'border-amber-700/50 bg-amber-900/10 cursor-pointer hover:bg-amber-900/20' : 'border-slate-700 bg-slate-800/60'} ${this.insightOpen === x.id ? 'ring-1 ring-amber-500' : ''}">
+          <div class="flex items-start justify-between gap-2 mb-2">
+            <span class="text-sm font-medium text-slate-200">${x.title}</span>
+            ${mechBadge(x.mechanism)}
+          </div>
+          ${x.state === 'actionable'
+            ? `<p class="text-2xl font-bold text-amber-300">${typeof x.pastOverspendUsd === 'number' ? fmt.usd2(x.pastOverspendUsd) : fmt.tok(x.pastOverspendTokens || 0) + ' tok'}</p>
+               <p class="text-xs text-slate-500 mt-1">click for evidence</p>`
+            : stateBadge(x.state)}
+        </div>`).join('')}
+    </div>`;
+
+    // Detail shell — Evidence / Fix / Caveat / How computed.
+    let detail = '';
+    const open = f.find(x => x.id === this.insightOpen);
+    if (open) {
+      const evid = open.evidence?.rows?.length ? `
+        <div class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead><tr class="border-b border-slate-700 text-xs text-slate-500">
+              ${open.evidence.columns.map(c => `<th class="py-2 px-3">${c}</th>`).join('')}
+            </tr></thead>
+            <tbody>${open.evidence.rows.map(r => `
+              <tr class="table-row border-b border-slate-700/40 text-sm">
+                ${r.map(v => `<td class="py-2 px-3 text-xs text-slate-300">${typeof v === 'number' && !Number.isInteger(v) ? fmt.usd(v) : v}</td>`).join('')}
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>` : emptyState('No evidence rows');
+      detail = card(`
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-semibold text-slate-200">${open.title}</h3>
+          <div class="flex gap-4 text-xs text-slate-500">${(open.stats || []).map(s => `<span><span class="text-slate-300 font-semibold">${fmt.num(s.value)}</span> ${s.label}</span>`).join('')}</div>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+          <div class="lg:col-span-2">
+            <p class="text-xs uppercase tracking-wide text-slate-500 mb-2">Evidence — where this figure came from</p>
+            ${evid}
+          </div>
+          <div class="space-y-4">
+            ${open.fix ? `<div><p class="text-xs uppercase tracking-wide text-slate-500 mb-1">The fix</p><p class="text-sm text-slate-300">${open.fix}</p></div>` : ''}
+            ${open.caveat ? `<div class="border border-amber-800/40 bg-amber-900/10 rounded-lg p-3"><p class="text-xs uppercase tracking-wide text-amber-500 mb-1">Caveat</p><p class="text-xs text-slate-400">${open.caveat}</p></div>` : ''}
+            <div><p class="text-xs uppercase tracking-wide text-slate-500 mb-1">How this figure is computed</p><p class="text-xs text-slate-500">${open.estimateBasis || '—'}</p></div>
+          </div>
+        </div>
+      `, 'mb-6');
+    }
+
+    return `
+      <h2 class="text-lg font-semibold mb-5">Insights</h2>
+      ${hero}
+      ${tiles}
+      ${detail}
+    `;
+  },
+
+  /* ── EXPLORE (pivot explorer) ────────────────── */
+  setExplore(key, value) {
+    this.explore[key] = key === 'days' ? parseInt(value, 10) : value;
+    this.refresh();
+  },
+  applyPreset(metric, by, stack) {
+    this.explore = { ...this.explore, metric, by, stack };
+    this.refresh();
+  },
+  exportCsv() {
+    const d = this.data.explore;
+    if (!d?.rows?.length) return;
+    const header = d.stack ? 'dimension,stack,value' : 'dimension,value';
+    const lines = d.rows.map(r => d.stack
+      ? `"${r.dim}","${r.stack}",${r.value}`
+      : `"${r.dim}",${r.value}`);
+    const blob = new Blob([header + '\n' + lines.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `lynkr-${d.metric}-by-${d.by}.csv`;
+    a.click();
+  },
+
+  _renderExplore(d) {
+    if (!d) return emptyState('No data');
+    const e = this.explore;
+    const METRICS = ['spend', 'tokens', 'requests', 'sessions'];
+    const DIMS = ['provider', 'model', 'tier', 'request_type', 'routing_method', 'switch_reason', 'day'];
+    const sel = (id, opts, val, allowEmpty) => `
+      <select onchange="App.setExplore('${id}', this.value)"
+        class="bg-slate-700 border border-slate-600 text-slate-300 text-sm rounded-lg px-3 py-1.5">
+        ${allowEmpty ? `<option value="" ${!val ? 'selected' : ''}>no stack</option>` : ''}
+        ${opts.map(o => `<option value="${o}" ${val === o ? 'selected' : ''}>${o}</option>`).join('')}
+      </select>`;
+
+    const kpiVal = { spend: fmt.usd2(d.kpis?.spend), tokens: fmt.tok(d.kpis?.tokens || 0), requests: fmt.num(d.kpis?.requests), sessions: fmt.num(d.kpis?.sessions) };
+    const kpiDelta = k => {
+      if (!d.kpiDeltas) return '<span class="text-xs text-slate-600">prior window too thin to compare</span>';
+      const v = d.kpiDeltas[k];
+      const sign = v > 0 ? '+' : '';
+      const cls = v > 0 ? 'text-amber-400' : 'text-green-400';
+      const fmtV = k === 'spend' ? fmt.usd2(Math.abs(v)) : k === 'tokens' ? fmt.tok(Math.abs(v)) : fmt.num(Math.abs(v));
+      return `<span class="text-xs ${cls}">${sign === '+' ? '▲' : '▼'} ${fmtV} vs prior</span>`;
+    };
+    const kpis = `<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      ${METRICS.map(k => `
+        <div class="border border-slate-700 bg-slate-800/60 rounded-xl p-4">
+          <p class="text-xs uppercase tracking-wide text-slate-500">${k}</p>
+          <p class="text-2xl font-bold mt-1">${kpiVal[k] ?? '—'}</p>
+          ${kpiDelta(k)}
+        </div>`).join('')}
+    </div>`;
+
+    const presets = [
+      ['Spend by tier', 'spend', 'tier', ''],
+      ['Tokens by model', 'tokens', 'model', ''],
+      ['Requests by type', 'requests', 'request_type', ''],
+      ['Spend over days by tier', 'spend', 'day', 'tier'],
+    ];
+
+    return `
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-lg font-semibold">Explore</h2>
+        <button onclick="App.exportCsv()" class="text-xs text-slate-400 hover:text-white px-3 py-1.5 rounded-lg border border-slate-600 hover:bg-slate-700">Export CSV</button>
+      </div>
+      ${card(`
+        <div class="flex flex-wrap gap-3 items-center">
+          ${sel('metric', METRICS, e.metric)}
+          <span class="text-xs text-slate-500">by</span>
+          ${sel('by', DIMS, e.by)}
+          <span class="text-xs text-slate-500">stack</span>
+          ${sel('stack', DIMS, e.stack, true)}
+          ${sel('days', [1, 7, 30, 90], e.days)}
+          <span class="text-xs text-slate-600">days</span>
+        </div>
+        <div class="flex flex-wrap gap-2 mt-3">
+          ${presets.map(([label, m, b, s]) => `
+            <button onclick="App.applyPreset('${m}','${b}','${s}')"
+              class="text-xs px-2.5 py-1 rounded-full border border-slate-600 text-slate-400 hover:text-white hover:bg-slate-700">${label}</button>`).join('')}
+        </div>
+      `, 'mb-6')}
+      ${kpis}
+      ${d.rows?.length
+        ? card(`<div style="height:340px"><canvas id="explore-chart"></canvas></div>`)
+        : emptyState('No rows for this pivot in the window — not the same as “nothing happened”: check the window size.')}
+    `;
+  },
+
+  _drawExploreChart(d) {
+    const canvas = document.getElementById('explore-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    const PALETTE = ['rgba(34,197,94,0.8)','rgba(59,130,246,0.8)','rgba(245,158,11,0.8)','rgba(168,85,247,0.8)','rgba(244,63,94,0.8)','rgba(14,165,233,0.8)','rgba(148,163,184,0.8)'];
+    let cfg;
+    if (d.stack) {
+      const dims = [...new Set(d.rows.map(r => r.dim))];
+      const stacks = [...new Set(d.rows.map(r => r.stack))];
+      cfg = {
+        type: 'bar',
+        data: {
+          labels: dims,
+          datasets: stacks.map((s, i) => ({
+            label: String(s ?? '—'),
+            data: dims.map(dim => d.rows.find(r => r.dim === dim && r.stack === s)?.value ?? 0),
+            backgroundColor: PALETTE[i % PALETTE.length],
+          })),
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true }, y: { stacked: true } } },
+      };
+    } else {
+      const rows = d.rows.slice(0, 20);
+      cfg = {
+        type: 'bar',
+        data: {
+          labels: rows.map(r => String(r.dim ?? '—')),
+          datasets: [{ label: d.metric, data: rows.map(r => r.value), backgroundColor: PALETTE[1] }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, indexAxis: rows.length > 8 ? 'y' : 'x', plugins: { legend: { display: false } } },
+      };
+    }
+    this._charts.explore = new Chart(canvas, cfg);
+  },
+
+  /* ── SESSION DETAIL ──────────────────────────── */
+  _renderSession(d) {
+    if (!d) return emptyState('Session not found');
+    const dur = d.lastSeen - d.firstSeen;
+    const modelRows = d.models.map(m => `
+      <tr class="table-row border-b border-slate-700/40 text-sm">
+        <td class="py-2 px-3 text-xs font-mono text-slate-300">${m.provider}</td>
+        <td class="py-2 px-3 text-xs text-slate-400">${m.model || '—'}</td>
+        <td class="py-2 px-3 text-xs">${fmt.num(m.requests)}</td>
+        <td class="py-2 px-3 text-xs">${fmt.tok(m.inputTokens)}</td>
+        <td class="py-2 px-3 text-xs">${fmt.tok(m.outputTokens)}</td>
+        <td class="py-2 px-3 text-xs text-green-400">${fmt.tok(m.cacheReadTokens)}</td>
+        <td class="py-2 px-3 text-xs text-amber-300">${fmt.usd(m.costUsd)}</td>
+      </tr>`).join('');
+
+    return `
+      <div class="flex items-center gap-3 mb-5">
+        <button onclick="App.navigate('logs')" class="text-xs text-slate-400 hover:text-white px-2 py-1 rounded border border-slate-600 hover:bg-slate-700">← logs</button>
+        <h2 class="text-lg font-semibold">Session</h2>
+        <span class="text-xs font-mono text-slate-500">${d.sessionId}</span>
+      </div>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        ${[['requests', fmt.num(d.requests)], ['spend', fmt.usd(d.totalCostUsd)], ['tool calls', fmt.num(d.toolCalls)], ['duration', fmt.ms(dur)]]
+          .map(([l, v]) => `<div class="border border-slate-700 bg-slate-800/60 rounded-xl p-4"><p class="text-xs uppercase tracking-wide text-slate-500">${l}</p><p class="text-2xl font-bold mt-1">${v}</p></div>`).join('')}
+      </div>
+      ${card(`
+        <h3 class="text-sm font-semibold text-slate-300 mb-3">Input (context) tokens per call — distillation and cache behavior are visible here</h3>
+        <div style="height:220px"><canvas id="session-context-chart"></canvas></div>
+      `, 'mb-6')}
+      ${card(`
+        <h3 class="text-sm font-semibold text-slate-300 mb-3">Model mix</h3>
+        <div class="overflow-x-auto"><table class="w-full text-left">
+          <thead><tr class="border-b border-slate-700 text-xs text-slate-500">
+            <th class="py-2 px-3">provider</th><th class="py-2 px-3">model</th><th class="py-2 px-3">requests</th>
+            <th class="py-2 px-3">input</th><th class="py-2 px-3">output</th><th class="py-2 px-3">cache reads</th><th class="py-2 px-3">cost</th>
+          </tr></thead><tbody>${modelRows}</tbody>
+        </table></div>
+      `)}
+    `;
+  },
+
+  _drawContextChart(series) {
+    const canvas = document.getElementById('session-context-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    this._charts.sessionCtx = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: series.map((_, i) => i + 1),
+        datasets: [
+          { label: 'input tokens', data: series.map(p => p.inputTokens), backgroundColor: 'rgba(59,130,246,0.8)' },
+          { label: 'cache reads', data: series.map(p => p.cacheReadTokens ?? 0), backgroundColor: 'rgba(34,197,94,0.6)' },
+        ],
+      },
+      options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'call #' } } } },
+    });
   },
 
   _drawUsageChart(daily) {
