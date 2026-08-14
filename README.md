@@ -15,7 +15,7 @@
 <td align="center"><strong>84%</strong><br/>JSON Compression</td>
 <td align="center"><strong>53%</strong><br/>Tool Token Reduction</td>
 <td align="center"><strong>&lt;300ms</strong><br/>Semantic Cache Hits</td>
-<td align="center"><strong>13+</strong><br/>LLM Providers</td>
+<td align="center"><strong>14+</strong><br/>LLM Providers</td>
 <td align="center"><strong>0</strong><br/>Code Changes Required</td>
 </tr>
 </table>
@@ -68,7 +68,7 @@ The fastest path is the interactive wizard:
 lynkr init
 ```
 
-It asks four questions — usage mode (Claude Pro/Max via wrap, or direct API keys), tier picks for SIMPLE/MEDIUM/COMPLEX/REASONING across the 12 supported providers, credentials for what you chose, and a few routing-intelligence knobs — then writes a fully-populated `.env` with sensible production defaults for everything else (caching, compression, policy budgets, MCP sandbox, rate limiting).
+It asks four questions — usage mode (Claude Pro/Max via wrap, or direct API keys), tier picks for SIMPLE/MEDIUM/COMPLEX/REASONING across the 14 supported providers, credentials for what you chose, and a few routing-intelligence knobs — then writes a fully-populated `.env` with sensible production defaults for everything else (caching, compression, policy budgets, MCP sandbox, rate limiting).
 
 Useful flags:
 
@@ -216,9 +216,21 @@ Claude Code / Cursor / Codex / Cline / Continue
 | **Azure OpenAI** | Cloud | GPT-4o, o1, o3 | $$$ |
 | **Azure Anthropic** | Cloud | Claude Sonnet, Opus | $$$ |
 | **OpenAI** | Cloud | GPT-4o, o3-mini | $$$ |
+| **Atlas Cloud** | Cloud | Qwen, DeepSeek, and other OpenAI-compatible models | $-$$$ |
 | **DeepSeek** | Cloud | DeepSeek R1, Reasoner | $ |
 
-**4 local providers** for 100% offline, free usage. **10+ cloud providers** for scale.
+**4 local providers** for 100% offline, free usage. **11+ cloud providers** for scale.
+
+<div align="center">
+  <a href="https://www.atlascloud.ai/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=lynkr">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://www.atlascloud.ai/logo-white.svg">
+      <img src="https://www.atlascloud.ai/logo.svg" alt="Atlas Cloud" width="196">
+    </picture>
+  </a>
+  <br>
+  <sub>Use Lynkr with Atlas Cloud's OpenAI-compatible API and route across its live model catalog with one optional provider configuration. <a href="https://www.atlascloud.ai/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=lynkr">Explore Atlas Cloud</a>.</sub>
+</div>
 
 ---
 

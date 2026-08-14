@@ -89,6 +89,17 @@ const PROVIDERS = {
     extras: [],
     defaultModel: 'gpt-4o',
   },
+  atlas: {
+    label: 'Atlas Cloud (OpenAI-compatible)',
+    local: false,
+    creds: [
+      { key: 'ATLASCLOUD_API_KEY', label: 'Atlas Cloud API key', secret: true },
+    ],
+    extras: [
+      { key: 'ATLASCLOUD_ENDPOINT', label: 'Chat Completions endpoint', default: 'https://api.atlascloud.ai/v1/chat/completions' },
+    ],
+    defaultModel: 'qwen/qwen3.8-max',
+  },
   openrouter: {
     label: 'OpenRouter (100+ models, one key)',
     local: false,
@@ -163,7 +174,7 @@ const PROVIDERS = {
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
-  'azure-anthropic', 'azure-openai', 'openai', 'openrouter', 'edenai',
+  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'openrouter', 'edenai',
   'databricks', 'bedrock', 'vertex', 'zai', 'moonshot',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];

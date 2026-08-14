@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -114,6 +114,11 @@ const openAIApiKey = process.env.OPENAI_API_KEY?.trim() || null;
 const openAIModel = process.env.OPENAI_MODEL?.trim() || "gpt-4o";
 const openAIEndpoint = process.env.OPENAI_ENDPOINT?.trim() || "https://api.openai.com/v1/chat/completions";
 const openAIOrganization = process.env.OPENAI_ORGANIZATION?.trim() || null;
+
+// Atlas Cloud configuration (OpenAI-compatible Chat Completions)
+const atlasCloudApiKey = process.env.ATLASCLOUD_API_KEY?.trim() || null;
+const atlasCloudModel = process.env.ATLASCLOUD_MODEL?.trim() || "qwen/qwen3.8-max";
+const atlasCloudEndpoint = process.env.ATLASCLOUD_ENDPOINT?.trim() || "https://api.atlascloud.ai/v1/chat/completions";
 
 // llama.cpp configuration
 const llamacppEndpoint = process.env.LLAMACPP_ENDPOINT?.trim() || "http://localhost:8080";
@@ -292,6 +297,12 @@ if (modelProvider === "openai" && !openAIApiKey) {
   );
 }
 
+if (modelProvider === "atlas" && !atlasCloudApiKey) {
+  throw new Error(
+    "Set ATLASCLOUD_API_KEY before starting the proxy.",
+  );
+}
+
 if (modelProvider === "ollama") {
   try {
     new URL(ollamaEndpoint);
@@ -340,7 +351,7 @@ const tiersConfigured = !!(
 if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, bedrock`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, bedrock`);
   }
   let fallbackMisconfigured = false;
   if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
@@ -353,6 +364,9 @@ if (fallbackEnabled && tiersConfigured) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "bedrock" && !bedrockApiKey) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "atlas" && !atlasCloudApiKey) {
     fallbackMisconfigured = true;
   }
   if (fallbackMisconfigured) {
@@ -601,6 +615,11 @@ var config = {
     model: openAIModel,
     endpoint: openAIEndpoint,
     organization: openAIOrganization,
+  },
+  atlas: {
+    apiKey: atlasCloudApiKey,
+    model: atlasCloudModel,
+    endpoint: atlasCloudEndpoint,
   },
   llamacpp: {
     endpoint: llamacppEndpoint,
@@ -1085,6 +1104,9 @@ function reloadConfig() {
   config.edenai.model = process.env.EDENAI_MODEL ?? "openai/gpt-4o-mini";
   config.azureOpenAI.apiKey = process.env.AZURE_OPENAI_API_KEY?.trim() || null;
   config.openai.apiKey = process.env.OPENAI_API_KEY?.trim() || null;
+  config.atlas.apiKey = process.env.ATLASCLOUD_API_KEY?.trim() || null;
+  config.atlas.model = process.env.ATLASCLOUD_MODEL?.trim() || "qwen/qwen3.8-max";
+  config.atlas.endpoint = process.env.ATLASCLOUD_ENDPOINT?.trim() || "https://api.atlascloud.ai/v1/chat/completions";
   config.bedrock.apiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null;
   config.zai.apiKey = process.env.ZAI_API_KEY?.trim() || null;
   config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";

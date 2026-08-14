@@ -30,6 +30,7 @@ const logger = require("../logger");
 // responses; the buffered path still lifts it into thinking blocks.
 const DEFAULT_OPENAI_SSE_PROVIDERS = [
   "openai",
+  "atlas",
   "azure-openai",
   "openrouter",
   "databricks",

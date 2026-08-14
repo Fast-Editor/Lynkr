@@ -357,7 +357,7 @@ data: {}
 
 **End-to-End SSE Through the Tier Router:**
 - Native passthrough for Anthropic-format upstreams (Anthropic endpoints, Z.AI, Ollama v0.14+ with `LYNKR_OLLAMA_BUFFER_RESPONSES=false`) — upstream bytes piped straight through with backpressure
-- OpenAI-format upstreams (openai, azure-openai, openrouter, databricks, llamacpp, lmstudio) transformed to Anthropic SSE in flight, including reassembly of split tool-call argument fragments into complete `tool_use` blocks
+- OpenAI-format upstreams (openai, atlas, azure-openai, openrouter, databricks, llamacpp, lmstudio) transformed to Anthropic SSE in flight, including reassembly of split tool-call argument fragments into complete `tool_use` blocks
 - `LYNKR_VISIBLE_ROUTING` badge injected into live streams as the first content block after `message_start`
 - If the upstream fails before the first byte, the request falls back to the buffered path; after the first byte, errors surface as SSE error events
 - Telemetry (latency, tokens, tool calls) recorded by a stream-close finalizer

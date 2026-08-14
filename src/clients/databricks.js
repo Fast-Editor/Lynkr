@@ -77,7 +77,7 @@ function _stripInternalFields(body) {
   return cleaned || body;
 }
 
-async function performJsonRequest(url, { headers = {}, body, retryableStatusesOverride }, providerLabel) {
+async function performJsonRequest(url, { headers = {}, body, retryableStatusesOverride, maxRetriesOverride }, providerLabel) {
   const agent = url.startsWith('https:') ? httpsAgent : httpAgent;
   body = _stripInternalFields(body);
   const isStreaming = body.stream === true;
@@ -158,7 +158,7 @@ async function performJsonRequest(url, { headers = {}, body, retryableStatusesOv
 
     return result;
   }, {
-    maxRetries: config.apiRetry?.maxRetries || 3,
+    maxRetries: maxRetriesOverride ?? (config.apiRetry?.maxRetries || 3),
     initialDelay: config.apiRetry?.initialDelay || 1000,
     maxDelay: config.apiRetry?.maxDelay || 30000,
     ...(retryableStatusesOverride ? { retryableStatuses: retryableStatusesOverride } : {}),
@@ -1383,6 +1383,69 @@ async function invokeOpenAI(body, incomingHeaders = {}) {
   }, "=== OPENAI REQUEST ===");
 
   return performJsonRequest(endpoint, { headers, body: openAIBody }, "OpenAI");
+}
+
+async function invokeAtlas(body) {
+  if (!config.atlas?.apiKey) {
+    throw new Error("Atlas Cloud API key is not configured.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.atlas.endpoint || "https://api.atlascloud.ai/v1/chat/completions";
+  const headers = {
+    "Authorization": `Bearer ${config.atlas.apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+  if (body.system) {
+    messages.unshift({ role: "system", content: body.system });
+  }
+
+  const atlasBody = {
+    model: body._suggestionModeModel || body._tierModel || config.atlas.model || "qwen/qwen3.8-max",
+    messages,
+    temperature: body.temperature ?? 0.7,
+    max_tokens: body.max_tokens ?? 16384,
+    top_p: body.top_p ?? 1.0,
+    stream: body.stream ?? false,
+  };
+
+  let toolsToSend = body.tools;
+  let toolsInjected = false;
+  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+    toolsToSend = STANDARD_TOOLS;
+    toolsInjected = true;
+  }
+
+  if (toolsToSend.length > 0) {
+    atlasBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
+    atlasBody.parallel_tool_calls = false;
+    atlasBody.tool_choice = "auto";
+  }
+
+  logger.debug({
+    endpoint,
+    model: atlasBody.model,
+    hasTools: !!atlasBody.tools,
+    toolCount: atlasBody.tools?.length || 0,
+    toolsInjected,
+    temperature: atlasBody.temperature,
+    max_tokens: atlasBody.max_tokens,
+  }, "=== ATLAS CLOUD REQUEST ===");
+
+  // Chat completions are billable POSTs, so Atlas requests are never replayed
+  // automatically. Callers can retry explicitly with their own idempotency policy.
+  return performJsonRequest(endpoint, {
+    headers,
+    body: atlasBody,
+    maxRetriesOverride: 0,
+    retryableStatusesOverride: [],
+  }, "Atlas Cloud");
 }
 
 async function invokeLlamaCpp(body, incomingHeaders = {}) {
@@ -2751,6 +2814,7 @@ const PROVIDER_INVOKERS = {
   openrouter: invokeOpenRouter,
   edenai: invokeEdenAI,
   openai: invokeOpenAI,
+  atlas: invokeAtlas,
   llamacpp: invokeLlamaCpp,
   lmstudio: invokeLMStudio,
   bedrock: invokeBedrock,
@@ -3540,6 +3604,7 @@ module.exports = {
   invokeZai,
   invokeOllama,
   invokeMoonshot,
+  invokeAtlas,
   PROVIDER_INVOKERS,
   stripLynkrBadges,
   destroyHttpAgents,

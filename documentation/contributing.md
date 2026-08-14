@@ -259,7 +259,7 @@ To add support for a new LLM provider:
 // Add to SUPPORTED_MODEL_PROVIDERS
 const SUPPORTED_MODEL_PROVIDERS = new Set([
   "databricks", "azure-anthropic", "ollama",
-  "openrouter", "azure-openai", "openai",
+  "openrouter", "azure-openai", "openai", "atlas",
   "llamacpp", "lmstudio", "bedrock", "newprovider"  // Add here
 ]);
 

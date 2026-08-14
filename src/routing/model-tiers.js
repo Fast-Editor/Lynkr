@@ -333,6 +333,8 @@ class ModelTierSelector {
         return config.azureOpenAI?.deployment || null;
       case 'openai':
         return config.openai?.model || null;
+      case 'atlas':
+        return config.atlas?.model || null;
       case 'ollama':
         return config.ollama?.model || null;
       case 'openrouter':

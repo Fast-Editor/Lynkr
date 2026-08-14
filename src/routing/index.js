@@ -84,6 +84,7 @@ function _enabledProviders() {
   if (config.openrouter?.apiKey) out.push('openrouter');
   if (config.edenai?.apiKey) out.push('edenai');
   if (config.openai?.apiKey) out.push('openai');
+  if (config.atlas?.apiKey) out.push('atlas');
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) out.push('azure-openai');
   if (config.ollama?.endpoint) out.push('ollama');
   if (config.llamacpp?.endpoint) out.push('llamacpp');
@@ -126,6 +127,7 @@ function getBestCloudProvider() {
   if (config.openrouter?.apiKey) return 'openrouter';
   if (config.edenai?.apiKey) return 'edenai';
   if (config.openai?.apiKey) return 'openai';
+  if (config.atlas?.apiKey) return 'atlas';
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) return 'azure-openai';
 
   return getFallbackProvider();
