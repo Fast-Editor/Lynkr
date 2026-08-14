@@ -43,7 +43,9 @@ function getDestinationUrl(providerType) {
     case 'edenai':
       return config.edenai?.endpoint ?? 'unknown';
     case 'openai':
-      return 'https://api.openai.com/v1/chat/completions';
+      return config.openai?.endpoint ?? 'https://api.openai.com/v1/chat/completions';
+    case 'atlas':
+      return config.atlas?.endpoint ?? 'https://api.atlascloud.ai/v1/chat/completions';
     case 'llamacpp':
       return config.llamacpp?.endpoint ?? 'unknown';
     case 'lmstudio':
@@ -1145,8 +1147,8 @@ function sanitizePayload(payload) {
     } else {
       clean.tools = ensureAnthropicToolFormat(clean.tools);
     }
-  } else if (providerType === "azure-openai" || providerType === "openai") {
-    // Azure OpenAI / OpenAI support tools — keep Anthropic format; the
+  } else if (providerType === "azure-openai" || providerType === "openai" || providerType === "atlas") {
+    // Azure OpenAI / OpenAI-compatible providers support tools — keep Anthropic format; the
     // client converts to Chat Completions / Responses format. Without this
     // branch the unknown-provider catch-all below deletes the tools.
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {

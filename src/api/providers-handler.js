@@ -107,6 +107,19 @@ function getConfiguredProviders() {
     });
   }
 
+  // Check Atlas Cloud (OpenAI-compatible Chat Completions)
+  if (config.atlas?.apiKey) {
+    providers.push({
+      name: "atlas",
+      type: "atlas-cloud",
+      baseUrl: config.atlas.endpoint || "https://api.atlascloud.ai/v1/chat/completions",
+      enabled: true,
+      models: [
+        { id: config.atlas.model || "qwen/qwen3.8-max", name: "Configured Model" },
+      ]
+    });
+  }
+
   // Check OpenRouter
   if (config.openrouter?.apiKey) {
     providers.push({

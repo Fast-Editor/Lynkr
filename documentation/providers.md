@@ -1,6 +1,6 @@
 # Provider Configuration Guide
 
-Complete configuration reference for all 12+ supported LLM providers. Each provider section includes setup instructions, model options, pricing, and example configurations.
+Complete configuration reference for all 14+ supported LLM providers. Each provider section includes setup instructions, model options, pricing, and example configurations.
 
 ---
 
@@ -19,6 +19,7 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 | **Azure OpenAI** | Cloud | GPT-4o, GPT-5, o1, o3 | $$$ | Cloud | Medium |
 | **Azure Anthropic** | Cloud | Claude models | $$$ | Cloud | Medium |
 | **OpenAI** | Cloud | GPT-4o, o1, o3 | $$$ | Cloud | Easy |
+| **Atlas Cloud** | Cloud | Qwen, DeepSeek, and other OpenAI-compatible models | $-$$$ | Cloud | Easy |
 | **Moonshot AI (Kimi)** | Cloud | Kimi K2 (thinking + turbo) | $ | Cloud | Easy |
 | **LM Studio** | Local | Local models with GUI | **FREE** | 🔒 100% Local | Easy |
 | **MLX OpenAI Server** | Local | Apple Silicon optimized | **FREE** | 🔒 100% Local | Easy |
@@ -722,6 +723,41 @@ OPENAI_MODEL=o1-mini          # Smaller reasoning model
 - ✅ **Parallel tool calls** - Execute multiple tools simultaneously
 - ✅ **Organization support** - Use org-level API keys
 - ✅ **Simple setup** - Just one API key needed
+
+---
+
+### 8a. Atlas Cloud (OpenAI-Compatible)
+
+**Best for:** Accessing Atlas Cloud text models through Lynkr's static or tier-based routing
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=atlas
+ATLASCLOUD_API_KEY=your-atlas-cloud-api-key
+ATLASCLOUD_MODEL=qwen/qwen3.8-max
+ATLASCLOUD_ENDPOINT=https://api.atlascloud.ai/v1/chat/completions
+```
+
+Get an API key from the [Atlas Cloud console](https://www.atlascloud.ai/console/api-keys). The endpoint is OpenAI-compatible, so Lynkr converts Anthropic messages and tools to Chat Completions requests and transforms streamed OpenAI SSE events back to Anthropic events.
+
+Atlas can also be selected per tier:
+
+```env
+TIER_SIMPLE=ollama:qwen2.5-coder:latest
+TIER_MEDIUM=atlas:qwen/qwen3.8-max
+TIER_COMPLEX=atlas:qwen/qwen3.8-max
+TIER_REASONING=atlas:qwen/qwen3.8-max
+```
+
+`ATLASCLOUD_MODEL` is the static-routing default. A model named in `TIER_*` takes precedence for that tier. Check the [live Atlas Cloud model catalog](https://www.atlascloud.ai/models) before selecting a different model; availability and pricing depend on that model.
+
+#### Behavior
+
+- Supports non-streaming and streaming Chat Completions
+- Supports Anthropic-format tools through Lynkr's existing OpenAI conversion path
+- Uses Bearer authentication and accepts a custom `ATLASCLOUD_ENDPOINT`
+- Does not automatically replay billable Chat Completions POST requests
 
 ---
 
