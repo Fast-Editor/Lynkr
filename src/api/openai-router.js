@@ -588,6 +588,22 @@ router.post("/chat/completions", async (req, res) => {
         const content = lynkrBadge(result.body) + (openaiResponse.choices[0].message.content || "");
         let toolCalls = openaiResponse.choices[0].message.tool_calls;
 
+        // Guard: never serve a clean empty completion. Upstream failures
+        // (e.g. exhausted 429 retries) can surface here as a contentless
+        // message with finish_reason "stop"; agent clients read that as
+        // "task complete" and terminate mid-task. Killing the stream without
+        // a finish chunk makes the client retry instead.
+        if (!content && (!toolCalls || toolCalls.length === 0)) {
+          logger.error({
+            finishReason: openaiResponse.choices[0]?.finish_reason,
+            terminationReason: result?.terminationReason,
+            status: result?.status,
+          }, "Empty completion reached serving path — aborting stream to force client retry");
+          res.write(`data: ${JSON.stringify({ error: { message: "Upstream returned an empty completion; retry.", type: "server_error", code: "empty_completion" } })}\n\n`);
+          res.destroy();
+          return;
+        }
+
         if (clientType !== "unknown" && toolCalls && toolCalls.length > 0) {
           toolCalls = toolCalls.map(tc => {
             const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);

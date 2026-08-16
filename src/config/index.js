@@ -673,7 +673,7 @@ var config = {
     fallbackProvider,
   },
   toolResultCompression: {
-    enabled: true,
+    enabled: process.env.TOOL_RESULT_COMPRESSION_ENABLED !== "false",
   },
   caveman: {
     enabled: cavemanEnabled,

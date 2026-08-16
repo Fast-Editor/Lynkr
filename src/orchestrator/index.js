@@ -1841,8 +1841,13 @@ IMPORTANT TOOL USAGE RULES:
   // before they reach the model (saves 60-90% on test/git/lint output)
   if (config.toolResultCompression?.enabled !== false) {
     const { compressToolResults } = require("../context/tool-result-compressor");
-    const tier = cleanPayload._routingTier || "MEDIUM";
-    compressToolResults(cleanPayload.messages, { tier });
+    // Fixed threshold: compression must be deterministic per message — the
+    // routed tier flaps between turns, and re-compressing history differently
+    // breaks provider prompt-cache prefixes. COMPLEX (>2000 chars) compresses
+    // only bulky outputs: with prompt caching live, resending history is
+    // cheap, so lighter lossiness beats aggressive compression; still bounds
+    // context growth enough to stay clear of the token-budget compressor.
+    compressToolResults(cleanPayload.messages, { tier: "COMPLEX" });
   }
 
   // MCP-aware tool dedup: drop built-in tools superseded by present MCP tools

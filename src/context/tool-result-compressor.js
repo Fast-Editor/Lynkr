@@ -9,20 +9,23 @@
  */
 
 const logger = require("../logger");
+const crypto = require("crypto");
 
 // ── Tee Recovery Cache ───────────────────────────────────────────────
 
 const teeCache = new Map();
 const TEE_MAX_SIZE = 200;
 const TEE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-let teeCounter = 0;
 
 function teeStore(original) {
-  if (teeCache.size >= TEE_MAX_SIZE) {
+  // Content-derived id: the same tool result must compress to byte-identical
+  // output on every turn, or the tee marker breaks provider prompt-cache
+  // prefixes. (Was Date.now()+counter — new bytes in old messages each turn.)
+  const id = "tee_" + crypto.createHash("sha1").update(original).digest("hex").slice(0, 16);
+  if (!teeCache.has(id) && teeCache.size >= TEE_MAX_SIZE) {
     const oldest = teeCache.keys().next().value;
     teeCache.delete(oldest);
   }
-  const id = `tee_${Date.now()}_${teeCounter++}`;
   teeCache.set(id, { content: original, createdAt: Date.now() });
   return id;
 }
