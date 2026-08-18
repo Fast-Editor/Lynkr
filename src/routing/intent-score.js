@@ -366,12 +366,35 @@ function _reconcile(anchorScore, anchorClass, classifierResult) {
   return { score: anchorScore, reconciled: 'up_gated' };
 }
 
+// Memoize the final reconciled score per cleaned text. The classifier leg is
+// live and can time out under load, sending identical text down different
+// fallback paths — which made the same turn score differently between the
+// router and the pin-drift checker (observed: 63 vs 77 for one prompt under
+// suite-wide Ollama contention). First resolution wins for the process life.
+const _scoreMemo = new Map();
+const _SCORE_MEMO_MAX = 500;
+
 async function scoreIntent(payload, opts = {}) {
   const mode = opts.mode ?? intentScoreMode();
   if (mode === 'legacy') return null;
 
   const text = extractCleanUserText(payload);
   if (!text) return null;
+
+  // Only memoize plain calls — opts that alter scoring (custom centroids,
+  // embedFn, risk/context inputs) must not share cache entries.
+  const memoizable = !opts.centroids && !opts.embedFn && !opts.forceMatched
+    && !opts.riskLevel && !opts.skipClassifier && !opts.priorTurns;
+  if (memoizable && _scoreMemo.has(text)) return _scoreMemo.get(text);
+  const _memoSet = (result) => {
+    if (memoizable && result) {
+      if (_scoreMemo.size >= _SCORE_MEMO_MAX) {
+        _scoreMemo.delete(_scoreMemo.keys().next().value);
+      }
+      _scoreMemo.set(text, result);
+    }
+    return result;
+  };
 
   try {
     const centroids = opts.centroids !== undefined ? opts.centroids : await getDefaultCentroids();
@@ -421,7 +444,7 @@ async function scoreIntent(payload, opts = {}) {
             finalScore: score,
           }, '[IntentScore] classifier reconciled anchor score');
         }
-        return {
+        return _memoSet({
           score,
           mode: reconciled ? 'anchor+classifier' : 'anchor',
           class: cls,
@@ -431,13 +454,15 @@ async function scoreIntent(payload, opts = {}) {
           classifierTier: classifierResult?.tier ?? null,
           classifierConfidence: classifierResult?.confidence ?? null,
           reconciled,
-        };
+        });
       }
     }
   } catch (err) {
     logger.debug({ err: err.message }, '[IntentScore] anchor scoring failed — lexical fallback');
   }
 
+  // Lexical fallback is NOT memoized: it usually means the embedding service
+  // was unavailable; pinning it would lock in degraded scores after recovery.
   return { score: _lexicalCleanScore(text), mode: 'lexical', text };
 }
 
