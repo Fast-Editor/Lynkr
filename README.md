@@ -218,8 +218,11 @@ Claude Code / Cursor / Codex / Cline / Continue
 | **OpenAI** | Cloud | GPT-4o, o3-mini | $$$ |
 | **Atlas Cloud** | Cloud | Qwen, DeepSeek, and other OpenAI-compatible models | $-$$$ |
 | **DeepSeek** | Cloud | DeepSeek R1, Reasoner | $ |
+| **Z.ai** | Cloud | GLM-4.7, GLM-4.5-Air | $ |
+| **Moonshot AI** | Cloud | Kimi K2.6, Kimi K3 | $ |
+| **Baidu Qianfan** | Cloud | ERNIE 4.5 Turbo, ERNIE X1.1 | $ (unverified — not yet probed against a live key) |
 
-**4 local providers** for 100% offline, free usage. **11+ cloud providers** for scale.
+**4 local providers** for 100% offline, free usage. **14+ cloud providers** for scale.
 
 <div align="center">
   <a href="https://www.atlascloud.ai/?utm_source=github&amp;utm_medium=readme&amp;utm_campaign=lynkr">
