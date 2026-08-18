@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -147,6 +147,11 @@ const zaiModel = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
 const moonshotApiKey = process.env.MOONSHOT_API_KEY?.trim() || null;
 const moonshotEndpoint = process.env.MOONSHOT_ENDPOINT?.trim() || "https://api.moonshot.ai/v1/chat/completions";
 const moonshotModel = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2-turbo-preview";
+
+// Baidu Qianfan (ERNIE) configuration - OpenAI-compatible v2 Chat Completions API
+const baiduApiKey = process.env.BAIDU_API_KEY?.trim() || null;
+const baiduEndpoint = process.env.BAIDU_ENDPOINT?.trim() || "https://qianfan.baidubce.com/v2/chat/completions";
+const baiduModel = process.env.BAIDU_MODEL?.trim() || "ernie-4.5-turbo-128k";
 
 // Vertex AI (Google Gemini) configuration
 const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
@@ -653,6 +658,11 @@ var config = {
     endpoint: moonshotEndpoint,
     model: moonshotModel,
   },
+  baidu: {
+    apiKey: baiduApiKey,
+    endpoint: baiduEndpoint,
+    model: baiduModel,
+  },
   codex: {
     enabled: process.env.CODEX_ENABLED !== "false",
     binaryPath: process.env.CODEX_BINARY_PATH?.trim() || null,
@@ -1114,6 +1124,8 @@ function reloadConfig() {
   config.vertex.model = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
   config.moonshot.apiKey = process.env.MOONSHOT_API_KEY?.trim() || null;
   config.moonshot.model = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2-turbo-preview";
+  config.baidu.apiKey = process.env.BAIDU_API_KEY?.trim() || null;
+  config.baidu.model = process.env.BAIDU_MODEL?.trim() || "ernie-4.5-turbo-128k";
 
   // Model provider settings
   const newProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();

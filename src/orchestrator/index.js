@@ -58,6 +58,8 @@ function getDestinationUrl(providerType) {
       return config.vertex?.endpoint ?? 'unknown';
     case 'moonshot':
       return config.moonshot?.endpoint ?? 'unknown';
+    case 'baidu':
+      return config.baidu?.endpoint ?? 'unknown';
     case 'codex':
       return 'codex://app-server (local process)';
     default:
@@ -1142,6 +1144,14 @@ function sanitizePayload(payload) {
   } else if (providerType === "moonshot") {
     // Moonshot supports tools - keep them in Anthropic format
     // They will be converted to OpenAI format in invokeMoonshot
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
+  } else if (providerType === "baidu") {
+    // Baidu Qianfan supports tools - keep them in Anthropic format
+    // They will be converted to OpenAI format in invokeBaidu
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
       delete clean.tools;
     } else {
@@ -2609,6 +2619,12 @@ IMPORTANT TOOL USAGE RULES:
       }
     } else if (actualProvider === "moonshot") {
       // Moonshot responses are already converted to Anthropic format in invokeMoonshot
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
+    } else if (actualProvider === "baidu") {
+      // Baidu Qianfan responses are already converted to Anthropic format in invokeBaidu
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);

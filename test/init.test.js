@@ -44,6 +44,7 @@ describe("lynkr init", () => {
       const supported = [
         "databricks", "azure-anthropic", "ollama", "openrouter", "azure-openai",
         "openai", "atlas", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot",
+        "baidu",
       ];
       for (const key of supported) {
         assert.ok(init.PROVIDERS[key], `wizard missing provider entry for ${key}`);

@@ -32,6 +32,7 @@ test('PROVIDER_INVOKERS covers every supported provider except databricks', () =
   const SUPPORTED = [
     'azure-anthropic', 'ollama', 'openrouter', 'edenai', 'azure-openai',
     'openai', 'atlas', 'llamacpp', 'lmstudio', 'bedrock', 'zai', 'vertex', 'moonshot',
+    'baidu',
   ];
 
   const missing = SUPPORTED.filter((p) => typeof PROVIDER_INVOKERS[p] !== 'function');
