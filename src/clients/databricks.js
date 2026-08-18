@@ -2050,6 +2050,12 @@ async function invokeZai(body, incomingHeaders = {}) {
     zaiBody = { ...body };
     zaiBody.model = mappedModel;
 
+    // Force buffered mode: with stream:true this endpoint returns ANTHROPIC
+    // SSE, but the downstream transformer parses OPENAI SSE — every chunk is
+    // unreadable and the client receives an empty completion. Buffered JSON
+    // converts correctly; the router synthesizes client-side SSE as usual.
+    zaiBody.stream = false;
+
     // Inject standard tools if client didn't send any (passthrough mode)
     if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
       zaiBody.tools = STANDARD_TOOLS;

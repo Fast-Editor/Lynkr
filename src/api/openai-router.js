@@ -780,6 +780,21 @@ router.post("/chat/completions", async (req, res) => {
         }, "Tool names mapped for non-streaming chat/completions");
       }
 
+      // Guard (mirrors the streaming path): never serve a clean empty
+      // completion — upstream failures can surface as contentless messages
+      // with finish_reason "stop", which agent clients read as "done" and
+      // terminate mid-task. A 502 is retryable; an empty 200 is a silent kill.
+      const _msg = openaiResponse.choices?.[0]?.message;
+      if (!_msg?.content && !(_msg?.tool_calls?.length > 0)) {
+        logger.error({
+          finishReason: openaiResponse.choices?.[0]?.finish_reason,
+          usage: openaiResponse.usage,
+        }, "Empty completion reached non-streaming serving path — returning 502");
+        return res.status(502).json({
+          error: { message: "Upstream returned an empty completion; retry.", type: "server_error", code: "empty_completion" }
+        });
+      }
+
       logger.info({
         duration: Date.now() - startTime,
         mode: "non-streaming",
