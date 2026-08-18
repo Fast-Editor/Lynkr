@@ -2301,6 +2301,129 @@ async function invokeMoonshot(body, incomingHeaders = {}) {
 }
 
 /**
+ * Baidu Qianfan (ERNIE) Provider
+ *
+ * Qianfan's v2 endpoint is an OpenAI-compatible Chat Completions API
+ * (bearer-token auth, key format "bce-v3/ALTAK-..."). Modeled on
+ * invokeMoonshot: request side reuses the shared openrouter-utils
+ * converters, response is converted to Anthropic shape locally so the
+ * orchestrator branch is a plain passthrough.
+ *
+ * NOTE: sampling-param quirks and the exact model roster below are best
+ * effort from public docs, not yet probed against a live key. Revisit the
+ * modelMap and pinned-params logic (see Moonshot's kimi-k* precedent) once
+ * real traffic surfaces 400s.
+ */
+async function invokeBaidu(body, incomingHeaders = {}) {
+  if (!config.baidu?.apiKey) {
+    throw new Error("Baidu API key is not configured. Set BAIDU_API_KEY in your .env file.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.baidu.endpoint || "https://qianfan.baidubce.com/v2/chat/completions";
+
+  // Model mapping: Anthropic names → Baidu ERNIE names.
+  // Starting point only — refine once TIER_* mappings and live-probe results
+  // are known (see file-level NOTE above).
+  const modelMap = {
+    "claude-sonnet-4-5-20250929": "ernie-4.5-turbo-128k",
+    "claude-sonnet-4-5": "ernie-4.5-turbo-128k",
+    "claude-sonnet-4.5": "ernie-4.5-turbo-128k",
+    "claude-3-5-sonnet": "ernie-4.5-turbo-128k",
+    "claude-opus-4-5": "ernie-x1.1",
+    "claude-haiku-4-5-20251001": "ernie-speed-8k",
+    "claude-haiku-4-5": "ernie-speed-8k",
+    "claude-3-haiku": "ernie-speed-8k",
+  };
+
+  const requestedModel = body._tierModel || body.model || config.baidu.model;
+  // Honor tier-selected ERNIE ids (e.g. TIER_REASONING=baidu:ernie-x1.1)
+  // instead of silently swapping in the .env default model.
+  const mappedModel = modelMap[requestedModel]
+    || (/^ernie-/i.test(requestedModel || "") ? requestedModel : null)
+    || config.baidu.model
+    || "ernie-4.5-turbo-128k";
+
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+
+  // Qianfan's OpenAI-compatible endpoint supports the system role natively.
+  if (body.system) {
+    const systemContent = Array.isArray(body.system)
+      ? body.system.map(s => s.text || s).join("\n")
+      : body.system;
+    messages.unshift({ role: "system", content: systemContent });
+  }
+
+  const baiduBody = {
+    model: mappedModel,
+    messages,
+    max_tokens: body.max_tokens || 16384,
+    temperature: body.temperature ?? 0.7,
+    top_p: body.top_p ?? 1.0,
+    // Streaming honored once "baidu" is added to DEFAULT_OPENAI_SSE_PROVIDERS
+    // (sse-transformer.js) and confirmed to match OpenAI SSE shape. Buffered
+    // requests use the Anthropic conversion path below regardless.
+    stream: body.stream ?? false,
+  };
+
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    baiduBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
+    baiduBody.tool_choice = "auto";
+    baiduBody.parallel_tool_calls = false;
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${config.baidu.apiKey}`,
+  };
+
+  logger.debug({
+    endpoint,
+    model: baiduBody.model,
+    originalModel: requestedModel,
+    messageCount: baiduBody.messages?.length || 0,
+    hasTools: !!baiduBody.tools,
+    toolCount: baiduBody.tools?.length || 0,
+  }, "=== Baidu Qianfan REQUEST ===");
+
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: baiduBody,
+    retryableStatusesOverride: [500, 502, 503, 504],
+  }, "Baidu");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`Baidu Qianfan rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  // Streaming request: hand the raw stream to the orchestrator's stream
+  // branch. The Anthropic conversion below is buffered-only.
+  if (response?.stream) {
+    return response;
+  }
+
+  if (response?.ok && response?.json) {
+    const anthropicJson = convertOpenAIToAnthropic(response.json);
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: anthropicJson,
+      text: JSON.stringify(anthropicJson),
+      contentType: "application/json",
+      headers: response.headers,
+    };
+  }
+
+  return response;
+}
+
+/**
  * Convert OpenAI response to Anthropic format
  */
 function convertOpenAIToAnthropic(response) {
@@ -2872,6 +2995,7 @@ const PROVIDER_INVOKERS = {
   vertex: invokeVertex,
   moonshot: invokeMoonshot,
   codex: invokeCodex,
+  baidu: invokeBaidu,
 };
 
 function invokeProvider(provider, body, incomingHeaders) {
@@ -3654,6 +3778,7 @@ module.exports = {
   invokeZai,
   invokeOllama,
   invokeMoonshot,
+  invokeBaidu,
   invokeAtlas,
   PROVIDER_INVOKERS,
   stripLynkrBadges,

@@ -170,12 +170,21 @@ const PROVIDERS = {
     extras: [],
     defaultModel: 'kimi-k2-turbo-preview',
   },
+  baidu: {
+    label: 'Baidu Qianfan (ERNIE)',
+    local: false,
+    creds: [
+      { key: 'BAIDU_API_KEY', label: 'Baidu Qianfan API key (bce-v3/ALTAK-...)', secret: true },
+    ],
+    extras: [],
+    defaultModel: 'ernie-4.5-turbo-128k',
+  },
 };
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
   'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'openrouter', 'edenai',
-  'databricks', 'bedrock', 'vertex', 'zai', 'moonshot',
+  'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
 
@@ -330,6 +339,9 @@ const BASELINE_ENV = {
   MOONSHOT_API_KEY: '',
   MOONSHOT_ENDPOINT: 'https://api.moonshot.ai/v1/chat/completions',
   MOONSHOT_MODEL: 'kimi-k2.6',
+  BAIDU_API_KEY: '',
+  BAIDU_ENDPOINT: 'https://qianfan.baidubce.com/v2/chat/completions',
+  BAIDU_MODEL: 'ernie-4.5-turbo-128k',
   LLAMACPP_ENDPOINT: 'http://localhost:8080',
   LLAMACPP_MODEL: 'default',
   LLAMACPP_TIMEOUT_MS: '120000',

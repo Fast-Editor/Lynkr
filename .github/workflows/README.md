@@ -27,37 +27,7 @@ This directory contains GitHub Actions workflows for automated testing and CI/CD
 
 ---
 
-### 2. Web Tools Tests (`web-tools-tests.yml`)
-
-**Purpose:** Run web search tool tests when related files change
-
-**Triggers:**
-- Changes to web tools source files:
-  - `src/tools/web.js`
-  - `src/tools/web-client.js`
-  - `src/clients/retry.js`
-  - `src/config/index.js`
-  - `test/web-tools.test.js`
-
-**What it does:**
-- Runs only the web tools test suite
-- Generates test summary in GitHub Actions UI
-- Faster feedback for web tools changes
-
-**Test Coverage:**
-- HTML extraction (9 tests)
-- HTTP keep-alive agent (2 tests)
-- Retry logic with exponential backoff (2 tests)
-- Configuration management (3 tests)
-- Error handling (1 test)
-- Performance validation (1 test)
-- Body preview configuration (1 test)
-
-**Total:** 19 tests
-
----
-
-### 3. NPM Publish (`npm-publish.yml`)
+### 2. NPM Publish (`npm-publish.yml`)
 
 **Purpose:** Automatically publish package to npm registry
 
@@ -81,7 +51,7 @@ This directory contains GitHub Actions workflows for automated testing and CI/CD
 
 ---
 
-### 4. Version Bump (`version-bump.yml`)
+### 3. Version Bump (`version-bump.yml`)
 
 **Purpose:** Manual workflow to bump version and create releases
 
@@ -104,7 +74,7 @@ This directory contains GitHub Actions workflows for automated testing and CI/CD
 
 ---
 
-### 5. IndexNow Notification (`index.yml`)
+### 4. IndexNow Notification (`index.yml`)
 
 **Purpose:** Notify search engines when documentation is updated
 
@@ -124,7 +94,6 @@ Add these badges to your README.md:
 
 ```markdown
 ![CI Tests](https://github.com/vishalveerareddy123/Lynkr/actions/workflows/ci.yml/badge.svg)
-![Web Tools Tests](https://github.com/vishalveerareddy123/Lynkr/actions/workflows/web-tools-tests.yml/badge.svg)
 ![npm version](https://img.shields.io/npm/v/lynkr.svg)
 ![npm downloads](https://img.shields.io/npm/dt/lynkr.svg)
 ```
@@ -136,10 +105,6 @@ Before pushing, run tests locally:
 ```bash
 # Run all unit tests
 npm run test:unit
-
-# Run only web tools tests
-DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com \
-  node --test test/web-tools.test.js
 
 # Run quick tests (routing only)
 npm run test:quick

@@ -963,6 +963,69 @@ curl -X POST http://localhost:8000/v1/chat/completions -H "Content-Type: applica
 
 ---
 
+### 12. Baidu Qianfan / ERNIE (OpenAI-Compatible)
+
+**Best for:** Chinese-market deployments, ERNIE reasoning models, OpenAI-compatible API
+
+> **Note:** model roster and sampling-param behavior below are best-effort from public docs and have not yet been probed against a live key — treat as a starting point, not a confirmed-stable config.
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=baidu
+BAIDU_API_KEY=bce-v3/ALTAK-your-baidu-qianfan-api-key
+BAIDU_ENDPOINT=https://qianfan.baidubce.com/v2/chat/completions
+BAIDU_MODEL=ernie-4.5-turbo-128k
+```
+
+#### Getting a Baidu Qianfan API Key
+
+1. Visit [Baidu AI Cloud Qianfan console](https://console.bce.baidu.com/qianfan/)
+2. Sign up or log in (Baidu Cloud account)
+3. Create an API key under the v2 / OpenAI-compatible access section — keys are formatted `bce-v3/ALTAK-...`
+4. Add credits to your account
+
+#### Available Models
+
+```env
+BAIDU_MODEL=ernie-4.5-turbo-128k   # General-purpose, 128K context (recommended default)
+BAIDU_MODEL=ernie-x1.1             # Reasoning model
+BAIDU_MODEL=ernie-speed-8k         # Smaller/cheaper, fast responses
+```
+
+#### How It Works
+
+Qianfan's v2 endpoint is an **OpenAI-compatible** chat completions API. Lynkr handles all format conversion automatically:
+
+1. Claude Code CLI sends Anthropic-format request to Lynkr
+2. Lynkr converts Anthropic messages → OpenAI chat completions format
+3. Request is sent to Qianfan's `/v2/chat/completions` endpoint
+4. Qianfan response is converted back to Anthropic format
+5. Claude Code CLI receives a standard Anthropic response
+
+#### Important Notes
+
+- **Streaming:** Buffered only for now — `baidu` is not yet in the SSE-transform provider list, pending confirmation that Qianfan's stream shape matches OpenAI's exactly.
+- **Tool Calling:** Tool calling support via OpenAI function calling format (automatically converted from Anthropic format) — not yet exercised against a live key.
+- **System Messages:** Qianfan's v2 endpoint supports the `system` role natively.
+
+#### Benefits
+
+- ✅ **OpenAI-compatible** — Standard chat completions API, drop-in wiring
+- ✅ **Reasoning model available** — `ernie-x1.1`
+- ✅ **System role support** — Native system message handling
+
+#### Test Connection
+
+```bash
+curl -X POST https://qianfan.baidubce.com/v2/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $BAIDU_API_KEY" \
+  -d '{"model":"ernie-4.5-turbo-128k","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+---
+
 ## Tier-Based Routing & Fallback
 
 ### Intelligent 4-Tier Routing
@@ -1025,7 +1088,7 @@ AZURE_OPENAI_API_KEY=your-key
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MODEL_PROVIDER` | Primary provider (`databricks`, `bedrock`, `openrouter`, `ollama`, `llamacpp`, `azure-openai`, `azure-anthropic`, `openai`, `lmstudio`, `zai`, `moonshot`, `vertex`) | `databricks` |
+| `MODEL_PROVIDER` | Primary provider (`databricks`, `bedrock`, `openrouter`, `ollama`, `llamacpp`, `azure-openai`, `azure-anthropic`, `openai`, `lmstudio`, `zai`, `moonshot`, `vertex`, `baidu`) | `databricks` |
 | `PORT` | HTTP port for proxy server | `8081` |
 | `WORKSPACE_ROOT` | Workspace directory path | `process.cwd()` |
 | `LOG_LEVEL` | Logging level (`error`, `warn`, `info`, `debug`) | `info` |
@@ -1071,6 +1134,7 @@ _* Tool calling only supported by Claude models on Bedrock_
 | **OpenAI** | GPT-4o | $2.50 | $10.00 |
 | **Azure OpenAI** | GPT-4o | $2.50 | $10.00 |
 | **Moonshot** | Kimi K2 Turbo | See moonshot.ai | See moonshot.ai |
+| **Baidu Qianfan** | ERNIE 4.5 Turbo | See qianfan.baidubce.com | See qianfan.baidubce.com |
 | **Ollama** | Any model | **FREE** | **FREE** |
 | **llama.cpp** | Any model | **FREE** | **FREE** |
 | **LM Studio** | Any model | **FREE** | **FREE** |

@@ -223,6 +223,21 @@ function getConfiguredProviders() {
     });
   }
 
+  // Check Baidu Qianfan (ERNIE)
+  if (config.baidu?.apiKey) {
+    providers.push({
+      name: "baidu",
+      type: "baidu-qianfan",
+      baseUrl: config.baidu.endpoint || "https://qianfan.baidubce.com/v2/chat/completions",
+      enabled: true,
+      models: [
+        { id: config.baidu.model || "ernie-4.5-turbo-128k", name: "Configured Model" },
+        { id: "ernie-4.5-turbo-128k", name: "ERNIE 4.5 Turbo 128K" },
+        { id: "ernie-x1.1", name: "ERNIE X1.1 (reasoning)" },
+      ]
+    });
+  }
+
   // Check Vertex AI (Google Cloud)
   if (config.vertex?.projectId) {
     const region = config.vertex.region || "us-east5";

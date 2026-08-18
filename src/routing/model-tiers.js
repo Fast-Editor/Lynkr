@@ -351,6 +351,8 @@ class ModelTierSelector {
         return config.zai?.model || null;
       case 'moonshot':
         return config.moonshot?.model || null;
+      case 'baidu':
+        return config.baidu?.model || null;
       case 'codex':
         return config.codex?.model || null;
       case 'vertex':

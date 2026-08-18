@@ -970,6 +970,18 @@ function getConfiguredProviders() {
     });
   }
 
+  if (config.baidu?.apiKey) {
+    providers.push({
+      name: "baidu",
+      type: "baidu-qianfan",
+      models: [
+        config.baidu.model || "ernie-4.5-turbo-128k",
+        "ernie-4.5-turbo-128k",
+        "ernie-x1.1"
+      ]
+    });
+  }
+
   if (config.vertex?.projectId) {
     providers.push({
       name: "vertex",
