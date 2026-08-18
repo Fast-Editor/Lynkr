@@ -41,3 +41,4 @@ tmp/
 
 # ai-sdk-provider build output
 packages/ai-sdk-provider/dist/
+.env.bak-*

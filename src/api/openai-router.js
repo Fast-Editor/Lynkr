@@ -588,6 +588,22 @@ router.post("/chat/completions", async (req, res) => {
         const content = lynkrBadge(result.body) + (openaiResponse.choices[0].message.content || "");
         let toolCalls = openaiResponse.choices[0].message.tool_calls;
 
+        // Guard: never serve a clean empty completion. Upstream failures
+        // (e.g. exhausted 429 retries) can surface here as a contentless
+        // message with finish_reason "stop"; agent clients read that as
+        // "task complete" and terminate mid-task. Killing the stream without
+        // a finish chunk makes the client retry instead.
+        if (!content && (!toolCalls || toolCalls.length === 0)) {
+          logger.error({
+            finishReason: openaiResponse.choices[0]?.finish_reason,
+            terminationReason: result?.terminationReason,
+            status: result?.status,
+          }, "Empty completion reached serving path — aborting stream to force client retry");
+          res.write(`data: ${JSON.stringify({ error: { message: "Upstream returned an empty completion; retry.", type: "server_error", code: "empty_completion" } })}\n\n`);
+          res.destroy();
+          return;
+        }
+
         if (clientType !== "unknown" && toolCalls && toolCalls.length > 0) {
           toolCalls = toolCalls.map(tc => {
             const mapped = mapToolForClient(tc.function?.name || "", tc.function?.arguments || "{}", clientType);
@@ -762,6 +778,21 @@ router.post("/chat/completions", async (req, res) => {
           mappedTools: openaiResponse.choices[0].message.tool_calls.map(t => t.function?.name),
           clientType
         }, "Tool names mapped for non-streaming chat/completions");
+      }
+
+      // Guard (mirrors the streaming path): never serve a clean empty
+      // completion — upstream failures can surface as contentless messages
+      // with finish_reason "stop", which agent clients read as "done" and
+      // terminate mid-task. A 502 is retryable; an empty 200 is a silent kill.
+      const _msg = openaiResponse.choices?.[0]?.message;
+      if (!_msg?.content && !(_msg?.tool_calls?.length > 0)) {
+        logger.error({
+          finishReason: openaiResponse.choices?.[0]?.finish_reason,
+          usage: openaiResponse.usage,
+        }, "Empty completion reached non-streaming serving path — returning 502");
+        return res.status(502).json({
+          error: { message: "Upstream returned an empty completion; retry.", type: "server_error", code: "empty_completion" }
+        });
       }
 
       logger.info({

@@ -888,6 +888,23 @@ function detectAzureFormat(url) {
 }
 
 
+/**
+ * Stable per-conversation cache key for GPT-5.6 declared prompt caching.
+ * Prefers the session id; falls back to hashing the first user message,
+ * which is identical across every turn of the same conversation.
+ */
+function derivePromptCacheKey(body) {
+  if (body._sessionId) return String(body._sessionId).slice(0, 64);
+  const first = (body.messages || []).find(m => m.role === "user");
+  let text = "";
+  if (first) {
+    text = typeof first.content === "string"
+      ? first.content
+      : JSON.stringify(first.content);
+  }
+  return "conv-" + crypto.createHash("sha1").update(text.slice(0, 4000)).digest("hex").slice(0, 32);
+}
+
 async function invokeAzureOpenAI(body, incomingHeaders = {}) {
   if (!config.azureOpenAI?.endpoint || !config.azureOpenAI?.apiKey) {
     throw new Error("Azure OpenAI endpoint or API key is not configured.");
@@ -1004,6 +1021,16 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
     const responsesInput = [];
     // Track function call IDs for matching with outputs
     const pendingCallIds = [];
+    // Fallback IDs must be DETERMINISTIC: the same history must render
+    // byte-identically on every turn, or provider prompt caching never hits.
+    // (Was Date.now()+Math.random(), which re-randomized history each turn.)
+    let stableIdCounter = 0;
+    const stableCallId = (name, args) => {
+      const h = crypto.createHash("sha1")
+        .update(`${name || ""}|${args || ""}|${stableIdCounter++}`)
+        .digest("hex").slice(0, 16);
+      return `call_${h}`;
+    };
 
     // Detect if this is a continuation request (has tool results)
     // Azure content filter triggers on full system prompt in continuations
@@ -1065,36 +1092,32 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
 
     for (const msg of azureBody.messages) {
       if (msg.role === "system") {
-        // For continuation requests, use minimal system prompt to avoid content filter
-        // Azure's jailbreak detection triggers on security-related text in continuations
-        if (hasToolResults) {
-          responsesInput.push({
-            type: "message",
-            role: "developer",
-            content: "You are a helpful coding assistant. Continue helping the user based on the tool results."
-          });
-        } else {
-          // Initial request - use full system prompt
-          responsesInput.push({
-            type: "message",
-            role: "developer",
-            content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-          });
-        }
+        // The system prompt must be IDENTICAL on every turn of a conversation:
+        // (a) swapping it per turn breaks provider prompt-cache prefixes, and
+        // (b) replacing it on continuations silently dropped the client
+        // agent's actual instructions mid-task. Strip system-reminder blocks
+        // uniformly (that was the content-filter trigger, not the prompt).
+        const sysText = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+        responsesInput.push({
+          type: "message",
+          role: "developer",
+          content: stripSystemReminders(sysText) || sysText
+        });
       } else if (msg.role === "user") {
         // Check if content contains tool_result blocks (Anthropic format)
         if (Array.isArray(msg.content)) {
           for (const block of msg.content) {
             if (block.type === "tool_result") {
-              const callId = block.tool_use_id || pendingCallIds.shift() || `call_${Date.now()}`;
+              const callId = block.tool_use_id || pendingCallIds.shift() || stableCallId("result", block.content);
               responsesInput.push({
                 type: "function_call_output",
                 call_id: callId,
                 output: typeof block.content === 'string' ? block.content : JSON.stringify(block.content || "")
               });
             } else if (block.type === "text") {
-              // For continuation requests, strip system-reminder tags to avoid jailbreak filter
-              const textContent = hasToolResults ? stripSystemReminders(block.text || "") : (block.text || "");
+              // Strip system-reminder tags on EVERY turn (uniformly), so the
+              // same message renders identically across turns (cache prefix).
+              const textContent = stripSystemReminders(block.text || "");
               if (textContent) {  // Only add if there's content after stripping
                 responsesInput.push({
                   type: "message",
@@ -1105,11 +1128,9 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
             }
           }
         } else {
-          // For continuation requests, strip system-reminder tags to avoid jailbreak filter
+          // Strip system-reminder tags uniformly on every turn (cache prefix).
           let userContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-          if (hasToolResults) {
-            userContent = stripSystemReminders(userContent);
-          }
+          userContent = stripSystemReminders(userContent);
           if (userContent) {  // Only add if there's content after stripping
             responsesInput.push({
               type: "message",
@@ -1123,7 +1144,7 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           // OpenAI format: tool_calls array
           for (const tc of msg.tool_calls) {
-            const callId = tc.id || `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const callId = tc.id || stableCallId(tc.function?.name || tc.name, tc.function?.arguments);
             pendingCallIds.push(callId);
             responsesInput.push({
               type: "function_call",
@@ -1138,7 +1159,7 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
           // Anthropic format: content is array of blocks
           for (const block of msg.content) {
             if (block.type === "tool_use") {
-              const callId = block.id || `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+              const callId = block.id || stableCallId(block.name, block.input);
               pendingCallIds.push(callId);
               responsesInput.push({
                 type: "function_call",
@@ -1164,7 +1185,7 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
         }
       } else if (msg.role === "tool") {
         // Tool results become function_call_output
-        const callId = msg.tool_call_id || pendingCallIds.shift() || `call_${Date.now()}`;
+        const callId = msg.tool_call_id || pendingCallIds.shift() || stableCallId("tool", msg.content);
         responsesInput.push({
           type: "function_call_output",
           call_id: callId,
@@ -1173,12 +1194,26 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
       }
     }
 
+    // Reasoning effort: honor the client's request, else the env default.
+    // Without this, gpt-5.x reasoning models run at their shallowest setting.
+    const reasoningEffort = body.reasoning_effort
+      ?? body.reasoning?.effort
+      ?? process.env.AZURE_OPENAI_REASONING_EFFORT
+      ?? null;
     const responsesBody = {
       input: responsesInput,
       model: azureBody.model,
-      max_output_tokens: azureBody.max_tokens,
+      // gpt-5.x deployments store the cap under max_completion_tokens.
+      max_output_tokens: azureBody.max_completion_tokens ?? azureBody.max_tokens,
       tools: responsesTools,
       tool_choice: azureBody.tool_choice,
+      ...(isGpt5 && reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+      // GPT-5.6 caching is declaration-based: a stable per-conversation key
+      // makes prefix cache matching reliable (~90% discount on agent loops).
+      // _sessionId is empty on the agentic path, so fall back to a hash of
+      // the conversation's first user message — stable across every turn of
+      // the same task. Keep per-key traffic under ~15 req/min.
+      ...(isGpt5 ? { prompt_cache_key: derivePromptCacheKey(body) } : {}),
       stream: false
     };
     logger.debug({
@@ -1277,6 +1312,11 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
           completion_tokens: result.json.usage.completion_tokens ?? result.json.usage.output_tokens ?? 0,
           total_tokens: result.json.usage.total_tokens
             ?? ((result.json.usage.input_tokens ?? 0) + (result.json.usage.output_tokens ?? 0)),
+          // Provider-side prompt-cache hits (Responses API: input_tokens_details,
+          // Chat Completions: prompt_tokens_details) — telemetry reads this name.
+          cache_read_input_tokens: result.json.usage.input_tokens_details?.cached_tokens
+            ?? result.json.usage.prompt_tokens_details?.cached_tokens
+            ?? null,
         } : undefined
       };
 
@@ -2010,6 +2050,12 @@ async function invokeZai(body, incomingHeaders = {}) {
     zaiBody = { ...body };
     zaiBody.model = mappedModel;
 
+    // Force buffered mode: with stream:true this endpoint returns ANTHROPIC
+    // SSE, but the downstream transformer parses OPENAI SSE — every chunk is
+    // unreadable and the client receives an empty completion. Buffered JSON
+    // converts correctly; the router synthesizes client-side SSE as usual.
+    zaiBody.stream = false;
+
     // Inject standard tools if client didn't send any (passthrough mode)
     if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
       zaiBody.tools = STANDARD_TOOLS;
@@ -2330,6 +2376,10 @@ function convertOpenAIToAnthropic(response) {
     usage: {
       input_tokens: response.usage?.prompt_tokens || 0,
       output_tokens: response.usage?.completion_tokens || 0,
+      // Provider-side prompt-cache hits — telemetry reads this field name.
+      cache_read_input_tokens: response.usage?.cache_read_input_tokens
+        ?? response.usage?.prompt_tokens_details?.cached_tokens
+        ?? null,
     }
   };
 }
