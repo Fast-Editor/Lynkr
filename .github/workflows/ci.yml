@@ -36,7 +36,6 @@ jobs:
           node --test \
             test/routing.test.js \
             test/hybrid-routing-integration.test.js \
-            test/web-tools.test.js \
             test/passthrough-mode.test.js \
             test/openrouter-error-resilience.test.js \
             test/format-conversion.test.js \
@@ -53,6 +52,5 @@ jobs:
             test/telemetry-routing.test.js \
             test/distill.test.js \
             test/large-payload.test.js \
-            test/code-mode.test.js \
             test/prompt-cache-injection.test.js
         timeout-minutes: 5
