@@ -3541,11 +3541,100 @@ async function invokeModel(body, options = {}) {
 
       const fallbackStart = Date.now();
 
+      // Strip the failed primary's routing stamps before re-dispatch: every
+      // provider client prefers body._tierModel over its own configured
+      // model, so leaving the failed tier's model on the body makes the
+      // fallback provider serve a model it doesn't have — azure-openai
+      // treats it as the deployment id and 404s with DeploymentNotFound
+      // (live incident 2026-08-19). The fallback provider must fall through
+      // to its own configured model.
+      const fallbackBody = { ...body };
+      delete fallbackBody._tierModel;
+      delete fallbackBody._suggestionModeModel;
+
       const fallbackResult = await fallbackBreaker.execute(async () => {
-        return await invokeProvider(fallbackProvider, body, incomingHeaders);
+        return await invokeProvider(fallbackProvider, fallbackBody, incomingHeaders);
       });
 
       const fallbackLatency = Date.now() - fallbackStart;
+
+      // Provider clients return {ok:false} on 4xx/5xx instead of throwing,
+      // so a fallback rung that answered with an error body used to sail
+      // through the success path below — logging "Fallback to cloud
+      // provider succeeded" and recording status_code:200 telemetry for
+      // what was actually a double failure. Treat it as one.
+      if (fallbackResult?.ok === false) {
+        const fbErrMessage = fallbackResult.json?.error?.message || String(fallbackResult.text || "").slice(0, 120) || "error response";
+
+        metricsCollector.recordFallbackFailure();
+        metricsCollector.recordDatabricksRequest(false, retries);
+        healthTracker.recordFailure(fallbackProvider, new Error(fbErrMessage), fallbackResult.status);
+
+        logger.warn({
+          originalProvider: initialProvider,
+          fallbackProvider,
+          status: fallbackResult.status,
+          error: fbErrMessage,
+        }, "Fallback provider answered with an error response");
+
+        // Thread the whole trail into the error payload so the client sees
+        // every failure, not just this one (e.g. "moonshot: quota" matters
+        // more than "azure: 404").
+        failureTrail.push(`${fallbackProvider}: HTTP ${fallbackResult.status} — ${fbErrMessage}`);
+        if (fallbackResult.json && typeof fallbackResult.json === "object") {
+          fallbackResult.json._lynkr_failure_trail = failureTrail;
+        }
+
+        const fbFailLatency = Date.now() - startTime;
+        telemetry.record({
+          request_id: crypto.randomUUID(),
+          session_id: body._sessionId || null,
+          timestamp: Date.now(),
+          complexity_score: routingResult.score ?? null,
+          tier: routingDecision.tier,
+          provider: fallbackProvider,
+          model: routingDecision.model ?? body._tierModel ?? null,
+          routing_method: "fallback",
+          was_fallback: true,
+          latency_ms: fbFailLatency,
+          status_code: fallbackResult.status || null,
+          error_type: "fallback_error_response",
+          quality_score: 0,
+          base_tier: routingResult.base_tier ?? null,
+          escalation_source: routingResult.escalation_source ?? null,
+          propensity: routingResult.propensity ?? null,
+          candidates: routingResult.candidates ?? null,
+          pinned: routingResult.pinned ? 1 : 0,
+          switch_reason: routingResult.switch_reason ?? null,
+          cache_decision: routingResult._cacheDecision ?? null,
+        });
+
+        // WS5.4 — feedback loop (fallback answered with an error). Same
+        // hard-negative signal as a double failure.
+        recordFeedbackOutcome({
+          routingResult,
+          body,
+          outcome: {
+            qualityScore: 0,
+            costUsd: null,
+            latencyMs: fbFailLatency,
+            statusCode: fallbackResult.status || null,
+            errorType: "fallback_error_response",
+            wasFallback: true,
+          },
+        });
+
+        return {
+          ...fallbackResult,
+          actualProvider: fallbackProvider,
+          routingDecision: {
+            ...routingDecision,
+            provider: fallbackProvider,
+            method: 'fallback',
+            fallbackReason: reason,
+          },
+        };
+      }
 
       metricsCollector.recordFallbackSuccess(fallbackLatency);
       metricsCollector.recordDatabricksRequest(true, retries);
@@ -3634,16 +3723,6 @@ async function invokeModel(body, options = {}) {
           wasFallback: true,
         },
       });
-
-      // The last rung also answered with an error — thread the whole trail
-      // into the error payload so the client sees every failure, not just
-      // this one (e.g. "moonshot: quota" matters more than "azure: 404").
-      if (fallbackResult?.ok === false) {
-        failureTrail.push(`${fallbackProvider}: HTTP ${fallbackResult.status} — ${fallbackResult.json?.error?.message || String(fallbackResult.text || "").slice(0, 120) || "error response"}`);
-        if (fallbackResult.json && typeof fallbackResult.json === "object") {
-          fallbackResult.json._lynkr_failure_trail = failureTrail;
-        }
-      }
 
       return {
         ...fallbackResult,

@@ -381,6 +381,15 @@ async function withCockatielRetry(fn, options = {}) {
               const retryAfterDate = new Date(retryAfter);
               delay = retryAfterDate.getTime() - Date.now();
             }
+            // Retry-After is a floor, not the full answer: Azure sends
+            // "Retry-After: 1" on token-window 429s that need far longer to
+            // drain, so honoring it literally re-hammers the window every
+            // second and it never recovers (2026-08-19 incident). Back off
+            // exponentially on top of the header, with jitter.
+            const floorMs = Math.max(0, delay || 0);
+            const backoffMs = 2000 * Math.pow(config.backoffMultiplier, attempt);
+            const cappedMs = Math.min(Math.max(floorMs, backoffMs), 60000);
+            delay = cappedMs + cappedMs * config.jitterFactor * Math.random();
           } else {
             // Exponential backoff with longer delays for rate limiting
             const baseDelay = 2000 * Math.pow(config.backoffMultiplier, attempt);

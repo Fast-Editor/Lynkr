@@ -256,6 +256,7 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
       error: { type: "overloaded_error", message: `Lynkr: upstream stream failed — retry (${err.message})` },
     });
     stats.stopReason = "stream_error";
+    stats.finishReason = finishReason ?? null;
     if (opts.onClose) { try { opts.onClose(stats); } catch { /* non-fatal */ } }
     return;
   }
@@ -263,10 +264,36 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
   // Normal end of stream ([DONE] or upstream EOF).
   yield* startMessage();
   yield* closeTextBlock();
+
+  // An EOF with no finish_reason is a dropped upstream, not a completed
+  // turn. Mapping it to end_turn hands the client a success-shaped stop —
+  // agent loops halt mid-task believing the model chose to stop (live
+  // incident 2026-08-19: opencode stalled between tool calls; the stream
+  // closed as end_turn with null output tokens). Spec-compliant upstreams
+  // always send finish_reason on the last choice chunk, so signal an error
+  // and let the client retry, mirroring the mid-flight failure path above.
+  // Accumulated tool fragments are NOT flushed: without finish_reason their
+  // argument JSON may be truncated mid-string.
+  if (!finishReason) {
+    logger.warn(
+      { droppedToolFragments: toolAcc.size, outputTokens: stats.usage.output_tokens },
+      "[SSETransform] Upstream ended without finish_reason — signaling stream error"
+    );
+    yield _sse("error", {
+      type: "error",
+      error: { type: "overloaded_error", message: "Lynkr: upstream ended without finish_reason — retry" },
+    });
+    stats.stopReason = "stream_error";
+    stats.finishReason = null;
+    if (opts.onClose) { try { opts.onClose(stats); } catch { /* non-fatal */ } }
+    return;
+  }
+
   yield* flushToolBlocks();
 
   const stopReason = _mapFinishReason(finishReason);
   stats.stopReason = stopReason;
+  stats.finishReason = finishReason;
   yield _sse("message_delta", {
     type: "message_delta",
     delta: { stop_reason: stopReason, stop_sequence: null },

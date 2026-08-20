@@ -212,3 +212,27 @@ test('interaction block pin_score is null on non-pinned decisions', () => {
   });
   assert.equal(block.pin_score, null);
 });
+
+// ---------------------------------------------------------------------------
+// Live-stream routing badge (orchestrator buildRoutingBadge)
+// ---------------------------------------------------------------------------
+
+test('badge: buildRoutingBadge formats the actual routing decision', () => {
+  const { buildRoutingBadge } = require('../src/orchestrator');
+  const badge = buildRoutingBadge({ tier: 'SIMPLE', model: 'glm-5.2', provider: 'baidu', score: 14 });
+  assert.equal(badge, '*[Lynkr] SIMPLE → glm-5.2 (baidu) · score 14*\n\n');
+  assert.equal(buildRoutingBadge({ tier: 'MEDIUM', model: 'm', provider: 'p' }), '*[Lynkr] MEDIUM → m (p)*\n\n');
+  assert.equal(buildRoutingBadge(null), null);
+  assert.equal(buildRoutingBadge({}), null, 'no tier → no badge');
+});
+
+test('badge: round-trip — a built badge resubmitted in history is fully stripped', () => {
+  const { buildRoutingBadge } = require('../src/orchestrator');
+  const badge = buildRoutingBadge({ tier: 'REASONING', model: 'gpt-5.6-sol', provider: 'azure-openai', score: 81 });
+  // String-content replay (what OpenAI-surface clients like opencode resubmit)
+  const strOut = stripLynkrBadges([{ role: 'assistant', content: badge + 'Real answer.' }]);
+  assert.equal(strOut[0].content, 'Real answer.');
+  // Block-content replay (Anthropic-format clients)
+  const blockOut = stripLynkrBadges([{ role: 'assistant', content: [{ type: 'text', text: badge + 'Real answer.' }] }]);
+  assert.ok(!JSON.stringify(blockOut).includes('[Lynkr]'), 'badge leaked upstream');
+});

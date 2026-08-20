@@ -8,8 +8,12 @@ pydantic>=2.9.0
 # Upstream Headroom — exposes the one-function compress() API.
 # Pin to v0.20.10 (last-tested upstream tag) to avoid chasing
 # breaking changes from a project shipping multiple releases per day.
-# Bump deliberately, not blindly. The [all] extra ships Kompress-base
-# (HuggingFace ML compressor) which is enabled by default for max
-# token savings — adds ~700MB to the image but pays back ~30% extra
-# compression on text-heavy outputs (logs, RAG chunks, search results).
-headroom-ai[all]==0.20.10
+# Bump deliberately, not blindly.
+#
+# 2026-08-19: dropped the [all] extra. It ships Kompress-base (HuggingFace
+# ML compressor, ~30% extra compression on text-heavy outputs) but on
+# linux/aarch64 it drags in torch + a full CUDA wheel stack — 4GB+ of image
+# for a Mac host with no NVIDIA GPU, and the build filled the disk.
+# server.py degrades gracefully without it. Re-add [all] deliberately if
+# the ML compressor is worth the image weight on your host.
+headroom-ai==0.20.10

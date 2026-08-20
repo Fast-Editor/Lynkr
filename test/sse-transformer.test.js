@@ -192,6 +192,38 @@ describe("SSE Transformer (OpenAI → Anthropic)", () => {
     assert.ok(!events.some((e) => e.type === "message_stop"), "no fake completion after failure");
   });
 
+  it("silent EOF without finish_reason is a stream error, not a fake end_turn", async () => {
+    // 2026-08-19 incident: upstream dropped the connection mid-agent-loop
+    // with no finish_reason; the fabricated end_turn made opencode stop
+    // mid-task believing the model was done.
+    let closed = null;
+    const upstream = mockUpstream([
+      openaiChunk({ content: "partial " }),
+      openaiChunk({ tool_calls: [{ index: 0, id: "c1", function: { name: "Bash", arguments: "{\"cmd" } }] }),
+      // no finish_reason chunk, no [DONE] — the stream just ends
+    ]);
+    const events = parseEvents(await drainToString(openaiToAnthropicSSE(upstream, { onClose: (stats) => { closed = stats; } })));
+
+    assert.ok(events.some((e) => e.type === "error"), "error event emitted");
+    assert.ok(!events.some((e) => e.type === "message_stop"), "no fake completion");
+    assert.ok(!events.some((e) => e.type === "message_delta" && e.delta?.stop_reason === "end_turn"), "no fabricated end_turn");
+    assert.ok(!events.some((e) => e.type === "content_block_start" && e.content_block?.type === "tool_use"), "truncated tool fragments not flushed");
+    assert.strictEqual(closed.stopReason, "stream_error");
+    assert.strictEqual(closed.finishReason, null);
+  });
+
+  it("reports the raw finish_reason to onClose on a clean stop", async () => {
+    let closed = null;
+    const upstream = mockUpstream([
+      openaiChunk({ content: "done" }),
+      openaiChunk({}, { finish: "stop" }),
+      "data: [DONE]\n\n",
+    ]);
+    await drainToString(openaiToAnthropicSSE(upstream, { onClose: (stats) => { closed = stats; } }));
+    assert.strictEqual(closed.stopReason, "end_turn");
+    assert.strictEqual(closed.finishReason, "stop");
+  });
+
   it("maps finish_reason length → max_tokens", async () => {
     const upstream = mockUpstream([
       openaiChunk({ content: "trunc" }),

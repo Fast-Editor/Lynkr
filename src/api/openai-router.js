@@ -426,22 +426,42 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
             res.write("data: [DONE]\n\n");
             res.end();
             return;
+          case "error":
+            // Forward upstream stream errors in OpenAI wire shape
+            // (data: {"error": ...}) and terminate WITHOUT finish_reason or
+            // [DONE]. Writing "stop" here told agent clients the model chose
+            // to end its turn — they stopped mid-task instead of retrying
+            // (2026-08-19 incident: opencode stalled between tool calls).
+            logger.warn({ error: ev.error?.message }, "Forwarding upstream stream error to OpenAI-surface client");
+            res.write(`data: ${JSON.stringify({ error: { message: ev.error?.message || "upstream stream error", type: ev.error?.type || "server_error", code: null } })}\n\n`);
+            res.end();
+            return;
           default:
             break; // ping, thinking deltas, unknown events — skip
         }
         if (res.writableEnded || res.destroyed) return;
       }
     }
-    // Upstream closed without message_stop — still terminate the client stream cleanly.
+    // Upstream closed without message_stop. If a stop_reason already arrived
+    // the turn is materially complete — finish normally. Otherwise this is a
+    // truncated stream: send an error chunk, never a fabricated "stop".
     if (!res.writableEnded) {
-      res.write(chunk({}, finishReason || "stop"));
-      res.write("data: [DONE]\n\n");
+      if (finishReason) {
+        res.write(chunk({}, finishReason));
+        res.write("data: [DONE]\n\n");
+      } else {
+        logger.warn("Upstream stream ended without message_stop — sending error chunk to OpenAI-surface client");
+        res.write(`data: ${JSON.stringify({ error: { message: "Lynkr: upstream stream truncated — retry", type: "server_error", code: null } })}\n\n`);
+      }
       res.end();
     }
   } catch (err) {
     logger.warn({ err: err.message }, "OpenAI-surface stream forward failed mid-flight");
     if (!res.writableEnded) {
-      try { res.write(chunk({}, "stop")); res.write("data: [DONE]\n\n"); res.end(); } catch { /* client gone */ }
+      try {
+        res.write(`data: ${JSON.stringify({ error: { message: `Lynkr: stream forward failed — retry (${err.message})`, type: "server_error", code: null } })}\n\n`);
+        res.end();
+      } catch { /* client gone */ }
     }
   }
 }
@@ -594,13 +614,25 @@ router.post("/chat/completions", async (req, res) => {
         // "task complete" and terminate mid-task. Killing the stream without
         // a finish chunk makes the client retry instead.
         if (!content && (!toolCalls || toolCalls.length === 0)) {
+          const upstreamErr = result.body?.error || {};
           logger.error({
             finishReason: openaiResponse.choices[0]?.finish_reason,
             terminationReason: result?.terminationReason,
             status: result?.status,
-          }, "Empty completion reached serving path — aborting stream to force client retry");
-          res.write(`data: ${JSON.stringify({ error: { message: "Upstream returned an empty completion; retry.", type: "server_error", code: "empty_completion" } })}\n\n`);
-          res.destroy();
+            upstreamError: upstreamErr.message || null,
+          }, "Empty completion reached serving path — sending error chunk to client");
+          // res.destroy() here surfaced as ECONNRESET ("connection reset by
+          // server") in clients, and the error chunk raced the teardown so
+          // it often never arrived. A cleanly-ended SSE error chunk (no
+          // finish chunk, no [DONE]) delivers the real upstream error and
+          // still reads as a failed request that agent clients retry.
+          res.write(`data: ${JSON.stringify({ error: {
+            message: upstreamErr.message || "Upstream returned an empty completion; retry.",
+            type: upstreamErr.type || "server_error",
+            code: upstreamErr.code || "empty_completion",
+            ...(result?.status ? { status: result.status } : {}),
+          } })}\n\n`);
+          res.end();
           return;
         }
 

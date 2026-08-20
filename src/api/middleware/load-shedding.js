@@ -1,4 +1,5 @@
 const os = require("os");
+const v8 = require("v8");
 const logger = require("../../logger");
 const { ServiceUnavailableError } = require("./error-handling");
 
@@ -18,11 +19,31 @@ class LoadShedder {
     this.memoryThreshold = options.memoryThreshold || 0.85; // 85%
     this.heapThreshold = options.heapThreshold || 0.95; // 95% (increased from 90% to prevent false positives from temporary allocation spikes)
     this.activeRequestsThreshold = options.activeRequestsThreshold || 1000;
+    // Absolute free-heap floor. Percent-of-heapTotal is unreliable in both
+    // directions: heapTotal is V8's CURRENTLY allocated heap (grows on
+    // demand toward the real limit), and at the limit "99%" leaves ~40MB on
+    // a 4GB heap — nowhere near enough to parse one multi-MB request body.
+    // 2026-08-19 OOM: a 5MB compact request passed the percent check and
+    // died allocating during JSON.parse. Shed while there is still room to
+    // finish in-flight work.
+    this.headroomMB = options.headroomMB || 512;
+    this.heapLimitMB = v8.getHeapStatistics().heap_size_limit / (1024 * 1024);
+
+    // Watchdog: how long the heap may stay below the headroom floor with
+    // zero active requests before the process self-restarts. Retained
+    // memory GC can't reclaim never recovers on its own — without this the
+    // server sheds 100% of traffic until someone restarts it by hand.
+    this.wedgedRestartMs = options.wedgedRestartMs || 60000;
+    this.selfRestart = options.selfRestart !== false;
+    this.wedgedSince = null;
 
     // State
     this.activeRequests = 0;
     this.totalShed = 0;
-    this.lastCheck = Date.now();
+    // 0, not Date.now(): the first isOverloaded() call must actually
+    // evaluate instead of returning the constructor's cached "false"
+    // for the first checkInterval window.
+    this.lastCheck = 0;
     this.checkInterval = options.checkInterval || 1000; // Check every second
     this.cachedOverloadState = false;
   }
@@ -42,26 +63,32 @@ class LoadShedder {
 
     // Check memory usage
     const memUsage = process.memoryUsage();
-    const heapUsedPercent = memUsage.heapUsed / memUsage.heapTotal;
 
-    // FIX: Only trigger if BOTH percentage is high AND actual usage is significant
-    // This prevents false positives on startup when heapTotal is small but will grow
-    const heapUsedMB = memUsage.heapUsed / (1024 * 1024);
-    const minHeapThresholdMB = 500; // Only shed load if using more than 500MB
-
-    if (heapUsedPercent > this.heapThreshold && heapUsedMB > minHeapThresholdMB) {
+    // Absolute headroom against the true V8 limit — the primary guard.
+    const heapStats = v8.getHeapStatistics();
+    const freeMB = (heapStats.heap_size_limit - heapStats.used_heap_size) / (1024 * 1024);
+    if (freeMB < this.headroomMB) {
       logger.warn(
         {
-          heapUsedPercent: (heapUsedPercent * 100).toFixed(2),
-          heapUsedMB: heapUsedMB.toFixed(2),
-          threshold: (this.heapThreshold * 100).toFixed(2),
-          minThresholdMB: minHeapThresholdMB,
+          freeMB: freeMB.toFixed(0),
+          headroomMB: this.headroomMB,
+          heapLimitMB: this.heapLimitMB.toFixed(0),
+          usedMB: (heapStats.used_heap_size / (1024 * 1024)).toFixed(0),
         },
-        "Load shedding: Heap usage exceeded threshold"
+        "Load shedding: heap headroom below floor"
       );
+      this._trackWedged(now);
       this.cachedOverloadState = true;
       return true;
     }
+    this.wedgedSince = null;
+
+    // NOTE: the old heapUsed/heapTotal percent check is gone. heapTotal is
+    // V8's *currently allocated* heap, which it keeps close to usage, so the
+    // ratio reads ~99% during perfectly normal operation — it shed all
+    // traffic at 755MB used with gigabytes of real headroom remaining
+    // (2026-08-20 false-positive incident). The absolute-headroom check
+    // against heap_size_limit above is the correct form of this guard.
 
     // Check RSS / system memory
     const rssPercent = memUsage.rss / os.totalmem();
@@ -95,6 +122,32 @@ class LoadShedder {
   }
 
   /**
+   * Track how long the heap has been wedged below the headroom floor.
+   * If it persists past wedgedRestartMs with no in-flight requests, the
+   * memory is retained (not transient) and GC cannot recover it — exit so
+   * the supervisor restarts a clean process instead of shedding forever.
+   */
+  _trackWedged(now) {
+    if (!this.selfRestart) return;
+    if (this.wedgedSince === null) {
+      this.wedgedSince = now;
+      return;
+    }
+    if (now - this.wedgedSince >= this.wedgedRestartMs && this.activeRequests === 0) {
+      logger.fatal(
+        {
+          wedgedForMs: now - this.wedgedSince,
+          totalShed: this.totalShed,
+          heapLimitMB: this.heapLimitMB.toFixed(0),
+        },
+        "Load shedding: heap wedged below headroom floor with no active requests — exiting for supervisor restart"
+      );
+      // Give the fatal log a moment to flush, then exit non-zero.
+      setTimeout(() => process.exit(1), 250).unref();
+    }
+  }
+
+  /**
    * Get current metrics
    */
   getMetrics() {
@@ -107,10 +160,15 @@ class LoadShedder {
       heapTotalMB: (memUsage.heapTotal / (1024 * 1024)).toFixed(2),
       rssMB: (memUsage.rss / (1024 * 1024)).toFixed(2),
       rssPercent: ((memUsage.rss / os.totalmem()) * 100).toFixed(2),
+      heapLimitMB: this.heapLimitMB.toFixed(2),
+      freeHeadroomMB: ((v8.getHeapStatistics().heap_size_limit - v8.getHeapStatistics().used_heap_size) / (1024 * 1024)).toFixed(2),
       thresholds: {
         heapThreshold: (this.heapThreshold * 100).toFixed(2),
         memoryThreshold: (this.memoryThreshold * 100).toFixed(2),
         activeRequestsThreshold: this.activeRequestsThreshold,
+        headroomMB: this.headroomMB,
+        wedgedRestartMs: this.wedgedRestartMs,
+        selfRestart: this.selfRestart,
       },
     };
   }
@@ -129,6 +187,11 @@ function getLoadShedder(options) {
         process.env.LOAD_SHEDDING_ACTIVE_REQUESTS_THRESHOLD || "1000",
         10
       ),
+      // Not env-configurable by design: these are crash-prevention floors,
+      // and there is no deployment where turning them off is correct.
+      headroomMB: 512,
+      wedgedRestartMs: 60000,
+      selfRestart: true,
     };
     instance = new LoadShedder({ ...defaultOptions, ...options });
   }

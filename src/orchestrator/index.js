@@ -1356,6 +1356,18 @@ function buildNonJsonResponse(databricksResponse) {
   };
 }
 
+/**
+ * Visible routing badge for live-streamed responses, built from the actual
+ * post-routing decision (tier fallbacks included). Matches the format of
+ * openai-router's lynkrBadge and the Anthropic router's intent badge so
+ * LYNKR_BADGE_PREFIX_RE strips all three identically from replayed history.
+ */
+function buildRoutingBadge(rd) {
+  if (!rd || !rd.tier) return null;
+  const score = typeof rd.score === "number" ? ` · score ${rd.score}` : "";
+  return `*[Lynkr] ${rd.tier} → ${rd.model || "—"} (${rd.provider || "—"})${score}*\n\n`;
+}
+
 function buildStreamingResponse(databricksResponse) {
   return {
     status: databricksResponse.status,
@@ -1755,7 +1767,24 @@ IMPORTANT TOOL USAGE RULES:
   };
   const headroomProvider = process.env.HEADROOM_PROVIDER || 'anthropic';
   const headroomSafeProviders = headroomProviderMap[headroomProvider] || new Set();
-  const headroomCompatible = headroomSafeProviders.has(providerType);
+  // Under tier routing the static providerType is just the MODEL_PROVIDER
+  // default (usually "databricks") — the real provider is chosen per-request
+  // later in invokeModel, AFTER this compression point, so gating on it
+  // silently disabled Headroom for every tier-routed setup. Gate on the
+  // configured tier fleet instead: compress only when every routable tier
+  // provider is format-safe, since any request may land on any tier.
+  let headroomCompatible = headroomSafeProviders.has(providerType);
+  if (!headroomCompatible) {
+    try {
+      const { getModelTierSelector } = require('../routing/model-tiers');
+      const sel = getModelTierSelector();
+      const tierProviders = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING']
+        .map((t) => { try { return sel.selectModel(t)?.provider; } catch { return null; } })
+        .filter(Boolean)
+        .map((p) => (p === 'z-ai' ? 'zai' : p));
+      headroomCompatible = tierProviders.length > 0 && tierProviders.every((p) => headroomSafeProviders.has(p));
+    } catch { /* tier routing not configured — keep the static gate result */ }
+  }
 
   if (isHeadroomEnabled() && headroomCompatible && cleanPayload.messages && cleanPayload.messages.length > 0) {
     try {
@@ -2053,7 +2082,16 @@ IMPORTANT TOOL USAGE RULES:
         const routingDecision = databricksResponse.routingDecision || {};
         const transformed = sseTransform.openaiToAnthropicSSE(databricksResponse.stream, {
           model: requestedModel,
-          badgeText: config.routing?.visibleInteraction ? options?.streamBadgeText || null : null,
+          // Badge precedence: an explicit streamBadgeText (Anthropic router's
+          // pre-computed intent badge) wins; otherwise build one from the
+          // ACTUAL post-routing decision so OpenAI-surface live streams
+          // (opencode et al.) show which model served the response —
+          // previously this path silently dropped the badge entirely.
+          // History pollution is covered: stripLynkrBadges in invokeModel
+          // removes resubmitted badges before anything reaches a provider.
+          badgeText: config.routing?.visibleInteraction
+            ? (options?.streamBadgeText || buildRoutingBadge(routingDecision))
+            : null,
           onClose: (stats) => {
             try {
               const telemetry = require("../routing/telemetry");
@@ -2080,6 +2118,7 @@ IMPORTANT TOOL USAGE RULES:
               logger.info({
                 provider: routingDecision.provider || _streamProvider,
                 stopReason: stats.stopReason,
+                finishReason: stats.finishReason ?? null,
                 toolCalls: stats.toolCalls.map((t) => t.name),
                 outputTokens: stats.usage.output_tokens,
               }, "[SSETransform] Stream closed");
@@ -3191,4 +3230,6 @@ module.exports = {
   toAnthropicResponse,
   // Exported for unit testing of loop trimming (task-preservation contract).
   trimLoopMessages,
+  // Exported for unit testing of the live-stream routing badge.
+  buildRoutingBadge,
 };
