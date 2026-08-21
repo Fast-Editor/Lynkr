@@ -93,6 +93,41 @@ test('no user messages / empty text → null (caller falls back to UUID)', () =>
   assert.equal(fingerprintSessionId(req({ messages: [{ role: 'user', content: '   ' }] })), null);
 });
 
+// Issue #95 — the OpenAI Responses API (/v1/responses) sends `input`
+// (string or message-item array) instead of `messages`. The fingerprint
+// must treat both shapes as the same conversation identity so static-key
+// clients on that route don't collapse into one session or fork per turn.
+test('Responses API: string input fingerprints like an equivalent messages body', () => {
+  const viaMessages = req({ messages: [{ role: 'user', content: CONVO_A_FIRST }] });
+  const viaInput = req({ body: { input: CONVO_A_FIRST } });
+  assert.equal(fingerprintSessionId(viaInput), fingerprintSessionId(viaMessages));
+});
+
+test('Responses API: input item array with input_text blocks → stable across turns', () => {
+  const turn1 = req({
+    body: {
+      input: [{ role: 'user', content: [{ type: 'input_text', text: CONVO_A_FIRST }] }],
+    },
+  });
+  const turn2 = req({
+    body: {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: CONVO_A_FIRST }] },
+        { role: 'assistant', content: 'On it.' },
+        { role: 'user', content: [{ type: 'input_text', text: 'continue' }] },
+      ],
+    },
+  });
+  const fp1 = fingerprintSessionId(turn1);
+  assert.ok(fp1?.startsWith('fp-'));
+  assert.equal(fp1, fingerprintSessionId(turn2));
+});
+
+test('Responses API: empty/absent input → null (caller falls back to UUID)', () => {
+  assert.equal(fingerprintSessionId(req({ body: { input: '' } })), null);
+  assert.equal(fingerprintSessionId(req({ body: { input: [] } })), null);
+});
+
 test('LYNKR_SESSION_FINGERPRINT=false disables fingerprinting', () => {
   process.env.LYNKR_SESSION_FINGERPRINT = 'false';
   try {

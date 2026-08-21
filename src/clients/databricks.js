@@ -791,6 +791,13 @@ async function invokeOpenRouter(body, incomingHeaders = {}) {
     stream: body.stream ?? false
   };
 
+  // Issue #95: forward the Lynkr session id so OpenRouter's meta-routers
+  // (auto/pareto) can apply session stickiness — without it every call in a
+  // pinned session re-ranks fresh and one agentic task can span 6+ models.
+  if (body._sessionId) {
+    openRouterBody.session_id = body._sessionId;
+  }
+
   // Add tools - inject standard tools if client didn't send any (passthrough mode)
   let toolsToSend = body.tools;
   let toolsInjected = false;

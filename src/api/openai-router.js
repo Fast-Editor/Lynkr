@@ -468,7 +468,11 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
 
 router.post("/chat/completions", async (req, res) => {
   const startTime = Date.now();
-  const sessionId = req.headers["x-session-id"] || req.headers["authorization"]?.split(" ")[1] || "openai-session";
+  // Issue #95: use sessionMiddleware's id (header → body id → content
+  // fingerprint → UUID). Falling back to the raw Authorization token here
+  // collapsed every conversation from a static-key client into ONE session
+  // (defeating WS1 pinning) and persisted the bearer token as a store key.
+  const sessionId = req.sessionId;
 
   try {
     if (!req.body || typeof req.body !== 'object') {
@@ -1588,7 +1592,10 @@ router.post("/embeddings", async (req, res) => {
  */
 router.post("/responses", async (req, res) => {
   const startTime = Date.now();
-  const sessionId = req.headers["x-session-id"] || req.headers["authorization"]?.split(" ")[1] || "responses-session";
+  // Issue #95: same as /chat/completions — trust sessionMiddleware, never
+  // the Authorization token. fingerprintSessionId understands the Responses
+  // API's `input` field, so fingerprinting works on this route too.
+  const sessionId = req.sessionId;
 
   try {
     const { convertResponsesToChat, convertChatToResponses } = require("../clients/responses-format");

@@ -115,27 +115,48 @@ async function compressMessages(messages, tools = [], options = {}) {
   }
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), headroomConfig.timeoutMs);
-
-    const response = await fetch(`${headroomConfig.endpoint}/compress`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages,
-        tools,
-        model: options.model || "claude-3-5-sonnet-20241022",
-        model_limit: options.modelLimit || 200000,
-        mode: options.mode || headroomConfig.mode,
-        token_budget: options.tokenBudget,
-        query_context: options.queryContext,
-        preserve_recent_turns: options.preserveRecentTurns,
-        target_ratio: options.targetRatio,
-      }),
-      signal: controller.signal,
+    const requestBody = JSON.stringify({
+      messages,
+      tools,
+      model: options.model || "claude-3-5-sonnet-20241022",
+      model_limit: options.modelLimit || 200000,
+      mode: options.mode || headroomConfig.mode,
+      token_budget: options.tokenBudget,
+      query_context: options.queryContext,
+      preserve_recent_turns: options.preserveRecentTurns,
+      target_ratio: options.targetRatio,
     });
 
-    clearTimeout(timeout);
+    // The sidecar (uvicorn) closes idle keep-alive sockets after ~5s, and
+    // undici can reuse a pooled socket in that exact window → ECONNRESET
+    // surfaces as "fetch failed". One retry gets a fresh connection, so the
+    // race never costs us the compression. Aborts (real timeouts) still
+    // propagate immediately.
+    let response;
+    for (let attempt = 0; ; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), headroomConfig.timeoutMs);
+      try {
+        response = await fetch(`${headroomConfig.endpoint}/compress`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: requestBody,
+          signal: controller.signal,
+        });
+        break;
+      } catch (fetchErr) {
+        if (attempt === 0 && fetchErr.name !== "AbortError") {
+          logger.debug(
+            { error: fetchErr.message, cause: fetchErr.cause?.code || fetchErr.cause?.message },
+            "Headroom fetch failed, retrying on a fresh connection"
+          );
+          continue;
+        }
+        throw fetchErr;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -179,7 +200,10 @@ async function compressMessages(messages, tools = [], options = {}) {
     if (err.name === "AbortError") {
       logger.warn({ timeoutMs: headroomConfig.timeoutMs }, "Headroom compression timed out");
     } else {
-      logger.warn({ error: err.message }, "Headroom compression failed, using original");
+      logger.warn(
+        { error: err.message, cause: err.cause?.code || err.cause?.message },
+        "Headroom compression failed, using original"
+      );
     }
 
     return {

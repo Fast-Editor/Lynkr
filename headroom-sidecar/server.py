@@ -430,4 +430,13 @@ async def ccr_retrieve(request: CCRRetrieveRequest):
 if __name__ == "__main__":
     logger.info("Starting Headroom sidecar on %s:%d", config.host, config.port)
     logger.info("Headroom available: %s (version: %s)", HEADROOM_AVAILABLE, HEADROOM_VERSION)
-    uvicorn.run(app, host=config.host, port=config.port, log_level=config.log_level)
+    # timeout_keep_alive must outlive the Node client's connection pool idle
+    # timeout (undici ~4s); uvicorn's 5s default races socket reuse on the
+    # Lynkr side and surfaces as intermittent "fetch failed" fallbacks.
+    uvicorn.run(
+        app,
+        host=config.host,
+        port=config.port,
+        log_level=config.log_level,
+        timeout_keep_alive=75,
+    )
