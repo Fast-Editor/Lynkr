@@ -15,7 +15,7 @@ const config = require('../config');
 
 // Synchronous version for benchmarking/tests
 // (when tiers are disabled, routing is purely static)
-function determineProviderSync(payload) {
+function determineProviderSync(_payload) {
   const primaryProvider = config.modelProvider?.type || 'databricks';
   const defaultModel = config.modelProvider?.defaultModel || 'databricks-claude-sonnet-4-5';
 

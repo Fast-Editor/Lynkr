@@ -116,7 +116,7 @@ function convertAnthropicToBedrockFormat(body, modelFamily) {
         },
       };
 
-    case "llama":
+    case "llama": {
       // Meta Llama format
       const llamaPrompt = messagesToPrompt(body.messages);
       return {
@@ -125,6 +125,7 @@ function convertAnthropicToBedrockFormat(body, modelFamily) {
         temperature: body.temperature || 0.7,
         top_p: body.top_p || 0.9,
       };
+    }
 
     case "jurassic":
       // AI21 Jurassic format

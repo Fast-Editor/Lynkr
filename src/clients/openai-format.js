@@ -113,21 +113,48 @@ function convertOpenAIToAnthropic(openaiRequest) {
         });
       }
     } else if (msg.role === "tool") {
-      // OpenAI tool response → Anthropic tool_result
-      const previousMsg = anthropicMessages[anthropicMessages.length - 1];
+      // OpenAI tool response → Anthropic tool_result. Two Anthropic rules
+      // apply (violating either 400s the request):
+      //   1. Every tool_use_id must match a tool_use block in the preceding
+      //      assistant message — orphans are rejected as "unexpected
+      //      tool_use_id".
+      //   2. All tool_results for one assistant turn must arrive in a SINGLE
+      //      user message — OpenAI sends parallel tool results as consecutive
+      //      role:"tool" messages, which must merge, not split.
+      const lastAssistant = anthropicMessages.findLast?.(m => m.role === "assistant")
+        ?? [...anthropicMessages].reverse().find(m => m.role === "assistant");
+      const hasMatchingToolUse = Array.isArray(lastAssistant?.content) &&
+        lastAssistant.content.some(b => b?.type === "tool_use" && b.id === msg.tool_call_id);
 
-      // Tool results must follow assistant message with tool_use
-      // Add as separate user message with tool_result
-      anthropicMessages.push({
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: msg.tool_call_id,
-            content: msg.content
-          }
-        ]
-      });
+      if (!hasMatchingToolUse) {
+        // Orphaned result (history truncated or ids rewritten by the client):
+        // degrade to plain text so the request survives instead of 400ing.
+        logger.warn({ toolCallId: msg.tool_call_id }, "Orphaned tool result — no matching tool_use in prior assistant message; converting to text");
+        const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+        anthropicMessages.push({
+          role: "user",
+          content: [{ type: "text", text: `[Tool result ${msg.tool_call_id}]: ${text}` }]
+        });
+        continue;
+      }
+
+      const resultBlock = {
+        type: "tool_result",
+        tool_use_id: msg.tool_call_id,
+        content: msg.content
+      };
+
+      const prev = anthropicMessages[anthropicMessages.length - 1];
+      const prevIsToolResultCarrier = prev?.role === "user" &&
+        Array.isArray(prev.content) &&
+        prev.content.length > 0 &&
+        prev.content.every(b => b?.type === "tool_result");
+
+      if (prevIsToolResultCarrier) {
+        prev.content.push(resultBlock);
+      } else {
+        anthropicMessages.push({ role: "user", content: [resultBlock] });
+      }
     }
   }
 

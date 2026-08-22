@@ -21,7 +21,6 @@ const router = express.Router();
  */
 function getConfiguredProviders() {
   const providers = [];
-  const timestamp = Math.floor(Date.now() / 1000);
 
   // Check Databricks
   if (config.databricks?.url && config.databricks?.apiKey) {

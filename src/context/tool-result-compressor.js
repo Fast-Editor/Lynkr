@@ -696,7 +696,7 @@ function compressDirectoryListing(text, opts = {}) {
   // skips this check — real listings can contain names (spaces, unicode)
   // the shape regex would reject.
   if (!opts.trusted) {
-    const pathLines = lines.filter(l => /^[.\w\/-]+\.\w+$/.test(l.trim()) || /^[.\w\/-]+\/$/.test(l.trim()) || /^[-drwx]{10}/.test(l.trim()));
+    const pathLines = lines.filter(l => /^[.\w/-]+\.\w+$/.test(l.trim()) || /^[.\w/-]+\/$/.test(l.trim()) || /^[-drwx]{10}/.test(l.trim()));
     if (pathLines.length < lines.length * 0.6) return null;
   }
 
@@ -823,7 +823,7 @@ function compressLintOutput(text, opts = {}) {
   for (const line of clean.split("\n")) {
     // ESLint stylish prints each file as a standalone path line above its
     // issue block — track it so issues group per file.
-    if (/^\S+[\/\\]\S+\.\w+$/.test(line.trim()) && !line.includes(":")) {
+    if (/^\S+[/\\]\S+\.\w+$/.test(line.trim()) && !line.includes(":")) {
       currentFile = line.trim();
       continue;
     }
@@ -935,8 +935,6 @@ function compressLargeFile(text) {
 
   // Extract structural skeleton
   const skeleton = [];
-  let inBlock = false;
-  let braceDepth = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -960,7 +958,7 @@ function compressLargeFile(text) {
     }
 
     // Keep decorators/attributes
-    if (/^[@#\[]/.test(trimmed)) {
+    if (/^[@#[]/.test(trimmed)) {
       skeleton.push(line);
       continue;
     }

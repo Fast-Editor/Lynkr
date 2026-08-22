@@ -90,32 +90,22 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@azure/openai": "^2.0.0",
-    "@babel/parser": "^7.29.0",
-    "@babel/traverse": "^7.29.0",
     "@blackwell-systems/gcf": "2.4.0",
-    "@tencentdb-agent-memory/memory-tencentdb": "^1.0.1",
     "@toon-format/toon": "^2.1.0",
     "cockatiel": "^3.2.1",
-    "compression": "^1.7.4",
     "diff": "^5.2.0",
     "dotenv": "^16.4.5",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
-    "fast-glob": "^3.3.2",
-    "graphify": "^1.0.0",
     "hnswlib-node": "^3.0.0",
     "js-tiktoken": "^1.0.20",
-    "js-yaml": "^4.1.1",
-    "openai": "^6.14.0",
     "pino": "^8.17.2",
     "pino-http": "^8.6.0",
-    "pino-roll": "^4.0.0",
-    "undici": "^6.22.0"
+    "pino-roll": "^4.0.0"
   },
   "optionalDependencies": {
     "better-sqlite3": "^12.11.1",
-    "dockerode": "^4.0.2",
+    "dockerode": "^5.0.1",
     "tree-sitter": "^0.21.1",
     "tree-sitter-javascript": "^0.21.0",
     "tree-sitter-python": "^0.21.0",
@@ -127,7 +117,5 @@
     "nodemon": "^3.1.0",
     "pino-pretty": "^10.2.0"
   },
-  "allowScripts": {
-    "@tencentdb-agent-memory/memory-tencentdb@1.0.1": true
-  }
+  "allowScripts": {}
 }

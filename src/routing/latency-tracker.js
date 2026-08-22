@@ -95,7 +95,7 @@ class LatencyTracker {
     }
     // Aggregate across all models for this provider
     const provEntries = [];
-    for (const [k, entry] of this._entries) {
+    for (const [_k, entry] of this._entries) {
       if (entry.provider === provider) provEntries.push(entry);
     }
     if (provEntries.length === 0) return null;

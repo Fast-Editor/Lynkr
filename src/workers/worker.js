@@ -65,7 +65,7 @@ const handlers = {
     let tokensReduced = 0;
     const seenToolResults = new Map(); // For deduplication
 
-    const transformed = messages.map((msg, idx) => {
+    const transformed = messages.map((msg) => {
       if (!msg) return msg;
 
       // Clone to avoid mutating original

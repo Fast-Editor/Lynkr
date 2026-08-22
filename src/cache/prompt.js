@@ -19,13 +19,6 @@ const fs = require("fs");
 const config = require("../config");
 const logger = require("../logger");
 
-function cloneValue(value) {
-  if (typeof structuredClone === "function") {
-    return structuredClone(value);
-  }
-  return JSON.parse(JSON.stringify(value));
-}
-
 function normaliseObject(value) {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) {

@@ -206,7 +206,6 @@ function classify(embedding, centroids) {
  * Lexical fallback path stays clamped ≤75 (see _lexicalCleanScore).
  */
 function blendScore(sims) {
-  const classes = Object.keys(CLASS_VALUES);
   // Frontier similarity floor: a weak topical match can't jump tiers.
   const frontierSim = sims.frontier ?? -1;
   const activeSims = { ...sims };

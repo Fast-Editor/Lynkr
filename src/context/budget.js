@@ -223,7 +223,7 @@ function finalizeBudgetEnforcement(original, optimized, strategy, initialCheck, 
 /**
  * Compress system prompt aggressively for budget enforcement
  */
-function compressSystemPromptAggressively(systemPromptContent, payload) {
+function compressSystemPromptAggressively(systemPromptContent, _payload) {
   let text = typeof systemPromptContent === 'string'
     ? systemPromptContent
     : systemPrompt.flattenBlocks(systemPromptContent);

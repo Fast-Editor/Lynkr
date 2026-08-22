@@ -100,14 +100,45 @@ describe("Cursor IDE Integration (OpenAI API Compatibility)", () => {
     });
 
     it("should convert OpenAI tool results", () => {
+      // Matched tool results (tool_use in the prior assistant message) stay
+      // tool_result blocks, and parallel results merge into ONE user message
+      // (Anthropic rejects tool_results split across messages).
       const openaiRequest = {
         model: "gpt-4",
         messages: [
+          { role: "user", content: "read two files" },
           {
-            role: "tool",
-            tool_call_id: "call_123",
-            content: "File contents here"
-          }
+            role: "assistant",
+            tool_calls: [
+              { id: "call_123", function: { name: "Read", arguments: "{}" } },
+              { id: "call_456", function: { name: "Read", arguments: "{}" } }
+            ]
+          },
+          { role: "tool", tool_call_id: "call_123", content: "File contents here" },
+          { role: "tool", tool_call_id: "call_456", content: "Second file" }
+        ]
+      };
+
+      const anthropicRequest = convertOpenAIToAnthropic(openaiRequest);
+
+      assert.strictEqual(anthropicRequest.messages.length, 3);
+      const resultMsg = anthropicRequest.messages[2];
+      assert.strictEqual(resultMsg.role, "user");
+      assert.strictEqual(resultMsg.content.length, 2);
+      assert.strictEqual(resultMsg.content[0].type, "tool_result");
+      assert.strictEqual(resultMsg.content[0].tool_use_id, "call_123");
+      assert.strictEqual(resultMsg.content[0].content, "File contents here");
+      assert.strictEqual(resultMsg.content[1].tool_use_id, "call_456");
+    });
+
+    it("should degrade orphaned tool results to text instead of 400ing", () => {
+      // A tool result with no matching tool_use (history truncated by the
+      // client) would be rejected by Anthropic as "unexpected tool_use_id" —
+      // it must degrade to plain text, not pass through as tool_result.
+      const openaiRequest = {
+        model: "gpt-4",
+        messages: [
+          { role: "tool", tool_call_id: "call_123", content: "File contents here" }
         ]
       };
 
@@ -115,9 +146,9 @@ describe("Cursor IDE Integration (OpenAI API Compatibility)", () => {
 
       assert.strictEqual(anthropicRequest.messages.length, 1);
       assert.strictEqual(anthropicRequest.messages[0].role, "user");
-      assert.strictEqual(anthropicRequest.messages[0].content[0].type, "tool_result");
-      assert.strictEqual(anthropicRequest.messages[0].content[0].tool_use_id, "call_123");
-      assert.strictEqual(anthropicRequest.messages[0].content[0].content, "File contents here");
+      assert.strictEqual(anthropicRequest.messages[0].content[0].type, "text");
+      assert.ok(anthropicRequest.messages[0].content[0].text.includes("File contents here"));
+      assert.ok(anthropicRequest.messages[0].content[0].text.includes("call_123"));
     });
 
     it("should handle tool_choice conversion", () => {

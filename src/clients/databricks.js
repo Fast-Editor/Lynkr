@@ -165,7 +165,7 @@ async function performJsonRequest(url, { headers = {}, body, retryableStatusesOv
   });
 }
 
-async function invokeDatabricks(body, incomingHeaders = {}) {
+async function invokeDatabricks(body, _incomingHeaders = {}) {
   if (!config.databricks?.url) {
     throw new Error("Databricks configuration is missing required URL.");
   }
@@ -489,7 +489,7 @@ async function _throwIfOllamaError(response, modelName) {
   return response;
 }
 
-async function invokeOllama(body, incomingHeaders = {}) {
+async function invokeOllama(body, _incomingHeaders = {}) {
   if (!config.ollama?.endpoint) {
     throw new Error("Ollama endpoint is not configured.");
   }
@@ -754,7 +754,7 @@ async function invokeOllama(body, incomingHeaders = {}) {
   );
 }
 
-async function invokeOpenRouter(body, incomingHeaders = {}) {
+async function invokeOpenRouter(body, _incomingHeaders = {}) {
   if (!config.openrouter?.endpoint || !config.openrouter?.apiKey) {
     throw new Error("OpenRouter endpoint or API key is not configured.");
   }
@@ -827,7 +827,7 @@ async function invokeOpenRouter(body, incomingHeaders = {}) {
 // Eden AI is an OpenAI-compatible gateway (provider/model naming, EU/GDPR).
 // It speaks the same wire format as OpenRouter, so this mirrors invokeOpenRouter
 // and reuses the shared Anthropic<->OpenAI converters.
-async function invokeEdenAI(body, incomingHeaders = {}) {
+async function invokeEdenAI(body, _incomingHeaders = {}) {
   if (!config.edenai?.endpoint || !config.edenai?.apiKey) {
     throw new Error("Eden AI endpoint or API key is not configured.");
   }
@@ -912,7 +912,7 @@ function derivePromptCacheKey(body) {
   return "conv-" + crypto.createHash("sha1").update(text.slice(0, 4000)).digest("hex").slice(0, 32);
 }
 
-async function invokeAzureOpenAI(body, incomingHeaders = {}) {
+async function invokeAzureOpenAI(body, _incomingHeaders = {}) {
   if (!config.azureOpenAI?.endpoint || !config.azureOpenAI?.apiKey) {
     throw new Error("Azure OpenAI endpoint or API key is not configured.");
   }
@@ -1357,7 +1357,7 @@ async function invokeAzureOpenAI(body, incomingHeaders = {}) {
 }
 
 
-async function invokeOpenAI(body, incomingHeaders = {}) {
+async function invokeOpenAI(body, _incomingHeaders = {}) {
   if (!config.openai?.apiKey) {
     throw new Error("OpenAI API key is not configured.");
   }
@@ -1495,7 +1495,7 @@ async function invokeAtlas(body) {
   }, "Atlas Cloud");
 }
 
-async function invokeLlamaCpp(body, incomingHeaders = {}) {
+async function invokeLlamaCpp(body, _incomingHeaders = {}) {
   if (!config.llamacpp?.endpoint) {
     throw new Error("llama.cpp endpoint is not configured.");
   }
@@ -1641,7 +1641,7 @@ async function invokeLlamaCpp(body, incomingHeaders = {}) {
   return result;
 }
 
-async function invokeLMStudio(body, incomingHeaders = {}) {
+async function invokeLMStudio(body, _incomingHeaders = {}) {
   if (!config.lmstudio?.endpoint) {
     throw new Error("LM Studio endpoint is not configured.");
   }
@@ -1768,7 +1768,7 @@ function normalizeBodyForConverse(body) {
   return normalized;
 }
 
-async function invokeBedrock(body, incomingHeaders = {}) {
+async function invokeBedrock(body, _incomingHeaders = {}) {
   if (!config.bedrock?.apiKey) {
     throw new Error(
       "AWS Bedrock requires AWS_BEDROCK_API_KEY (Bearer token). " +
@@ -1781,11 +1781,9 @@ async function invokeBedrock(body, incomingHeaders = {}) {
 
   // Inject standard tools if needed
   let toolsToSend = body.tools;
-  let toolsInjected = false;
 
   if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
     toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
     logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
       injectedToolNames: STANDARD_TOOL_NAMES,
@@ -1954,7 +1952,7 @@ async function invokeBedrock(body, incomingHeaders = {}) {
  * Z.AI offers GLM models through an Anthropic-compatible API at ~1/7 the cost.
  * Minimal transformation needed - mostly passthrough with model mapping.
  */
-async function invokeZai(body, incomingHeaders = {}) {
+async function invokeZai(body, _incomingHeaders = {}) {
   if (!config.zai?.apiKey) {
     throw new Error("Z.AI API key is not configured. Set ZAI_API_KEY in your .env file.");
   }
@@ -2159,7 +2157,7 @@ async function invokeZai(body, incomingHeaders = {}) {
  * Moonshot offers Kimi models through an OpenAI-compatible chat completions API.
  * Uses native system role support (unlike Z.AI which merges into user message).
  */
-async function invokeMoonshot(body, incomingHeaders = {}) {
+async function invokeMoonshot(body, _incomingHeaders = {}) {
   if (!config.moonshot?.apiKey) {
     throw new Error("Moonshot API key is not configured. Set MOONSHOT_API_KEY in your .env file.");
   }
@@ -2321,7 +2319,7 @@ async function invokeMoonshot(body, incomingHeaders = {}) {
  * modelMap and pinned-params logic (see Moonshot's kimi-k* precedent) once
  * real traffic surfaces 400s.
  */
-async function invokeBaidu(body, incomingHeaders = {}) {
+async function invokeBaidu(body, _incomingHeaders = {}) {
   if (!config.baidu?.apiKey) {
     throw new Error("Baidu API key is not configured. Set BAIDU_API_KEY in your .env file.");
   }
@@ -2558,7 +2556,7 @@ function sanitizeSchemaForGemini(schema) {
  * (generativelanguage.googleapis.com), not Google Cloud Vertex AI.
  * Converts Anthropic format to Gemini format and back.
  */
-async function invokeVertex(body, incomingHeaders = {}) {
+async function invokeVertex(body, _incomingHeaders = {}) {
   const apiKey = config.vertex?.apiKey;
 
   if (!apiKey) {
@@ -2803,7 +2801,7 @@ function convertGeminiToAnthropic(response, requestedModel) {
   };
 }
 
-async function invokeCodex(body, incomingHeaders = {}) {
+async function invokeCodex(body, _incomingHeaders = {}) {
   const { getCodexProcess } = require("./codex-process");
   const { convertAnthropicToCodexPrompt, convertCodexResponseToAnthropic } = require("./codex-utils");
 
@@ -2927,7 +2925,6 @@ const LYNKR_BADGE_PREFIX_RE = /^\*\[Lynkr\][^*\n]*\*\s*/;
 function stripLynkrBadges(messages) {
   if (!Array.isArray(messages)) return messages;
   let mutated = false;
-  let badgeCount = 0;
   const out = messages.map((msg) => {
     if (msg?.role !== 'assistant') return msg;
 
@@ -2938,7 +2935,6 @@ function stripLynkrBadges(messages) {
       if (!LYNKR_BADGE_PREFIX_RE.test(msg.content)) return msg;
       const stripped = msg.content.replace(LYNKR_BADGE_PREFIX_RE, '');
       mutated = true;
-      badgeCount++;
       // Badge-only content must not become an empty string — Anthropic
       // rejects empty assistant content (this is the interrupted-response
       // continuation case, where the partial text WAS just the badge).
@@ -2957,7 +2953,6 @@ function stripLynkrBadges(messages) {
       for (const b of msg.content) {
         if (b?.type === 'text' && typeof b.text === 'string' && LYNKR_BADGE_PREFIX_RE.test(b.text)) {
           changed = true;
-          badgeCount++;
           const strippedText = b.text.replace(LYNKR_BADGE_PREFIX_RE, '');
           if (strippedText.trim()) rebuilt.push({ ...b, text: strippedText });
           // badge-only block → drop

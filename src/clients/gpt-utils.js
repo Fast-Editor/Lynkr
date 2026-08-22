@@ -25,7 +25,7 @@ function stringSimilarity(s1, s2) {
   // Tokenize by whitespace and common delimiters
   const tokenize = (s) => new Set(
     s.toLowerCase()
-      .split(/[\s\-_\/\.\,\:\;]+/)
+      .split(/[\s\-_/.,:;]+/)
       .filter(t => t.length > 0)
   );
 

@@ -85,7 +85,7 @@ class KnnRouter {
       // (Earlier Lynkr code passed MAX_ELEMENTS here — wrong type, threw on load.)
       this.index.readIndexSync(INDEX_FILE, false);
       // resize if needed so we can keep adding up to MAX_ELEMENTS
-      try { this.index.resizeIndex(MAX_ELEMENTS); } catch (_) {}
+      try { this.index.resizeIndex(MAX_ELEMENTS); } catch (err) { logger.debug({ err: err.message }, '[KnnRouter] resizeIndex failed — index may not grow past loaded size'); }
       this.ready = true;
       logger.info({ size: this.size, dim: this.dim }, '[KnnRouter] Index loaded');
       return true;
@@ -197,7 +197,7 @@ class KnnRouter {
 
     let best = null;
     let bestScore = -Infinity;
-    for (const [model, agg] of byModel) {
+    for (const [, agg] of byModel) {
       const avgQ = agg.quality / agg.weight;
       const avgC = agg.cost / agg.weight;
       // Score = quality / log(cost+1) — reward quality, penalise cost gently

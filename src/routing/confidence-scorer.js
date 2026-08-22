@@ -82,8 +82,8 @@ function scoreCode(response) {
   const fenced = (text.match(/```[\s\S]*?```/g) || []).join('\n');
   if (!fenced) return 0.6; // Code-gen request without code is suspicious
   // Very basic balance check
-  const opens = (fenced.match(/[\{\[\(]/g) || []).length;
-  const closes = (fenced.match(/[\}\]\)]/g) || []).length;
+  const opens = (fenced.match(/[{[(]/g) || []).length;
+  const closes = (fenced.match(/[}\])]/g) || []).length;
   if (Math.abs(opens - closes) > 2) return 0.5;
   return 0.9;
 }

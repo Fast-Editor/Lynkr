@@ -279,7 +279,7 @@ class CodexProcess {
    * Reject all pending requests
    */
   _rejectAllPending(error) {
-    for (const [id, pending] of this.pendingRequests) {
+    for (const [_id, pending] of this.pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(error);
     }

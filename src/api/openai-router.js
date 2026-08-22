@@ -1043,7 +1043,6 @@ function getConfiguredProviders() {
 router.get("/models", (req, res) => {
   try {
     const providers = getConfiguredProviders();
-    const primaryProvider = config.modelProvider?.type || "databricks";
     const timestamp = Math.floor(Date.now() / 1000);
     const models = [];
     const seenModelIds = new Set();
@@ -1480,7 +1479,7 @@ router.post("/embeddings", async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const { input, model, encoding_format } = req.body;
+    const { input, model, encoding_format: encodingFormat } = req.body;
 
     if (!input) {
       return res.status(400).json({
@@ -1488,6 +1487,16 @@ router.post("/embeddings", async (req, res) => {
           message: "Missing required parameter: input",
           type: "invalid_request_error",
           code: "missing_parameter"
+        }
+      });
+    }
+
+    if (encodingFormat && encodingFormat !== "float" && encodingFormat !== "base64") {
+      return res.status(400).json({
+        error: {
+          message: `Invalid encoding_format: ${encodingFormat}. Must be "float" or "base64".`,
+          type: "invalid_request_error",
+          code: "invalid_parameter"
         }
       });
     }
@@ -1564,6 +1573,20 @@ router.post("/embeddings", async (req, res) => {
       embeddingCount: embeddingResponse.data?.length || 0,
       totalTokens: embeddingResponse.usage?.total_tokens || 0
     }, "=== EMBEDDINGS RESPONSE ===");
+
+    // Providers return float arrays; honor encoding_format=base64 (OpenAI
+    // spec: base64 of the little-endian float32 buffer) instead of silently
+    // returning floats for every request.
+    if (encodingFormat === "base64" && Array.isArray(embeddingResponse.data)) {
+      for (const item of embeddingResponse.data) {
+        if (Array.isArray(item.embedding)) {
+          item.embedding = Buffer.from(new Float32Array(item.embedding).buffer).toString("base64");
+        }
+      }
+      if ("encoding_format" in embeddingResponse) {
+        embeddingResponse.encoding_format = "base64";
+      }
+    }
 
     res.json(embeddingResponse);
 
@@ -1775,7 +1798,7 @@ router.post("/responses", async (req, res) => {
 
         // SSE comment keepalive (spec-compliant, ignored by all clients)
         const keepalive = setInterval(() => {
-          try { res.write(`: keepalive\n\n`); } catch {}
+          try { res.write(`: keepalive\n\n`); } catch { /* client gone — best-effort keepalive */ }
         }, 2000);
 
         let result;
@@ -1882,21 +1905,25 @@ router.post("/responses", async (req, res) => {
                   if (taskArgs.prompt && taskArgs.prompt.toLowerCase().includes("read")) {
                     exploreCmd = "cat README.md 2>/dev/null && cat package.json 2>/dev/null";
                   }
-                } catch {}
+                } catch (err) {
+                  logger.debug({ err: err?.message }, "Failed to parse task tool arguments — using default explore command");
+                }
               }
               converted.push({ ...tc, function: { name: "shell", arguments: JSON.stringify({ command: ["bash", "-c", exploreCmd] }) } });
               continue;
             }
 
             let args = {};
-            try { args = JSON.parse(tc.function?.arguments || "{}"); } catch {}
+            try { args = JSON.parse(tc.function?.arguments || "{}"); } catch (err) {
+              logger.debug({ err: err?.message }, "Failed to parse tool call arguments — treating as empty object");
+            }
 
             // Already a shell command — normalise to array format
             if (ln === "shell" || ln === "bash") {
               let cmd = args.command || "";
               // Handle string-encoded arrays: '["bash","-c","ls"]'
               if (typeof cmd === "string" && cmd.trim().startsWith("[")) {
-                try { cmd = JSON.parse(cmd); } catch {}
+                try { cmd = JSON.parse(cmd); } catch { /* not a JSON array — keep as plain string */ }
               }
               // Extract the actual command from ["bash", "-c", "actual command"]
               if (Array.isArray(cmd) && cmd.length >= 3 && cmd[0] === "bash" && cmd[1] === "-c") {
@@ -2107,7 +2134,7 @@ router.post("/responses", async (req, res) => {
             sequence_number: 1
           })}\n\n`
         ].join("");
-        try { res.end(errorPayload); } catch { try { res.end(); } catch {} }
+        try { res.end(errorPayload); } catch { try { res.end(); } catch { /* res already ended — best-effort */ } }
       }
 
     } else {

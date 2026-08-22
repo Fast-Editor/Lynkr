@@ -1,5 +1,3 @@
-const config = require("../config");
-
 const NATIVE_THINKING_PROVIDERS = new Set(["azure-anthropic", "databricks"]);
 
 const NATIVE_THINKING_BEDROCK_MODELS = [

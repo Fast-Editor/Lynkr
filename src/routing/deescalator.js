@@ -57,7 +57,7 @@ function _lowerTier(tier) {
  * @param {Function} [args.deps.now] - Override Date.now() for tests.
  * @returns {string|null} The lower tier, or null if demotion is not warranted.
  */
-function suggestDemotion({ tier, requestType, analysis, deps = {} } = {}) {
+function suggestDemotion({ tier, requestType, analysis: _analysis, deps = {} } = {}) {
   if (!tier || !requestType) return null;
   const lower = _lowerTier(tier);
   if (!lower) return null;
