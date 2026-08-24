@@ -5,9 +5,8 @@
  */
 
 const logger = require('../logger');
-const config = require('../config');
 const { getModelRegistry, getModelRegistrySync } = require('./model-registry');
-const { getModelTierSelector, TIER_DEFINITIONS } = require('./model-tiers');
+const { getModelTierSelector } = require('./model-tiers');
 const { ratioFor } = require('./output-ratios');
 
 // Session cost tracking (in-memory)

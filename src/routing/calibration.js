@@ -19,6 +19,8 @@ const path = require('path');
 
 const DEFAULT_DAYS = 7;
 const MIN_SAMPLES = 100;
+/** Narrower than this and a calibrated band is treated as collapse, not signal. */
+const MIN_TIER_WIDTH = 10;
 
 /** Quality score below which a complexity bucket is "underperforming" for its tier. */
 const QUALITY_FLOOR = {
@@ -188,7 +190,24 @@ function runCalibration({ days = DEFAULT_DAYS, dryRun = false, dbPath, outputPat
     const prev = ranges[tierOrder[i - 1]];
     const cur = ranges[tierOrder[i]];
     if (cur[0] !== prev[1] + 1) cur[0] = prev[1] + 1;
-    if (cur[0] > cur[1]) cur[1] = cur[0]; // collapsed; tier disabled in practice
+    if (cur[0] > cur[1]) cur[1] = cur[0]; // collapsed; see guardrail below
+  }
+
+  // Guardrail: a tier squeezed under MIN_TIER_WIDTH means calibration had
+  // degenerate signal, not a real finding — e.g. 2026-07-26 (MEDIUM →
+  // [20,20]) and 2026-08-22 (COMPLEX → [51,54], which re-stitched
+  // REASONING's floor down to 55 and sent ~all agentic traffic to the most
+  // expensive tier; skewed telemetry then re-taught the same bands every
+  // 24h). Collapsed bands revert the whole set to DEFAULT_RANGES — bands
+  // are interdependent after stitching, so partial reverts would leave
+  // gaps.
+  const collapsed = tierOrder.filter(
+    (t) => ranges[t][1] - ranges[t][0] < MIN_TIER_WIDTH
+  );
+  let guardrail = null;
+  if (collapsed.length > 0) {
+    guardrail = { reverted: true, reason: 'band_collapse', collapsed };
+    for (const t of tierOrder) ranges[t] = [...DEFAULT_RANGES[t]];
   }
 
   const out = {
@@ -197,6 +216,7 @@ function runCalibration({ days = DEFAULT_DAYS, dryRun = false, dbPath, outputPat
     sampleCount: rows.length,
     ranges,
     stats,
+    ...(guardrail ? { guardrail } : {}),
   };
 
   if (dryRun) return { ...out, dryRun: true };

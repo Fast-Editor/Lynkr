@@ -340,6 +340,19 @@ async function memory_stats(args, context = {}) {
       };
     }
 
+    // Surface tracked entities — the extractor writes them on every
+    // conversation, but until this they were collected and never readable.
+    let entities = [];
+    try {
+      entities = store.getAllEntities(10).map(e => ({
+        name: e.name,
+        type: e.type,
+        count: e.count,
+      }));
+    } catch (err) {
+      logger.debug({ err: err.message }, 'Entity stats unavailable');
+    }
+
     return {
       ok: true,
       content: JSON.stringify({
@@ -350,6 +363,7 @@ async function memory_stats(args, context = {}) {
         recentCount: stats.recentCount,
         importantCount: stats.importantCount,
         sessionId: stats.sessionId || 'global',
+        topEntities: entities,
       }, null, 2),
     };
   } catch (err) {

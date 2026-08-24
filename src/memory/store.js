@@ -122,12 +122,6 @@ const upsertEntityStmt = db.prepare(`
     properties = @properties
 `);
 
-const getEntityStmt = db.prepare(`
-  SELECT id, entity_type, entity_name, first_seen_at, last_seen_at, occurrence_count, properties
-  FROM memory_entities
-  WHERE entity_type = ? AND entity_name = ?
-`);
-
 const getAllEntitiesStmt = db.prepare(`
   SELECT id, entity_type, entity_name, first_seen_at, last_seen_at, occurrence_count, properties
   FROM memory_entities
@@ -173,19 +167,6 @@ function toMemory(row) {
     updatedAt: row.updated_at,
     lastAccessedAt: row.last_accessed_at ?? null,
     metadata: parseJSON(row.metadata, {}),
-  };
-}
-
-function toEntity(row) {
-  if (!row) return null;
-  return {
-    id: row.id,
-    entityType: row.entity_type,
-    entityName: row.entity_name,
-    firstSeenAt: row.first_seen_at,
-    lastSeenAt: row.last_seen_at,
-    occurrenceCount: row.occurrence_count ?? 1,
-    properties: parseJSON(row.properties, {}),
   };
 }
 
@@ -400,16 +381,20 @@ function trackEntity(options) {
 }
 
 /**
- * Get an entity
+ * Get an entity by name, optionally scoped to a type. Names can collide
+ * across types (e.g. a "file" and a "topic" both named "router"), so
+ * without a type filter the most recently seen entity wins,
+ * deterministically.
  */
-function getEntity(name) {
-  // Since we only have the name, we need to search across all entity types
+function getEntity(name, type = null) {
   const stmt = db.prepare(`
     SELECT id, entity_type, entity_name, first_seen_at, last_seen_at, occurrence_count, properties
     FROM memory_entities
-    WHERE entity_name = ?
+    WHERE entity_name = ? ${type ? "AND entity_type = ?" : ""}
+    ORDER BY last_seen_at DESC
+    LIMIT 1
   `);
-  const row = stmt.get(name);
+  const row = type ? stmt.get(name, type) : stmt.get(name);
   if (!row) return null;
 
   return {

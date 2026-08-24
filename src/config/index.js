@@ -545,7 +545,6 @@ const agentsEnabled = process.env.AGENTS_ENABLED === "true";
 // LLM Audit logging configuration
 const auditEnabled = process.env.LLM_AUDIT_ENABLED === "true"; // default false
 const auditLogFile = process.env.LLM_AUDIT_LOG_FILE ?? path.join(process.cwd(), "logs", "llm-audit.log");
-const auditMaxContentLength = Number.parseInt(process.env.LLM_AUDIT_MAX_CONTENT_LENGTH ?? "5000", 10); // Legacy fallback
 const auditMaxSystemLength = Number.parseInt(process.env.LLM_AUDIT_MAX_SYSTEM_LENGTH ?? "2000", 10);
 const auditMaxUserLength = Number.parseInt(process.env.LLM_AUDIT_MAX_USER_LENGTH ?? "3000", 10);
 const auditMaxResponseLength = Number.parseInt(process.env.LLM_AUDIT_MAX_RESPONSE_LENGTH ?? "3000", 10);

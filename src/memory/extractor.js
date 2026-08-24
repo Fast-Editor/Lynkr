@@ -26,14 +26,14 @@ const EXTRACTION_PATTERNS = {
   ],
 
   entity: [
-    /(?:file|function|class|module|component|package|library)\s+['"`]?([A-Za-z0-9_./\-]+)['"`]?/gi,
-    /in\s+['"`]([A-Za-z0-9_./\-]+\.(?:js|ts|py|java|go|rs|cpp|c|h))['"`]/gi,
+    /(?:file|function|class|module|component|package|library)\s+['"`]?([A-Za-z0-9_./-]+)['"`]?/gi,
+    /in\s+['"`]([A-Za-z0-9_./-]+\.(?:js|ts|py|java|go|rs|cpp|c|h))['"`]/gi,
     /`([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)`/g, // Code references
   ],
 
   relationship: [
     /([A-Za-z0-9_]+)\s+(?:depends on|imports|uses|extends|implements|inherits from)\s+([A-Za-z0-9_]+)/gi,
-    /([A-Za-z0-9_./\-]+)\s+(?:calls|invokes|references)\s+([A-Za-z0-9_./\-]+)/gi,
+    /([A-Za-z0-9_./-]+)\s+(?:calls|invokes|references)\s+([A-Za-z0-9_./-]+)/gi,
   ],
 };
 

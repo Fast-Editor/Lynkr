@@ -158,7 +158,62 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
     }
   };
 
+  // GLM-family reasoning leak filter (streaming twin of the fix in
+  // convertOpenAIToAnthropic): suppresses matched <think>…</think> spans and
+  // strips a bare orphan closing tag from visible text deltas, holding back
+  // trailing partial-tag fragments so tags split across chunk boundaries
+  // still match. Orphan pre-text has already been emitted by the time the
+  // closer arrives — a stream can't retract — so only the tag is removed.
+  let _inThink = false;
+  let _tagTail = "";
+  const _partialTagLen = (s) => {
+    for (let k = Math.min(8, s.length); k > 0; k--) {
+      const suf = s.slice(-k);
+      if ("</think>".startsWith(suf) || "<think>".startsWith(suf)) return k;
+    }
+    return 0;
+  };
+  const filterThink = (text) => {
+    let s = _tagTail + text;
+    _tagTail = "";
+    let out = "";
+    for (;;) {
+      if (_inThink) {
+        const close = s.indexOf("</think>");
+        if (close === -1) break; // still inside thinking — discard s (tail kept below)
+        s = s.slice(close + 8);
+        _inThink = false;
+      } else {
+        const open = s.indexOf("<think>");
+        const close = s.indexOf("</think>");
+        if (close !== -1 && (open === -1 || close < open)) {
+          out += s.slice(0, close); // orphan closer: drop the tag only
+          s = s.slice(close + 8);
+        } else if (open !== -1) {
+          out += s.slice(0, open);
+          s = s.slice(open + 7);
+          _inThink = true;
+        } else {
+          break;
+        }
+      }
+    }
+    const keep = _partialTagLen(s);
+    if (keep > 0) _tagTail = s.slice(-keep);
+    if (!_inThink && s.length > keep) out += s.slice(0, s.length - keep);
+    return out;
+  };
+
   const closeTextBlock = function* () {
+    // Flush a held-back fragment that turned out not to be a tag.
+    if (_tagTail && !_inThink && textIndex !== null) {
+      yield _sse("content_block_delta", {
+        type: "content_block_delta",
+        index: textIndex,
+        delta: { type: "text_delta", text: _tagTail },
+      });
+      _tagTail = "";
+    }
     if (textIndex === null) return;
     yield _sse("content_block_stop", { type: "content_block_stop", index: textIndex });
     textIndex = null;
@@ -217,19 +272,22 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
       // Text deltas are straightforward: open a block on first text, then
       // emit a text_delta per chunk.
       if (typeof delta.content === "string" && delta.content.length > 0) {
-        if (textIndex === null) {
-          textIndex = nextIndex++;
-          yield _sse("content_block_start", {
-            type: "content_block_start",
+        const visible = filterThink(delta.content);
+        if (visible.length > 0) {
+          if (textIndex === null) {
+            textIndex = nextIndex++;
+            yield _sse("content_block_start", {
+              type: "content_block_start",
+              index: textIndex,
+              content_block: { type: "text", text: "" },
+            });
+          }
+          yield _sse("content_block_delta", {
+            type: "content_block_delta",
             index: textIndex,
-            content_block: { type: "text", text: "" },
+            delta: { type: "text_delta", text: visible },
           });
         }
-        yield _sse("content_block_delta", {
-          type: "content_block_delta",
-          index: textIndex,
-          delta: { type: "text_delta", text: delta.content },
-        });
       }
 
       // Tool-call fragments: accumulate per OpenAI tool index. Fragments of

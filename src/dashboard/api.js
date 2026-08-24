@@ -2,7 +2,6 @@ const config = require('../config');
 const telemetry = require('../routing/telemetry');
 const { getUsage } = require('../usage/aggregator');
 const metrics = require('../metrics');
-const { getMetricsCollector } = require('../observability/metrics');
 const { TIER_DEFINITIONS } = require('../routing/model-tiers');
 
 // Per-provider type + whether its credentials/endpoint are actually present.

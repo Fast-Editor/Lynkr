@@ -30,7 +30,7 @@ function sanitizeKeyword(keyword) {
   
   // Remove ALL FTS5 special characters
   const sanitized = keyword
-    .replace(/[*()<>\-:\[\]{}|^~,.;!?'"@#$%&+=/\\\\]/g, ' ')
+    .replace(/[*()<>\-:[\]{}|^~,.;!?'"@#$%&+=/\\\\]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   
@@ -97,7 +97,7 @@ function prepareFTS5Query(query) {
   // - @ symbol → "syntax error near @"
   // - Quotes (") → can break string quoting
   // - Parentheses, brackets → break grouping syntax
-  cleaned = cleaned.replace(/[*()<>\-:\[\]{}|^~,.;!?'"@#$%&+=/\\\\]/g, ' ');
+  cleaned = cleaned.replace(/[*()<>\-:[\]{}|^~,.;!?'"@#$%&+=/\\\\]/g, ' ');
   cleaned = cleaned.replace(/\s+/g, ' ').trim();
 
   if (!cleaned) {

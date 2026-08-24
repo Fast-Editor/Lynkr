@@ -89,7 +89,11 @@ async function getFileContent(id) {
 async function deleteFile(id) {
   const entry = metadata.get(id);
   if (!entry) return false;
-  try { await fsp.unlink(entry.storage_path); } catch {}
+  try {
+    await fsp.unlink(entry.storage_path);
+  } catch (err) {
+    logger.debug({ err: err.message, fileId: id }, "Best-effort unlink failed during file delete");
+  }
   metadata.delete(id);
   persistMetadata();
   return true;

@@ -6,7 +6,6 @@
  */
 
 const crypto = require('crypto');
-const logger = require('../logger');
 
 const DEFAULT_MAX = 5000;
 

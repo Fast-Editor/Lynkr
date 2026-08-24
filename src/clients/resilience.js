@@ -195,7 +195,6 @@ class CockatielCircuitBreaker {
     this._lastStateChange = Date.now();
 
     // Recreate the policy to reset state
-    const oldPolicy = this._policy;
     this._policy = circuitBreaker(handleAll, {
       breaker: new ConsecutiveBreaker(this.failureThreshold),
       halfOpenAfter: this.halfOpenAfter,

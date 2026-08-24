@@ -42,3 +42,8 @@ tmp/
 # ai-sdk-provider build output
 packages/ai-sdk-provider/dist/
 .env.bak-*
+
+# local db files
+src/db/*.sqlite
+.DS_Store
+HANDOFF.md

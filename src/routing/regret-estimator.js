@@ -68,7 +68,7 @@ async function estimate(args) {
       fs.mkdirSync(path.dirname(ALERTS_PATH), { recursive: true });
       let existing = [];
       if (fs.existsSync(ALERTS_PATH)) {
-        try { existing = JSON.parse(fs.readFileSync(ALERTS_PATH, 'utf8')); } catch {}
+        try { existing = JSON.parse(fs.readFileSync(ALERTS_PATH, 'utf8')); } catch (err) { logger.debug({ err: err.message }, '[RegretEstimator] Existing alerts file unreadable — starting fresh'); }
       }
       const out = Array.isArray(existing) ? existing : [];
       out.push(...alerts);

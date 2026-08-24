@@ -38,7 +38,7 @@ const telemetry = require("../routing/telemetry");
 const ANONYMIZE_PATTERNS = [
   // API keys and bearer tokens
   [/sk-[A-Za-z0-9_-]{20,}/g, "<API_KEY>"],
-  [/Bearer\s+[A-Za-z0-9._\-]+/gi, "Bearer <REDACTED>"],
+  [/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer <REDACTED>"],
   [/dapi_[A-Za-z0-9_-]+/g, "<DATABRICKS_KEY>"],
   [/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "<JWT>"],
   // AWS keys

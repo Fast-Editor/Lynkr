@@ -44,7 +44,7 @@ function _effectiveTools(payload) {
 // Pre-compiled regex patterns for performance
 const PATTERNS = {
   // Greetings - always local
-  greeting: /^(hi|hello|hey|good\s*(morning|afternoon|evening)|howdy|greetings|sup|yo|thanks?|thank\s*you)[\s\.\!\?,]*$/i,
+  greeting: /^(hi|hello|hey|good\s*(morning|afternoon|evening)|howdy|greetings|sup|yo|thanks?|thank\s*you)[\s.!?,]*$/i,
 
   // Simple questions - likely local
   simpleQuestion: /^(what\s+is|what's|define|who\s+is|when\s+was|where\s+is)\s+\w/i,
@@ -56,7 +56,7 @@ const PATTERNS = {
   technical: /\b(code|function|class|method|variable|api|database|server|client|module|import|export|async|await|promise|component|interface|type|struct|enum)\b/i,
 
   // File/path references
-  fileReference: /\b(\w+\.(js|ts|py|rb|go|rs|java|cpp|c|h|jsx|tsx|vue|svelte|md|json|yaml|yml|toml|sql|sh|bash))\b|[\.\/]\w+\//i,
+  fileReference: /\b(\w+\.(js|ts|py|rb|go|rs|java|cpp|c|h|jsx|tsx|vue|svelte|md|json|yaml|yml|toml|sql|sh|bash))\b|[./]\w+\//i,
 };
 
 // ============================================================================
@@ -119,10 +119,10 @@ const FORCE_CLOUD_PATTERNS = [
 
 // Force local patterns - always route to local regardless of score
 const FORCE_LOCAL_PATTERNS = [
-  /^(hi|hello|hey|thanks?|thank\s*you|bye|goodbye)[\s\.\!\?]*$/i,
+  /^(hi|hello|hey|thanks?|thank\s*you|bye|goodbye)[\s.!?]*$/i,
   /^what\s+(time|day|date)\s+is\s+it/i,
-  /^(yes|no|ok|okay|sure|got\s+it|understood)[\s\.\!\?]*$/i,
-  /^(help|menu|commands?|options?)[\s\.\!\?]*$/i,
+  /^(yes|no|ok|okay|sure|got\s+it|understood)[\s.!?]*$/i,
+  /^(help|menu|commands?|options?)[\s.!?]*$/i,
 ];
 
 // Weighted Scoring (15 Dimensions)
@@ -478,8 +478,6 @@ function scoreTools(payload) {
  * Score based on task type (0-25 points)
  */
 function scoreTaskType(content) {
-  const contentLower = content.toLowerCase();
-
   // Check force patterns first (priority: REASONING > cloud > local)
   for (const pattern of FORCE_REASONING_PATTERNS) {
     if (pattern.test(content)) {
@@ -796,7 +794,6 @@ async function analyzeComplexity(payload, options = {}) {
   if (useWeighted) {
     const weighted = calculateWeightedScore(workingPayload, content);
     const threshold = getThreshold();
-    const mode = config.smartToolSelection?.mode ?? 'heuristic';
 
     // Check force patterns
     const taskTypeResult = scoreTaskType(content);

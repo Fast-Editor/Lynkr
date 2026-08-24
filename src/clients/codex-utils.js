@@ -7,8 +7,6 @@
  * @module clients/codex-utils
  */
 
-const logger = require("../logger");
-
 /**
  * Extract text content from Anthropic message format
  * Handles both string content and content block arrays

@@ -101,6 +101,41 @@ test('skips gracefully when the DB does not exist', () => {
   }
 });
 
+test('band-collapse guardrail: a tier squeezed under MIN_TIER_WIDTH reverts ALL ranges to defaults',
+  { skip: !_sqliteAvailable() }, () => {
+    const { dir, dbPath, db } = _mkTempDb();
+    try {
+      const rows = [];
+      const now = Date.now();
+      // COMPLEX default is [51,75] with quality floor 65. A failing bucket
+      // at lo=55 (score 56, quality 55) shrinks the upper bound to 59 →
+      // width 8 < MIN_TIER_WIDTH → guardrail must revert everything.
+      for (let i = 0; i < 40; i++) {
+        rows.push({ tier: 'COMPLEX', score: 56, quality: 55, timestamp: now - i * 1000 });
+      }
+      for (const tier of ['SIMPLE', 'MEDIUM', 'REASONING']) {
+        const base = DEFAULT_RANGES[tier][0];
+        for (let i = 0; i < 40; i++) {
+          rows.push({ tier, score: base + 1, quality: 95, timestamp: now - i * 1000 });
+        }
+      }
+      _seedRows(db, rows);
+      db.close();
+
+      const outputPath = path.join(dir, 'calibrated.json');
+      const result = runCalibration({ dbPath, outputPath });
+      assert.equal(result.skipped, undefined, `should not skip; result=${JSON.stringify(result)}`);
+
+      const saved = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+      assert.deepEqual(saved.ranges, DEFAULT_RANGES, 'collapsed calibration must revert to defaults');
+      assert.equal(saved.guardrail?.reverted, true);
+      assert.equal(saved.guardrail?.reason, 'band_collapse');
+      assert.ok(saved.guardrail?.collapsed.includes('COMPLEX'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
 test('writes calibrated ranges when a tier bucket dips below its quality floor',
   { skip: !_sqliteAvailable() }, () => {
     const { dir, dbPath, db } = _mkTempDb();
@@ -186,7 +221,7 @@ test('reloadCalibratedThresholds() picks up new ranges from disk',
         ranges: { SIMPLE: [0, 10], MEDIUM: [11, 40], COMPLEX: [41, 70], REASONING: [71, 100] },
         stats: {},
       }, null, 2));
-      const ranges = reloadCalibratedThresholds();
+      reloadCalibratedThresholds();
       const selector = getModelTierSelector();
       assert.deepEqual(selector.ranges.SIMPLE, [0, 10]);
       // Any score ≥ 11 must now land in MEDIUM+ per the reloaded ranges.

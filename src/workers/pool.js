@@ -310,7 +310,7 @@ class WorkerPool {
     logger.info('[WorkerPool] Shutting down...');
 
     // Reject all pending tasks
-    for (const [taskId, pending] of this.pendingTasks) {
+    for (const [_taskId, pending] of this.pendingTasks) {
       clearTimeout(pending.timeout);
       pending.reject(new Error('Worker pool shutting down'));
     }

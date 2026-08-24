@@ -4,7 +4,6 @@ try {
 } catch {
   Database = null;
 }
-const { invokeModel } = require("../clients/databricks");
 const logger = require("../logger");
 const config = require("../config");
 const { getHeadroomManager } = require("../headroom");

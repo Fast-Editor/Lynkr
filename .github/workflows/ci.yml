@@ -30,6 +30,14 @@ jobs:
         run: pnpm install --no-optional --ignore-scripts --no-frozen-lockfile
         timeout-minutes: 5
 
+      - name: Lint (blocking)
+        run: npx eslint src index.js --max-warnings 0
+        timeout-minutes: 3
+
+      - name: Audit (no high/critical)
+        run: npm audit --audit-level=high
+        timeout-minutes: 3
+
       - name: Test
         run: |
           DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com \

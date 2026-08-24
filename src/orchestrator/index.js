@@ -13,12 +13,11 @@ const { applyToonCompression } = require("../context/toon");
 const { applyGcfCompression } = require("../context/gcf");
 const { compressMessages: headroomCompress, isEnabled: isHeadroomEnabled } = require("../headroom");
 const { createAuditLogger } = require("../logger/audit-logger");
-const { getResolvedIp, runWithDnsContext } = require("../clients/dns-logger");
 const { getShuttingDown } = require("../api/health");
 const { tryPreflight, buildSatisfiedResponse: buildPreflightResponse } = require("./preflight");
 const { detectBypass, buildBypassResponse } = require("./bypass");
 const crypto = require("crypto");
-const { getSemanticCache, isSemanticCacheEnabled } = require("../cache/semantic");
+const { getSemanticCache } = require("../cache/semantic");
 const { areSimilarToolCalls } = require("../clients/gpt-utils");
 const { getModelRegistrySync } = require("../routing/model-registry");
 const sessionAffinity = require("../routing/session-affinity");
@@ -416,37 +415,6 @@ function countToolCallsInHistory(messages) {
   return { toolUseCount, toolResultCount, lastUserTextIndex };
 }
 
-/**
- * Inject a "stop looping" instruction if there are too many tool calls in history.
- * This helps prevent infinite loops when the model keeps calling tools instead of responding.
- *
- * @param {Array} messages - The conversation messages
- * @param {number} threshold - Max tool results before injection (default: 5)
- * @returns {Array} - Messages with stop instruction injected if needed
- */
-function injectToolLoopStopInstruction(messages, threshold = 5) {
-  if (!Array.isArray(messages)) return messages;
-
-  const { toolResultCount } = countToolCallsInHistory(messages);
-
-  if (toolResultCount >= threshold) {
-    logger.warn({
-      toolResultCount,
-      threshold,
-    }, "[ToolLoopGuard] Too many tool results in conversation - injecting stop instruction");
-
-    // Inject instruction to stop tool calls and provide a final answer
-    const stopInstruction = {
-      role: "user",
-      content: `⚠️ IMPORTANT: You have already executed ${toolResultCount} tool calls in this conversation. This is likely an infinite loop. STOP calling tools immediately and provide a direct text response to the user based on the information you have gathered. If you cannot complete the task, explain why. DO NOT call any more tools. Your response must contain your actual findings — NOT an acknowledgment or restatement of this warning.`,
-    };
-
-    return [...messages, stopInstruction];
-  }
-
-  return messages;
-}
-
 // === CROSS-REQUEST TOOL CALL DEDUP TRACKING ===
 // These helpers track tool call signatures across multiple HTTP requests within
 // the same session (client/passthrough mode). The inner-loop detection in
@@ -716,52 +684,6 @@ function normaliseToolChoice(choice) {
     return { type: "function", function: { name: choice.name } };
   }
   return undefined;
-}
-
-/**
- * Strip thinking-style reasoning from Ollama model outputs
- * Patterns to remove:
- * - Lines starting with bullet points (●, •, -, *)
- * - Explanatory reasoning before the actual response
- * - Multiple newlines used to separate thinking from response
- */
-function stripThinkingBlocks(text) {
-  if (typeof text !== "string") return text;
-
-  const lines = text.split("\n");
-  const cleanedLines = [];
-  let inThinkingBlock = false;
-  let consecutiveEmptyLines = 0;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Detect thinking block markers (bullet points followed by reasoning)
-    if (/^[●•\-\*]\s/.test(trimmed)) {
-      inThinkingBlock = true;
-      continue;
-    }
-
-    // Empty lines might separate thinking from response
-    if (trimmed === "") {
-      consecutiveEmptyLines++;
-      // If we've seen 2+ empty lines, likely end of thinking block
-      if (consecutiveEmptyLines >= 2) {
-        inThinkingBlock = false;
-      }
-      continue;
-    }
-
-    consecutiveEmptyLines = 0;
-
-    if (inThinkingBlock) {
-      continue;
-    }
-
-    cleanedLines.push(line);
-  }
-
-  return cleanedLines.join("\n").trim();
 }
 
 /**
@@ -1392,7 +1314,6 @@ async function runAgentLoop({
   requestedModel,
   wantsThinking,
   session,
-  cwd,
   options,
   cacheKey,
   providerType,

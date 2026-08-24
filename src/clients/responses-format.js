@@ -11,61 +11,6 @@ const logger = require("../logger");
 const { repairToolCallIds } = require("./tool-call-repair");
 
 /**
- * Map client tool names back to Lynkr tool names
- * Used when processing incoming function_call messages from various AI coding clients
- * Supports: Codex CLI, Cline (VS Code), Continue.dev
- * @param {string} clientToolName - Client tool name (e.g., shell_command, execute_command, read_file)
- * @returns {string} Lynkr tool name (e.g., Bash, Read)
- */
-function mapClientToolToLynkr(clientToolName) {
-  const reverseMapping = {
-    // ============== CODEX CLI ==============
-    "shell": "Bash",
-    "shell_command": "Bash",
-    "read_file": "Read",
-    "write_file": "Write",
-    "apply_patch": "Edit",
-    "glob_file_search": "Glob",
-    "rg": "Grep",
-    "list_dir": "ListDir",
-
-    // ============== CLINE (VS Code) ==============
-    "execute_command": "Bash",
-    // "read_file" already mapped above
-    "write_to_file": "Write",
-    "replace_in_file": "Edit",
-    "search_files": "Grep",
-    "list_files": "ListDir",
-
-    // ============== KILO CODE (Fork of Cline) ==============
-    // Most tools same as Cline, but apply_diff is different
-    "apply_diff": "Edit",
-    "codebase_search": "Grep",
-    "delete_file": "Bash",  // No direct equivalent, use Bash rm
-    "browser_action": "WebFetch",  // Approximate mapping
-
-    // ============== CONTINUE.DEV ==============
-    "run_terminal_command": "Bash",
-    // "read_file" already mapped above
-    "create_new_file": "Write",
-    "edit_existing_file": "Edit",
-    "exact_search": "Grep",
-    "read_currently_open_file": "Read",
-
-    // ============== Lowercase Lynkr tools (pass-through) ==============
-    "bash": "Bash",
-    "read": "Read",
-    "write": "Write",
-    "edit": "Edit",
-    "glob": "Glob",
-    "grep": "Grep",
-    "listdir": "ListDir"
-  };
-
-  return reverseMapping[clientToolName] || clientToolName;
-}
-
-/**
  * Convert Responses API request to Chat Completions format
  * @param {Object} responsesRequest - Responses API format request
  * @returns {Object} Chat Completions format request
@@ -189,7 +134,6 @@ function convertResponsesToChat(responsesRequest) {
             }, "Converted multimodal content array to string");
           } else {
             // No text found, keep as array (might be image-only)
-            content = content;
           }
         }
 

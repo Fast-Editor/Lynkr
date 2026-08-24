@@ -450,7 +450,7 @@ async function handleOauthPassthrough(req, res, opts = {}) {
       try { reader.cancel(); } catch { /* already dead */ }
       try { res.write(SSE_STALL_EVENT); } catch { /* client gone */ }
     } finally {
-      try { reader.releaseLock(); } catch {}
+      try { reader.releaseLock(); } catch { /* lock already released */ }
     }
     res.end();
   } else {
@@ -495,7 +495,7 @@ async function handleOauthPassthrough(req, res, opts = {}) {
       const tier = opts.tier || {};
       let parsedResponse = null;
       if (contentType.includes("application/json")) {
-        try { parsedResponse = JSON.parse(responseTextForObservability); } catch {}
+        try { parsedResponse = JSON.parse(responseTextForObservability); } catch { /* not JSON — telemetry proceeds without a parsed body */ }
       } else if (contentType.includes("text/event-stream")) {
         // Extract a usable response object from the SSE stream by finding the
         // final message_delta / message_stop events.
@@ -1027,7 +1027,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     try {
       const { getMetricsCollector } = require("../observability/metrics");
       getMetricsCollector().recordRequest("POST", "/v1/messages", null, null);
-    } catch (_) {}
+    } catch (err) {
+      // If this fails silently, the wrap UI's "No requests tracked" bug returns.
+      logger.debug({ err: err?.message }, "observability collector recordRequest failed");
+    }
 
     messagesRequestCount += 1;
 

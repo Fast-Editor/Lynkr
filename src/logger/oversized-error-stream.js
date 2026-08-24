@@ -66,7 +66,7 @@ function createOversizedErrorStream(config) {
 		},
 		final(callback) {
 			// Close all open file handles when stream ends
-			for (const [sessionId, { writeStream }] of sessionFiles.entries()) {
+			for (const [_sessionId, { writeStream }] of sessionFiles.entries()) {
 				writeStream.end();
 			}
 			sessionFiles.clear();
