@@ -435,7 +435,7 @@ describe("Cursor IDE Integration (OpenAI API Compatibility)", () => {
 
         // This test verifies the config allows the explicit provider to be set
         // Actual provider detection logic is in openai-router.js
-        const config = require("../src/config");
+        require("../src/config");
         assert.strictEqual(process.env.EMBEDDINGS_PROVIDER, "ollama");
       });
 
@@ -444,7 +444,7 @@ describe("Cursor IDE Integration (OpenAI API Compatibility)", () => {
         process.env.LLAMACPP_EMBEDDINGS_ENDPOINT = "http://localhost:8080/embeddings";
         process.env.OPENROUTER_API_KEY = "sk-test";
 
-        const config = require("../src/config");
+        require("../src/config");
         assert.strictEqual(process.env.EMBEDDINGS_PROVIDER, "llamacpp");
       });
 
@@ -453,7 +453,7 @@ describe("Cursor IDE Integration (OpenAI API Compatibility)", () => {
         process.env.OPENROUTER_API_KEY = "sk-test";
         process.env.OLLAMA_EMBEDDINGS_MODEL = "nomic-embed-text";
 
-        const config = require("../src/config");
+        require("../src/config");
         assert.strictEqual(process.env.EMBEDDINGS_PROVIDER, "openrouter");
       });
 
@@ -462,7 +462,7 @@ describe("Cursor IDE Integration (OpenAI API Compatibility)", () => {
         process.env.OPENAI_API_KEY = "sk-test";
         process.env.OLLAMA_EMBEDDINGS_MODEL = "nomic-embed-text";
 
-        const config = require("../src/config");
+        require("../src/config");
         assert.strictEqual(process.env.EMBEDDINGS_PROVIDER, "openai");
       });
     });
@@ -472,9 +472,16 @@ describe("Cursor IDE Integration (OpenAI API Compatibility)", () => {
         process.env.MODEL_PROVIDER = "ollama";
         process.env.OLLAMA_MODEL = "llama3.2";
         process.env.OLLAMA_EMBEDDINGS_MODEL = "nomic-embed-text";
-        delete process.env.OPENROUTER_API_KEY;
-        delete process.env.OPENAI_API_KEY;
+        // Set to "" (not delete): dotenv refills deleted vars from the
+        // developer's real .env on a fresh config load, so this test could
+        // never pass on a machine with real keys. Empty string wins over
+        // dotenv (it never overrides existing env) and is still falsy.
+        process.env.OPENROUTER_API_KEY = "";
+        process.env.OPENAI_API_KEY = "";
 
+        // Fresh config snapshot — the cached singleton predates the env
+        // mutations above.
+        delete require.cache[require.resolve("../src/config")];
         const config = require("../src/config");
         assert.strictEqual(config.modelProvider.type, "ollama");
         assert.strictEqual(config.ollama.model, "llama3.2");
@@ -488,9 +495,11 @@ describe("Cursor IDE Integration (OpenAI API Compatibility)", () => {
         process.env.MODEL_PROVIDER = "ollama";
         process.env.OLLAMA_MODEL = "llama3.2";
         process.env.LLAMACPP_EMBEDDINGS_ENDPOINT = "http://localhost:8080/embeddings";
-        delete process.env.OPENROUTER_API_KEY;
-        delete process.env.OPENAI_API_KEY;
+        // "" not delete — see the Ollama+Ollama test above.
+        process.env.OPENROUTER_API_KEY = "";
+        process.env.OPENAI_API_KEY = "";
 
+        delete require.cache[require.resolve("../src/config")];
         const config = require("../src/config");
         assert.strictEqual(config.modelProvider.type, "ollama");
         assert.strictEqual(config.ollama.model, "llama3.2");

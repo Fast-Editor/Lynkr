@@ -355,11 +355,35 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
   const created = Math.floor(Date.now() / 1000);
   const model = requestedModel || "lynkr";
 
-  const chunk = (delta, finish = null) => `data: ${JSON.stringify({
+  const chunk = (delta, finish = null, usage = null) => `data: ${JSON.stringify({
     id, object: "chat.completion.chunk", created, model,
     system_fingerprint: "fp_lynkr",
     choices: [{ index: 0, delta, logprobs: null, finish_reason: finish }],
+    ...(usage ? { usage } : {}),
   })}\n\n`;
+
+  // Usage accounting (issue: opencode sidebar showed wrong token counts —
+  // this path never emitted usage at all). Anthropic sends input/cache
+  // tokens in message_start and output tokens in message_delta; accumulate
+  // and attach to the final chunk in OpenAI shape.
+  const usageAcc = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+  const captureUsage = (u) => {
+    if (!u) return;
+    if (u.input_tokens != null) usageAcc.input = u.input_tokens;
+    if (u.cache_read_input_tokens != null) usageAcc.cacheRead = u.cache_read_input_tokens;
+    if (u.cache_creation_input_tokens != null) usageAcc.cacheWrite = u.cache_creation_input_tokens;
+    if (u.output_tokens != null) usageAcc.output = u.output_tokens;
+  };
+  const finalUsage = () => {
+    const promptTokens = usageAcc.input + usageAcc.cacheRead + usageAcc.cacheWrite;
+    const u = {
+      prompt_tokens: promptTokens,
+      completion_tokens: usageAcc.output,
+      total_tokens: promptTokens + usageAcc.output,
+    };
+    if (usageAcc.cacheRead > 0) u.prompt_tokens_details = { cached_tokens: usageAcc.cacheRead };
+    return u;
+  };
 
   const mapStop = (r) => r === "tool_use" ? "tool_calls" : r === "max_tokens" ? "length" : "stop";
 
@@ -394,6 +418,7 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
 
         switch (ev.type) {
           case "message_start":
+            captureUsage(ev.message?.usage);
             if (!started) { started = true; res.write(chunk({ role: "assistant", content: "" })); }
             break;
           case "content_block_start":
@@ -419,10 +444,11 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
             break;
           }
           case "message_delta":
+            captureUsage(ev.usage);
             if (ev.delta?.stop_reason) finishReason = mapStop(ev.delta.stop_reason);
             break;
           case "message_stop":
-            res.write(chunk({}, finishReason || "stop"));
+            res.write(chunk({}, finishReason || "stop", finalUsage()));
             res.write("data: [DONE]\n\n");
             res.end();
             return;
@@ -447,7 +473,7 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
     // truncated stream: send an error chunk, never a fabricated "stop".
     if (!res.writableEnded) {
       if (finishReason) {
-        res.write(chunk({}, finishReason));
+        res.write(chunk({}, finishReason, finalUsage()));
         res.write("data: [DONE]\n\n");
       } else {
         logger.warn("Upstream stream ended without message_stop — sending error chunk to OpenAI-surface client");
@@ -734,7 +760,10 @@ router.post("/chat/completions", async (req, res) => {
             delta: {},
             logprobs: null,
             finish_reason: openaiResponse.choices[0].finish_reason
-          }]
+          }],
+          // Clients (opencode et al.) read token accounting from the final
+          // chunk — omitting it here left streamed turns uncounted.
+          usage: openaiResponse.usage
         };
 
         logger.debug({ chunk: "finish", finishReason: openaiResponse.choices[0].finish_reason }, "Sending finish chunk");
@@ -838,6 +867,24 @@ router.post("/chat/completions", async (req, res) => {
         outputTokens: openaiResponse.usage.completion_tokens,
         finishReason: openaiResponse.choices[0].finish_reason
       }, "=== OPENAI CHAT COMPLETION RESPONSE ===");
+
+      // Surface the routed reality: which model actually answered and what
+      // it cost (LiteLLM-style headers). Clients that can't price a dynamic
+      // router (opencode #24113) get the truth out-of-band.
+      const routingMeta = result.body?._routingMeta;
+      if (routingMeta?.model) {
+        res.set("x-lynkr-routed-model", String(routingMeta.model));
+        if (routingMeta.provider) res.set("x-lynkr-routed-provider", String(routingMeta.provider));
+        try {
+          const { computeCostUsd } = require("../clients/databricks");
+          const cost = computeCostUsd(
+            routingMeta.model,
+            result.body?.usage?.input_tokens || 0,
+            result.body?.usage?.output_tokens || 0
+          );
+          if (cost != null) res.set("x-lynkr-response-cost", cost.toFixed(6));
+        } catch { /* cost pricing unavailable — headers are best-effort */ }
+      }
 
       res.json(openaiResponse);
     }

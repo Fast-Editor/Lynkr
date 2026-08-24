@@ -288,7 +288,10 @@ function convertAnthropicToOpenAI(anthropicResponse, model = "claude-3-5-sonnet-
 
   // Build OpenAI response
   // Ensure ID has the chatcmpl- prefix that OpenAI clients expect
-  const responseId = id && id.startsWith("chatcmpl-") ? id : `chatcmpl-${Date.now()}`;
+  // Preserve the upstream id whatever its prefix (msg_… from Anthropic-shaped
+  // providers) — clients don't validate the prefix and a stable id keeps
+  // request tracing intact across the format conversion.
+  const responseId = id || `chatcmpl-${Date.now()}`;
   const openaiResponse = {
     id: responseId,
     object: "chat.completion",
@@ -304,11 +307,23 @@ function convertAnthropicToOpenAI(anthropicResponse, model = "claude-3-5-sonnet-
         finish_reason: mapStopReason(stop_reason)
       }
     ],
-    usage: {
-      prompt_tokens: usage?.input_tokens || 0,
-      completion_tokens: usage?.output_tokens || 0,
-      total_tokens: (usage?.input_tokens || 0) + (usage?.output_tokens || 0)
-    }
+    // OpenAI semantics: prompt_tokens INCLUDES cached tokens (Anthropic's
+    // input_tokens excludes cache reads/writes). Dropping cache tokens made
+    // clients like opencode undercount context — with prompt caching on,
+    // most of a turn's input is cache-read (issue: sidebar token drift).
+    usage: (() => {
+      const cacheRead = usage?.cache_read_input_tokens || 0;
+      const cacheWrite = usage?.cache_creation_input_tokens || 0;
+      const promptTokens = (usage?.input_tokens || 0) + cacheRead + cacheWrite;
+      const completionTokens = usage?.output_tokens || 0;
+      const u = {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens
+      };
+      if (cacheRead > 0) u.prompt_tokens_details = { cached_tokens: cacheRead };
+      return u;
+    })()
   };
 
   // Add citations if present
@@ -454,10 +469,18 @@ function convertAnthropicStreamChunkToOpenAI(chunk, model = "claude-3-5-sonnet-2
           finish_reason: mapStopReason(stopReason)
         }
       ],
+      // Anthropic's message_delta usage carries output_tokens and (on newer
+      // API versions) cumulative input_tokens — forward whatever is present
+      // instead of hardcoding prompt_tokens: 0.
       usage: usage ? {
-        prompt_tokens: 0, // Not available in streaming
+        prompt_tokens: (usage.input_tokens || 0) +
+          (usage.cache_read_input_tokens || 0) +
+          (usage.cache_creation_input_tokens || 0),
         completion_tokens: usage.output_tokens || 0,
-        total_tokens: usage.output_tokens || 0
+        total_tokens: (usage.input_tokens || 0) +
+          (usage.cache_read_input_tokens || 0) +
+          (usage.cache_creation_input_tokens || 0) +
+          (usage.output_tokens || 0)
       } : undefined
     };
   } else if (eventType === "message_stop") {

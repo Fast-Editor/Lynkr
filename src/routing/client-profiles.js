@@ -114,6 +114,32 @@ const PROFILES = {
       minToolFingerprintMatch: 0.5,
     },
   },
+  'opencode': {
+    name: 'opencode',
+    baselineTools: new Set([
+      // OpenCode 1.18.x default loadout — captured live 2026-08-22 from
+      // Lynkr logs (user-agent `opencode/1.18.21 ai-sdk/provider-utils/…`).
+      // All of these attach to every request; counting them as intent
+      // scored every OpenCode turn ~80 → REASONING band → session pin
+      // locked the whole session there (2026-08-22: 1163/1203 REASONING
+      // routings were pin-inherited from a floored first turn).
+      'bash', 'edit', 'glob', 'grep', 'question', 'read', 'skill', 'task',
+      'todowrite', 'webfetch', 'write',
+      // Per opencode.ai/docs/tools — enabled-by-default or common-config
+      // names not seen in our capture; harmless if absent (subtraction
+      // only removes names actually present).
+      'list', 'todoread', 'websearch',
+    ]),
+    detect: {
+      headerPatterns: [/opencode/i],
+      // 0.5 (like goose): `question`/`skill`/`todo*` vary with user config,
+      // so a minimal loadout matches ~8 of 14 baseline names. The lowercase
+      // set is disjoint from claude-code's capitalized and cursor's
+      // snake_case names, and opencode always sends its user-agent, so the
+      // header pattern is the primary detector anyway.
+      minToolFingerprintMatch: 0.5,
+    },
+  },
   'openai-codex': {
     name: 'openai-codex',
     baselineTools: new Set([

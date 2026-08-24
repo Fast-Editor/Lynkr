@@ -39,8 +39,14 @@ jobs:
             exit 1
           fi
 
+      # --ignore-scripts: the allowScripts gate prompts interactively for
+      # native postinstall builds (tree-sitter, better-sqlite3), which hangs
+      # CI — the v9.14.1 run sat 27 minutes in `npm ci` before dying. The
+      # test gate below doesn't need native addons (ci.yml installs the same
+      # way), and `npm publish` only packs files.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+        timeout-minutes: 5
 
       # Gate on the routing regression suite. Widen to `npm run test:unit`
       # once the full suite is green in CI.

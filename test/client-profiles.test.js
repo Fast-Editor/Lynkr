@@ -222,6 +222,33 @@ const GOOSE_TOOLS = [
   'todo__todo_write',
 ].map((name) => ({ name, input_schema: { type: 'object', properties: {} } }));
 
+// OpenCode 1.18.x — sends `opencode/x.y.z ai-sdk/…` UA plus a lowercase
+// default loadout (captured live 2026-08-22). Without this profile every
+// OpenCode first turn scored ~80 (harness counted as intent) → REASONING
+// pin for the whole session.
+const OPENCODE_TOOLS = [
+  'bash', 'edit', 'glob', 'grep', 'question', 'read', 'skill', 'task',
+  'todowrite', 'webfetch', 'write',
+].map((name) => ({ name }));
+
+test('detectClient — opencode user-agent matches', () => {
+  const profile = detectClient({
+    headers: { 'user-agent': 'opencode/1.18.21 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14' },
+    payload: {},
+  });
+  assert.ok(profile);
+  assert.equal(profile.name, 'opencode');
+});
+
+test('detectClient — opencode tool fingerprint matches when UA missing', () => {
+  const profile = detectClient({
+    headers: {},
+    payload: { tools: OPENCODE_TOOLS },
+  });
+  assert.ok(profile);
+  assert.equal(profile.name, 'opencode');
+});
+
 test('detectClient — goose fingerprint matches with no user-agent', () => {
   const profile = detectClient({
     headers: {},

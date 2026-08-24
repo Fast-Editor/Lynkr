@@ -15,6 +15,10 @@
 process.env.DATABRICKS_API_KEY = process.env.DATABRICKS_API_KEY || "test-key";
 process.env.DATABRICKS_API_BASE = process.env.DATABRICKS_API_BASE || "http://test.com";
 process.env.BAIDU_API_KEY = process.env.BAIDU_API_KEY || "test-key";
+// Pin unconditionally: the test asserts the shipped default mapping, and a
+// developer's real .env (e.g. BAIDU_MODEL=glm-5.2) otherwise leaks into the
+// config singleton and fails the fallback-model assertion.
+process.env.BAIDU_MODEL = "ernie-4.5-turbo-128k";
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");

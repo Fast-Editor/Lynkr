@@ -22,7 +22,11 @@ const logger = require('../logger');
 const { generateEmbedding } = require('../cache/embeddings');
 const { getEmbeddingCache } = require('./embedding-cache');
 
-const INDEX_DIR = path.join(__dirname, '../../data/knn');
+// LYNKR_KNN_DIR override exists so test runs point at a scratch dir instead
+// of the production index — parallel test processes saving to the real path
+// produced a torn read → corrupt link-list lengths → a 135GB zero-filled
+// index file (2026-08-21).
+const INDEX_DIR = process.env.LYNKR_KNN_DIR || path.join(__dirname, '../../data/knn');
 const INDEX_FILE = path.join(INDEX_DIR, 'index.hnsw');
 const META_FILE = path.join(INDEX_DIR, 'meta.json');
 
@@ -99,8 +103,26 @@ class KnnRouter {
     if (!this.ready || !this.index) return;
     try {
       fs.mkdirSync(INDEX_DIR, { recursive: true });
-      this.index.writeIndexSync(INDEX_FILE);
-      fs.writeFileSync(META_FILE, JSON.stringify({ dim: this.dim, entries: this.meta }, null, 0));
+      // Atomic save: hnswlib's writeIndexSync is truncate-then-write, so a
+      // concurrent reader can observe a torn image and later persist a
+      // corrupt index. Write to a per-pid temp file and rename into place —
+      // readers then always see a complete image.
+      const tmpIndex = `${INDEX_FILE}.tmp-${process.pid}`;
+      const tmpMeta = `${META_FILE}.tmp-${process.pid}`;
+      this.index.writeIndexSync(tmpIndex);
+      // Sanity bound: a healthy index is ~(elements × ~3.3KB) + slack. A
+      // corrupted link-list length manifests as a wildly oversized file —
+      // refuse to install it over the good one.
+      const expectedMax = (this.size + 1000) * 8192 + 1_000_000;
+      const written = fs.statSync(tmpIndex).size;
+      if (written > expectedMax) {
+        fs.rmSync(tmpIndex, { force: true });
+        logger.error({ written, expectedMax, size: this.size }, '[KnnRouter] Refusing to save implausibly large index — in-memory index likely corrupt');
+        return;
+      }
+      fs.writeFileSync(tmpMeta, JSON.stringify({ dim: this.dim, entries: this.meta }, null, 0));
+      fs.renameSync(tmpIndex, INDEX_FILE);
+      fs.renameSync(tmpMeta, META_FILE);
     } catch (err) {
       logger.warn({ err: err.message }, '[KnnRouter] Index save failed');
     }

@@ -423,12 +423,20 @@ function _liftLeakedThinkingBlocks(response) {
   const newContent = [];
   let lifted = 0;
   for (const block of payload.content) {
-    if (block?.type === "text" && typeof block.text === "string" && block.text.includes("<think>")) {
+    if (block?.type === "text" && typeof block.text === "string" &&
+        (block.text.includes("<think>") || block.text.includes("</think>"))) {
       const thoughts = [];
       let m;
       while ((m = thinkRegex.exec(block.text)) !== null) thoughts.push(m[1].trim());
       thinkRegex.lastIndex = 0;
-      const cleaned = block.text.replace(thinkRegex, "").trim();
+      let cleaned = block.text.replace(thinkRegex, "").trim();
+      // Orphan closing tag: GLM-family templates open <think> in the prompt,
+      // so the completion may carry reasoning terminated by a bare </think>.
+      const orphanIdx = cleaned.indexOf("</think>");
+      if (orphanIdx !== -1) {
+        thoughts.push(cleaned.slice(0, orphanIdx).trim());
+        cleaned = cleaned.slice(orphanIdx + "</think>".length).trim();
+      }
       const merged = thoughts.filter(Boolean).join("\n\n");
       if (merged) {
         newContent.push({ type: "thinking", thinking: merged });
@@ -2455,12 +2463,34 @@ function convertOpenAIToAnthropic(response) {
   const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
 
   // Extract text content and reasoning from thinking models
-  const textContent = typeof message.content === 'string' ? message.content : '';
+  let textContent = typeof message.content === 'string' ? message.content : '';
   const reasoningContent = typeof message.reasoning_content === 'string' ? message.reasoning_content : '';
 
-  // Emit reasoning_content as a proper thinking block (not discarded)
-  if (reasoningContent) {
-    content.push({ type: "thinking", thinking: reasoningContent });
+  // GLM-family models leak reasoning into `content` in two shapes:
+  //   1. matched <think>...</think> pairs;
+  //   2. an ORPHAN closing </think> — GLM's chat template opens <think>
+  //      inside the prompt, so the completion starts mid-reasoning and only
+  //      emits the closer (observed live 2026-08-23, baidu/glm-5.2:
+  //      "Hi. What need?</think>Hi. What need?" reached the client verbatim).
+  let leakedThinking = '';
+  if (textContent.includes('</think>')) {
+    if (textContent.includes('<think>')) {
+      const thoughts = [];
+      textContent = textContent
+        .replace(/<think>([\s\S]*?)<\/think>/g, (_, t) => { thoughts.push(t.trim()); return ''; })
+        .trim();
+      leakedThinking = thoughts.filter(Boolean).join('\n\n');
+    } else {
+      const idx = textContent.indexOf('</think>');
+      leakedThinking = textContent.slice(0, idx).trim();
+      textContent = textContent.slice(idx + '</think>'.length).trim();
+    }
+  }
+
+  // Emit reasoning (side-channel and/or leaked) as a proper thinking block
+  const combinedThinking = [reasoningContent, leakedThinking].filter(Boolean).join('\n\n');
+  if (combinedThinking) {
+    content.push({ type: "thinking", thinking: combinedThinking });
   }
 
   if (textContent) {
@@ -3855,6 +3885,8 @@ function destroyHttpAgents() {
 
 module.exports = {
   invokeModel,
+  computeCostUsd,
+  convertOpenAIToAnthropic,
   invokeAzureAnthropic,
   invokeZai,
   invokeOllama,

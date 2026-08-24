@@ -46,3 +46,4 @@ packages/ai-sdk-provider/dist/
 # local db files
 src/db/*.sqlite
 .DS_Store
+HANDOFF.md
