@@ -12,9 +12,13 @@ RUN apk add --no-cache python3 make g++ git bash
 # Layer cache: install prod deps before copying source so this layer
 # is reused on source-only changes
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force && rm -rf /root/.npm /tmp/*
+# --ignore-scripts: postinstall (scripts/check-native.js) isn't in the image
+# until COPY below — running it here fails the build. Natives are rebuilt
+# after the source lands.
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force && rm -rf /root/.npm /tmp/*
 
 COPY . .
+RUN npm rebuild && node scripts/check-native.js || true
 
 ############################
 # Runtime stage
