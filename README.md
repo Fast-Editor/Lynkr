@@ -617,6 +617,9 @@ With tier routing + token optimization: **additional 50-87% savings** on cloud p
 - [NPM Package](https://www.npmjs.com/package/lynkr) — Official releases
 - [DeepWiki](https://deepwiki.com/Fast-Editor/Lynkr) — AI-powered docs
 
+This project follows our [Code of Conduct](CODE_OF_CONDUCT.md) — it applies in
+all project spaces, and it tells you exactly how to report a problem.
+
 ---
 
 ## License
