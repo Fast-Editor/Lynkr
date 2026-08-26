@@ -84,10 +84,16 @@ welcome; deleted comments are still violations.
   identity.
 - **If your report concerns the maintainer**, we acknowledge the structural
   problem honestly: Lynkr currently has a single maintainer, so there is no
-  independent chain. You may instead report the behavior to GitHub via
+  independent chain. For behavior in GitHub-hosted spaces (issues, PRs,
+  discussions, review comments), report it to GitHub via
   [GitHub's Report Abuse process](https://github.com/contact/report-abuse),
-  which the maintainer cannot influence. As the maintainer team grows, this
-  section will be replaced with a named second contact.
+  which the maintainer cannot influence. For behavior elsewhere, report it to
+  that venue's own process — the event's organizers, or the platform's trust
+  and safety channel — all of which are likewise outside the maintainer's
+  control. We name this gap rather than paper over it: until the maintainer
+  team grows, there is no single independent contact for non-GitHub
+  incidents, and this section will be replaced with a named second contact
+  as soon as one exists.
 
 What happens after you report:
 
