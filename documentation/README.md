@@ -19,6 +19,7 @@ New to Lynkr? Start here:
 Connect Lynkr to your development tools:
 
 - **[Claude Code CLI Setup](claude-code-cli.md)** - Configure Claude Code CLI to use Lynkr
+- **[Claude Desktop Setup](claude-desktop.md)** - Route the Claude Desktop app through Lynkr (macOS gateway profile, model picker as tier selector)
 - **[Codex CLI Setup](codex-cli.md)** - Configure OpenAI Codex CLI with Lynkr (config.toml, wire_api, troubleshooting)
 - **[OpenClaw Integration](openclaw-integration.md)** - Use OpenClaw with Lynkr as its AI backend
 - **[Cursor IDE Integration](cursor-integration.md)** - Full Cursor IDE setup with troubleshooting
@@ -72,7 +73,7 @@ Get help and contribute:
 ## Quick Navigation by Topic
 
 ### Setup & Configuration
-- [Installation](installation.md) | [Providers](providers.md) | [Claude Code](claude-code-cli.md) | [Codex CLI](codex-cli.md) | [OpenClaw](openclaw-integration.md) | [Cursor](cursor-integration.md) | [Embeddings](embeddings.md)
+- [Installation](installation.md) | [Providers](providers.md) | [Claude Code](claude-code-cli.md) | [Claude Desktop](claude-desktop.md) | [Codex CLI](codex-cli.md) | [OpenClaw](openclaw-integration.md) | [Cursor](cursor-integration.md) | [Embeddings](embeddings.md)
 
 ### Features & Optimization
 - [Features](features.md) | [Routing](routing.md) | [Memory System](memory-system.md) | [Token Optimization](token-optimization.md) | [Headroom](headroom.md) | [Tools](tools.md)

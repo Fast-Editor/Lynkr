@@ -6,12 +6,14 @@ const pkg = require('../package.json');
 // Subcommands. Dispatched before server boot so `lynkr usage` / `lynkr trajectory`
 // don't start the proxy. Add new subcommands here, not in scattered binaries.
 const SUBCOMMANDS = {
-  usage:      path.join(__dirname, "lynkr-usage.js"),
-  stats:      path.join(__dirname, "lynkr-usage.js"),
-  trajectory: path.join(__dirname, "lynkr-trajectory.js"),
-  wrap:       path.join(__dirname, "wrap.js"),
-  init:       path.join(__dirname, "lynkr-init.js"),
-  reset:      path.join(__dirname, "lynkr-reset.js"),
+  usage:         path.join(__dirname, "lynkr-usage.js"),
+  stats:         path.join(__dirname, "lynkr-usage.js"),
+  trajectory:    path.join(__dirname, "lynkr-trajectory.js"),
+  wrap:          path.join(__dirname, "wrap.js"),
+  init:          path.join(__dirname, "lynkr-init.js"),
+  reset:         path.join(__dirname, "lynkr-reset.js"),
+  "desktop-token": path.join(__dirname, "lynkr-desktop-token.js"),
+  restart:       path.join(__dirname, "lynkr-restart.js"),
 };
 
 const sub = process.argv[2];
@@ -51,6 +53,11 @@ Usage:
   lynkr start [options]            Alias for the above
   lynkr init [options]             Interactive setup wizard (writes .env, pulls classifier model)
   lynkr wrap <target> [options]    Wrap CLI tools through Lynkr proxy
+  lynkr desktop-token <token>      Apply a Claude Pro/Max OAuth token to Claude Desktop's
+                                    gateway profile (macOS only)
+  lynkr desktop-token --restore    Restore Claude Desktop to talking to Anthropic directly
+                                    (undoes the above; macOS only)
+  lynkr restart                    Restart the local Lynkr server (pick up code/config changes)
   lynkr usage [options]            Show AI spend report and tier-routing savings
   lynkr stats [options]            Shareable savings-receipt card (also: lynkr usage --card)
   lynkr trajectory [options]       Export agent trajectories as JSONL training data

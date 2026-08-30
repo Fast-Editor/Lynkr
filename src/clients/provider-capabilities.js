@@ -32,8 +32,35 @@ function getThinkingBehavior(providerType, model) {
   return "none";
 }
 
+/**
+ * Anthropic-shaped `thinking` request param to send upstream, honoring an
+ * explicit client request and otherwise defaulting to disabled.
+ *
+ * Confirmed live (2026-08-27) against both endpoints directly: Baidu
+ * Qianfan's `glm-5.2` and Moonshot's Kimi (`kimi-k3`) both emit verbose
+ * `reasoning_content` on EVERY call by default, sharing the same token
+ * budget as the visible answer — with no instruction at all, a baseline
+ * call to either returned ~500-600 chars of reasoning_content, an EMPTY
+ * `content`, and `finish_reason:"length"` (the whole max_tokens budget
+ * spent on reasoning, none left for the actual answer). The GLM/Qwen
+ * convention `enable_thinking:false` does NOT suppress this on either
+ * endpoint — only this Anthropic-shaped `{type:"disabled"}` param does
+ * (also confirmed live, on both). Not a caveman-specific issue — the same
+ * budget waste happens on every request to these two providers; caveman's
+ * elaborate constraint set just makes it worse, since the model has more to
+ * visibly deliberate against.
+ *
+ * @param {Object} body - incoming Anthropic-format request body
+ * @returns {Object} the `thinking` param to send upstream
+ */
+function resolveThinkingParam(body) {
+  if (body?.thinking && typeof body.thinking === "object") return body.thinking;
+  return { type: "disabled" };
+}
+
 module.exports = {
   supportsNativeThinking,
   supportsReasoningContent,
   getThinkingBehavior,
+  resolveThinkingParam,
 };
