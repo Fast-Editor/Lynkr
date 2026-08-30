@@ -403,8 +403,6 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
   let emittedTools = 0;
   let finishReason = null;
   let started = false;
-  let inputTokens = null;
-  let outputTokens = null;
   const decoder = new TextDecoder();
 
   try {
@@ -422,12 +420,6 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
           case "message_start":
             captureUsage(ev.message?.usage);
             if (!started) { started = true; res.write(chunk({ role: "assistant", content: "" })); }
-            if (typeof ev.message?.usage?.input_tokens === "number") {
-              inputTokens = ev.message.usage.input_tokens;
-            }
-            if (typeof ev.message?.usage?.output_tokens === "number") {
-              outputTokens = ev.message.usage.output_tokens;
-            }
             break;
           case "content_block_start":
             if (ev.content_block?.type === "tool_use") {
@@ -454,14 +446,6 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
           case "message_delta":
             captureUsage(ev.usage);
             if (ev.delta?.stop_reason) finishReason = mapStop(ev.delta.stop_reason);
-            // The final, authoritative output_tokens count arrives here —
-            // overwrite, don't merge, the message_start placeholder.
-            if (typeof ev.usage?.output_tokens === "number") {
-              outputTokens = ev.usage.output_tokens;
-            }
-            if (typeof ev.usage?.input_tokens === "number") {
-              inputTokens = ev.usage.input_tokens;
-            }
             break;
           case "message_stop":
             res.write(chunk({}, finishReason || "stop", finalUsage()));
