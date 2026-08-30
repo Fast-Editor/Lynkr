@@ -50,11 +50,32 @@ function getThinkingBehavior(providerType, model) {
  * elaborate constraint set just makes it worse, since the model has more to
  * visibly deliberate against.
  *
+ * Model-specific exception, also live-verified (2026-08-30) directly
+ * against api.moonshot.ai: `kimi-k2.7-code` (incl. -highspeed) rejects
+ * `{type:"disabled"}` outright — HTTP 400 "invalid thinking: only
+ * type=enabled is allowed for this model", since that model's thinking is
+ * always-on and cannot be turned off. Omit the field entirely for it rather
+ * than send a value the model 400s on.
+ *
+ * A web-sourced claim that `kimi-k3` similarly rejects `thinking` (and
+ * needs `reasoning_effort` instead) was checked the same way and is FALSE
+ * for the real live endpoint as of this writing — `kimi-k3` returns a
+ * clean 200 with `{type:"disabled"}`, exactly like the doc comment above
+ * already said. Don't reintroduce that "fix" without a fresh live probe;
+ * docs and reality disagreed here once already.
+ *
  * @param {Object} body - incoming Anthropic-format request body
- * @returns {Object} the `thinking` param to send upstream
+ * @param {string} [mappedModel] - the provider-native model id actually
+ *   being requested (e.g. "kimi-k2.7-code"), for the exception above.
+ *   Providers without a model-specific exception can omit this.
+ * @returns {Object|undefined} the `thinking` param to send upstream, or
+ *   `undefined` to omit the field entirely (JSON.stringify drops it).
  */
-function resolveThinkingParam(body) {
+function resolveThinkingParam(body, mappedModel) {
   if (body?.thinking && typeof body.thinking === "object") return body.thinking;
+  if (typeof mappedModel === "string" && /^kimi-k2\.7-code/i.test(mappedModel)) {
+    return undefined;
+  }
   return { type: "disabled" };
 }
 

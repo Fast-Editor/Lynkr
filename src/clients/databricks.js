@@ -1272,6 +1272,20 @@ async function invokeAzureOpenAI(body, _incomingHeaders = {}) {
 
     const result = await performJsonRequest(endpoint, { headers, body: responsesBody }, "Azure OpenAI Responses");
 
+    // Same pre-return 429 check as invokeMoonshot/invokeBaidu/invokeOpenRouter
+    // — but placed BEFORE the stream branch below, unlike those. When
+    // body.stream is true, performJsonRequest returns {ok:false, status:429,
+    // stream} without throwing (streaming responses aren't retried), so if
+    // this check ran after the stream branch it would never fire: the 429
+    // would get wrapped as a normal (broken) SSE stream and returned as if
+    // successful, and invokeModel's fallback catch would never see it —
+    // the next tier never gets a chance.
+    if (!result.ok && result.status === 429) {
+      const err = new Error(`Azure OpenAI rate-limited: ${String(result.json?.error?.message || '').slice(0, 120)}`);
+      err.status = 429;
+      throw err;
+    }
+
     // Streaming: hand back a synthetic OpenAI-Chat-Completions-shaped SSE
     // stream (see src/orchestrator/azure-responses-sse.js for why that shape
     // rather than Anthropic SSE directly) so the orchestrator's existing
@@ -1668,12 +1682,25 @@ async function invokeLlamaCpp(body, _incomingHeaders = {}) {
   // text. Same fix already shipped for Ollama as LYNKR_OLLAMA_MIN_MAX_TOKENS;
   // mirrored here rather than inventing a different mechanism.
   const llamacppMinMaxTokens = Number(process.env.LYNKR_LLAMACPP_MIN_MAX_TOKENS) || 1536;
+  // Enforce the buffer-by-default policy HERE, at the actual invocation
+  // point, rather than trusting body.stream — CodeRabbit correctly flagged
+  // that sse-transformer.js's _transformProviders() gate only affects the
+  // INITIAL provider decision (computed once in orchestrator/index.js
+  // before invokeModel). If a transform-eligible provider later falls back
+  // to llamacpp (tier-fallback / cascade in this same file reuses
+  // body.stream for fallback candidates), that inherited stream:true would
+  // bypass the gate entirely and llamacpp would stream live — dropping
+  // reasoning_content exactly like the bug this was meant to fix. Checking
+  // the same env var again right here covers the initial-pick path AND
+  // every fallback path uniformly, with no dependency on how llamacpp was
+  // reached.
+  const bufferLlamacpp = process.env.LYNKR_LLAMACPP_BUFFER_RESPONSES !== "false";
   const llamacppBody = {
     messages: deduplicated,
     temperature: body.temperature ?? 0.7,
     max_tokens: Math.max(body.max_tokens ?? 16384, llamacppMinMaxTokens),
     top_p: body.top_p ?? 1.0,
-    stream: body.stream ?? false
+    stream: bufferLlamacpp ? false : (body.stream ?? false)
   };
 
   // Inject standard tools if client didn't send any
@@ -2336,8 +2363,10 @@ async function invokeMoonshot(body, _incomingHeaders = {}) {
     // kimi-k3 emits verbose reasoning_content by default, sharing the same
     // token budget as the answer — without this, reasoning alone can (and
     // did, live-confirmed) consume the whole max_tokens before any answer
-    // is written. See resolveThinkingParam's doc comment for the full story.
-    thinking: resolveThinkingParam(body),
+    // is written. See resolveThinkingParam's doc comment for the full story,
+    // including why mappedModel is passed (kimi-k2.7-code needs the field
+    // omitted entirely, not disabled).
+    thinking: resolveThinkingParam(body, mappedModel),
     // Streaming honored since the Phase-2b sse-transformer landed: the raw
     // OpenAI SSE stream is returned below and reshaped in flight by the
     // orchestrator (moonshot is in DEFAULT_OPENAI_SSE_PROVIDERS). Buffered
@@ -2492,7 +2521,10 @@ async function invokeBaidu(body, _incomingHeaders = {}) {
     // token budget as the answer — without this, reasoning alone can (and
     // did, live-confirmed) consume the whole max_tokens before any answer
     // is written. See resolveThinkingParam's doc comment for the full story.
-    thinking: resolveThinkingParam(body),
+    // mappedModel is passed for signature parity with invokeMoonshot's call
+    // site — Baidu's ERNIE ids never match the Moonshot-specific exception,
+    // so behavior here is unchanged.
+    thinking: resolveThinkingParam(body, mappedModel),
     // Streaming honored once "baidu" is added to DEFAULT_OPENAI_SSE_PROVIDERS
     // (sse-transformer.js) and confirmed to match OpenAI SSE shape. Buffered
     // requests use the Anthropic conversion path below regardless.

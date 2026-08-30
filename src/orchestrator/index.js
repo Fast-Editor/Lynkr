@@ -2252,8 +2252,13 @@ IMPORTANT TOOL USAGE RULES:
             step: steps,
             tools: toolCalls.map((tc) => tc.function?.name ?? tc.name),
           }, "[web-search-exec] Auto-resolving web_search/web_fetch for unrecognized client");
+          // steps was already incremented for this iteration at the top of
+          // the loop (line ~2228) — incrementing again here double-counted
+          // it, so with the default maxSteps:2 the loop exited right after
+          // the FIRST web tool result, before the model ever saw it
+          // (max_steps_exceeded with no answer). Confirmed against the
+          // while(steps < settings.maxSteps) loop guard above.
           await webSearchExec.autoResolve(toolCalls, cleanPayload.messages);
-          steps++;
           continue;
         }
       }

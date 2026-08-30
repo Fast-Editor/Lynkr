@@ -106,9 +106,60 @@ async function searchWeb(query) {
   return { query, error: `search failed: ${lastErr}` };
 }
 
+const MAX_REDIRECT_HOPS = 5;
+
+/**
+ * Read up to `maxBytes` (well, chars — decoded text) from a Response body,
+ * without ever buffering more than that in memory. Node's global fetch
+ * always provides a ReadableStream body; the non-streaming fallback exists
+ * only for defensiveness.
+ *
+ * @param {Response} response
+ * @param {number} maxChars
+ * @returns {Promise<{text: string, truncated: boolean}>}
+ */
+async function _readBounded(response, maxChars) {
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const full = await response.text();
+    return { text: full.slice(0, maxChars), truncated: full.length > maxChars };
+  }
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (text.length < maxChars) {
+      const { done, value } = await reader.read();
+      if (done) return { text, truncated: false };
+      text += decoder.decode(value, { stream: true });
+    }
+    // Hit the cap — confirm there was more data waiting (vs. landing exactly
+    // on the boundary) so `truncated` is accurate either way.
+    const over = text.length > maxChars;
+    if (over) text = text.slice(0, maxChars);
+    const { done } = await reader.read().catch(() => ({ done: true }));
+    return { text, truncated: over || !done };
+  } finally {
+    try { await reader.cancel(); } catch { /* best-effort; body may already be spent */ }
+  }
+}
+
 /**
  * Generic URL fetch, host-allowlisted per config.webSearch (allowAllHosts /
  * allowedHosts), truncated per config.webSearch.bodyPreviewMax.
+ *
+ * Redirects are followed manually, not via fetch's default redirect:"follow"
+ * — Node's global fetch would otherwise follow a redirect from an allowlisted
+ * endpoint straight to a blocked/private address without ever re-checking
+ * allowedHosts, defeating the allowlist entirely. Every hop's resolved
+ * Location is validated the same way the original targetUrl was.
+ *
+ * The same per-hop abort timer stays alive through body consumption too —
+ * previously it was cleared the moment fetch() resolved (headers received),
+ * before the body was ever read, so a slow or hostile allowed endpoint could
+ * hold the response open indefinitely with no timeout, and `.slice()` only
+ * trimmed the string AFTER it had already been fully buffered in memory.
+ * _readBounded() now runs inside the same _withTimeout(signal) call as the
+ * fetch itself, so an abort mid-read is a real abort, not just a display cap.
  *
  * @param {string} targetUrl
  * @returns {Promise<Object>}
@@ -121,18 +172,43 @@ async function fetchUrl(targetUrl) {
   }
   const maxPreview = config.webSearch?.bodyPreviewMax || 10000;
   const timeoutMs = config.webSearch?.timeoutMs || 10000;
+
+  let currentUrl = targetUrl;
   try {
-    const res = await _withTimeout(
-      (signal) => fetch(targetUrl, { signal }),
-      timeoutMs,
-    );
-    const text = await res.text();
-    return {
-      url: targetUrl,
-      status: res.status,
-      content: text.slice(0, maxPreview),
-      truncated: text.length > maxPreview,
-    };
+    for (let hop = 0; ; hop++) {
+      if (hop > MAX_REDIRECT_HOPS) {
+        return { url: targetUrl, error: `too many redirects (>${MAX_REDIRECT_HOPS})` };
+      }
+
+      const outcome = await _withTimeout(async (signal) => {
+        const response = await fetch(currentUrl, { signal, redirect: "manual" });
+        if (response.status >= 300 && response.status < 400) {
+          return { redirect: true, status: response.status, location: response.headers.get("location") };
+        }
+        const { text, truncated } = await _readBounded(response, maxPreview);
+        return { redirect: false, status: response.status, text, truncated };
+      }, timeoutMs);
+
+      if (outcome.redirect) {
+        if (!outcome.location) {
+          return { url: currentUrl, status: outcome.status, error: "redirect with no Location header" };
+        }
+        const nextUrl = new URL(outcome.location, currentUrl).toString();
+        if (!isHostAllowed(nextUrl)) {
+          logger.warn({ from: currentUrl, to: nextUrl }, "[web-search-exec] blocked redirect to disallowed host");
+          return { url: targetUrl, error: "redirect target host not in allowedHosts" };
+        }
+        currentUrl = nextUrl;
+        continue;
+      }
+
+      return {
+        url: currentUrl,
+        status: outcome.status,
+        content: outcome.text,
+        truncated: outcome.truncated,
+      };
+    }
   } catch (err) {
     logger.warn({ url: targetUrl, err: err.message }, "[web-search-exec] fetch failed");
     return { url: targetUrl, error: `fetch failed: ${err.message}` };
