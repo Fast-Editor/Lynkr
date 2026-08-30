@@ -38,6 +38,28 @@ function stringSimilarity(s1, s2) {
   return union.size > 0 ? intersection.size / union.size : 0;
 }
 
+// Common argument keys a Read-style tool might carry its target path under,
+// across different clients/harnesses.
+const FILE_PATH_ARG_KEYS = ['file_path', 'path', 'filePath', 'filename', 'file'];
+
+/**
+ * Pull a file-path argument out of a (possibly stringified) args object,
+ * trying the common key spellings different clients use.
+ * @param {string|Object} args
+ * @returns {string|null}
+ */
+function extractFilePathArg(args) {
+  let obj = args;
+  if (typeof obj === 'string') {
+    try { obj = JSON.parse(obj); } catch { return null; }
+  }
+  if (!obj || typeof obj !== 'object') return null;
+  for (const key of FILE_PATH_ARG_KEYS) {
+    if (typeof obj[key] === 'string' && obj[key]) return obj[key];
+  }
+  return null;
+}
+
 /**
  * Check if two tool calls are semantically similar
  * @param {Object} call1 - First tool call {name, arguments}
@@ -59,17 +81,38 @@ function areSimilarToolCalls(call1, call2) {
 
   if (argsStr1 === argsStr2) return true;
 
+  const toolName = (name1 || '').toLowerCase();
+
+  // Read-style tools: NOT Jaccard-fuzzy-matched (see below for why), but a
+  // re-read of the exact SAME file at a different offset/limit is still a
+  // duplicate worth counting — exact-match above only catches identical
+  // args, so re-reads with different paging windows slipped through
+  // entirely (live incident: an agent re-read one file at overlapping
+  // offsets ~10 times, restating the same conclusion each time, and never
+  // hit the loop guard because every offset produced a "new" signature).
+  // Comparing only the path argument (ignoring offset/limit) catches that
+  // without resurrecting the bug below — this is exact path equality, not
+  // fuzzy token overlap, so it can't confuse two DIFFERENT files that merely
+  // share path segments.
+  if (toolName.includes('read')) {
+    const path1 = extractFilePathArg(args1);
+    const path2 = extractFilePathArg(args2);
+    if (path1 && path2 && path1 === path2) {
+      logger.debug({ tool: name1, path: path1 }, "Same-file re-read detected");
+      return true;
+    }
+    return false;
+  }
+
   // Only search-style tools get fuzzy matching; mutating tools with
   // near-identical args may be intentional repeats.
-  // 'read' is deliberately NOT fuzzy-matched: its argument is a file path, and
-  // absolute paths in one repo share nearly every Jaccard token
-  // (/Users/x/project/src/…), so reads of DIFFERENT files scored ≥0.8 and
-  // merged into one "repeated call" signature (live incident: an opencode
+  // 'read' is handled above, deliberately NOT via Jaccard: its argument is a
+  // file path, and absolute paths in one repo share nearly every Jaccard
+  // token (/Users/x/project/src/…), so reads of DIFFERENT files scored ≥0.8
+  // and merged into one "repeated call" signature (live incident: an opencode
   // code-trace reading server.js, openai-router.js and orchestrator/index.js
-  // was flagged as a loop). A genuine re-read of the same file is caught by
-  // the exact-match branch above.
+  // was flagged as a loop).
   const searchTools = ['grep', 'glob', 'search', 'find', 'bash', 'shell'];
-  const toolName = (name1 || '').toLowerCase();
   const isSearchTool = searchTools.some(t => toolName.includes(t));
 
   if (isSearchTool) {

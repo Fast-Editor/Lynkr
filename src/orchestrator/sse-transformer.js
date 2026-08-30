@@ -28,6 +28,14 @@ const logger = require("../logger");
 // stream:false predated this transformer). Caveat: reasoning_content deltas
 // (kimi thinking) are not reshaped — thinking text is dropped from streamed
 // responses; the buffered path still lifts it into thinking blocks.
+// baidu (Qianfan's /v2/chat/completions) already returns the raw stream the
+// same way moonshot does (invokeBaidu's `if (response?.stream) return
+// response;`) and its endpoint is documented as OpenAI-compatible — but
+// unlike moonshot this hasn't been E2E-verified against a live key as of
+// this addition. If Qianfan's SSE deltas turn out not to match
+// choices[0].delta exactly, remove it from this list (or set
+// LYNKR_STREAM_TRANSFORM_PROVIDERS to exclude it) rather than patching the
+// shared transformer for one provider's quirk.
 const DEFAULT_OPENAI_SSE_PROVIDERS = [
   "openai",
   "atlas",
@@ -37,12 +45,30 @@ const DEFAULT_OPENAI_SSE_PROVIDERS = [
   "lmstudio",
   "llamacpp",
   "moonshot",
+  "baidu",
 ];
 
+// llama.cpp specific: reasoning-capable local builds (live-confirmed on this
+// deployment's GPT-OSS model) emit `delta.reasoning_content` before any
+// `delta.content`. This transformer only reads delta.content (see the
+// per-chunk loop below) — reasoning deltas are silently dropped, so a client
+// streaming through this path sees nothing at all during the thinking phase
+// and, if reasoning consumes the whole max_tokens budget, nothing ever.
+// Default OFF (buffered instead) for exactly the same reason Ollama already
+// defaults to buffering (LYNKR_OLLAMA_BUFFER_RESPONSES) — the buffered path's
+// convertOpenRouterResponseToAnthropic already lifts reasoning_content into a
+// proper `thinking` block, so no data is lost there. Opt into live streaming
+// (and accept dropped thinking text) via LYNKR_LLAMACPP_BUFFER_RESPONSES=false.
 function _transformProviders() {
   const env = process.env.LYNKR_STREAM_TRANSFORM_PROVIDERS;
+  if (env) {
+    return new Set(env.split(",").map((s) => s.trim()).filter(Boolean));
+  }
+  const bufferLlamacpp = process.env.LYNKR_LLAMACPP_BUFFER_RESPONSES !== "false";
   return new Set(
-    env ? env.split(",").map((s) => s.trim()).filter(Boolean) : DEFAULT_OPENAI_SSE_PROVIDERS,
+    bufferLlamacpp
+      ? DEFAULT_OPENAI_SSE_PROVIDERS.filter((p) => p !== "llamacpp")
+      : DEFAULT_OPENAI_SSE_PROVIDERS,
   );
 }
 
@@ -497,4 +523,9 @@ module.exports = {
   // Exported for unit tests.
   _openaiToAnthropicEvents,
   _anthropicToOpenaiEvents,
+  // Exported for reuse by other SSE adapters (e.g. azure-responses-sse.js) —
+  // generic, provider-agnostic SSE byte-stream parsing with no OpenAI-specific
+  // behavior, worth sharing rather than reimplementing per adapter.
+  _iterateStream,
+  _sseDataLines,
 };

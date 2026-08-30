@@ -126,31 +126,56 @@ function summarizeOldHistory(messages) {
   let hasUserInput = false;
   let hasAssistantOutput = false;
 
+  // Index tool_result blocks by tool_use_id so each tool_use below can carry
+  // a one-line recap of what it actually found. Previously this summary kept
+  // only the tool NAME ("Assistant used tools: bash") and threw away the
+  // result entirely — which meant a long tool-calling session forgot its own
+  // diagnosis every time it aged past the recent-turns window and had to
+  // re-derive it from scratch (live symptom: an agent stuck re-reading the
+  // same file and re-fetching the same issue instead of ever writing a fix).
+  const resultByToolUseId = new Map();
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (block?.type === 'tool_result' && block.tool_use_id) {
+        resultByToolUseId.set(block.tool_use_id, extractResultSnippet(block));
+      }
+    }
+  }
+
   for (const msg of messages) {
     if (msg.role === 'user') {
       hasUserInput = true;
       const content = extractTextContent(msg);
-      if (content.length < 200) {
-        keyPoints.push(`User: ${content}`);
-      } else {
-        // Compress long user messages
-        keyPoints.push(`User: ${content.substring(0, 150)}...`);
+      if (content) {
+        // compressText keeps head AND tail (unlike a flat substring(0, N)),
+        // which matters here too: the actionable part of a long user
+        // message is often at the end ("...so please fix X and open a PR").
+        keyPoints.push(`User: ${compressText(content, 200)}`);
       }
     } else if (msg.role === 'assistant') {
       hasAssistantOutput = true;
       const content = extractTextContent(msg);
 
-      // Extract tool uses
-      const toolUses = extractToolUses(msg);
-      if (toolUses.length > 0) {
-        keyPoints.push(`Assistant used tools: ${toolUses.join(', ')}`);
+      // Extract tool uses WITH their outcome, not just the tool name.
+      const toolUseBlocks = extractToolUseBlocks(msg);
+      for (const use of toolUseBlocks) {
+        const argsSnippet = summarizeToolArgs(use.input);
+        const resultSnippet = resultByToolUseId.get(use.id);
+        keyPoints.push(
+          resultSnippet
+            ? `Assistant called ${use.name}(${argsSnippet}) → ${resultSnippet}`
+            : `Assistant called ${use.name}(${argsSnippet})`
+        );
       }
 
-      // Add assistant text if meaningful
-      if (content.length > 20 && content.length < 200) {
-        keyPoints.push(`Assistant: ${content}`);
-      } else if (content.length >= 200) {
-        keyPoints.push(`Assistant: ${content.substring(0, 150)}...`);
+      // Add assistant text if meaningful. compressText (head+tail) instead
+      // of a head-only substring(0, 150) — conclusions ("Cause: ...",
+      // "Findings: ...") are usually written at the END of a reasoning
+      // turn, so a head-only cut was silently discarding exactly the part
+      // that mattered for remembering what was already diagnosed.
+      if (content.length > 20) {
+        keyPoints.push(`Assistant: ${compressText(content, 300)}`);
       }
     }
   }
@@ -166,6 +191,51 @@ function summarizeOldHistory(messages) {
     role: 'user',
     content: summaryText
   };
+}
+
+/**
+ * Short, single-line recap of a tool_result's content — used so the
+ * compacted history shows what a tool call actually found, not just that it
+ * was called. Reuses compressText's head+tail truncation.
+ *
+ * @param {Object} block - tool_result block
+ * @returns {string} snippet, or '' if the result had no usable text
+ */
+function extractResultSnippet(block) {
+  const RESULT_SNIPPET_MAX = 160;
+  let text = '';
+  if (typeof block.content === 'string') {
+    text = block.content;
+  } else if (Array.isArray(block.content)) {
+    text = block.content
+      .filter(item => typeof item === 'string' || item?.type === 'text')
+      .map(item => (typeof item === 'string' ? item : item.text || ''))
+      .join(' ');
+  }
+  text = text.trim();
+  if (!text) return '';
+  const prefix = block.is_error ? 'error: ' : '';
+  return prefix + compressText(text, RESULT_SNIPPET_MAX);
+}
+
+/**
+ * Compact, single-line rendering of a tool_use's arguments for the summary
+ * (e.g. `Read(file_path=".../types.go", offset=390)`), not the full JSON.
+ *
+ * @param {Object} input - tool_use input object
+ * @returns {string}
+ */
+function summarizeToolArgs(input) {
+  const ARGS_SNIPPET_MAX = 80;
+  if (!input || typeof input !== 'object') return '';
+  try {
+    const flat = Object.entries(input)
+      .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+      .join(', ');
+    return compressText(flat, ARGS_SNIPPET_MAX);
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -382,17 +452,19 @@ function extractTextContent(message) {
 }
 
 /**
- * Extract tool names used in message
+ * Extract tool_use blocks (id/name/input) from a message — the fuller
+ * counterpart to extractToolUses(), which only returns names. Used by
+ * summarizeOldHistory() to pair each call with its outcome.
  *
  * @param {Object} message - Message object
- * @returns {Array} Tool names
+ * @returns {Array<{id: string, name: string, input: Object}>}
  */
-function extractToolUses(message) {
+function extractToolUseBlocks(message) {
   if (!Array.isArray(message.content)) return [];
 
   return message.content
     .filter(block => block.type === 'tool_use')
-    .map(block => block.name);
+    .map(block => ({ id: block.id, name: block.name, input: block.input }));
 }
 
 /**

@@ -77,10 +77,25 @@ function _stripInternalFields(body) {
   return cleaned || body;
 }
 
-async function performJsonRequest(url, { headers = {}, body, retryableStatusesOverride, maxRetriesOverride }, providerLabel) {
+async function performJsonRequest(url, { headers = {}, body, retryableStatusesOverride, maxRetriesOverride, timeoutMs }, providerLabel) {
   const agent = url.startsWith('https:') ? httpsAgent : httpAgent;
   body = _stripInternalFields(body);
   const isStreaming = body.stream === true;
+
+  // Optional per-call abort timeout (opt-in via timeoutMs) — most callers
+  // omit it and keep the historical unbounded-fetch behavior. Added for
+  // llama.cpp (see invokeLlamaCpp): a dead upstream that accepts the TCP
+  // connection but never answers at the application layer hangs fetch()
+  // indefinitely — live-observed at ~75s, riding an incidental OS/tunnel
+  // socket timeout rather than any deliberate bound. This makes the
+  // already-configured (but previously unused) LLAMACPP_TIMEOUT_MS real.
+  // A fresh signal is created per attempt below (not hoisted here) —
+  // AbortSignal.timeout()'s clock starts at construction, so one signal
+  // shared across withRetry's attempts would leave later retries with a
+  // shrinking (or already-expired) budget instead of a full timeout each.
+  const makeSignal = () => (typeof timeoutMs === "number" && timeoutMs > 0
+    ? AbortSignal.timeout(timeoutMs)
+    : undefined);
 
   // Streaming requests can't be retried, so handle them directly
   if (isStreaming) {
@@ -89,6 +104,7 @@ async function performJsonRequest(url, { headers = {}, body, retryableStatusesOv
       headers,
       body: JSON.stringify(body),
       agent,
+      signal: makeSignal(),
     });
 
     logger.debug({
@@ -122,6 +138,7 @@ async function performJsonRequest(url, { headers = {}, body, retryableStatusesOv
       headers,
       body: JSON.stringify(body),
       agent,
+      signal: makeSignal(),
     });
     const text = await response.text();
 
@@ -829,7 +846,21 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
     }, "Sending tools to OpenRouter");
   }
 
-  return performJsonRequest(endpoint, { headers, body: openRouterBody }, "OpenRouter");
+  // Same pre-return 429 check as invokeMoonshot/invokeBaidu — see the comment
+  // on invokeOpenAI's equivalent check for why this matters for streaming.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: openRouterBody,
+    retryableStatusesOverride: [500, 502, 503, 504],
+  }, "OpenRouter");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`OpenRouter rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  return response;
 }
 
 // Eden AI is an OpenAI-compatible gateway (provider/model naming, EU/GDPR).
@@ -1229,16 +1260,33 @@ async function invokeAzureOpenAI(body, _incomingHeaders = {}) {
       // the conversation's first user message — stable across every turn of
       // the same task. Keep per-key traffic under ~15 req/min.
       ...(isGpt5 ? { prompt_cache_key: derivePromptCacheKey(body) } : {}),
-      stream: false
+      stream: body.stream ?? false
     };
     logger.debug({
       format: "responses",
       inputCount: responsesBody.input?.length,
       model: responsesBody.model,
-      hasTools: !!responsesBody.tools
+      hasTools: !!responsesBody.tools,
+      streaming: responsesBody.stream,
     }, "Using Responses API format");
 
     const result = await performJsonRequest(endpoint, { headers, body: responsesBody }, "Azure OpenAI Responses");
+
+    // Streaming: hand back a synthetic OpenAI-Chat-Completions-shaped SSE
+    // stream (see src/orchestrator/azure-responses-sse.js for why that shape
+    // rather than Anthropic SSE directly) so the orchestrator's existing
+    // sseTransform.openaiToAnthropicSSE call site — already wired for
+    // moonshot/baidu/openai's raw streams — handles this one identically,
+    // with zero changes needed there. Skips the whole buffered
+    // output-array/dedup/usage-remap conversion below entirely; that logic
+    // only makes sense for a complete, already-materialized response.
+    if (result.stream) {
+      const { azureResponsesToOpenAIChunks } = require("../orchestrator/azure-responses-sse");
+      return {
+        ...result,
+        stream: azureResponsesToOpenAIChunks(result.stream, { model: responsesBody.model }),
+      };
+    }
 
     // Convert Responses API response to Chat Completions format
     if (result.ok && result.json?.output) {
@@ -1306,6 +1354,8 @@ async function invokeAzureOpenAI(body, _incomingHeaders = {}) {
         toolCallNames: toolCalls.map(tc => tc.function.name)
       }, "Parsing Responses API output");
 
+      const _rawUsage = result.json.usage;
+
       result.json = {
         id: result.json.id,
         object: "chat.completion",
@@ -1322,15 +1372,15 @@ async function invokeAzureOpenAI(body, _incomingHeaders = {}) {
         }],
         // Responses API usage is {input,output}_tokens; downstream reads
         // Chat Completions' {prompt,completion}_tokens.
-        usage: result.json.usage ? {
-          prompt_tokens: result.json.usage.prompt_tokens ?? result.json.usage.input_tokens ?? 0,
-          completion_tokens: result.json.usage.completion_tokens ?? result.json.usage.output_tokens ?? 0,
-          total_tokens: result.json.usage.total_tokens
-            ?? ((result.json.usage.input_tokens ?? 0) + (result.json.usage.output_tokens ?? 0)),
+        usage: _rawUsage ? {
+          prompt_tokens: _rawUsage.prompt_tokens ?? _rawUsage.input_tokens ?? 0,
+          completion_tokens: _rawUsage.completion_tokens ?? _rawUsage.output_tokens ?? 0,
+          total_tokens: _rawUsage.total_tokens
+            ?? ((_rawUsage.input_tokens ?? 0) + (_rawUsage.output_tokens ?? 0)),
           // Provider-side prompt-cache hits (Responses API: input_tokens_details,
           // Chat Completions: prompt_tokens_details) — telemetry reads this name.
-          cache_read_input_tokens: result.json.usage.input_tokens_details?.cached_tokens
-            ?? result.json.usage.prompt_tokens_details?.cached_tokens
+          cache_read_input_tokens: _rawUsage.input_tokens_details?.cached_tokens
+            ?? _rawUsage.prompt_tokens_details?.cached_tokens
             ?? null,
         } : undefined
       };
@@ -1437,7 +1487,23 @@ async function invokeOpenAI(body, _incomingHeaders = {}) {
     max_tokens: openAIBody.max_tokens,
   }, "=== OPENAI REQUEST ===");
 
-  return performJsonRequest(endpoint, { headers, body: openAIBody }, "OpenAI");
+  // Same pre-return 429 check as invokeMoonshot/invokeBaidu: performJsonRequest's
+  // streaming branch never throws on a bad status (retry is skipped entirely for
+  // stream:true), so without this a 429 was silently handed back as a "successful"
+  // stream/response and tier-fallback never got a chance to climb.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: openAIBody,
+    retryableStatusesOverride: [500, 502, 503, 504],
+  }, "OpenAI");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`OpenAI rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  return response;
 }
 
 async function invokeAtlas(body) {
@@ -1495,12 +1561,26 @@ async function invokeAtlas(body) {
 
   // Chat completions are billable POSTs, so Atlas requests are never replayed
   // automatically. Callers can retry explicitly with their own idempotency policy.
-  return performJsonRequest(endpoint, {
+  // maxRetriesOverride/retryableStatusesOverride stay at 0/[] — this does NOT
+  // retry the Atlas request itself, it only decides whether invokeModel's
+  // caller escalates to a DIFFERENT provider/tier on 429, same as
+  // invokeMoonshot/invokeBaidu/invokeOpenAI/invokeOpenRouter already do.
+  // Without this, a 429 here was silently handed back as a "successful"
+  // response and tier-fallback never got a chance to climb.
+  const response = await performJsonRequest(endpoint, {
     headers,
     body: atlasBody,
     maxRetriesOverride: 0,
     retryableStatusesOverride: [],
   }, "Atlas Cloud");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`Atlas Cloud rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  return response;
 }
 
 async function invokeLlamaCpp(body, _incomingHeaders = {}) {
@@ -1580,10 +1660,18 @@ async function invokeLlamaCpp(body, _incomingHeaders = {}) {
     }, 'llama.cpp: Removed consecutive duplicate roles from message sequence');
   }
 
+  // max_tokens floor: reasoning-capable local models (live-confirmed on this
+  // deployment's GPT-OSS build) can spend their entire budget on
+  // `reasoning_content` before writing any visible answer — a caller-
+  // supplied tiny budget (e.g. the caveman probe's max_tokens:1 seen in
+  // production logs) then returns finish_reason:"length" with zero visible
+  // text. Same fix already shipped for Ollama as LYNKR_OLLAMA_MIN_MAX_TOKENS;
+  // mirrored here rather than inventing a different mechanism.
+  const llamacppMinMaxTokens = Number(process.env.LYNKR_LLAMACPP_MIN_MAX_TOKENS) || 1536;
   const llamacppBody = {
     messages: deduplicated,
     temperature: body.temperature ?? 0.7,
-    max_tokens: body.max_tokens ?? 16384,
+    max_tokens: Math.max(body.max_tokens ?? 16384, llamacppMinMaxTokens),
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
@@ -1633,7 +1721,11 @@ async function invokeLlamaCpp(body, _incomingHeaders = {}) {
     }))
   }, "=== LLAMA.CPP REQUEST ===");
 
-  const result = await performJsonRequest(endpoint, { headers, body: llamacppBody }, "llama.cpp");
+  const result = await performJsonRequest(
+    endpoint,
+    { headers, body: llamacppBody, timeoutMs: config.llamacpp.timeout },
+    "llama.cpp",
+  );
 
   // Context overflow is a CAPACITY error, not a request error: the local
   // model's slot is simply too small for this conversation (llama-server
@@ -2063,11 +2155,23 @@ async function invokeZai(body, _incomingHeaders = {}) {
     zaiBody = { ...body };
     zaiBody.model = mappedModel;
 
-    // Force buffered mode: with stream:true this endpoint returns ANTHROPIC
-    // SSE, but the downstream transformer parses OPENAI SSE — every chunk is
-    // unreadable and the client receives an empty completion. Buffered JSON
-    // converts correctly; the router synthesizes client-side SSE as usual.
-    zaiBody.stream = false;
+    // Honor body.stream as-is here. The ONLY caller that ever sets it true
+    // for this branch is passthrough-stream.js's handleNativeStream — zai
+    // isn't in sse-transformer.js's DEFAULT_OPENAI_SSE_PROVIDERS, so the
+    // normal buffered orchestrator (orchestrator/index.js) always sets
+    // cleanPayload.stream=false before invoking any provider not on that
+    // allowlist, and never reaches this branch with stream:true itself.
+    // Forcing false unconditionally (as this used to do) broke exactly that
+    // caller: _anthropicNative() advertises this endpoint as native-passthrough
+    // eligible, handleNativeStream sets stream:true and expects real
+    // Anthropic SSE bytes back, but got a buffered JSON body instead —
+    // handleNativeStream then saw no `.stream` field, silently gave up, and
+    // fell back to the buffered orchestrator path, which called zai AGAIN.
+    // Every native-passthrough request to this endpoint was double-invoking
+    // the real API. If a future caller other than handleNativeStream ever
+    // needs stream:true routed through the OpenAI-SSE transformer instead,
+    // that's a different bug — add zai to DEFAULT_OPENAI_SSE_PROVIDERS then,
+    // don't reintroduce this override.
 
     // Inject standard tools if client didn't send any (passthrough mode)
     if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
@@ -2222,12 +2326,18 @@ async function invokeMoonshot(body, _incomingHeaders = {}) {
   // Only the moonshot-v1-* models accept caller-supplied values.
   const isKimiPinned = /^kimi-k/i.test(mappedModel);
 
+  const { resolveThinkingParam } = require("./provider-capabilities");
   const moonshotBody = {
     model: mappedModel,
     messages,
     max_tokens: body.max_tokens || 16384,
     temperature: isKimiPinned ? 1 : (body.temperature ?? 0.7),
     top_p: isKimiPinned ? 0.95 : (body.top_p ?? 1.0),
+    // kimi-k3 emits verbose reasoning_content by default, sharing the same
+    // token budget as the answer — without this, reasoning alone can (and
+    // did, live-confirmed) consume the whole max_tokens before any answer
+    // is written. See resolveThinkingParam's doc comment for the full story.
+    thinking: resolveThinkingParam(body),
     // Streaming honored since the Phase-2b sse-transformer landed: the raw
     // OpenAI SSE stream is returned below and reshaped in flight by the
     // orchestrator (moonshot is in DEFAULT_OPENAI_SSE_PROVIDERS). Buffered
@@ -2371,12 +2481,18 @@ async function invokeBaidu(body, _incomingHeaders = {}) {
     messages.unshift({ role: "system", content: systemContent });
   }
 
+  const { resolveThinkingParam } = require("./provider-capabilities");
   const baiduBody = {
     model: mappedModel,
     messages,
     max_tokens: body.max_tokens || 16384,
     temperature: body.temperature ?? 0.7,
     top_p: body.top_p ?? 1.0,
+    // glm-5.2 emits verbose reasoning_content by default, sharing the same
+    // token budget as the answer — without this, reasoning alone can (and
+    // did, live-confirmed) consume the whole max_tokens before any answer
+    // is written. See resolveThinkingParam's doc comment for the full story.
+    thinking: resolveThinkingParam(body),
     // Streaming honored once "baidu" is added to DEFAULT_OPENAI_SSE_PROVIDERS
     // (sse-transformer.js) and confirmed to match OpenAI SSE shape. Buffered
     // requests use the Anthropic conversion path below regardless.

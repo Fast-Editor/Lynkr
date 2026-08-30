@@ -7,7 +7,9 @@ const logger = require("../logger");
 const { createRateLimiter } = require("./middleware/rate-limiter");
 const openaiRouter = require("./openai-router");
 const providersRouter = require("./providers-handler");
+const claudeDesktopGatewayRouter = require("./claude-desktop-gateway");
 const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector, analyzeRisk, checkSessionPin, writeSessionPin, checkPinScoreDrift } = require("../routing");
+const { resolveTierForModelId } = require("../routing/model-slots");
 
 // Upstream streams can die without a clean end (reader.read() never
 // resolves on a dropped socket), hanging the client forever. Every
@@ -1117,6 +1119,37 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // in a session skip the whole window-scored intent pipeline.
     let tier;
     const pinCheck = checkSessionPin(req.body);
+
+    // Explicit model-id pin: Claude Desktop's model picker (or any Anthropic-
+    // format caller) can name one of the fixed ids claude-desktop-gateway.js
+    // advertises (see ../routing/model-slots.js). Unlike every signal below,
+    // this one is EXPLICIT user intent, not an inference — it wins over
+    // session pins, side-request detection, and content scoring alike.
+    // "Lynkr Auto" (claude-fable-5) and any unrecognized id resolve to null
+    // and fall through to the existing cascade unchanged.
+    const modelPinTier = resolveTierForModelId(req.body?.model);
+    if (modelPinTier) {
+      const _sel = getModelTierSelector().selectModel(modelPinTier, null);
+      tier = {
+        tier: modelPinTier,
+        provider: _sel.provider,
+        model: _sel.model || null,
+        score: null,
+        method: 'model_id_pin',
+        reason: 'client_selected_model',
+        base_tier: null,
+        escalation_source: null,
+        pinned: false,
+        switch_reason: null,
+        propensity: 1.0,
+        candidates: [{ provider: _sel.provider, model: _sel.model || null }],
+      };
+      logger.debug({
+        model: req.body.model,
+        tier: modelPinTier,
+        provider: _sel.provider,
+      }, "[Routing] Explicit model-id pin — scoring bypassed");
+    } else {
     // Side-request detection. Claude Code fires internal background calls
     // (title generation, summarization, memory extraction, suggestion-mode
     // autocomplete) that REPLAY the conversation — so they share the
@@ -1343,6 +1376,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
         }, "OAuth intent — side request (no tools), pin write skipped");
       }
     }
+    } // end else — no explicit model-id pin, scored normally above
 
     // Subscription-only fork: anti-abuse stealth passthrough when the picked
     // tier resolves to azure-anthropic. Bypasses the orchestrator entirely
@@ -2089,6 +2123,12 @@ router.get("/api/tokens/stats", (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Claude Desktop third-party gateway: intercepts GET /v1/models for
+// Anthropic-API clients (anthropic-version header) and advertises Lynkr's
+// tiers as Claude model families. Mounted BEFORE openaiRouter so the
+// intercept wins; non-Anthropic callers fall through unchanged.
+router.use("/v1", claudeDesktopGatewayRouter);
 
 // Mount OpenAI-compatible endpoints for Cursor IDE support
 router.use("/v1", openaiRouter);

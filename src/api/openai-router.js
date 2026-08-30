@@ -403,6 +403,8 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
   let emittedTools = 0;
   let finishReason = null;
   let started = false;
+  let inputTokens = null;
+  let outputTokens = null;
   const decoder = new TextDecoder();
 
   try {
@@ -420,6 +422,12 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
           case "message_start":
             captureUsage(ev.message?.usage);
             if (!started) { started = true; res.write(chunk({ role: "assistant", content: "" })); }
+            if (typeof ev.message?.usage?.input_tokens === "number") {
+              inputTokens = ev.message.usage.input_tokens;
+            }
+            if (typeof ev.message?.usage?.output_tokens === "number") {
+              outputTokens = ev.message.usage.output_tokens;
+            }
             break;
           case "content_block_start":
             if (ev.content_block?.type === "tool_use") {
@@ -446,6 +454,14 @@ async function forwardAnthropicStreamAsOpenAIChunks(res, stream, requestedModel)
           case "message_delta":
             captureUsage(ev.usage);
             if (ev.delta?.stop_reason) finishReason = mapStop(ev.delta.stop_reason);
+            // The final, authoritative output_tokens count arrives here —
+            // overwrite, don't merge, the message_start placeholder.
+            if (typeof ev.usage?.output_tokens === "number") {
+              outputTokens = ev.usage.output_tokens;
+            }
+            if (typeof ev.usage?.input_tokens === "number") {
+              inputTokens = ev.usage.input_tokens;
+            }
             break;
           case "message_stop":
             res.write(chunk({}, finishReason || "stop", finalUsage()));
@@ -566,6 +582,35 @@ router.post("/chat/completions", async (req, res) => {
       if (profile) anthropicRequest._clientProfile = profile;
     } catch (err) {
       logger.debug({ err: err.message }, "[OpenAI Router] client profile detection failed");
+    }
+
+    // Explicit model/effort pin: Codex's model picker (or any OpenAI-format
+    // caller) can name a real OpenAI model + reasoning.effort combo that
+    // resolveTierForOpenAIModel recognizes. Mirrors router.js's model-id-pin
+    // block for the Anthropic /v1/messages route — this one is needed
+    // separately because these OpenAI-shaped handlers call
+    // orchestrator.processMessage() directly and never go through router.js's
+    // pin/classifier code at all. See ../routing/openai-model-slots.js.
+    try {
+      const { resolveTierForOpenAIModel } = require("../routing/openai-model-slots");
+      const _effort = req.body?.reasoning?.effort ?? req.body?.reasoning_effort ?? null;
+      const _pinTier = resolveTierForOpenAIModel(req.body?.model, _effort);
+      if (_pinTier) {
+        const { getModelTierSelector } = require("../routing");
+        const _sel = getModelTierSelector().selectModel(_pinTier, null);
+        anthropicRequest._forceProvider = _sel.provider;
+        if (_sel.model) anthropicRequest._tierModel = _sel.model;
+        anthropicRequest._tierName = _pinTier;
+        anthropicRequest._forcedMethod = "openai_model_effort_pin";
+        logger.debug({
+          model: req.body?.model,
+          effort: _effort,
+          tier: _pinTier,
+          provider: _sel.provider,
+        }, "[OpenAI Router] Explicit model/effort pin — scoring bypassed");
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, "[OpenAI Router] model/effort pin failed");
     }
 
     const session = getSession(sessionId);
@@ -768,6 +813,25 @@ router.post("/chat/completions", async (req, res) => {
 
         logger.debug({ chunk: "finish", finishReason: openaiResponse.choices[0].finish_reason }, "Sending finish chunk");
         res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
+
+        // Trailing usage chunk (choices: [], usage populated) — same shape
+        // as the Phase 2b live-stream path above. Previously this buffered
+        // synthesis only ever logged openaiResponse.usage (see below) and
+        // never wrote it to the client, so streaming clients on this path
+        // saw zero token/context usage too.
+        if (openaiResponse.usage) {
+          const usageChunk = {
+            id: openaiResponse.id,
+            object: "chat.completion.chunk",
+            created: openaiResponse.created,
+            model: streamModel,
+            system_fingerprint: "fp_lynkr",
+            choices: [],
+            usage: openaiResponse.usage,
+          };
+          res.write(`data: ${JSON.stringify(usageChunk)}\n\n`);
+        }
+
         res.write("data: [DONE]\n\n");
 
         logger.debug({ contentLength: content.length, contentPreview: content.substring(0, 50) }, "=== SSE STREAM COMPLETE ===");
@@ -1829,6 +1893,32 @@ router.post("/responses", async (req, res) => {
       if (profile) anthropicRequest._clientProfile = profile;
     } catch (err) {
       logger.debug({ err: err.message }, "[OpenAI Router] client profile detection failed");
+    }
+
+    // Explicit model/effort pin — see the identical block in /chat/completions
+    // above for the full rationale. This is the route Codex Desktop actually
+    // uses (wire_api="responses"), so this is the one that matters for its
+    // model picker specifically.
+    try {
+      const { resolveTierForOpenAIModel } = require("../routing/openai-model-slots");
+      const _effort = req.body?.reasoning?.effort ?? req.body?.reasoning_effort ?? null;
+      const _pinTier = resolveTierForOpenAIModel(req.body?.model, _effort);
+      if (_pinTier) {
+        const { getModelTierSelector } = require("../routing");
+        const _sel = getModelTierSelector().selectModel(_pinTier, null);
+        anthropicRequest._forceProvider = _sel.provider;
+        if (_sel.model) anthropicRequest._tierModel = _sel.model;
+        anthropicRequest._tierName = _pinTier;
+        anthropicRequest._forcedMethod = "openai_model_effort_pin";
+        logger.debug({
+          model: req.body?.model,
+          effort: _effort,
+          tier: _pinTier,
+          provider: _sel.provider,
+        }, "[OpenAI Router] Explicit model/effort pin (responses) — scoring bypassed");
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, "[OpenAI Router] model/effort pin failed (responses)");
     }
 
     const session = getSession(sessionId);

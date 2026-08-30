@@ -2231,6 +2231,33 @@ IMPORTANT TOOL USAGE RULES:
     }
 
     if (toolCalls.length > 0) {
+      // Auto-resolve web_search/web_fetch server-side, but ONLY for clients
+      // src/routing/client-profiles.js's detectClient() didn't recognize —
+      // i.e. we have no signal the caller can fulfill these itself. Known
+      // harnesses (Claude Code AND Claude Desktop — both present as
+      // claude-cli/... since Desktop's gateway mode runs the same agent-sdk;
+      // also Cursor, goose, Codex) already execute these client-side and
+      // must keep doing so unchanged — this branch never fires for them.
+      // Does NOT reintroduce general server-mode tool execution (removed
+      // 2026-07-22, commit b32e988): only these two tool names, only for
+      // unrecognized clients, and only when EVERY call in this batch is one
+      // we can resolve (a mixed batch falls through to the normal
+      // forward-to-client path below, untouched).
+      const clientProfile = cleanPayload._clientProfile || null;
+      if (!clientProfile) {
+        const webSearchExec = require("../tools/web-search-exec");
+        if (webSearchExec.canAutoResolveAll(toolCalls)) {
+          logger.info({
+            sessionId: session?.id ?? null,
+            step: steps,
+            tools: toolCalls.map((tc) => tc.function?.name ?? tc.name),
+          }, "[web-search-exec] Auto-resolving web_search/web_fetch for unrecognized client");
+          await webSearchExec.autoResolve(toolCalls, cleanPayload.messages);
+          steps++;
+          continue;
+        }
+      }
+
       // Convert OpenAI/OpenRouter format to Anthropic format for session storage
       let sessionContent;
       if (providerType === "azure-anthropic") {
