@@ -188,6 +188,45 @@ class LinUCBBandit {
   }
 
   /**
+   * Mean reward estimate for one arm in one context — θ·x with NO
+   * uncertainty bonus. This is the regression model r̂(x, a) the
+   * doubly-robust off-policy estimator consumes (routing/ope.js): the same
+   * ridge-regression state the live policy learns from, reused as the
+   * DR baseline instead of training a second model.
+   *
+   * Returns null when the arm has never been observed (identity-prior-only
+   * arms predict 0 by construction, which would bias DR toward "never
+   * tried" — better to let the estimator fall back to the IPS-only term).
+   *
+   * @param {string} tier
+   * @param {string} provider
+   * @param {string} model
+   * @param {number[]} context
+   * @returns {number|null} estimated reward in [0, 1], or null if unknown arm
+   */
+  estimateReward(tier, provider, model, context) {
+    const key = this._armKey(tier, provider, model);
+    const arm = this.arms.get(key);
+    if (!arm || arm.count === 0) return null;
+    let ctx = context;
+    if (ctx.length !== this.dim) {
+      ctx = ctx.slice(0, this.dim);
+      while (ctx.length < this.dim) ctx.push(0);
+    }
+    let Ainv;
+    try {
+      Ainv = _inv(arm.A);
+    } catch {
+      return null;
+    }
+    const theta = _matVec(Ainv, arm.b);
+    const mean = _dot(theta, ctx);
+    // Rewards are trained in [0, 1]; clamp the linear extrapolation so a
+    // wild θ·x can't dominate the DR correction term.
+    return Math.max(0, Math.min(1, mean));
+  }
+
+  /**
    * Update the chosen arm with the observed reward.
    * @param {string} tier
    * @param {string} provider
