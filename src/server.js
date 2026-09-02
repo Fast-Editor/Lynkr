@@ -109,7 +109,8 @@ function createApp() {
 
   app.get("/metrics/circuit-breakers", (req, res) => {
     const registry = getCircuitBreakerRegistry();
-    res.json(registry.getAll());
+    const { getHealthProber } = require("./clients/health-probe");
+    res.json({ breakers: registry.getAll(), healthProbe: getHealthProber().getStatus() });
   });
 
   app.get("/metrics/load-shedding", (req, res) => {
@@ -188,6 +189,18 @@ async function start() {
   }
 
   const app = createApp();
+
+  // Synthetic circuit-breaker health probing — recovers open circuits with a
+  // cheap background probe instead of letting the next live user request pay
+  // for testing a dead provider. Zero-cost while all breakers are closed.
+  try {
+    const { getHealthProber } = require("./clients/health-probe");
+    const prober = getHealthProber();
+    prober.start();
+    getShutdownManager().onShutdown(() => prober.stop());
+  } catch (err) {
+    logger.warn({ err: err.message }, "Health prober failed to start, circuit recovery falls back to live-request probing");
+  }
 
   // Wait for Ollama if it's the configured provider or referenced in tier config
   const provider = config.modelProvider?.type?.toLowerCase();
