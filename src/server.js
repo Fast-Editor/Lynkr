@@ -140,6 +140,12 @@ function createApp() {
     res.json({ enabled: true, embeddings: getEmbeddingStatus(), ...cache.getStats() });
   });
 
+  // MCP broker — exposes configured MCP servers to other clients over HTTP.
+  // Off by default; requires LYNKR_MCP_BROKER_ENABLED + a bearer token.
+  // Mounted BEFORE the main router so /v1/mcp/* never falls through to the
+  // OpenAI-compat surface.
+  app.use(require('./api/mcp-broker'));
+
   app.use(router);
 
   app.use('/dashboard', require('./dashboard/router'));

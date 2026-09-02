@@ -20,6 +20,7 @@ Connect Lynkr to your development tools:
 
 - **[Claude Code CLI Setup](claude-code-cli.md)** - Configure Claude Code CLI to use Lynkr
 - **[Claude Desktop Setup](claude-desktop.md)** - Route the Claude Desktop app through Lynkr (macOS gateway profile, model picker as tier selector)
+- **[Tier Pinning](tier-pinning.md)** - Use any desktop client's model picker as a routing tier selector (the generalized technique behind the Claude Desktop and Codex integrations)
 - **[Codex CLI Setup](codex-cli.md)** - Configure OpenAI Codex CLI with Lynkr (config.toml, wire_api, troubleshooting)
 - **[OpenClaw Integration](openclaw-integration.md)** - Use OpenClaw with Lynkr as its AI backend
 - **[Cursor IDE Integration](cursor-integration.md)** - Full Cursor IDE setup with troubleshooting
