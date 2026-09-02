@@ -80,7 +80,11 @@ function createApp() {
 
   // Phase 6.1 — per-tenant routing policies (LYNKR-Tenant-Id header).
   // Runs before message handling so res.locals.tenantPolicy is populated.
-  app.use('/v1/messages', tenantMiddleware);
+  // Must cover every AGENT_ENDPOINT, not just /v1/messages — mounting on a
+  // single path silently exempts OpenAI-compat clients from tenant policy
+  // (the same failure mode the comment above already warns about for other
+  // guards; see issue #100).
+  for (const p of AGENT_ENDPOINTS) app.use(p, tenantMiddleware);
 
   // Phase 6.2 — hierarchical budget enforcement (LYNKR_BUDGET_ENFORCER=false to disable).
   for (const p of AGENT_ENDPOINTS) app.use(p, budgetEnforcer);
