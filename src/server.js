@@ -128,11 +128,15 @@ function createApp() {
 
   app.get("/metrics/semantic-cache", (req, res) => {
     const { getSemanticCache, isSemanticCacheEnabled } = require("./cache/semantic");
+    const { getEmbeddingStatus } = require("./cache/embeddings");
     if (!isSemanticCacheEnabled()) {
       return res.json({ enabled: false, message: "Semantic cache not enabled" });
     }
     const cache = getSemanticCache();
-    res.json({ enabled: true, ...cache.getStats() });
+    // embeddings.providerAvailable === false means matches are currently
+    // served from the non-semantic hash fallback — cache "hits" during a
+    // degraded window are approximate, not semantic.
+    res.json({ enabled: true, embeddings: getEmbeddingStatus(), ...cache.getStats() });
   });
 
   app.use(router);
