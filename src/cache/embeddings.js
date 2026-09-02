@@ -199,6 +199,19 @@ function _wrapProvider(providerName, providerFn) {
 function getEmbeddingFunction() {
   const provider = config.modelProvider?.type || 'databricks';
 
+  // In-process ONNX embedder (opt-in): no external embedding server on the
+  // hot path at all. Same underlying model as the Ollama default
+  // (nomic-embed-text, 768-dim), so existing kNN/cache vectors stay valid.
+  // Wrapped in the same degradation machinery — a failed model load logs
+  // loudly, serves the hash fallback, and retries after the cooldown.
+  if (process.env.LYNKR_EMBEDDINGS_PROVIDER === 'onnx') {
+    const { generateOnnxEmbedding, isOnnxAvailable } = require('./onnx-embedder');
+    if (isOnnxAvailable()) {
+      return _wrapProvider('onnx', generateOnnxEmbedding);
+    }
+    logger.warn('[Embeddings] LYNKR_EMBEDDINGS_PROVIDER=onnx but @huggingface/transformers is not installed (optionalDependency) — falling through to the configured network provider');
+  }
+
   // Check if we have a local embedding provider configured
   if (config.ollama?.embeddingsEndpoint || provider === 'ollama') {
     return _wrapProvider('ollama', generateOllamaEmbedding);
