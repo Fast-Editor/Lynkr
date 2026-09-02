@@ -29,6 +29,7 @@ const { scoreIntent, intentScoreMode } = require('./intent-score');
 // Phase 3-6 routing modules
 const { getKnnRouter } = require('./knn-router');
 const { getBandit } = require('./bandit');
+const { buildCandidates, buildContextVector, decide, stampPropensity } = require('./decide');
 const { getShadowPolicy, compareAndLog: shadowCompareAndLog } = require('./shadow-mode');
 const { chooseFastest } = require('./deadline');
 const { applyTenantOverrides } = require('./tenant-policy');
@@ -1441,65 +1442,29 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // WS4.2 — capture propensity + candidates + context so the outcome row can
   // support off-policy evaluation. banditContext is stashed on the decision
   // (underscored → won't leak through headers, see WS4.2 verification).
-  let banditPropensity = null;
-  let banditCandidates = null;
-  let banditContext = null;
+  //
+  // The candidate-building / context-vector / pick logic lives in decide.js
+  // so the off-policy evaluator can replay it against logged rows.
+  let banditResult = null;
   if (config.routing?.banditEnabled !== false && knnResult && knnResult.model) {
     try {
-      // Build candidates: current selection and kNN alternative if different.
-      //
-      // Tier-aware filter: only treat the kNN suggestion as a real candidate
-      // if it matches a (provider, model) combo configured in ANY TIER_*
-      // entry. The bandit is allowed to explore freely across the user's
-      // configured tiers (e.g. swap a SIMPLE request to the COMPLEX-tier
-      // model), but is forbidden from picking a credentialed-but-untiered
-      // model (e.g. an Azure OpenAI deployment whose endpoint is set in .env
-      // for some other use, but not referenced by any TIER_*). This keeps
-      // tier routing as the source of truth for what's eligible while
-      // preserving cross-tier bandit exploration.
-      const allCandidates = [{ provider, model: selectedModel }];
-      if (knnResult.model !== selectedModel) {
-        const configured = require('./model-tiers').getModelTierSelector().getAllConfiguredModels();
-        const inConfig = configured.some(
-          m => m.provider === knnResult.provider && m.model === knnResult.model
-        );
-        if (inConfig) {
-          allCandidates.push({ provider: knnResult.provider, model: knnResult.model });
-        }
-      }
-
-      if (allCandidates.length > 1) {
-        const bandit = getBandit();
-        const TASK_TYPES = ['code_gen', 'summarization', 'reasoning', 'factoid', 'chat', 'other'];
-        const inferredTask = (analysis.breakdown?.taskType?.reason || 'other').toLowerCase();
-        const taskIdx = Math.max(0, TASK_TYPES.findIndex(t => inferredTask.includes(t)));
-        const ctx = [
-          (analysis.score || 0) / 100,
-          Math.log(Math.max(1, analysis.breakdown?.tokenCount || 0) + 1) / 15,
-          ((payload?.tools?.length ?? 0) > 0) ? 1 : 0,
-          options.streaming ? 1 : 0,
-          risk?.level === 'high' ? 1 : risk?.level === 'medium' ? 0.5 : 0,
-          agenticResult?.isAgentic ? 1 : 0,
-          ...TASK_TYPES.map((_, i) => i === taskIdx ? 1 : 0),
-        ];
-        const picked = bandit.pick(tier, allCandidates, ctx);
-        if (picked) {
-          banditCandidates = allCandidates;
-          banditPropensity = picked.propensity ?? null;
-          banditContext = ctx;
-          if (picked.model !== selectedModel) {
-            logger.debug({
-              from: `${provider}:${selectedModel}`,
-              to: `${picked.provider}:${picked.model}`,
-              ucb: picked.ucb?.toFixed(4),
-              explored: picked.explored,
-              propensity: picked.propensity,
-            }, '[Routing] Bandit override');
-            provider = picked.provider;
-            selectedModel = picked.model;
-            method = method + (picked.explored ? '+bandit_explore' : '+bandit');
-          }
-        }
+      const allCandidates = buildCandidates(
+        { provider, model: selectedModel },
+        { provider: knnResult.provider, model: knnResult.model },
+      );
+      const ctx = buildContextVector({ analysis, payload, options, risk, agenticResult });
+      banditResult = decide(tier, allCandidates, ctx);
+      if (banditResult && banditResult.model !== selectedModel) {
+        logger.debug({
+          from: `${provider}:${selectedModel}`,
+          to: `${banditResult.provider}:${banditResult.model}`,
+          ucb: banditResult.ucb?.toFixed(4),
+          explored: banditResult.explored,
+          propensity: banditResult.propensity,
+        }, '[Routing] Bandit override');
+        provider = banditResult.provider;
+        selectedModel = banditResult.model;
+        method = method + (banditResult.explored ? '+bandit_explore' : '+bandit');
       }
     } catch (err) {
       degradation.record('bandit', err);
@@ -1577,24 +1542,13 @@ async function _determineProviderSmartInner(payload, options = {}) {
   });
 
   // WS4.2 — propensity/candidates for off-policy evaluation from telemetry.
-  // Bandit picks populate both. If a deterministic downstream override
-  // (deadline / tenant) then swapped the served model out of the bandit's
-  // candidate set, the bandit's propensity no longer describes the served
-  // choice — collapse to propensity=1.0 with a single candidate. Otherwise
-  // deterministic branches (bandit didn't run at all) always collapse.
-  // _banditContext is underscored so it never leaks to response headers;
-  // WS5 will consume it in the feedback path to call bandit.update().
-  const banditPickedServed = banditCandidates
-    && banditCandidates.some(c => c.provider === provider && c.model === selectedModel);
-  if (banditPickedServed) {
-    decision.propensity = banditPropensity ?? 1.0;
-    decision.candidates = banditCandidates;
-    decision._banditContext = banditContext;
-  } else {
-    decision.propensity = 1.0;
-    decision.candidates = [{ provider, model: selectedModel }];
-    decision._banditContext = null;
-  }
+  // Collapse rule lives in decide.js (stampPropensity): if a deterministic
+  // downstream override (deadline / tenant) swapped the served model out of
+  // the bandit's candidate set — or the bandit never ran — the row collapses
+  // to propensity=1.0 with a single candidate. _banditContext is underscored
+  // so it never leaks to response headers; the feedback path consumes it to
+  // call bandit.update().
+  stampPropensity(decision, { provider, model: selectedModel }, banditResult);
 
   // WS5.5 — attach the query embedding + raw query text so the feedback
   // path can turn conclusive outcomes into new kNN exemplars without
