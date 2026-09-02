@@ -392,6 +392,11 @@ function _pinToDecision(pin, { reason, risk }) {
 async function determineProviderSmart(payload, options = {}) {
   const pinCheck = checkSessionPin(payload, options);
 
+  // Thread the session identity into fresh routing without mutating the
+  // caller's options object. Used by the de-escalation holdout so a session
+  // deterministically lands on one side of the holdout on every turn.
+  options = pinCheck.sessionId ? { ...options, _sessionId: pinCheck.sessionId } : options;
+
   // Bypass (no session / forceProvider / feature-off) or no pin yet →
   // straight to fresh routing, then persist the outcome for the next turn.
   if (pinCheck.reason === 'bypass' || pinCheck.reason === 'no_pin') {
@@ -1201,17 +1206,31 @@ async function _determineProviderSmartInner(payload, options = {}) {
         analysis,
       });
       if (demoted && demoted !== tier) {
-        const demotedSelection = selector.selectModel(demoted, null);
-        logger.debug({
-          from: `${tier}:${provider}:${selectedModel}`,
-          to: `${demoted}:${demotedSelection.provider}:${demotedSelection.model}`,
-          requestType,
-        }, '[Routing] De-escalation — demoting tier on evidence');
-        demotedFrom = tier;
-        provider = demotedSelection.provider;
-        selectedModel = demotedSelection.model;
-        tier = demoted;
-        method = method + '+deescalated';
+        // Percentage holdout (LYNKR_DEESCALATION_HOLDOUT_PCT, default 10):
+        // a deterministic slice of sessions is served at the original tier
+        // even though the evidence supports demotion. Their telemetry rows
+        // (method '+deescalation_holdout') are the running baseline that
+        // proves demoted sessions aren't quietly doing worse.
+        if (deescalator.isHeldOut(options._sessionId)) {
+          method = method + '+deescalation_holdout';
+          logger.debug({
+            tier,
+            wouldDemoteTo: demoted,
+            requestType,
+          }, '[Routing] De-escalation — evidence supports demotion, session held out as baseline');
+        } else {
+          const demotedSelection = selector.selectModel(demoted, null);
+          logger.debug({
+            from: `${tier}:${provider}:${selectedModel}`,
+            to: `${demoted}:${demotedSelection.provider}:${demotedSelection.model}`,
+            requestType,
+          }, '[Routing] De-escalation — demoting tier on evidence');
+          demotedFrom = tier;
+          provider = demotedSelection.provider;
+          selectedModel = demotedSelection.model;
+          tier = demoted;
+          method = method + '+deescalated';
+        }
       }
     } catch (err) {
       degradation.record('tier_select', err);

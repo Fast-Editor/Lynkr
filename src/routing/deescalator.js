@@ -104,6 +104,42 @@ function _clearCache() {
 }
 
 /**
+ * Percentage-based demotion holdout (ROUTING-NOTES §4.10.4).
+ *
+ * Even when the evidence supports demotion, a configurable slice of sessions
+ * is deliberately excluded and served at the original tier. Those held-out
+ * rows are a continuously-running baseline: comparing their outcomes against
+ * demoted rows (method suffix '+deescalated' vs '+deescalation_holdout' in
+ * routing telemetry) proves the demotion rule is still net-positive over
+ * time, instead of trusting a one-time calibration.
+ *
+ * The bucket is a deterministic hash of the session key, so a session lands
+ * on the same side of the holdout on every turn — cohorts stay clean and a
+ * conversation never flip-flops tiers because of the holdout itself.
+ *
+ * LYNKR_DEESCALATION_HOLDOUT_PCT: 0–100, default 10. 0 disables the holdout.
+ * Read at call time (not module load) so tests and live re-config work.
+ *
+ * @param {string|null} sessionKey — session id/fingerprint; null → never held out
+ * @returns {boolean} true when this session must NOT be demoted (baseline cohort)
+ */
+function isHeldOut(sessionKey) {
+  if (!sessionKey) return false;
+  const raw = Number.parseInt(process.env.LYNKR_DEESCALATION_HOLDOUT_PCT, 10);
+  const pct = Number.isNaN(raw) ? 10 : Math.min(100, Math.max(0, raw));
+  if (pct === 0) return false;
+  // FNV-1a over the session key → stable bucket in 0..99.
+  let hash = 0x811c9dc5;
+  const s = String(sessionKey);
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  const bucket = (hash >>> 0) % 100;
+  return bucket < pct;
+}
+
+/**
  * Shadow-mode policy. Wraps the live routing decision by delegating to
  * `determineProviderSmart` and then applying `suggestDemotion` on the result.
  * Registered with shadow-mode.js under name 'deescalate-v1' so operators can
@@ -143,6 +179,7 @@ async function shadowDeescalate(payload) {
 module.exports = {
   suggestDemotion,
   shadowDeescalate,
+  isHeldOut,
   TIER_ORDER,
   _clearCache,
 };
