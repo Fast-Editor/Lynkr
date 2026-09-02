@@ -332,6 +332,15 @@ class MetricsCollector {
     metric("http_request_duration_ms", "summary", "HTTP request latency in ms", metrics.latency_ms.p95, { quantile: "0.95" });
     metric("http_request_duration_ms", "summary", "HTTP request latency in ms", metrics.latency_ms.p99, { quantile: "0.99" });
 
+    // OTel GenAI semantic-convention aliases (dots → underscores, per
+    // Prometheus conversion rules). Same underlying counters as above,
+    // named so semconv-aware dashboards/tooling find them.
+    metric("gen_ai_client_token_usage_total", "counter", "GenAI tokens consumed (OTel semconv)", metrics.tokens_input_total, { gen_ai_token_type: "input" });
+    metric("gen_ai_client_token_usage_total", "counter", "GenAI tokens consumed (OTel semconv)", metrics.tokens_output_total, { gen_ai_token_type: "output" });
+    metric("gen_ai_client_operation_duration_ms", "summary", "GenAI operation duration (OTel semconv)", metrics.latency_ms.median, { quantile: "0.5" });
+    metric("gen_ai_client_operation_duration_ms", "summary", "GenAI operation duration (OTel semconv)", metrics.latency_ms.p95, { quantile: "0.95" });
+    metric("gen_ai_client_operation_duration_ms", "summary", "GenAI operation duration (OTel semconv)", metrics.latency_ms.p99, { quantile: "0.99" });
+
     return lines.join("\n");
   }
 

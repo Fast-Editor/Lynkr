@@ -202,6 +202,17 @@ async function start() {
     logger.warn({ err: err.message }, "Health prober failed to start, circuit recovery falls back to live-request probing");
   }
 
+  // OTel GenAI metrics export — no-op unless OTEL_EXPORTER_OTLP_ENDPOINT
+  // (or LYNKR_OTEL_ENDPOINT) is set. Zero-dependency OTLP/HTTP push.
+  try {
+    const { getOtelExporter } = require("./observability/otel");
+    const otel = getOtelExporter();
+    otel.start();
+    getShutdownManager().onShutdown(() => otel.stop());
+  } catch (err) {
+    logger.warn({ err: err.message }, "OTel exporter failed to start");
+  }
+
   // Wait for Ollama if it's the configured provider or referenced in tier config
   const provider = config.modelProvider?.type?.toLowerCase();
   if (provider === "ollama" || config.tiersReferenceOllama()) {

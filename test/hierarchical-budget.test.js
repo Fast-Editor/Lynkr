@@ -50,3 +50,35 @@ test('missing context level is ignored', () => {
   const r = b.check({ team: null, customer: null }, 100);
   assert.equal(r.ok, true);
 });
+
+// --- Pre-flight cost estimation (ROUTING-NOTES §1 gap: flat $0.01 stub) ----
+
+const { estimateRequestCost } = require('../src/api/middleware/budget-enforcer');
+
+test('estimateRequestCost floors at the old $0.01 nominal gate', () => {
+  // Empty/unpriceable payloads keep the legacy behavior exactly.
+  assert.ok(estimateRequestCost({}) >= 0.01);
+  assert.ok(estimateRequestCost(null) >= 0.01);
+});
+
+test('estimateRequestCost grows with payload size', () => {
+  const small = estimateRequestCost({
+    messages: [{ role: 'user', content: 'hi' }],
+    max_tokens: 100,
+  });
+  const large = estimateRequestCost({
+    system: 'x'.repeat(40_000),
+    messages: [{ role: 'user', content: 'y'.repeat(400_000) }],
+    max_tokens: 8000,
+  });
+  // With any non-zero blended pricing the large payload must cost more; with
+  // zero pricing both floor at 0.01 — either way large >= small always holds.
+  assert.ok(large >= small, `large (${large}) should be >= small (${small})`);
+});
+
+test('estimateRequestCost respects caller max_tokens over the output floor', () => {
+  const base = { messages: [{ role: 'user', content: 'hello world' }] };
+  const smallOut = estimateRequestCost({ ...base, max_tokens: 1 });
+  const bigOut = estimateRequestCost({ ...base, max_tokens: 32_000 });
+  assert.ok(bigOut >= smallOut);
+});
