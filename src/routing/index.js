@@ -686,6 +686,27 @@ function checkSessionPin(payload, options = {}) {
   const refreshOk = Array.isArray(payload?.tools) && payload.tools.length > 0;
 
   if (sessionAffinity.payloadHasToolHistory(payload)) {
+    // Stuck-loop detection: the pinned model re-issuing the same tool call
+    // (or the same text) over and over. Switching mid-exchange is forbidden
+    // (tool-call IDs aren't provider-portable), so the intervention is the
+    // same safe pattern as the embedded-text triggers below — serve the pin
+    // this turn but DROP it, so the next turn boundary re-routes fresh.
+    try {
+      const { detectStuckLoop } = require('./stuck-detector');
+      const stuck = detectStuckLoop(payload);
+      if (stuck.stuck) {
+        sessionAffinity.removePin(sessionId);
+        logger.warn({
+          sessionId,
+          trigger: stuck.reason,
+          repeats: stuck.repeats,
+          signature: stuck.signature,
+          pinnedTier: pin.tier,
+          pinnedModel: pin.model,
+        }, '[Routing] Stuck loop detected — pin dropped, next boundary re-routes fresh');
+        return { serve: true, pin, reason: 'tool_history_pin_dropped', sessionId };
+      }
+    } catch { /* never block the pin-serve path */ }
     // Text typed during a tool loop arrives merged with the pending
     // tool_result, where the pin serves unconditionally (id linkage forbids
     // switching mid-exchange). If that embedded text trips a trigger, drop
