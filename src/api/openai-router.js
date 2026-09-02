@@ -620,7 +620,8 @@ router.post("/chat/completions", async (req, res) => {
           session: session,
           options: {
             maxSteps: req.body?.max_steps,
-            clientWantsStream: true
+            clientWantsStream: true,
+            tenantPolicy: res.locals?.tenantPolicy || null
           }
         });
 
@@ -859,7 +860,8 @@ router.post("/chat/completions", async (req, res) => {
         headers: req.headers,
         session: session,
         options: {
-          maxSteps: req.body?.max_steps
+          maxSteps: req.body?.max_steps,
+          tenantPolicy: res.locals?.tenantPolicy || null
         }
       });
 
@@ -1929,7 +1931,8 @@ router.post("/responses", async (req, res) => {
             headers: req.headers,
             session: session,
             options: {
-              maxSteps: req.body?.max_steps
+              maxSteps: req.body?.max_steps,
+              tenantPolicy: res.locals?.tenantPolicy || null
             }
           });
         } finally {
@@ -2266,7 +2269,8 @@ router.post("/responses", async (req, res) => {
         headers: req.headers,
         session: session,
         options: {
-          maxSteps: req.body?.max_steps
+          maxSteps: req.body?.max_steps,
+          tenantPolicy: res.locals?.tenantPolicy || null
         }
       });
 
