@@ -18,6 +18,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Guard: the lockfile must only reference the public npm registry.
+      # A private/corporate mirror URL in `resolved` breaks `npm install` /
+      # `npm ci` / Docker builds for everyone outside that network (this
+      # shipped once — 100 npm.devsnc.com URLs made from-source installs 403
+      # for the public). Recurs silently whenever someone on a corporate
+      # network runs `npm install` and commits the lockfile.
+      - name: Lockfile uses public registry only
+        run: |
+          if grep -oE '"resolved": "https://[^/"]*' package-lock.json | grep -v 'registry.npmjs.org'; then
+            echo "::error::package-lock.json contains non-public registry URLs (see above). Regenerate off the corporate network: rm -rf node_modules package-lock.json && npm install"
+            exit 1
+          fi
+        timeout-minutes: 1
+
       - uses: pnpm/action-setup@v4
         with:
           version: 9
