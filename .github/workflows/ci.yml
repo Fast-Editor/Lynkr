@@ -48,9 +48,32 @@ jobs:
         run: npx eslint src index.js --max-warnings 0
         timeout-minutes: 3
 
+      # npm audit needs the registry's advisory endpoint, which flaps during
+      # npm incidents: the POST hangs with no response (observed 2026-09-03,
+      # status page already claiming "operational") and the old bare step
+      # timed out, failing unrelated PRs. Policy: real vulnerability findings
+      # FAIL immediately; a hung/unreachable advisory service retries 3x and
+      # then warns-and-passes — npm's availability must not block merges, and
+      # the audit re-runs on every subsequent push anyway.
       - name: Audit (no high/critical)
-        run: npm audit --audit-level=high
-        timeout-minutes: 3
+        run: |
+          for attempt in 1 2 3; do
+            set +e
+            out=$(timeout 75 npm audit --audit-level=high 2>&1); code=$?
+            set -e
+            echo "$out" | tail -15
+            if [ "$code" -eq 0 ]; then exit 0; fi
+            if [ "$code" -eq 124 ]; then
+              echo "::warning::npm audit attempt $attempt timed out — registry advisory endpoint unresponsive"
+              continue
+            fi
+            # Non-zero, non-timeout: real vulnerabilities (or a real npm
+            # error) — fail loudly.
+            exit "$code"
+          done
+          echo "::warning::npm audit SKIPPED after 3 timeouts (npm registry incident). This is not a clean audit pass — re-run this job once npm recovers."
+          exit 0
+        timeout-minutes: 5
 
       - name: Test
         run: |
