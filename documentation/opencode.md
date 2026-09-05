@@ -6,10 +6,11 @@ opencode's own compaction always matches the model actually serving.
 ## Setup
 
 ```bash
-lynkr opencode                          # merge into ~/.config/opencode/opencode.json
-lynkr opencode --path ./opencode.json   # project-scoped config
-lynkr opencode --base-url http://host:8081
-lynkr opencode --dry-run                # preview, write nothing
+lynkr run opencode                      # refresh config, then launch opencode
+lynkr run opencode --path ./opencode.json   # project-scoped config
+lynkr run opencode --base-url http://host:8081
+lynkr run opencode --dry-run            # preview, write and launch nothing
+lynkr run opencode -- --help            # pass args through to opencode
 ```
 
 Reads your live `TIER_*` config and the model registry, and writes a
@@ -50,5 +51,5 @@ the safest (minimum) window.
 - If a tier model has no registry context window, its entry floors to the
   minimum known window (never guesses upward). Fix with a
   `MODEL_PRICE_OVERRIDES` entry carrying a `context` field.
-- Re-run `lynkr opencode` after changing `TIER_*` config — the windows are
-  computed at setup time.
+- `lynkr run opencode` recomputes the windows on every launch, so `TIER_*`
+  changes are picked up automatically. (Plain `opencode` also works once configured — the windows just stay as last written.)

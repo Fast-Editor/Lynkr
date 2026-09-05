@@ -115,8 +115,13 @@ function defaultConfigPath() {
   return path.join(os.homedir(), ".config", "opencode", "opencode.json");
 }
 
-function main() {
-  const args = process.argv.slice(2);
+/**
+ * Perform the setup. Exported so `lynkr run opencode` (bin/run.js) can
+ * configure-then-launch. Returns { dryRun } so the caller knows whether to
+ * proceed to launching.
+ * @param {string[]} args - CLI-style flag list
+ */
+function runSetup(args) {
   const argValue = (flag) => {
     const i = args.indexOf(flag);
     return i !== -1 && i + 1 < args.length ? args[i + 1] : null;
@@ -146,7 +151,7 @@ function main() {
   if (dryRun) {
     console.log(`\n--dry-run: would merge into ${configPath}`);
     console.log(JSON.stringify({ provider: { lynkr: provider } }, null, 2));
-    return;
+    return { dryRun: true };
   }
 
   let existing = {};
@@ -164,11 +169,7 @@ function main() {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n");
   console.log(`\n✓ Merged provider.lynkr into ${configPath} (other keys preserved).`);
-  console.log("Restart opencode, then pick a Lynkr model. 'Lynkr Auto' compacts at the safe minimum; per-tier entries pin their tier and use its model's full window.");
+  return { dryRun: false };
 }
 
-module.exports = { buildLynkrProvider, mergeOpencodeConfig, readTierWindows, FALLBACK_WINDOW };
-
-if (require.main === module || process.env._LYNKR_SUBCMD === "opencode") {
-  main();
-}
+module.exports = { buildLynkrProvider, mergeOpencodeConfig, readTierWindows, runSetup, FALLBACK_WINDOW };
