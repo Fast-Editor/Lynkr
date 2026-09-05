@@ -705,6 +705,32 @@ function checkSessionPin(payload, options = {}) {
         }
       }
     } catch { /* never block the pin-serve path */ }
+    // Context-overflow escape hatch. Every frame of a tool loop is an
+    // unconditional pin serve, so a long agentic session could NEVER escape
+    // to a larger-context model — the guards that check context fit only run
+    // on non-tool turns, which a busy agent may not produce for hours (live
+    // incident: an 884k-token session stayed pinned to a 128k model for 43
+    // straight requests, with 93.7% of history amputated on every one).
+    // Same safe pattern as the triggers above: serve the pin THIS turn
+    // (tool-call IDs aren't provider-portable), drop it so the next boundary
+    // re-routes — and fresh routing's context guard picks a model that fits.
+    try {
+      if (pin.model) {
+        const promptTokensEst = countPayloadTokens(payload, pin.model);
+        const ctxResult = contextValidator.validate(pin.model, promptTokensEst);
+        if (!ctxResult.ok) {
+          sessionAffinity.removePin(sessionId);
+          logger.warn({
+            sessionId,
+            trigger: 'context_overflow',
+            pinnedModel: pin.model,
+            pinnedTier: pin.tier,
+            promptTokensEst,
+          }, '[Routing] Session outgrew pinned model\'s context window — pin dropped, next boundary re-routes to a context-capable model');
+          return { serve: true, pin, reason: 'tool_history_pin_dropped', sessionId };
+        }
+      }
+    } catch { /* never block the pin-serve path */ }
     if (refreshOk) {
       sessionAffinity.setPin(sessionId, pin, {
         // Monotonic within a pin's lifetime: refreshes must never SHRINK the

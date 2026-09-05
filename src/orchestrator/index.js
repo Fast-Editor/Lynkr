@@ -19,6 +19,7 @@ const { detectBypass, buildBypassResponse } = require("./bypass");
 const crypto = require("crypto");
 const { getSemanticCache } = require("../cache/semantic");
 const { areSimilarToolCalls } = require("../clients/gpt-utils");
+const { getMetricsCollector } = require("../observability/metrics");
 const { getModelRegistrySync } = require("../routing/model-registry");
 const sessionAffinity = require("../routing/session-affinity");
 
@@ -422,8 +423,52 @@ function countToolCallsInHistory(messages) {
 // requests escape it.
 
 const DEDUP_MAX_SIGNATURES = 50;
-const DEDUP_WARN_THRESHOLD = 5;
-const DEDUP_TERMINATE_THRESHOLD = 8;
+// Loop-guard thresholds. Read at call time (not module load) so they're
+// env-tunable per deployment and testable. Defaults raised from 5/8 after a
+// live incident: with the old similarity rule, paging through disjoint
+// regions of one large file hit 5 "similar" reads and the injected STOP
+// order repeatedly killed legitimate work turns. Now that similarity is
+// overlap-aware (gpt-utils.js), even 8 genuinely-similar calls is a strong
+// loop signal — the guard keeps catching real loops without firing on
+// normal coding sessions in big files.
+const DEDUP_WARN_THRESHOLD_DEFAULT = 8;
+const DEDUP_TERMINATE_THRESHOLD_DEFAULT = 12;
+
+function dedupWarnThreshold() {
+  const n = Number.parseInt(process.env.LYNKR_DEDUP_WARN_THRESHOLD, 10);
+  return Number.isNaN(n) || n < 2 ? DEDUP_WARN_THRESHOLD_DEFAULT : n;
+}
+
+function dedupTerminateThreshold() {
+  const n = Number.parseInt(process.env.LYNKR_DEDUP_TERMINATE_THRESHOLD, 10);
+  return Number.isNaN(n) || n < 3 ? DEDUP_TERMINATE_THRESHOLD_DEFAULT : n;
+}
+
+/**
+ * Model-aware token budget for a requested model: the model's real context
+ * window (registry-sourced) shrunk to a safe working budget. Single source
+ * of truth for both the token-budget enforcement pass AND the history
+ * compressor — the compressor must target the same budget the enforcer
+ * checks, or it over-compresses (live incident: fixed 10-message window kept
+ * ~56k tokens while 108.8k were available).
+ *
+ * @param {string} requestedModel
+ * @returns {{ modelContextWindow: number, effectiveMax: number, effectiveWarning: number, source: string }}
+ */
+function computeModelTokenBudget(requestedModel) {
+  const registry = getModelRegistrySync();
+  const modelInfo = registry.getCost(requestedModel);
+  const modelContextWindow = modelInfo?.context || config.tokenBudget?.max || 180000;
+  const modelMax = Math.floor(modelContextWindow * 0.85);
+  const effectiveMax = Math.min(modelMax, config.tokenBudget?.max || 180000);
+  const effectiveWarning = Math.floor(effectiveMax * 0.65);
+  return {
+    modelContextWindow,
+    effectiveMax,
+    effectiveWarning,
+    source: modelInfo?.source || 'default',
+  };
+}
 
 /**
  * State-management tools are called repeatedly with similar args BY DESIGN —
@@ -1434,7 +1479,11 @@ async function runAgentLoop({
           cleanPayload.messages = historyCompression.compressHistory(originalMessages, {
             keepRecentTurns: config.historyCompression?.keepRecentTurns ?? 10,
             summarizeOlder: config.historyCompression?.summarizeOlder ?? true,
-            enabled: true
+            enabled: true,
+            // Budget-driven recent window: keep as many verbatim recent
+            // messages as the model's context budget allows, instead of a
+            // fixed 10 (see compressHistory for the incident this fixes).
+            budgetTokens: computeModelTokenBudget(requestedModel).effectiveMax,
           });
 
           if (cleanPayload.messages !== originalMessages) {
@@ -1443,6 +1492,24 @@ async function runAgentLoop({
               sessionId: session?.id ?? null,
               ...stats
             }, 'History compression applied');
+
+            // Degradation visibility: severe compression means the model is
+            // seeing a small fraction of the session. Count it, and warn
+            // (once per session) past 50% — operators should not need log
+            // forensics to learn their agent has amnesia.
+            const pct = Number.parseFloat(stats.percentage) || 0;
+            try { getMetricsCollector().recordHistoryCompression(pct); } catch { /* best-effort */ }
+            if (pct > 50 && session?.metadata && !session.metadata._compressionWarned) {
+              session.metadata._compressionWarned = true;
+              logger.warn({
+                sessionId: session?.id ?? null,
+                percentage: stats.percentage,
+                originalMessages: stats.originalMessages,
+                compressedMessages: stats.compressedMessages,
+                tokensOriginal: stats.tokensOriginal,
+                tokensCompressed: stats.tokensCompressed,
+              }, '[HistoryCompression] Severe compression — the model sees a small fraction of this session. Consider client-side compaction or a larger-context model.');
+            }
           }
         }
       } catch (err) {
@@ -1598,13 +1665,11 @@ IMPORTANT TOOL USAGE RULES:
       cleanPayload.system = (cleanPayload.system || '') + '\n\nCRITICAL: You have NO tools available. Do NOT generate tool_use, function_call, or code_execution blocks. Output ONLY text content directly.';
     }
 
-    // Compute model-aware token budget thresholds
-    const registry = getModelRegistrySync();
-    const modelInfo = registry.getCost(requestedModel);
-    const modelContextWindow = modelInfo?.context || config.tokenBudget?.max || 180000;
-    const modelMax = Math.floor(modelContextWindow * 0.85);
-    const effectiveMax = Math.min(modelMax, config.tokenBudget?.max || 180000);
-    const effectiveWarning = Math.floor(effectiveMax * 0.65);
+    // Compute model-aware token budget thresholds (shared helper — also
+    // consumed by the history-compression block above, which must target the
+    // same budget it enforces).
+    const { modelContextWindow, effectiveMax, effectiveWarning, source: budgetSource } =
+      computeModelTokenBudget(requestedModel);
 
     logger.debug({
       sessionId: session?.id ?? null,
@@ -1612,7 +1677,7 @@ IMPORTANT TOOL USAGE RULES:
       modelContextWindow,
       effectiveWarning,
       effectiveMax,
-      source: modelInfo?.source || 'default',
+      source: budgetSource,
     }, 'Model-aware token budget computed');
 
     if (steps === 1 && config.tokenBudget?.enforcement !== false) {
@@ -2893,15 +2958,16 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
       const { maxCount, toolName: dedupToolName, signature: dedupSig } = getMaxDedupCount(session);
 
-      if (maxCount >= DEDUP_TERMINATE_THRESHOLD) {
+      if (maxCount >= dedupTerminateThreshold()) {
         // Force-terminate: same pattern as existing tool_loop_guard
         logger.error({
           toolName: dedupToolName,
           count: maxCount,
-          threshold: DEDUP_TERMINATE_THRESHOLD,
+          threshold: dedupTerminateThreshold(),
           signature: dedupSig,
           sessionId: session?.id ?? null,
         }, "[CrossRequestDedup] FORCE TERMINATING - repeated tool call across requests");
+        try { getMetricsCollector().recordLoopGuard('terminate'); } catch { /* metrics best-effort */ }
 
         // Extract tool results summary from current turn
         let toolResultsSummary = "";
@@ -2957,22 +3023,27 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
         };
       }
 
-      if (maxCount >= DEDUP_WARN_THRESHOLD && !dedup.warningInjected) {
+      if (maxCount >= dedupWarnThreshold() && !dedup.warningInjected) {
         logger.warn({
           toolName: dedupToolName,
           count: maxCount,
-          threshold: DEDUP_WARN_THRESHOLD,
+          threshold: dedupWarnThreshold(),
           signature: dedupSig,
           sessionId: session?.id ?? null,
         }, "[CrossRequestDedup] Warning - repeated tool call detected across requests");
+        try { getMetricsCollector().recordLoopGuard('warn'); } catch { /* metrics best-effort */ }
 
         dedup.warningInjected = true;
 
-        // Inject a strict warning into the payload so the model sees it
+        // Inject a warning into the payload so the model sees it. The text is
+        // deliberately honest about what was detected (similar, not
+        // necessarily identical, calls) and does NOT tell the model to hide
+        // the intervention — an invisible mutation that changes agent
+        // behavior is exactly the failure mode operators can't debug.
         if (Array.isArray(payload?.messages)) {
           payload.messages.push({
             role: "user",
-            content: `⚠️ CRITICAL SYSTEM WARNING: You have called the "${dedupToolName}" tool ${maxCount} times with identical or similar parameters across multiple requests. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Your response must contain your actual findings from the tool results gathered so far — NOT an acknowledgment or restatement of this warning. Do not mention this warning in your response.`,
+            content: `[Lynkr loop guard] The "${dedupToolName}" tool has now been called ${maxCount} times with identical or overlapping parameters in this session. If you are re-requesting content you already received, stop and produce your answer from the results you already have — an empty or "no results" output IS a final answer, do not retry it. If these repeats were intentional (e.g. re-checking a file after editing it), continue, but vary your approach rather than repeating the same call. At ${dedupTerminateThreshold()} similar calls the session loop guard will force-terminate the turn.`,
           });
         }
       }
