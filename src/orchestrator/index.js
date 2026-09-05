@@ -19,7 +19,7 @@ const { detectBypass, buildBypassResponse } = require("./bypass");
 const crypto = require("crypto");
 const { getSemanticCache } = require("../cache/semantic");
 const { areSimilarToolCalls } = require("../clients/gpt-utils");
-const { getModelRegistrySync } = require("../routing/model-registry");
+const { getMetricsCollector } = require("../observability/metrics");
 const sessionAffinity = require("../routing/session-affinity");
 
 /**
@@ -365,55 +365,9 @@ function normaliseToolIdentifier(name = "") {
 }
 
 
-/**
- * Count tool_use and tool_result blocks in message history.
- * Only counts tools from the CURRENT TURN (after the last user text message).
- * This prevents the guard from blocking new questions after a previous loop.
- */
-function countToolCallsInHistory(messages) {
-  if (!Array.isArray(messages)) return { toolUseCount: 0, toolResultCount: 0 };
-
-  // Find the index of the last user message that contains actual text (not just tool_result)
-  let lastUserTextIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg?.role !== 'user') continue;
-
-    // Check if this user message has actual text content (not just tool_result)
-    if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
-      lastUserTextIndex = i;
-      break;
-    }
-    if (Array.isArray(msg.content)) {
-      const hasText = msg.content.some(block =>
-        (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
-        (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
-      );
-      if (hasText) {
-        lastUserTextIndex = i;
-        break;
-      }
-    }
-  }
-
-  // Count only tool_use/tool_result AFTER the last user text message
-  let toolUseCount = 0;
-  let toolResultCount = 0;
-
-  const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
-
-  for (let i = startIndex; i < messages.length; i++) {
-    const msg = messages[i];
-    if (!msg || !Array.isArray(msg.content)) continue;
-
-    for (const block of msg.content) {
-      if (block?.type === 'tool_use') toolUseCount++;
-      if (block?.type === 'tool_result') toolResultCount++;
-    }
-  }
-
-  return { toolUseCount, toolResultCount, lastUserTextIndex };
-}
+// (countToolCallsInHistory was removed along with the dedup force-terminate
+// path — the dedup counter is observe-only and no longer needs to slice the
+// current turn's tool results to synthesize a forced response.)
 
 // === CROSS-REQUEST TOOL CALL DEDUP TRACKING ===
 // These helpers track tool call signatures across multiple HTTP requests within
@@ -422,8 +376,123 @@ function countToolCallsInHistory(messages) {
 // requests escape it.
 
 const DEDUP_MAX_SIGNATURES = 50;
-const DEDUP_WARN_THRESHOLD = 5;
-const DEDUP_TERMINATE_THRESHOLD = 8;
+// Observe-only threshold: how many similar calls before the counter emits
+// its once-per-question log line + metrics signal. This is diagnostics, not
+// enforcement — no message is ever injected and no turn is ever terminated
+// on this signal (see the observe-only note at the consumer). Read at call
+// time (not module load) so it's env-tunable per deployment and testable.
+const DEDUP_OBSERVE_THRESHOLD_DEFAULT = 8;
+
+function dedupWarnThreshold() {
+  const n = Number.parseInt(process.env.LYNKR_DEDUP_WARN_THRESHOLD, 10);
+  return Number.isNaN(n) || n < 2 ? DEDUP_OBSERVE_THRESHOLD_DEFAULT : n;
+}
+
+// Cached minimum context window across the configured TIER_* models — the
+// conservative floor for requests whose actual model can't be resolved
+// (virtual names like "lynkr-auto" before a session has a pin). 60s TTL so
+// tier-config hot-reloads are picked up.
+let _minTierWindowCache = { at: 0, value: null };
+const MIN_TIER_WINDOW_TTL_MS = 60_000;
+
+function minConfiguredTierWindow() {
+  const now = Date.now();
+  if (now - _minTierWindowCache.at < MIN_TIER_WINDOW_TTL_MS) return _minTierWindowCache.value;
+  let min = null;
+  try {
+    const { getModelTierSelector } = require("../routing/model-tiers");
+    const { contextWindowFor } = require("../routing/model-registry");
+    for (const m of getModelTierSelector().getAllConfiguredModels()) {
+      const w = contextWindowFor(m.model);
+      if (w && (!min || w < min)) min = w;
+    }
+  } catch { /* tier config unavailable — fall through to the default */ }
+  _minTierWindowCache = { at: now, value: min };
+  return min;
+}
+
+// Absolute fallback when nothing at all resolves (no registry hit, no pin,
+// no priced tier models). 200k-class minus headroom — the historical default.
+const TOKEN_BUDGET_FALLBACK = 180000;
+
+/**
+ * Model-aware token budget: the served model's real context window
+ * (registry-sourced) shrunk to a safe working budget. Single source of truth
+ * for both the token-budget enforcement pass AND the history compressor —
+ * the compressor must target the same budget the enforcer checks, or it
+ * over-compresses (live incident: fixed 10-message window kept ~56k tokens
+ * while 108.8k were available).
+ *
+ * Resolution order — most specific knowledge of the ACTUAL model wins:
+ *   1. the session pin's model — ground truth for what is really serving.
+ *      Requested names lie in both virtual cases: "lynkr-auto" resolves in
+ *      the registry (a literal 128k entry — the incident's mystery number),
+ *      and tier-slot names (Claude Desktop's "claude-sonnet-5" = COMPLEX
+ *      tier) resolve to the SLOT model's window, not the tier's configured
+ *      model actually serving. The pin knows the truth; it wins.
+ *   2. requested model known to the registry (clients sending real names;
+ *      "lynkr-*" virtual names are excluded — they must never resolve)
+ *   3. minimum window across configured TIER_* models (conservative floor
+ *      for unpinned virtual-name requests: safe for whatever routing picks)
+ *   4. TOKEN_BUDGET_FALLBACK
+ *
+ * TOKEN_BUDGET_MAX is an OPT-IN cost/latency ceiling, applied only when the
+ * env var is explicitly set. It is deliberately no longer a default clamp:
+ * overflow safety is fully handled by the per-model ×0.85 math, and cost
+ * control belongs to the honest protocol layers (budgets, TPM) — not to a
+ * silent global squeeze that turns a 1M-context model into a 180k one.
+ * Read at call time so it's testable and live-tunable.
+ *
+ * @param {string} requestedModel
+ * @param {string|null} [sessionId] - for pin-aware resolution (step 2)
+ * @returns {{ modelContextWindow: number, effectiveMax: number, effectiveWarning: number, source: string }}
+ */
+function computeModelTokenBudget(requestedModel, sessionId = null) {
+  const { contextWindowFor } = require("../routing/model-registry");
+
+  let modelContextWindow = null;
+  let source = null;
+
+  // 1. Session pin — the actually-serving model, when known.
+  if (sessionId) {
+    try {
+      const pin = sessionAffinity.getPin(sessionId);
+      if (pin?.model) {
+        modelContextWindow = contextWindowFor(pin.model);
+        if (modelContextWindow) source = 'session-pin';
+      }
+    } catch { /* pin store unavailable — fall through */ }
+  }
+
+  // 2. Requested model — only for real names. Lynkr's own virtual names
+  // must never resolve here (a "lynkr-auto" registry entry exists and
+  // longest-prefix matching extends it to any lynkr-* string).
+  const isVirtualName = /^lynkr[-_]/i.test(requestedModel || '');
+  if (!modelContextWindow && !isVirtualName) {
+    modelContextWindow = contextWindowFor(requestedModel);
+    if (modelContextWindow) source = 'requested-model';
+  }
+
+  if (!modelContextWindow) {
+    modelContextWindow = minConfiguredTierWindow();
+    if (modelContextWindow) source = 'min-tier';
+  }
+
+  if (!modelContextWindow) {
+    modelContextWindow = TOKEN_BUDGET_FALLBACK;
+    source = 'default';
+  }
+
+  const modelMax = Math.floor(modelContextWindow * 0.85);
+  const explicitCap = process.env.TOKEN_BUDGET_MAX
+    ? Number.parseInt(process.env.TOKEN_BUDGET_MAX, 10)
+    : null;
+  const effectiveMax = explicitCap && explicitCap > 0
+    ? Math.min(modelMax, explicitCap)
+    : modelMax;
+  const effectiveWarning = Math.floor(effectiveMax * 0.65);
+  return { modelContextWindow, effectiveMax, effectiveWarning, source };
+}
 
 /**
  * State-management tools are called repeatedly with similar args BY DESIGN —
@@ -1434,7 +1503,11 @@ async function runAgentLoop({
           cleanPayload.messages = historyCompression.compressHistory(originalMessages, {
             keepRecentTurns: config.historyCompression?.keepRecentTurns ?? 10,
             summarizeOlder: config.historyCompression?.summarizeOlder ?? true,
-            enabled: true
+            enabled: true,
+            // Budget-driven recent window: keep as many verbatim recent
+            // messages as the model's context budget allows, instead of a
+            // fixed 10 (see compressHistory for the incident this fixes).
+            budgetTokens: computeModelTokenBudget(requestedModel, session?.id ?? null).effectiveMax,
           });
 
           if (cleanPayload.messages !== originalMessages) {
@@ -1443,6 +1516,24 @@ async function runAgentLoop({
               sessionId: session?.id ?? null,
               ...stats
             }, 'History compression applied');
+
+            // Degradation visibility: severe compression means the model is
+            // seeing a small fraction of the session. Count it, and warn
+            // (once per session) past 50% — operators should not need log
+            // forensics to learn their agent has amnesia.
+            const pct = Number.parseFloat(stats.percentage) || 0;
+            try { getMetricsCollector().recordHistoryCompression(pct); } catch { /* best-effort */ }
+            if (pct > 50 && session?.metadata && !session.metadata._compressionWarned) {
+              session.metadata._compressionWarned = true;
+              logger.warn({
+                sessionId: session?.id ?? null,
+                percentage: stats.percentage,
+                originalMessages: stats.originalMessages,
+                compressedMessages: stats.compressedMessages,
+                tokensOriginal: stats.tokensOriginal,
+                tokensCompressed: stats.tokensCompressed,
+              }, '[HistoryCompression] Severe compression — the model sees a small fraction of this session. Consider client-side compaction or a larger-context model.');
+            }
           }
         }
       } catch (err) {
@@ -1598,13 +1689,11 @@ IMPORTANT TOOL USAGE RULES:
       cleanPayload.system = (cleanPayload.system || '') + '\n\nCRITICAL: You have NO tools available. Do NOT generate tool_use, function_call, or code_execution blocks. Output ONLY text content directly.';
     }
 
-    // Compute model-aware token budget thresholds
-    const registry = getModelRegistrySync();
-    const modelInfo = registry.getCost(requestedModel);
-    const modelContextWindow = modelInfo?.context || config.tokenBudget?.max || 180000;
-    const modelMax = Math.floor(modelContextWindow * 0.85);
-    const effectiveMax = Math.min(modelMax, config.tokenBudget?.max || 180000);
-    const effectiveWarning = Math.floor(effectiveMax * 0.65);
+    // Compute model-aware token budget thresholds (shared helper — also
+    // consumed by the history-compression block above, which must target the
+    // same budget it enforces).
+    const { modelContextWindow, effectiveMax, effectiveWarning, source: budgetSource } =
+      computeModelTokenBudget(requestedModel, session?.id ?? null);
 
     logger.debug({
       sessionId: session?.id ?? null,
@@ -1612,7 +1701,7 @@ IMPORTANT TOOL USAGE RULES:
       modelContextWindow,
       effectiveWarning,
       effectiveMax,
-      source: modelInfo?.source || 'default',
+      source: budgetSource,
     }, 'Model-aware token budget computed');
 
     if (steps === 1 && config.tokenBudget?.enforcement !== false) {
@@ -2893,88 +2982,36 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
       const { maxCount, toolName: dedupToolName, signature: dedupSig } = getMaxDedupCount(session);
 
-      if (maxCount >= DEDUP_TERMINATE_THRESHOLD) {
-        // Force-terminate: same pattern as existing tool_loop_guard
-        logger.error({
-          toolName: dedupToolName,
-          count: maxCount,
-          threshold: DEDUP_TERMINATE_THRESHOLD,
-          signature: dedupSig,
-          sessionId: session?.id ?? null,
-        }, "[CrossRequestDedup] FORCE TERMINATING - repeated tool call across requests");
-
-        // Extract tool results summary from current turn
-        let toolResultsSummary = "";
-        const messages = payload?.messages || [];
-        const { lastUserTextIndex: luIdx } = countToolCallsInHistory(messages);
-        const startIdx = luIdx >= 0 ? luIdx : 0;
-        for (let i = startIdx; i < messages.length; i++) {
-          const msg = messages[i];
-          if (!msg || !Array.isArray(msg.content)) continue;
-          for (const block of msg.content) {
-            if (block?.type === 'tool_result' && block?.content) {
-              const content = typeof block.content === 'string'
-                ? block.content
-                : JSON.stringify(block.content);
-              if (content && !content.includes('Found 0')) {
-                toolResultsSummary += content + "\n";
-              }
-            }
-          }
-        }
-
-        let responseText = `Based on the tool results, here's what I found:\n\n`;
-        if (toolResultsSummary.trim()) {
-          responseText += toolResultsSummary.trim();
-        } else {
-          responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
-        }
-
-        const forcedResponse = {
-          id: `msg_forced_${Date.now()}`,
-          type: "message",
-          role: "assistant",
-          content: [{ type: "text", text: responseText }],
-          model: requestedModel || "unknown",
-          stop_reason: "end_turn",
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 100 },
-        };
-
-        // Reset dedup after termination so next question starts fresh
-        resetDedupTracking(session);
-        // Persist to DB (non-ephemeral sessions only)
-        if (session.id && !session._ephemeral) {
-          try { upsertSession(session.id, { metadata: session.metadata }); } catch (e) {
-            logger.debug({ err: e.message }, "Failed to persist dedup reset");
-          }
-        }
-
-        return {
-          status: 200,
-          body: forcedResponse,
-          terminationReason: "tool_loop_guard",
-        };
-      }
-
-      if (maxCount >= DEDUP_WARN_THRESHOLD && !dedup.warningInjected) {
+      // OBSERVE-ONLY (deliberate design decision, 2026-09): the proxy meters
+      // and reports — it never judges behavior into the conversation. The
+      // previous enforcement here (an injected "loop guard" message at the
+      // warn threshold, a forced synthetic response at the terminate
+      // threshold) was removed after a live incident where it repeatedly
+      // killed legitimate work: the proxy has the weakest evidence of any
+      // layer (arg previews + similarity heuristics), so it carries an
+      // irreducible false-positive floor, and a false positive here
+      // sabotages the user's task invisibly. Loop *breaking* belongs to the
+      // harness and the model; Lynkr's protection against runaway spend is
+      // the honest, protocol-level layer: TPM limits (LYNKR_TPM_LIMIT),
+      // budgets, and the loop-guard middleware's turn caps
+      // (LYNKR_MAX_SESSION_TURNS / LYNKR_MAX_TOOL_TURNS) — all visible
+      // 429/402 refusals, never ghostwritten messages.
+      //
+      // The counter itself stays: it costs nothing, mutates nothing, and is
+      // exactly the signal an operator needs to diagnose loop-shaped waste
+      // (log line + metrics; dashboards/statusline read the metrics).
+      if (maxCount >= dedupWarnThreshold() && !dedup.warningInjected) {
         logger.warn({
           toolName: dedupToolName,
           count: maxCount,
-          threshold: DEDUP_WARN_THRESHOLD,
+          threshold: dedupWarnThreshold(),
           signature: dedupSig,
           sessionId: session?.id ?? null,
-        }, "[CrossRequestDedup] Warning - repeated tool call detected across requests");
-
+        }, "[CrossRequestDedup] Repeated similar tool calls observed (observe-only — no intervention)");
+        try { getMetricsCollector().recordLoopGuard('observed'); } catch { /* metrics best-effort */ }
+        // Field name kept for persisted-session compatibility; semantics are
+        // now "signal emitted once per question", not "warning injected".
         dedup.warningInjected = true;
-
-        // Inject a strict warning into the payload so the model sees it
-        if (Array.isArray(payload?.messages)) {
-          payload.messages.push({
-            role: "user",
-            content: `⚠️ CRITICAL SYSTEM WARNING: You have called the "${dedupToolName}" tool ${maxCount} times with identical or similar parameters across multiple requests. This IS an infinite loop. STOP calling this tool immediately. You MUST now provide a direct text response based on the results you have received. If the tool returned "no results" or empty output, that IS the final answer - do not retry. Your response must contain your actual findings from the tool results gathered so far — NOT an acknowledgment or restatement of this warning. Do not mention this warning in your response.`,
-          });
-        }
       }
 
       // Persist dedup state (non-ephemeral sessions only)
@@ -2985,9 +3022,10 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
       }
     }
 
-    // No count-based tool_loop_guard. Natural limits (maxSteps, maxDurationMs,
-    // provider token/rate limits, client-side loop detection, and the
-    // cross-request dedup above) are sufficient protection.
+    // No count-based tool_loop_guard and no dedup-based enforcement (see
+    // observe-only note above). Hard limits live at the protocol layer:
+    // maxSteps, maxDurationMs, provider token/rate limits, TPM, budgets,
+    // and the loop-guard middleware's turn caps.
   }
 
   const { createTimer } = require("../utils/perf-timer");
@@ -3180,4 +3218,6 @@ module.exports = {
   trimLoopMessages,
   // Exported for unit testing of the live-stream routing badge.
   buildRoutingBadge,
+  // Exported for unit testing of pin-aware model budget resolution.
+  computeModelTokenBudget,
 };

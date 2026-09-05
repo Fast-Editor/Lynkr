@@ -29,6 +29,20 @@ class MetricsCollector {
     this.budgetBlocks = 0;
     this.rateLimitBlocks = 0;
 
+    // Loop-guard interventions (cross-request tool dedup): warnings injected
+    // into model context and force-terminated turns. Non-zero numbers here
+    // mean Lynkr actively altered agent behavior — surfaced so operators
+    // don't need log forensics to discover it.
+    this.loopGuardWarnings = 0;
+    this.loopGuardTerminations = 0;
+
+    // History compression: how often and how hard conversations are being
+    // squeezed to fit the model's context window. A high maxPercentage means
+    // models are seeing a small fraction of their sessions.
+    this.historyCompressions = 0;
+    this.historyCompressionLastPct = 0;
+    this.historyCompressionMaxPct = 0;
+
     // API metrics
     this.databricksRequests = 0;
     this.databricksErrors = 0;
@@ -118,6 +132,28 @@ class MetricsCollector {
    */
   recordRateLimitBlock() {
     this.rateLimitBlocks++;
+  }
+
+  /**
+   * Record a loop-guard intervention.
+   * @param {'warn'|'terminate'} kind
+   */
+  recordLoopGuard(kind) {
+    // 'observed' is the only kind emitted since the guard went observe-only;
+    // 'terminate' is kept as a counter bucket for any historical dashboards.
+    if (kind === 'terminate') this.loopGuardTerminations++;
+    else this.loopGuardWarnings++;
+  }
+
+  /**
+   * Record a history-compression event.
+   * @param {number} percentage - percent of chars removed (0-100)
+   */
+  recordHistoryCompression(percentage) {
+    this.historyCompressions++;
+    const pct = Number(percentage) || 0;
+    this.historyCompressionLastPct = pct;
+    if (pct > this.historyCompressionMaxPct) this.historyCompressionMaxPct = pct;
   }
 
   /**
@@ -221,6 +257,13 @@ class MetricsCollector {
       // Budget
       budget_blocks_total: this.budgetBlocks,
       rate_limit_blocks_total: this.rateLimitBlocks,
+
+      // Loop guard + history compression (context interventions)
+      loop_guard_warnings_total: this.loopGuardWarnings,
+      loop_guard_terminations_total: this.loopGuardTerminations,
+      history_compressions_total: this.historyCompressions,
+      history_compression_last_pct: this.historyCompressionLastPct,
+      history_compression_max_pct: this.historyCompressionMaxPct,
 
       // API
       databricks_requests_total: this.databricksRequests,

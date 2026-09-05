@@ -1116,7 +1116,7 @@ async function invokeAzureOpenAI(body, _incomingHeaders = {}) {
         originalMessageCount: (body.messages || []).length,
         convertedMessageCount: azureBody.messages.length,
         messageRoles: (body.messages || []).map(m => m.role),
-      }, "=== CONTINUATION REQUEST DETECTED - using minimal system prompt to avoid Azure content filter ===");
+      }, "Continuation request — system prompt PRESERVED, system-reminder blocks stripped uniformly (the filter trigger was the reminders, not the prompt; see system-message handling below)");
     } else {
       logger.debug({
         hasToolResults: false,

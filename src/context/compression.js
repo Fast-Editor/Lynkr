@@ -40,14 +40,50 @@ function compressHistory(messages, options = {}) {
     keepRecentTurns: options.keepRecentTurns ?? config.historyCompression?.keepRecentTurns ?? 10,
     summarizeOlder: options.summarizeOlder ?? config.historyCompression?.summarizeOlder ?? true,
     enabled: options.enabled ?? config.historyCompression?.enabled ?? true,
+    // Model token budget (e.g. effectiveMax from the orchestrator). When set,
+    // the verbatim-recent window grows to USE the budget instead of a fixed
+    // message count. Live incident: a 935-message session against a 128k
+    // model kept only 10 recent messages (~56k tokens) while 108.8k tokens
+    // of budget were available — ~50k tokens of context thrown away, giving
+    // the model amnesia about its own recent edits.
+    budgetTokens: options.budgetTokens ?? null,
   };
 
   if (!opts.enabled) {
     return messages; // Return uncompressed if disabled
   }
 
+  // Recent-window size: fixed count by default; budget-driven when a model
+  // token budget is provided. RECENT_BUDGET_FRACTION reserves the rest of
+  // the budget for the summary block, system prompt, tools, and the
+  // response itself.
+  const RECENT_BUDGET_FRACTION = 0.6;
+  const CHARS_PER_TOKEN = 4;
+  let keepRecent = opts.keepRecentTurns;
+  if (Number.isFinite(opts.budgetTokens) && opts.budgetTokens > 0) {
+    const targetChars = opts.budgetTokens * CHARS_PER_TOKEN * RECENT_BUDGET_FRACTION;
+    let accumulated = 0;
+    let count = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      accumulated += estimateMessagesSize([messages[i]]);
+      if (accumulated > targetChars) break;
+      count++;
+    }
+    keepRecent = Math.max(opts.keepRecentTurns, count);
+  }
+
   // Calculate split point
-  const splitIndex = Math.max(0, messages.length - opts.keepRecentTurns);
+  let splitIndex = Math.max(0, messages.length - keepRecent);
+
+  // Tool-exchange boundary alignment: never let the recent window START with
+  // a tool_result whose paired tool_use just got summarized away — providers
+  // reject orphaned tool_result blocks ("unexpected tool_use_id"). Pull the
+  // split earlier until the boundary is clean.
+  const startsWithToolResult = (msg) =>
+    Array.isArray(msg?.content) && msg.content.some((b) => b?.type === 'tool_result');
+  while (splitIndex > 0 && startsWithToolResult(messages[splitIndex])) {
+    splitIndex--;
+  }
 
   if (splitIndex === 0) {
     // All messages are recent, no compression needed

@@ -11,6 +11,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+// Context-overflow tests need a model with a tiny, KNOWN context window in
+// the registry. Must be set before the registry singleton first constructs.
+process.env.MODEL_PRICE_OVERRIDES = JSON.stringify({
+  "tiny-ctx-model": { input: 1.0, output: 1.0, context: 1000 },
+});
+
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lynkr-sticky-"));
 require("../src/routing/telemetry")._setDbPathForTests(path.join(tmpDir, "telemetry.db"));
 
@@ -347,5 +353,52 @@ describe("2026-07-10 00:18 — opener conversations never consume pins", () => {
     });
     assert.strictEqual(r.serve, true);
     assert.strictEqual(affinity.getPin("s-mono").messageCount, 49, "refresh must not ratchet down");
+  });
+});
+
+describe("pin: context-overflow escape hatch (tool-loop sessions)", () => {
+  // Live incident: every frame of a tool loop is an unconditional pin serve,
+  // so an 884k-token session stayed pinned to a 128k-context model for 43
+  // straight requests — the context guards only ran on non-tool turns that a
+  // busy agent never produced. Fix mirrors the embedded-trigger pattern:
+  // serve THIS frame (tool-call id linkage), drop the pin, next boundary
+  // re-routes to a context-capable model.
+  beforeEach(() => affinity._clearAll());
+
+  const toolHistoryPayload = (sessionId, fillerChars) => ({
+    _sessionId: sessionId,
+    tools: [{ name: "Read", description: "read", input_schema: { type: "object" } }],
+    messages: [
+      // Realistic word-boundary filler: BPE tokenizers are pathologically slow
+      // (quadratic) on one unbroken run of a repeated character.
+      { role: "user", content: "work on the big file: " + "some source code line here ".repeat(Math.ceil(fillerChars / 27)) },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a.rs" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "contents" }] },
+    ],
+  });
+
+  it("session that outgrew the pinned model: frame serves, pin drops", () => {
+    affinity.setPin("s-overflow", { provider: "openai", model: "tiny-ctx-model", tier: "SIMPLE" }, {});
+    // ~40k chars ≈ 10k tokens ≫ the 1,000-token window (850 with headroom).
+    const r = routing.checkSessionPin(toolHistoryPayload("s-overflow", 40000));
+    assert.strictEqual(r.serve, true, "mid-exchange frame must still serve (tool id linkage)");
+    assert.strictEqual(r.reason, "tool_history_pin_dropped");
+    assert.strictEqual(affinity.getPin("s-overflow"), null, "pin must not survive the overflow");
+  });
+
+  it("session that still fits: frame serves and the pin stays", () => {
+    affinity.setPin("s-fits", { provider: "openai", model: "tiny-ctx-model", tier: "SIMPLE" }, {});
+    const r = routing.checkSessionPin(toolHistoryPayload("s-fits", 400));
+    assert.strictEqual(r.serve, true);
+    assert.strictEqual(r.reason, "tool_history");
+    assert.ok(affinity.getPin("s-fits"), "pin stays when context fits");
+  });
+
+  it("unknown-context models are never overflow-dropped (no data, assume fits)", () => {
+    affinity.setPin("s-unknown", { provider: "openai", model: "totally-unknown-model", tier: "SIMPLE" }, {});
+    const r = routing.checkSessionPin(toolHistoryPayload("s-unknown", 40000));
+    assert.strictEqual(r.serve, true);
+    assert.strictEqual(r.reason, "tool_history");
+    assert.ok(affinity.getPin("s-unknown"), "no context data → no drop");
   });
 });
