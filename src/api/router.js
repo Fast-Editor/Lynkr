@@ -38,7 +38,7 @@ const { detectClient } = require("../routing/client-profiles");
 const { buildInteractionBlock } = require("../routing/interaction");
 const { validateCwd } = require("../workspace");
 const { renderText } = require("../utils/markdown-ansi");
-const { classifyAuthMode } = require("../auth-mode");
+const { classifyAuthMode, isFirstPartyAnthropicClient } = require("../auth-mode");
 
 const router = express.Router();
 
@@ -308,21 +308,16 @@ async function handleOauthPassthrough(req, res, opts = {}) {
   const upstream = process.env.LYNKR_OAUTH_PASSTHROUGH_URL
     || "https://api.anthropic.com/v1/messages";
 
-  // === Optional: memory injection at last-user-message tail ===
-  // Headroom's P0-1 pattern: append memory context to the latest user
-  // message's first text block. NEVER touches system prompt or frozen-prefix
-  // messages, so the cache-hot zone Anthropic fingerprints stays intact.
-  // Opt-in via LYNKR_OAUTH_MEMORY_INJECTION=true since any body mutation on
-  // a subscription request has nonzero anti-abuse risk.
+  // NO body mutation on the passthrough — deliberate policy (2026-09). The
+  // memory-injection option that lived here (LYNKR_OAUTH_MEMORY_INJECTION)
+  // was removed: this function's whole contract is byte-for-byte fidelity
+  // to what the first-party client sent, and any mutation of subscription
+  // traffic both breaks that claim and carries anti-abuse risk. Memory
+  // injection remains available on the orchestrator paths, where Lynkr is
+  // openly transforming requests. The only change made below is stripping
+  // Lynkr-internal underscore-prefixed fields, which Anthropic would reject
+  // as unknown keys — protocol necessity, not content mutation.
   let bodyToSend = req.body;
-  if (process.env.LYNKR_OAUTH_MEMORY_INJECTION === 'true' && config.memory?.enabled !== false) {
-    try {
-      bodyToSend = maybeInjectMemoryIntoUserTail(req.body);
-    } catch (err) {
-      logger.debug({ err: err.message }, "Memory injection skipped (non-fatal)");
-      bodyToSend = req.body;
-    }
-  }
 
   // === Observability: start ===
   const startedAt = Date.now();
@@ -392,8 +387,13 @@ async function handleOauthPassthrough(req, res, opts = {}) {
   // Lynkr's own decision headers so callers can see which model answered.
   res.set("X-Lynkr-Provider", "azure-anthropic-passthrough");
   if (opts.tier?.tier) res.set("X-Lynkr-Tier", opts.tier.tier);
-  if (req.body?.model) res.set("X-Lynkr-Model", req.body.model);
-  res.set("X-Lynkr-Routing-Method", "oauth-subscription-stealth");
+  if (req.body?.model) {
+    res.set("X-Lynkr-Model", req.body.model);
+    const { contextWindowFor } = require("../routing/model-registry");
+    const contextWindow = contextWindowFor(req.body.model);
+    if (contextWindow) res.set("X-Lynkr-Context-Window", String(contextWindow));
+  }
+  res.set("X-Lynkr-Routing-Method", "oauth-subscription-passthrough");
 
   // Capture the response (buffered or streamed) so we can do observability hooks
   // on the way back without changing what the client sees.
@@ -732,86 +732,8 @@ function extractAnthropicMessageFromSSE(sseText) {
   return result;
 }
 
-/**
- * Append relevant memories to the FIRST TEXT BLOCK of the LATEST USER MESSAGE.
- *
- * Headroom's P0-1 pattern (`_append_context_to_latest_non_frozen_user_turn`).
- * The cache hot zone (system + frozen prefix) is NEVER touched. Mutating only
- * the latest user message — which is the request's "live zone" — keeps the
- * prompt-cache identity stable and avoids Anthropic anti-abuse fingerprint
- * divergence for subscription tokens.
- *
- * Returns the body unchanged if:
- *   - Memory is disabled
- *   - No memories retrieved
- *   - Latest message is not a user turn (could be tool_result, assistant)
- *
- * Returns a new body with appended context otherwise. Original body never
- * mutated (returns a shallow-cloned messages array).
- */
-function maybeInjectMemoryIntoUserTail(body) {
-  if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return body;
-
-  const lastIdx = body.messages.length - 1;
-  const lastMsg = body.messages[lastIdx];
-  if (!lastMsg || lastMsg.role !== "user") return body;
-
-  const { retrieveRelevantMemories, formatMemoriesForContext, extractQueryFromMessage } =
-    require("../memory/retriever");
-  const query = extractQueryFromMessage(lastMsg);
-  if (!query || query.length < 10) return body; // too short to be a useful query
-
-  const memories = retrieveRelevantMemories(query, {
-    limit: Math.min(parseInt(process.env.MEMORY_RETRIEVAL_LIMIT, 10) || 5, 10),
-    sessionId: body._sessionId || null,
-    includeGlobal: process.env.MEMORY_INCLUDE_GLOBAL !== "false",
-  });
-  if (!memories || memories.length === 0) return body;
-
-  const formatted = formatMemoriesForContext(memories);
-  if (!formatted) return body;
-
-  const contextText = `\n\n## Relevant context from earlier sessions:\n${formatted}`;
-
-  // Bound the injection size (Headroom uses a MemoryInjectionBudget; we use
-  // a simpler char cap — ~1024 tokens * 4 chars/token = 4096 chars).
-  const MAX_INJECTION_CHARS = 4096;
-  const boundedContext = contextText.length > MAX_INJECTION_CHARS
-    ? contextText.slice(0, MAX_INJECTION_CHARS) + "\n…"
-    : contextText;
-
-  // Clone messages array (shallow) so we don't mutate the caller's body.
-  const newMessages = body.messages.slice();
-
-  if (typeof lastMsg.content === "string") {
-    newMessages[lastIdx] = { ...lastMsg, content: lastMsg.content + boundedContext };
-  } else if (Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
-    // Append to the FIRST text block, preserving every other block (images,
-    // tool_use, etc.) untouched.
-    const newContent = [];
-    let appended = false;
-    for (const block of lastMsg.content) {
-      if (!appended && block && typeof block === "object" && block.type === "text") {
-        newContent.push({ ...block, text: (block.text || "") + boundedContext });
-        appended = true;
-      } else {
-        newContent.push(block);
-      }
-    }
-    if (!appended) return body; // no text block to append to
-    newMessages[lastIdx] = { ...lastMsg, content: newContent };
-  } else {
-    return body;
-  }
-
-  logger.debug({
-    memoryCount: memories.length,
-    appendedChars: boundedContext.length,
-  }, "Memory injected into last-user-message tail");
-
-  return { ...body, messages: newMessages };
-}
-
+// (maybeInjectMemoryIntoUserTail was removed with the passthrough
+// memory-injection option — the passthrough is byte-for-byte by contract.)
 /**
  * Estimate token count for messages.
  *
@@ -1094,7 +1016,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     //
     // All three paths now share window-scored intent tier picking
     // (`pickTierByIntent`). Subscription still has the additional
-    // azure-anthropic passthrough fork for anti-abuse stealth; everything
+    // azure-anthropic passthrough fork (first-party clients only); everything
     // else just falls through to the orchestrator with the picked tier
     // pinned via _forceProvider/_tierModel. The reason all paths share the
     // scorer is that determineProviderSmart's full-body analysis inflates
@@ -1378,10 +1300,11 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     }
     } // end else — no explicit model-id pin, scored normally above
 
-    // Subscription-only fork: anti-abuse stealth passthrough when the picked
-    // tier resolves to azure-anthropic. Bypasses the orchestrator entirely
-    // so the inbound bytes hit api.anthropic.com unchanged (Anthropic
-    // fingerprints subscription clients; any mutation gets flagged).
+    // Subscription-only fork: byte-for-byte passthrough to api.anthropic.com
+    // when the picked tier resolves to azure-anthropic — FIRST-PARTY
+    // Anthropic clients only (Claude Code / Claude Desktop wrapping their
+    // own traffic; see auth-mode.js for the policy). Gated here at the
+    // dispatch point, not just in classification, so the two can't drift.
     // Passthrough forwards the CLIENT's credentials; GUI harnesses that
     // spawn claude headless inject placeholder keys ("dummy") that Anthropic
     // 401s. Placeholder auth ⇒ serve REASONING via the provider's own
@@ -1391,13 +1314,14 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     const _placeholderAuth =
       !_clientAuthHdr &&
       (['dummy', 'test', 'placeholder', 'none', 'x', 'sk-dummy'].includes(_clientApiKey) || _clientApiKey.length < 8);
+    const _firstParty = isFirstPartyAnthropicClient(req.headers);
     if (_placeholderAuth && authMode === 'subscription' && tier.provider === 'azure-anthropic') {
       logger.info({
         reqNumber: messagesRequestCount,
         xApiKeyShape: _clientApiKey.slice(0, 12),
       }, 'Placeholder client auth — skipping passthrough, serving REASONING via provider credentials');
     }
-    if (authMode === 'subscription' && tier.provider === 'azure-anthropic' && !_placeholderAuth) {
+    if (authMode === 'subscription' && tier.provider === 'azure-anthropic' && !_placeholderAuth && _firstParty) {
       logger.debug({
         reqNumber: messagesRequestCount,
         authMode,

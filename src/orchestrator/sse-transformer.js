@@ -286,6 +286,8 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
       if (chunk.usage) {
         if (chunk.usage.prompt_tokens != null) stats.usage.input_tokens = chunk.usage.prompt_tokens;
         if (chunk.usage.completion_tokens != null) stats.usage.output_tokens = chunk.usage.completion_tokens;
+        const cached = chunk.usage.prompt_tokens_details?.cached_tokens;
+        if (cached != null) stats.usage.cache_read_input_tokens = cached;
       }
 
       const choice = chunk.choices?.[0];
@@ -360,7 +362,11 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
   // argument JSON may be truncated mid-string.
   if (!finishReason) {
     logger.warn(
-      { droppedToolFragments: toolAcc.size, outputTokens: stats.usage.output_tokens },
+      {
+        droppedToolFragments: toolAcc.size,
+        inputTokens: stats.usage.input_tokens,
+        outputTokens: stats.usage.output_tokens,
+      },
       "[SSETransform] Upstream ended without finish_reason — signaling stream error"
     );
     yield _sse("error", {
@@ -378,10 +384,26 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
   const stopReason = _mapFinishReason(finishReason);
   stats.stopReason = stopReason;
   stats.finishReason = finishReason;
+  // Usage ordering problem, solved here: the Anthropic protocol reports
+  // input_tokens in message_start, but OpenAI-shaped upstreams (Azure
+  // Responses API especially) only deliver usage at END of stream — so our
+  // message_start necessarily went out with input_tokens: 0. Emit the real
+  // cumulative usage in the final message_delta instead: Anthropic's own
+  // newer streams carry input_tokens/cache fields here, and SDK clients
+  // (incl. opencode's @ai-sdk/anthropic) merge message_delta usage over
+  // message_start. Without this, clients see only output tokens (~tens) and
+  // render nonsense like "Context: 64 tokens, 0% used" for a 60k-token
+  // prompt — and misprice every turn.
   yield _sse("message_delta", {
     type: "message_delta",
     delta: { stop_reason: stopReason, stop_sequence: null },
-    usage: { output_tokens: stats.usage.output_tokens ?? 0 },
+    usage: {
+      output_tokens: stats.usage.output_tokens ?? 0,
+      ...(stats.usage.input_tokens != null ? { input_tokens: stats.usage.input_tokens } : {}),
+      ...(stats.usage.cache_read_input_tokens != null
+        ? { cache_read_input_tokens: stats.usage.cache_read_input_tokens }
+        : {}),
+    },
   });
   yield _sse("message_stop", { type: "message_stop" });
 

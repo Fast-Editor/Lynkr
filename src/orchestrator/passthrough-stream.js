@@ -261,7 +261,13 @@ async function handleNativeStream(req, res, opts = {}) {
   });
   res.set("X-Lynkr-Provider", tier.provider || "azure-anthropic");
   if (tier.tier) res.set("X-Lynkr-Tier", tier.tier);
-  if (tier.model || req.body?.model) res.set("X-Lynkr-Model", tier.model || req.body.model);
+  if (tier.model || req.body?.model) {
+    const servedModel = tier.model || req.body.model;
+    res.set("X-Lynkr-Model", servedModel);
+    const { contextWindowFor } = require("../routing/model-registry");
+    const contextWindow = contextWindowFor(servedModel);
+    if (contextWindow) res.set("X-Lynkr-Context-Window", String(contextWindow));
+  }
   res.set("X-Lynkr-Routing-Method", "native-passthrough-stream");
   if (typeof res.flushHeaders === "function") res.flushHeaders();
 

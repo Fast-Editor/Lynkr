@@ -29,6 +29,32 @@ const clientProfiles = require("../routing/client-profiles");
 const router = express.Router();
 
 /**
+ * Served-model decision headers for the OpenAI-compat ingress.
+ *
+ * The Anthropic ingress has carried X-Lynkr-* decision headers for a long
+ * time; this path never did — the same single-ingress gap as issue #100.
+ * X-Lynkr-Context-Window is the served model's REAL context window (the
+ * workweave pattern): behind a virtual model name, tier routing serves
+ * models with different windows per request, and this header is the
+ * client's authoritative per-turn compaction budget. Omitted (never
+ * guessed) for models the registry doesn't know.
+ *
+ * Safe on streaming paths: no-op once headers have flushed.
+ *
+ * @param {object} res - Express response
+ * @param {string|null} servedModel - model from the orchestrator result body
+ */
+function setServedModelHeaders(res, servedModel) {
+  if (!servedModel || res.headersSent) return;
+  try {
+    res.set("X-Lynkr-Model", servedModel);
+    const { contextWindowFor } = require("../routing/model-registry");
+    const contextWindow = contextWindowFor(servedModel);
+    if (contextWindow) res.set("X-Lynkr-Context-Window", String(contextWindow));
+  } catch { /* headers are best-effort — never fail a response over them */ }
+}
+
+/**
  * Resolve the model name for OpenAI responses.
  * In OpenClaw mode, returns the actual provider/model from routing metadata.
  */
@@ -624,6 +650,7 @@ router.post("/chat/completions", async (req, res) => {
             tenantPolicy: res.locals?.tenantPolicy || null
           }
         });
+        setServedModelHeaders(res, result?.body?.model);
 
         // Phase 2b live stream: reshape Anthropic SSE events into OpenAI
         // chat.completion.chunk events in flight — first token reaches the
@@ -864,6 +891,7 @@ router.post("/chat/completions", async (req, res) => {
           tenantPolicy: res.locals?.tenantPolicy || null
         }
       });
+      setServedModelHeaders(res, result?.body?.model);
 
       logger.debug({
         resultKeys: Object.keys(result || {}),
@@ -1935,6 +1963,7 @@ router.post("/responses", async (req, res) => {
               tenantPolicy: res.locals?.tenantPolicy || null
             }
           });
+          setServedModelHeaders(res, result?.body?.model);
         } finally {
           clearInterval(keepalive);
         }
@@ -2273,6 +2302,7 @@ router.post("/responses", async (req, res) => {
           tenantPolicy: res.locals?.tenantPolicy || null
         }
       });
+      setServedModelHeaders(res, result?.body?.model);
 
       const chatResponse = convertAnthropicToOpenAI(result.body, resolveResponseModel(result.body, req.body.model));
       const responsesResponse = convertChatToResponses(chatResponse);

@@ -56,3 +56,43 @@ describe('areSimilarToolCalls', () => {
     });
   });
 });
+
+describe('read-window overlap (loop-guard fix: paging a large file is not a loop)', () => {
+  const { extractReadWindow } = require('../src/clients/gpt-utils');
+
+  it('does NOT flag DISJOINT windows of the same file (paging through a big file)', () => {
+    // Mirrors the live uv incident: settings.rs (4,000 lines) read at
+    // offsets 975/3485/3800 — three distinct regions needed to fix a bug
+    // spanning two structs. The old same-path rule counted these toward the
+    // loop threshold and the injected STOP order killed the work turn.
+    const a = { name: 'read', input: { filePath: '/tmp/uv/crates/uv/src/settings.rs', offset: 975, limit: 210 } };
+    const b = { name: 'read', input: { filePath: '/tmp/uv/crates/uv/src/settings.rs', offset: 3485, limit: 145 } };
+    const c = { name: 'read', input: { filePath: '/tmp/uv/crates/uv/src/settings.rs', offset: 3800, limit: 205 } };
+    assert.equal(areSimilarToolCalls(a, b), false);
+    assert.equal(areSimilarToolCalls(b, c), false);
+    assert.equal(areSimilarToolCalls(a, c), false);
+  });
+
+  it('still flags OVERLAPPING windows of the same file (true re-read)', () => {
+    const a = { name: 'read', input: { filePath: '/x/settings.rs', offset: 3485, limit: 145 } }; // [3485, 3630)
+    const b = { name: 'read', input: { filePath: '/x/settings.rs', offset: 3488, limit: 30 } };  // [3488, 3518)
+    assert.equal(areSimilarToolCalls(a, b), true);
+  });
+
+  it('still flags repeated whole-file reads (no offset/limit → open window)', () => {
+    const a = { name: 'Read', input: { file_path: '/x/big.rs' } };
+    const b = { name: 'Read', input: { file_path: '/x/big.rs' } };
+    // identical args → exact match; and with one paged read it still overlaps:
+    const paged = { name: 'Read', input: { file_path: '/x/big.rs', offset: 100, limit: 50 } };
+    assert.equal(areSimilarToolCalls(a, b), true);
+    assert.equal(areSimilarToolCalls(a, paged), true);
+  });
+
+  it('extractReadWindow: defaults and edge shapes', () => {
+    assert.deepEqual(extractReadWindow({ offset: 10, limit: 5 }), { start: 10, end: 15 });
+    assert.deepEqual(extractReadWindow({}), { start: 0, end: Infinity });
+    assert.deepEqual(extractReadWindow('{"offset":3,"limit":2}'), { start: 3, end: 5 });
+    assert.deepEqual(extractReadWindow('not json'), { start: 0, end: Infinity });
+    assert.deepEqual(extractReadWindow({ offset: 7, limit: 0 }), { start: 7, end: Infinity });
+  });
+});

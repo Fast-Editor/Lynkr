@@ -25,6 +25,26 @@ const MODEL_SLOTS = [
 ];
 
 /**
+ * Protocol-agnostic virtual tier ids. Unlike MODEL_SLOTS (whose ids must be
+ * real Claude names because Claude Desktop validates its picker against a
+ * fixed set), these are for clients whose model list Lynkr fully controls —
+ * e.g. the opencode provider entry written by `lynkr opencode`. Each id pins
+ * its tier explicitly, which also lets the client carry an HONEST per-tier
+ * context window in its own config (the tier's configured model is knowable
+ * at setup time), so client-side compaction budgets match the real serving
+ * model instead of one blended guess.
+ *
+ * "lynkr-auto" = no pin (full content-based tier routing).
+ */
+const VIRTUAL_TIER_IDS = {
+  'lynkr-auto': null,
+  'lynkr-simple': 'SIMPLE',
+  'lynkr-medium': 'MEDIUM',
+  'lynkr-complex': 'COMPLEX',
+  'lynkr-reasoning': 'REASONING',
+};
+
+/**
  * Resolve a client-supplied model id to the tier it pins.
  *
  * @param {string} modelId
@@ -34,8 +54,12 @@ const MODEL_SLOTS = [
  */
 function resolveTierForModelId(modelId) {
   if (!modelId) return null;
+  const normalized = String(modelId).toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(VIRTUAL_TIER_IDS, normalized)) {
+    return VIRTUAL_TIER_IDS[normalized];
+  }
   const slot = MODEL_SLOTS.find((s) => s.id === modelId);
   return slot?.tier || null;
 }
 
-module.exports = { MODEL_SLOTS, resolveTierForModelId };
+module.exports = { MODEL_SLOTS, VIRTUAL_TIER_IDS, resolveTierForModelId };

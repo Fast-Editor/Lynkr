@@ -18,7 +18,7 @@ re-enters the model's context across turns.
 `pickTierByIntent` runs at the `/v1/messages` entry for every auth mode
 (subscription, OAuth, PAYG). Subscription requests where the picked tier
 resolves to `azure-anthropic` are forwarded byte-for-byte to
-`api.anthropic.com` (anti-abuse stealth path). All other dispatches pin
+`api.anthropic.com` (first-party byte-for-byte passthrough). All other dispatches pin
 the picked `(provider, model)` onto the request so the orchestrator
 honours the intent-based decision.
 
