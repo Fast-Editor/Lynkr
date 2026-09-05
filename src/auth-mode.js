@@ -69,6 +69,12 @@ const SUBSCRIPTION_UA_PREFIXES = [
   'claude-code/',
   'claude-vscode/',
   'anthropic-cli/',
+  // Claude Desktop (Electron app). Captured from a real gateway request:
+  // "Mozilla/5.0 (...) Claude/1.46388.1 Chrome/148... Electron/42..." —
+  // the app identifies as "Claude/<version>" inside a browser-style UA.
+  // Deliberately 'claude/' (with slash): no third-party harness UA carries
+  // that token, and the first-party ids above don't collide with it.
+  'claude/',
 ];
 
 /**

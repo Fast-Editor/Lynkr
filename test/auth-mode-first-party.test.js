@@ -33,6 +33,8 @@ const FIRST_PARTY_UAS = [
   'claude-code/2.1.0',
   'claude-vscode/0.3.4',
   'anthropic-cli/0.9.1',
+  // Claude Desktop's real UA, captured live from the gateway:
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.46388.1 Chrome/148.0.7778.280 Electron/42.10.0 Safari/537.36',
 ];
 
 const THIRD_PARTY_UAS = [
@@ -75,6 +77,7 @@ test('the prefix list contains ONLY first-party Anthropic clients', () => {
     'claude-cli/',
     'claude-code/',
     'claude-vscode/',
+    'claude/',
   ].sort());
   for (const banned of ['codex-cli/', 'cursor/', 'github-copilot/', 'antigravity/']) {
     assert.ok(!SUBSCRIPTION_UA_PREFIXES.includes(banned),
