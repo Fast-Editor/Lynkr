@@ -321,4 +321,44 @@ describe("shouldTransform gating", () => {
       else process.env.LYNKR_STREAM_TRANSFORM = prev;
     }
   });
+
+  it("carries real input_tokens (and cache reads) into the final message_delta usage", async () => {
+    // The Anthropic protocol reports input_tokens in message_start, but
+    // OpenAI-shaped upstreams (Azure Responses API) only deliver usage at
+    // END of stream — message_start necessarily says 0. The final
+    // message_delta must carry the real cumulative usage, or clients
+    // (opencode context meter, cost math) see only output tokens.
+    const upstream = mockUpstream([
+      openaiChunk({ role: "assistant", content: "done" }),
+      openaiChunk({}, {
+        finish: "stop",
+        usage: {
+          prompt_tokens: 61234,
+          completion_tokens: 64,
+          total_tokens: 61298,
+          prompt_tokens_details: { cached_tokens: 48000 },
+        },
+      }),
+      "data: [DONE]\n\n",
+    ]);
+    const events = parseEvents(await drainToString(openaiToAnthropicSSE(upstream)));
+
+    const messageDelta = events.find((e) => e.type === "message_delta");
+    assert.strictEqual(messageDelta.usage.output_tokens, 64);
+    assert.strictEqual(messageDelta.usage.input_tokens, 61234, "real prompt size must reach the client");
+    assert.strictEqual(messageDelta.usage.cache_read_input_tokens, 48000);
+  });
+
+  it("omits input_tokens from message_delta when the upstream never reported usage", async () => {
+    const upstream = mockUpstream([
+      openaiChunk({ content: "hi" }),
+      openaiChunk({}, { finish: "stop" }),
+      "data: [DONE]\n\n",
+    ]);
+    const events = parseEvents(await drainToString(openaiToAnthropicSSE(upstream)));
+    const messageDelta = events.find((e) => e.type === "message_delta");
+    assert.strictEqual(messageDelta.usage.output_tokens, 0);
+    assert.ok(!("input_tokens" in messageDelta.usage), "never fabricate an input count");
+  });
+
 });
