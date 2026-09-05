@@ -537,10 +537,35 @@ function getModelRegistrySync() {
   return instance;
 }
 
+/**
+ * Real context window (tokens) for a model, or null when unknown.
+ *
+ * Null on unknown is deliberate: consumers surface this to CLIENTS (the
+ * X-Lynkr-Context-Window response header that harnesses may use as their
+ * compaction budget), and advertising a guessed window is worse than
+ * advertising none — a client that compacts against a fabricated number
+ * either wastes context or overruns the real window.
+ *
+ * @param {string} modelName
+ * @returns {number|null}
+ */
+function contextWindowFor(modelName) {
+  if (!modelName) return null;
+  try {
+    const registry = getModelRegistrySync();
+    const info = registry?.getCost?.(modelName);
+    if (!info || info.unknown) return null;
+    return Number.isFinite(info.context) && info.context > 0 ? info.context : null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   ModelRegistry,
   getModelRegistry,
   getModelRegistrySync,
   DATABRICKS_FALLBACK,
   DEFAULT_COST,
+  contextWindowFor,
 };

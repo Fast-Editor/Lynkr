@@ -1684,6 +1684,16 @@ function getRoutingHeaders(decision) {
 
   if (decision.model) {
     headers['X-Lynkr-Model'] = decision.model;
+    // Served-model context window (workweave pattern): the client can't know
+    // the real window behind a virtual model name when tier routing serves
+    // different models per request — this header is the authoritative per-
+    // turn answer, intended as the client's compaction budget. Omitted (never
+    // guessed) when the registry doesn't know the model.
+    const { contextWindowFor } = require('./model-registry');
+    const contextWindow = contextWindowFor(decision.model);
+    if (contextWindow) {
+      headers['X-Lynkr-Context-Window'] = String(contextWindow);
+    }
   }
 
   if (decision.agenticResult?.isAgentic) {

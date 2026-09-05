@@ -392,7 +392,12 @@ async function handleOauthPassthrough(req, res, opts = {}) {
   // Lynkr's own decision headers so callers can see which model answered.
   res.set("X-Lynkr-Provider", "azure-anthropic-passthrough");
   if (opts.tier?.tier) res.set("X-Lynkr-Tier", opts.tier.tier);
-  if (req.body?.model) res.set("X-Lynkr-Model", req.body.model);
+  if (req.body?.model) {
+    res.set("X-Lynkr-Model", req.body.model);
+    const { contextWindowFor } = require("../routing/model-registry");
+    const contextWindow = contextWindowFor(req.body.model);
+    if (contextWindow) res.set("X-Lynkr-Context-Window", String(contextWindow));
+  }
   res.set("X-Lynkr-Routing-Method", "oauth-subscription-stealth");
 
   // Capture the response (buffered or streamed) so we can do observability hooks
