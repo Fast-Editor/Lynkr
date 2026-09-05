@@ -139,6 +139,8 @@ class MetricsCollector {
    * @param {'warn'|'terminate'} kind
    */
   recordLoopGuard(kind) {
+    // 'observed' is the only kind emitted since the guard went observe-only;
+    // 'terminate' is kept as a counter bucket for any historical dashboards.
     if (kind === 'terminate') this.loopGuardTerminations++;
     else this.loopGuardWarnings++;
   }

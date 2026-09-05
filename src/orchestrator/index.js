@@ -366,55 +366,9 @@ function normaliseToolIdentifier(name = "") {
 }
 
 
-/**
- * Count tool_use and tool_result blocks in message history.
- * Only counts tools from the CURRENT TURN (after the last user text message).
- * This prevents the guard from blocking new questions after a previous loop.
- */
-function countToolCallsInHistory(messages) {
-  if (!Array.isArray(messages)) return { toolUseCount: 0, toolResultCount: 0 };
-
-  // Find the index of the last user message that contains actual text (not just tool_result)
-  let lastUserTextIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg?.role !== 'user') continue;
-
-    // Check if this user message has actual text content (not just tool_result)
-    if (typeof msg.content === 'string' && msg.content.trim().length > 0) {
-      lastUserTextIndex = i;
-      break;
-    }
-    if (Array.isArray(msg.content)) {
-      const hasText = msg.content.some(block =>
-        (block?.type === 'text' && block?.text?.trim?.().length > 0) ||
-        (block?.type === 'input_text' && block?.input_text?.trim?.().length > 0)
-      );
-      if (hasText) {
-        lastUserTextIndex = i;
-        break;
-      }
-    }
-  }
-
-  // Count only tool_use/tool_result AFTER the last user text message
-  let toolUseCount = 0;
-  let toolResultCount = 0;
-
-  const startIndex = lastUserTextIndex >= 0 ? lastUserTextIndex : 0;
-
-  for (let i = startIndex; i < messages.length; i++) {
-    const msg = messages[i];
-    if (!msg || !Array.isArray(msg.content)) continue;
-
-    for (const block of msg.content) {
-      if (block?.type === 'tool_use') toolUseCount++;
-      if (block?.type === 'tool_result') toolResultCount++;
-    }
-  }
-
-  return { toolUseCount, toolResultCount, lastUserTextIndex };
-}
+// (countToolCallsInHistory was removed along with the dedup force-terminate
+// path — the dedup counter is observe-only and no longer needs to slice the
+// current turn's tool results to synthesize a forced response.)
 
 // === CROSS-REQUEST TOOL CALL DEDUP TRACKING ===
 // These helpers track tool call signatures across multiple HTTP requests within
@@ -423,25 +377,16 @@ function countToolCallsInHistory(messages) {
 // requests escape it.
 
 const DEDUP_MAX_SIGNATURES = 50;
-// Loop-guard thresholds. Read at call time (not module load) so they're
-// env-tunable per deployment and testable. Defaults raised from 5/8 after a
-// live incident: with the old similarity rule, paging through disjoint
-// regions of one large file hit 5 "similar" reads and the injected STOP
-// order repeatedly killed legitimate work turns. Now that similarity is
-// overlap-aware (gpt-utils.js), even 8 genuinely-similar calls is a strong
-// loop signal — the guard keeps catching real loops without firing on
-// normal coding sessions in big files.
-const DEDUP_WARN_THRESHOLD_DEFAULT = 8;
-const DEDUP_TERMINATE_THRESHOLD_DEFAULT = 12;
+// Observe-only threshold: how many similar calls before the counter emits
+// its once-per-question log line + metrics signal. This is diagnostics, not
+// enforcement — no message is ever injected and no turn is ever terminated
+// on this signal (see the observe-only note at the consumer). Read at call
+// time (not module load) so it's env-tunable per deployment and testable.
+const DEDUP_OBSERVE_THRESHOLD_DEFAULT = 8;
 
 function dedupWarnThreshold() {
   const n = Number.parseInt(process.env.LYNKR_DEDUP_WARN_THRESHOLD, 10);
-  return Number.isNaN(n) || n < 2 ? DEDUP_WARN_THRESHOLD_DEFAULT : n;
-}
-
-function dedupTerminateThreshold() {
-  const n = Number.parseInt(process.env.LYNKR_DEDUP_TERMINATE_THRESHOLD, 10);
-  return Number.isNaN(n) || n < 3 ? DEDUP_TERMINATE_THRESHOLD_DEFAULT : n;
+  return Number.isNaN(n) || n < 2 ? DEDUP_OBSERVE_THRESHOLD_DEFAULT : n;
 }
 
 /**
@@ -2958,71 +2903,24 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
       const { maxCount, toolName: dedupToolName, signature: dedupSig } = getMaxDedupCount(session);
 
-      if (maxCount >= dedupTerminateThreshold()) {
-        // Force-terminate: same pattern as existing tool_loop_guard
-        logger.error({
-          toolName: dedupToolName,
-          count: maxCount,
-          threshold: dedupTerminateThreshold(),
-          signature: dedupSig,
-          sessionId: session?.id ?? null,
-        }, "[CrossRequestDedup] FORCE TERMINATING - repeated tool call across requests");
-        try { getMetricsCollector().recordLoopGuard('terminate'); } catch { /* metrics best-effort */ }
-
-        // Extract tool results summary from current turn
-        let toolResultsSummary = "";
-        const messages = payload?.messages || [];
-        const { lastUserTextIndex: luIdx } = countToolCallsInHistory(messages);
-        const startIdx = luIdx >= 0 ? luIdx : 0;
-        for (let i = startIdx; i < messages.length; i++) {
-          const msg = messages[i];
-          if (!msg || !Array.isArray(msg.content)) continue;
-          for (const block of msg.content) {
-            if (block?.type === 'tool_result' && block?.content) {
-              const content = typeof block.content === 'string'
-                ? block.content
-                : JSON.stringify(block.content);
-              if (content && !content.includes('Found 0')) {
-                toolResultsSummary += content + "\n";
-              }
-            }
-          }
-        }
-
-        let responseText = `Based on the tool results, here's what I found:\n\n`;
-        if (toolResultsSummary.trim()) {
-          responseText += toolResultsSummary.trim();
-        } else {
-          responseText += `The tools executed but didn't return clear results. Please check the tool output above or try a different command.`;
-        }
-
-        const forcedResponse = {
-          id: `msg_forced_${Date.now()}`,
-          type: "message",
-          role: "assistant",
-          content: [{ type: "text", text: responseText }],
-          model: requestedModel || "unknown",
-          stop_reason: "end_turn",
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 100 },
-        };
-
-        // Reset dedup after termination so next question starts fresh
-        resetDedupTracking(session);
-        // Persist to DB (non-ephemeral sessions only)
-        if (session.id && !session._ephemeral) {
-          try { upsertSession(session.id, { metadata: session.metadata }); } catch (e) {
-            logger.debug({ err: e.message }, "Failed to persist dedup reset");
-          }
-        }
-
-        return {
-          status: 200,
-          body: forcedResponse,
-          terminationReason: "tool_loop_guard",
-        };
-      }
-
+      // OBSERVE-ONLY (deliberate design decision, 2026-09): the proxy meters
+      // and reports — it never judges behavior into the conversation. The
+      // previous enforcement here (an injected "loop guard" message at the
+      // warn threshold, a forced synthetic response at the terminate
+      // threshold) was removed after a live incident where it repeatedly
+      // killed legitimate work: the proxy has the weakest evidence of any
+      // layer (arg previews + similarity heuristics), so it carries an
+      // irreducible false-positive floor, and a false positive here
+      // sabotages the user's task invisibly. Loop *breaking* belongs to the
+      // harness and the model; Lynkr's protection against runaway spend is
+      // the honest, protocol-level layer: TPM limits (LYNKR_TPM_LIMIT),
+      // budgets, and the loop-guard middleware's turn caps
+      // (LYNKR_MAX_SESSION_TURNS / LYNKR_MAX_TOOL_TURNS) — all visible
+      // 429/402 refusals, never ghostwritten messages.
+      //
+      // The counter itself stays: it costs nothing, mutates nothing, and is
+      // exactly the signal an operator needs to diagnose loop-shaped waste
+      // (log line + metrics; dashboards/statusline read the metrics).
       if (maxCount >= dedupWarnThreshold() && !dedup.warningInjected) {
         logger.warn({
           toolName: dedupToolName,
@@ -3030,22 +2928,11 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
           threshold: dedupWarnThreshold(),
           signature: dedupSig,
           sessionId: session?.id ?? null,
-        }, "[CrossRequestDedup] Warning - repeated tool call detected across requests");
-        try { getMetricsCollector().recordLoopGuard('warn'); } catch { /* metrics best-effort */ }
-
+        }, "[CrossRequestDedup] Repeated similar tool calls observed (observe-only — no intervention)");
+        try { getMetricsCollector().recordLoopGuard('observed'); } catch { /* metrics best-effort */ }
+        // Field name kept for persisted-session compatibility; semantics are
+        // now "signal emitted once per question", not "warning injected".
         dedup.warningInjected = true;
-
-        // Inject a warning into the payload so the model sees it. The text is
-        // deliberately honest about what was detected (similar, not
-        // necessarily identical, calls) and does NOT tell the model to hide
-        // the intervention — an invisible mutation that changes agent
-        // behavior is exactly the failure mode operators can't debug.
-        if (Array.isArray(payload?.messages)) {
-          payload.messages.push({
-            role: "user",
-            content: `[Lynkr loop guard] The "${dedupToolName}" tool has now been called ${maxCount} times with identical or overlapping parameters in this session. If you are re-requesting content you already received, stop and produce your answer from the results you already have — an empty or "no results" output IS a final answer, do not retry it. If these repeats were intentional (e.g. re-checking a file after editing it), continue, but vary your approach rather than repeating the same call. At ${dedupTerminateThreshold()} similar calls the session loop guard will force-terminate the turn.`,
-          });
-        }
       }
 
       // Persist dedup state (non-ephemeral sessions only)
@@ -3056,9 +2943,10 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
       }
     }
 
-    // No count-based tool_loop_guard. Natural limits (maxSteps, maxDurationMs,
-    // provider token/rate limits, client-side loop detection, and the
-    // cross-request dedup above) are sufficient protection.
+    // No count-based tool_loop_guard and no dedup-based enforcement (see
+    // observe-only note above). Hard limits live at the protocol layer:
+    // maxSteps, maxDurationMs, provider token/rate limits, TPM, budgets,
+    // and the loop-guard middleware's turn caps.
   }
 
   const { createTimer } = require("../utils/perf-timer");
