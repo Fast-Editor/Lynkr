@@ -47,15 +47,28 @@
  * @module auth-mode
  */
 
+// FIRST-PARTY Anthropic clients only (deliberate policy, 2026-09): the
+// subscription classification — and with it the api.anthropic.com
+// passthrough — is for Claude Code and Claude Desktop wrapping their OWN
+// traffic. Third-party harness prefixes (codex-cli/, cursor/,
+// github-copilot/, antigravity/) were removed: classifying them as
+// 'subscription' handed the passthrough to exactly the harness category
+// Anthropic's ToS enforcement targets. Those clients still work through
+// Lynkr — they classify by token shape ('oauth'/'payg') and route through
+// the orchestrator with the operator's configured providers.
+//
+// BREAKING CHANGE for anyone who had Cursor/Codex/Copilot riding the
+// subscription path: that traffic now routes via configured tiers.
+//
+// If Claude Desktop's own requests carry a UA not listed here (capture one
+// via the desktop gateway before assuming), add THAT — never a third-party
+// harness. This is a UA check: it defines intended use, not cryptographic
+// attestation.
 const SUBSCRIPTION_UA_PREFIXES = [
   'claude-cli/',
   'claude-code/',
-  'codex-cli/',
-  'cursor/',
   'claude-vscode/',
-  'github-copilot/',
   'anthropic-cli/',
-  'antigravity/',
 ];
 
 /**
@@ -110,7 +123,24 @@ function classifyAuthMode(headers) {
   return 'payg';
 }
 
+/**
+ * Is this request from a first-party Anthropic client (Claude Code / Claude
+ * Desktop family)? Used as the explicit gate at the api.anthropic.com
+ * passthrough dispatch fork — the security decision lives at the point of
+ * dispatch, not only in classification, so the two can't silently drift
+ * apart. Same UA semantics as classifyAuthMode's subscription check.
+ *
+ * @param {object} headers
+ * @returns {boolean}
+ */
+function isFirstPartyAnthropicClient(headers) {
+  const ua = getHeader(headers, 'user-agent').toLowerCase();
+  if (!ua) return false;
+  return SUBSCRIPTION_UA_PREFIXES.some((prefix) => ua.includes(prefix));
+}
+
 module.exports = {
   classifyAuthMode,
+  isFirstPartyAnthropicClient,
   SUBSCRIPTION_UA_PREFIXES,
 };

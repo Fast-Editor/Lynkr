@@ -13,7 +13,7 @@
 
 **With Lynkr Wrap:**
 - **Hybrid routing** — route simple tasks to free local models (Ollama), complex tasks to your subscription
-- **3-5x more usage** from the same subscription limits
+- **Subscription offload** — simple requests go to your own local/API models; your subscription serves only the work that needs it. Anthropic subscription passthrough is for Claude Code / Claude Desktop wrapping their own traffic only.
 - **All Lynkr features** — tier routing, TOON/RTK compression, semantic caching, fallback
 - **Zero configuration** — just run `lynkr wrap claude` instead of `claude`
 
@@ -211,7 +211,7 @@ Everything after `--` is forwarded to the target tool.
 | Refactor | "Refactor this function" | COMPLEX | Anthropic (Pro/Max) |
 | Architecture | "Design a new API" | REASONING | Anthropic (Pro/Max) |
 
-**Result:** 60-70% of requests never touch your subscription → 3-5x effective capacity.
+**Result:** 60-70% of requests never touch your subscription — it is reserved for the work that actually needs it.
 
 ---
 

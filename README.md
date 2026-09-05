@@ -45,7 +45,7 @@ lynkr wrap claude
 - ✅ Sticky sessions: one routing decision per conversation via content fingerprinting, with automatic escalation when the task outgrows the model
 - ✅ TOON/RTK compression (84% token reduction on large JSON tool outputs)
 - ✅ Semantic caching (sub-300ms cache hits, 0 tokens billed)
-- ✅ **3-5x more usage from the same subscription limits**
+- ✅ **Your subscription is used only where it counts** — simple requests route to your own local/API models, so subscription capacity goes to the work that needs it
 - ✅ Works with OAuth (Claude, Copilot, Cursor) or API keys (Aider, Codex)
 
 [Full wrap guide →](docs/wrap-guide.md)
