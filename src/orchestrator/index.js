@@ -20,7 +20,6 @@ const crypto = require("crypto");
 const { getSemanticCache } = require("../cache/semantic");
 const { areSimilarToolCalls } = require("../clients/gpt-utils");
 const { getMetricsCollector } = require("../observability/metrics");
-const { getModelRegistrySync } = require("../routing/model-registry");
 const sessionAffinity = require("../routing/session-affinity");
 
 /**
@@ -389,30 +388,110 @@ function dedupWarnThreshold() {
   return Number.isNaN(n) || n < 2 ? DEDUP_OBSERVE_THRESHOLD_DEFAULT : n;
 }
 
+// Cached minimum context window across the configured TIER_* models — the
+// conservative floor for requests whose actual model can't be resolved
+// (virtual names like "lynkr-auto" before a session has a pin). 60s TTL so
+// tier-config hot-reloads are picked up.
+let _minTierWindowCache = { at: 0, value: null };
+const MIN_TIER_WINDOW_TTL_MS = 60_000;
+
+function minConfiguredTierWindow() {
+  const now = Date.now();
+  if (now - _minTierWindowCache.at < MIN_TIER_WINDOW_TTL_MS) return _minTierWindowCache.value;
+  let min = null;
+  try {
+    const { getModelTierSelector } = require("../routing/model-tiers");
+    const { contextWindowFor } = require("../routing/model-registry");
+    for (const m of getModelTierSelector().getAllConfiguredModels()) {
+      const w = contextWindowFor(m.model);
+      if (w && (!min || w < min)) min = w;
+    }
+  } catch { /* tier config unavailable — fall through to the default */ }
+  _minTierWindowCache = { at: now, value: min };
+  return min;
+}
+
+// Absolute fallback when nothing at all resolves (no registry hit, no pin,
+// no priced tier models). 200k-class minus headroom — the historical default.
+const TOKEN_BUDGET_FALLBACK = 180000;
+
 /**
- * Model-aware token budget for a requested model: the model's real context
- * window (registry-sourced) shrunk to a safe working budget. Single source
- * of truth for both the token-budget enforcement pass AND the history
- * compressor — the compressor must target the same budget the enforcer
- * checks, or it over-compresses (live incident: fixed 10-message window kept
- * ~56k tokens while 108.8k were available).
+ * Model-aware token budget: the served model's real context window
+ * (registry-sourced) shrunk to a safe working budget. Single source of truth
+ * for both the token-budget enforcement pass AND the history compressor —
+ * the compressor must target the same budget the enforcer checks, or it
+ * over-compresses (live incident: fixed 10-message window kept ~56k tokens
+ * while 108.8k were available).
+ *
+ * Resolution order — most specific knowledge of the ACTUAL model wins:
+ *   1. the session pin's model — ground truth for what is really serving.
+ *      Requested names lie in both virtual cases: "lynkr-auto" resolves in
+ *      the registry (a literal 128k entry — the incident's mystery number),
+ *      and tier-slot names (Claude Desktop's "claude-sonnet-5" = COMPLEX
+ *      tier) resolve to the SLOT model's window, not the tier's configured
+ *      model actually serving. The pin knows the truth; it wins.
+ *   2. requested model known to the registry (clients sending real names;
+ *      "lynkr-*" virtual names are excluded — they must never resolve)
+ *   3. minimum window across configured TIER_* models (conservative floor
+ *      for unpinned virtual-name requests: safe for whatever routing picks)
+ *   4. TOKEN_BUDGET_FALLBACK
+ *
+ * TOKEN_BUDGET_MAX is an OPT-IN cost/latency ceiling, applied only when the
+ * env var is explicitly set. It is deliberately no longer a default clamp:
+ * overflow safety is fully handled by the per-model ×0.85 math, and cost
+ * control belongs to the honest protocol layers (budgets, TPM) — not to a
+ * silent global squeeze that turns a 1M-context model into a 180k one.
+ * Read at call time so it's testable and live-tunable.
  *
  * @param {string} requestedModel
+ * @param {string|null} [sessionId] - for pin-aware resolution (step 2)
  * @returns {{ modelContextWindow: number, effectiveMax: number, effectiveWarning: number, source: string }}
  */
-function computeModelTokenBudget(requestedModel) {
-  const registry = getModelRegistrySync();
-  const modelInfo = registry.getCost(requestedModel);
-  const modelContextWindow = modelInfo?.context || config.tokenBudget?.max || 180000;
+function computeModelTokenBudget(requestedModel, sessionId = null) {
+  const { contextWindowFor } = require("../routing/model-registry");
+
+  let modelContextWindow = null;
+  let source = null;
+
+  // 1. Session pin — the actually-serving model, when known.
+  if (sessionId) {
+    try {
+      const pin = sessionAffinity.getPin(sessionId);
+      if (pin?.model) {
+        modelContextWindow = contextWindowFor(pin.model);
+        if (modelContextWindow) source = 'session-pin';
+      }
+    } catch { /* pin store unavailable — fall through */ }
+  }
+
+  // 2. Requested model — only for real names. Lynkr's own virtual names
+  // must never resolve here (a "lynkr-auto" registry entry exists and
+  // longest-prefix matching extends it to any lynkr-* string).
+  const isVirtualName = /^lynkr[-_]/i.test(requestedModel || '');
+  if (!modelContextWindow && !isVirtualName) {
+    modelContextWindow = contextWindowFor(requestedModel);
+    if (modelContextWindow) source = 'requested-model';
+  }
+
+  if (!modelContextWindow) {
+    modelContextWindow = minConfiguredTierWindow();
+    if (modelContextWindow) source = 'min-tier';
+  }
+
+  if (!modelContextWindow) {
+    modelContextWindow = TOKEN_BUDGET_FALLBACK;
+    source = 'default';
+  }
+
   const modelMax = Math.floor(modelContextWindow * 0.85);
-  const effectiveMax = Math.min(modelMax, config.tokenBudget?.max || 180000);
+  const explicitCap = process.env.TOKEN_BUDGET_MAX
+    ? Number.parseInt(process.env.TOKEN_BUDGET_MAX, 10)
+    : null;
+  const effectiveMax = explicitCap && explicitCap > 0
+    ? Math.min(modelMax, explicitCap)
+    : modelMax;
   const effectiveWarning = Math.floor(effectiveMax * 0.65);
-  return {
-    modelContextWindow,
-    effectiveMax,
-    effectiveWarning,
-    source: modelInfo?.source || 'default',
-  };
+  return { modelContextWindow, effectiveMax, effectiveWarning, source };
 }
 
 /**
@@ -1428,7 +1507,7 @@ async function runAgentLoop({
             // Budget-driven recent window: keep as many verbatim recent
             // messages as the model's context budget allows, instead of a
             // fixed 10 (see compressHistory for the incident this fixes).
-            budgetTokens: computeModelTokenBudget(requestedModel).effectiveMax,
+            budgetTokens: computeModelTokenBudget(requestedModel, session?.id ?? null).effectiveMax,
           });
 
           if (cleanPayload.messages !== originalMessages) {
@@ -1614,7 +1693,7 @@ IMPORTANT TOOL USAGE RULES:
     // consumed by the history-compression block above, which must target the
     // same budget it enforces).
     const { modelContextWindow, effectiveMax, effectiveWarning, source: budgetSource } =
-      computeModelTokenBudget(requestedModel);
+      computeModelTokenBudget(requestedModel, session?.id ?? null);
 
     logger.debug({
       sessionId: session?.id ?? null,
@@ -3139,4 +3218,6 @@ module.exports = {
   trimLoopMessages,
   // Exported for unit testing of the live-stream routing badge.
   buildRoutingBadge,
+  // Exported for unit testing of pin-aware model budget resolution.
+  computeModelTokenBudget,
 };
