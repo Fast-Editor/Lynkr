@@ -14,6 +14,7 @@ const SUBCOMMANDS = {
   reset:         path.join(__dirname, "lynkr-reset.js"),
   "desktop-token": path.join(__dirname, "lynkr-desktop-token.js"),
   restart:       path.join(__dirname, "lynkr-restart.js"),
+  opencode:      path.join(__dirname, "opencode-setup.js"),
 };
 
 const sub = process.argv[2];
