@@ -109,7 +109,8 @@ function createApp() {
 
   app.get("/metrics/circuit-breakers", (req, res) => {
     const registry = getCircuitBreakerRegistry();
-    res.json(registry.getAll());
+    const { getHealthProber } = require("./clients/health-probe");
+    res.json({ breakers: registry.getAll(), healthProbe: getHealthProber().getStatus() });
   });
 
   app.get("/metrics/load-shedding", (req, res) => {
@@ -128,12 +129,22 @@ function createApp() {
 
   app.get("/metrics/semantic-cache", (req, res) => {
     const { getSemanticCache, isSemanticCacheEnabled } = require("./cache/semantic");
+    const { getEmbeddingStatus } = require("./cache/embeddings");
     if (!isSemanticCacheEnabled()) {
       return res.json({ enabled: false, message: "Semantic cache not enabled" });
     }
     const cache = getSemanticCache();
-    res.json({ enabled: true, ...cache.getStats() });
+    // embeddings.providerAvailable === false means matches are currently
+    // served from the non-semantic hash fallback — cache "hits" during a
+    // degraded window are approximate, not semantic.
+    res.json({ enabled: true, embeddings: getEmbeddingStatus(), ...cache.getStats() });
   });
+
+  // MCP broker — exposes configured MCP servers to other clients over HTTP.
+  // Off by default; requires LYNKR_MCP_BROKER_ENABLED + a bearer token.
+  // Mounted BEFORE the main router so /v1/mcp/* never falls through to the
+  // OpenAI-compat surface.
+  app.use(require('./api/mcp-broker'));
 
   app.use(router);
 
@@ -184,6 +195,29 @@ async function start() {
   }
 
   const app = createApp();
+
+  // Synthetic circuit-breaker health probing — recovers open circuits with a
+  // cheap background probe instead of letting the next live user request pay
+  // for testing a dead provider. Zero-cost while all breakers are closed.
+  try {
+    const { getHealthProber } = require("./clients/health-probe");
+    const prober = getHealthProber();
+    prober.start();
+    getShutdownManager().onShutdown(() => prober.stop());
+  } catch (err) {
+    logger.warn({ err: err.message }, "Health prober failed to start, circuit recovery falls back to live-request probing");
+  }
+
+  // OTel GenAI metrics export — no-op unless OTEL_EXPORTER_OTLP_ENDPOINT
+  // (or LYNKR_OTEL_ENDPOINT) is set. Zero-dependency OTLP/HTTP push.
+  try {
+    const { getOtelExporter } = require("./observability/otel");
+    const otel = getOtelExporter();
+    otel.start();
+    getShutdownManager().onShutdown(() => otel.stop());
+  } catch (err) {
+    logger.warn({ err: err.message }, "OTel exporter failed to start");
+  }
 
   // Wait for Ollama if it's the configured provider or referenced in tier config
   const provider = config.modelProvider?.type?.toLowerCase();

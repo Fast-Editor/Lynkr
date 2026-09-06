@@ -115,53 +115,134 @@ function simpleHash(str) {
   return hash;
 }
 
-// Track if embedding provider is available
+// Embedding provider availability state.
+//
+// The hash fallback is NOT a semantic embedding — when it's active, the
+// semantic cache and kNN router are effectively disabled (hash vectors are
+// 384-dim vs the providers' 768-dim, so they never match real entries; the
+// kNN index rejects them on dimension). Historically this degradation was a
+// permanent latch (one transient provider failure disabled semantic matching
+// until process restart) and logged only at debug level — i.e. invisible.
+// The same failure shape elsewhere in the industry silently misrouted ~20%
+// of a production cluster's spend before anyone noticed, so this state is
+// now: retried on a cooldown, logged loudly on every transition, counted,
+// and exposed via getEmbeddingStatus() for /metrics.
 let embeddingProviderAvailable = null;
+let degradedSince = null;
+let lastProviderAttempt = 0;
+let fallbackCount = 0;
+let lastProviderError = null;
+
+// After a provider failure, wait this long before trying it again (instead
+// of latching to the fallback forever). Env-tunable for tests/impatience.
+const RETRY_COOLDOWN_MS = Number.parseInt(process.env.LYNKR_EMBEDDINGS_RETRY_COOLDOWN_MS, 10) || 60_000;
+
+// Strict mode: throw instead of silently degrading to hash embeddings.
+// For deployments that prefer fail-loud (no semantic cache is better than a
+// silently fake one). Default stays fail-soft to match Lynkr's philosophy.
+const STRICT = process.env.LYNKR_EMBEDDINGS_STRICT === 'true';
+
+function _noteFallback(providerName, err) {
+  fallbackCount += 1;
+  lastProviderError = err?.message || String(err);
+  if (embeddingProviderAvailable !== false) {
+    embeddingProviderAvailable = false;
+    degradedSince = Date.now();
+    logger.warn({
+      provider: providerName,
+      error: lastProviderError,
+      retryCooldownMs: RETRY_COOLDOWN_MS,
+    }, '[Embeddings] Provider unreachable — DEGRADED to non-semantic hash embeddings. Semantic cache and kNN routing are effectively disabled until the provider recovers.');
+  }
+}
+
+function _noteRecovery(providerName) {
+  if (embeddingProviderAvailable === false) {
+    logger.info({
+      provider: providerName,
+      degradedForMs: degradedSince ? Date.now() - degradedSince : null,
+      fallbacksServed: fallbackCount,
+    }, '[Embeddings] Provider recovered — semantic embeddings restored');
+  }
+  embeddingProviderAvailable = true;
+  degradedSince = null;
+}
+
+function _wrapProvider(providerName, providerFn) {
+  return async (text) => {
+    // While degraded, only re-attempt the provider after the cooldown; serve
+    // the fallback in between so a dead provider doesn't add per-request
+    // connect timeouts to the hot path.
+    if (embeddingProviderAvailable === false
+        && Date.now() - lastProviderAttempt < RETRY_COOLDOWN_MS) {
+      if (STRICT) throw new Error(`Embedding provider ${providerName} degraded: ${lastProviderError}`);
+      fallbackCount += 1;
+      return generateHashEmbedding(text);
+    }
+    lastProviderAttempt = Date.now();
+    try {
+      const result = await providerFn(text);
+      _noteRecovery(providerName);
+      return result;
+    } catch (err) {
+      _noteFallback(providerName, err);
+      if (STRICT) throw err;
+      return generateHashEmbedding(text);
+    }
+  };
+}
 
 /**
  * Get the appropriate embedding function based on config
  * @returns {Function} - Embedding generation function
  */
 function getEmbeddingFunction() {
-  // If we already know embedding provider isn't available, use fallback
-  if (embeddingProviderAvailable === false) {
-    return (text) => Promise.resolve(generateHashEmbedding(text));
-  }
-
   const provider = config.modelProvider?.type || 'databricks';
+
+  // In-process ONNX embedder (opt-in): no external embedding server on the
+  // hot path at all. Same underlying model as the Ollama default
+  // (nomic-embed-text, 768-dim), so existing kNN/cache vectors stay valid.
+  // Wrapped in the same degradation machinery — a failed model load logs
+  // loudly, serves the hash fallback, and retries after the cooldown.
+  if (process.env.LYNKR_EMBEDDINGS_PROVIDER === 'onnx') {
+    const { generateOnnxEmbedding, isOnnxAvailable } = require('./onnx-embedder');
+    if (isOnnxAvailable()) {
+      return _wrapProvider('onnx', generateOnnxEmbedding);
+    }
+    logger.warn('[Embeddings] LYNKR_EMBEDDINGS_PROVIDER=onnx but @huggingface/transformers is not installed (optionalDependency) — falling through to the configured network provider');
+  }
 
   // Check if we have a local embedding provider configured
   if (config.ollama?.embeddingsEndpoint || provider === 'ollama') {
-    return async (text) => {
-      try {
-        const result = await generateOllamaEmbedding(text);
-        embeddingProviderAvailable = true;
-        return result;
-      } catch (err) {
-        logger.debug({ error: err.message }, 'Ollama embedding failed, using hash fallback');
-        embeddingProviderAvailable = false;
-        return generateHashEmbedding(text);
-      }
-    };
+    return _wrapProvider('ollama', generateOllamaEmbedding);
   }
 
   if (config.llamacpp?.embeddingsEndpoint || provider === 'llamacpp') {
-    return async (text) => {
-      try {
-        const result = await generateLlamaCppEmbedding(text);
-        embeddingProviderAvailable = true;
-        return result;
-      } catch (err) {
-        logger.debug({ error: err.message }, 'LlamaCpp embedding failed, using hash fallback');
-        embeddingProviderAvailable = false;
-        return generateHashEmbedding(text);
-      }
-    };
+    return _wrapProvider('llamacpp', generateLlamaCppEmbedding);
   }
 
-  // Fallback to hash-based embeddings
-  logger.debug('No embedding provider configured, using hash-based fallback');
+  // No provider configured at all — hash fallback is the deliberate mode,
+  // not a degradation. Warn once so the operator knows semantic matching is
+  // approximate, then stay quiet.
+  if (embeddingProviderAvailable === null) {
+    embeddingProviderAvailable = false;
+    logger.warn('[Embeddings] No embedding provider configured — using non-semantic hash embeddings. Semantic cache matches will be approximate; configure an Ollama/llama.cpp embeddings endpoint for real semantic matching.');
+  }
   return (text) => Promise.resolve(generateHashEmbedding(text));
+}
+
+/**
+ * Current embedding subsystem status, for /metrics and health surfaces.
+ * @returns {{ providerAvailable: boolean|null, degradedSince: number|null,
+ *             fallbackCount: number, lastProviderError: string|null }}
+ */
+function getEmbeddingStatus() {
+  return {
+    providerAvailable: embeddingProviderAvailable,
+    degradedSince,
+    fallbackCount,
+    lastProviderError,
+  };
 }
 
 /**
@@ -178,12 +259,16 @@ async function generateEmbedding(text) {
   const maxLength = 8000;
   const truncated = text.length > maxLength ? text.substring(0, maxLength) : text;
 
+  const embedFn = getEmbeddingFunction();
+  if (STRICT) return embedFn(truncated);
   try {
-    const embedFn = getEmbeddingFunction();
     return await embedFn(truncated);
   } catch (err) {
-    // Final fallback to hash embeddings if everything else fails
-    logger.debug({ error: err.message }, 'Embedding generation failed, using hash fallback');
+    // Final fallback to hash embeddings if everything else fails. The
+    // provider wrapper already logged the degradation transition loudly;
+    // this catch only covers unexpected non-provider errors.
+    logger.warn({ error: err.message }, '[Embeddings] Embedding generation failed unexpectedly, serving hash fallback');
+    fallbackCount += 1;
     return generateHashEmbedding(truncated);
   }
 }
@@ -193,6 +278,10 @@ async function generateEmbedding(text) {
  */
 function resetEmbeddingProvider() {
   embeddingProviderAvailable = null;
+  degradedSince = null;
+  lastProviderAttempt = 0;
+  fallbackCount = 0;
+  lastProviderError = null;
 }
 
 /**
@@ -231,5 +320,6 @@ module.exports = {
   generateHashEmbedding,
   cosineSimilarity,
   getEmbeddingFunction,
+  getEmbeddingStatus,
   resetEmbeddingProvider,
 };

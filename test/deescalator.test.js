@@ -159,3 +159,71 @@ test('cache invalidated after TTL', () => {
   });
   assert.equal(calls, 2);
 });
+
+// --- Percentage holdout (ROUTING-NOTES §4.10.4) ---------------------------
+
+const { isHeldOut } = require('../src/routing/deescalator');
+
+test('holdout: null session key is never held out', () => {
+  process.env.LYNKR_DEESCALATION_HOLDOUT_PCT = '50';
+  assert.equal(isHeldOut(null), false);
+  assert.equal(isHeldOut(undefined), false);
+  delete process.env.LYNKR_DEESCALATION_HOLDOUT_PCT;
+});
+
+test('holdout: 0 pct disables the holdout entirely', () => {
+  process.env.LYNKR_DEESCALATION_HOLDOUT_PCT = '0';
+  for (let i = 0; i < 50; i++) {
+    assert.equal(isHeldOut(`session-${i}`), false);
+  }
+  delete process.env.LYNKR_DEESCALATION_HOLDOUT_PCT;
+});
+
+test('holdout: 100 pct holds every session out', () => {
+  process.env.LYNKR_DEESCALATION_HOLDOUT_PCT = '100';
+  for (let i = 0; i < 50; i++) {
+    assert.equal(isHeldOut(`session-${i}`), true);
+  }
+  delete process.env.LYNKR_DEESCALATION_HOLDOUT_PCT;
+});
+
+test('holdout: deterministic — same session key always lands on the same side', () => {
+  process.env.LYNKR_DEESCALATION_HOLDOUT_PCT = '30';
+  for (let i = 0; i < 20; i++) {
+    const key = `fp-abc${i}`;
+    const first = isHeldOut(key);
+    for (let j = 0; j < 5; j++) {
+      assert.equal(isHeldOut(key), first, `session ${key} flip-flopped`);
+    }
+  }
+  delete process.env.LYNKR_DEESCALATION_HOLDOUT_PCT;
+});
+
+test('holdout: observed rate roughly tracks the configured percentage', () => {
+  process.env.LYNKR_DEESCALATION_HOLDOUT_PCT = '20';
+  let held = 0;
+  const N = 2000;
+  for (let i = 0; i < N; i++) {
+    if (isHeldOut(`fp-${i}-${i * 7919}`)) held++;
+  }
+  const rate = held / N;
+  assert.ok(rate > 0.15 && rate < 0.25, `expected ~0.20 holdout rate, got ${rate}`);
+  delete process.env.LYNKR_DEESCALATION_HOLDOUT_PCT;
+});
+
+test('holdout: default (env unset) is 10 pct, and invalid values clamp sanely', () => {
+  delete process.env.LYNKR_DEESCALATION_HOLDOUT_PCT;
+  let held = 0;
+  const N = 2000;
+  for (let i = 0; i < N; i++) {
+    if (isHeldOut(`fp-${i}-${i * 104729}`)) held++;
+  }
+  const rate = held / N;
+  assert.ok(rate > 0.06 && rate < 0.14, `expected ~0.10 default holdout rate, got ${rate}`);
+
+  process.env.LYNKR_DEESCALATION_HOLDOUT_PCT = '250';
+  assert.equal(isHeldOut('any-session'), true, '>100 clamps to 100');
+  process.env.LYNKR_DEESCALATION_HOLDOUT_PCT = '-5';
+  assert.equal(isHeldOut('any-session'), false, 'negative clamps to 0');
+  delete process.env.LYNKR_DEESCALATION_HOLDOUT_PCT;
+});

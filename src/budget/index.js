@@ -75,6 +75,12 @@ class BudgetManager {
         minute_window_start INTEGER,
         hour_window_start INTEGER
       );
+
+      CREATE TABLE IF NOT EXISTS token_rate (
+        user_id TEXT PRIMARY KEY,
+        tokens_minute INTEGER NOT NULL DEFAULT 0,
+        minute_window_start INTEGER NOT NULL
+      );
     `);
 
     this.stmts = {
@@ -112,6 +118,86 @@ class BudgetManager {
           hour_window_start = excluded.hour_window_start
       `),
     };
+  }
+
+  /**
+   * Token-aware (TPM) rate limiting (ROUTING-NOTES §1 gap: request-count
+   * only). Off unless LYNKR_TPM_LIMIT is set — same "off unless configured"
+   * convention as the loop guard.
+   *
+   * Estimate → true-up pattern (the one every serious gateway converged on):
+   * the pre-flight check gates on the window's ACTUAL consumption plus the
+   * current request's cheap estimate; real usage lands in the window
+   * post-response via recordTokenUsage(). Soft admission control, not a hard
+   * ceiling — concurrent in-flight requests can overshoot by roughly one
+   * request's worth, by design.
+   *
+   * @param {string} userId
+   * @param {number} estimatedTokens — cheap pre-flight estimate for THIS request
+   * @returns {{allowed: boolean, reason?: string, limit?: number, current?: number, resetInMs?: number}}
+   */
+  checkTokenRate(userId, estimatedTokens = 0) {
+    if (!this.enabled) return { allowed: true };
+    const limit = Number.parseInt(process.env.LYNKR_TPM_LIMIT, 10);
+    if (!limit || limit <= 0 || Number.isNaN(limit)) return { allowed: true };
+
+    const now = Date.now();
+    const minuteWindow = 60 * 1000;
+    const row = this.db.prepare('SELECT * FROM token_rate WHERE user_id = ?').get(userId);
+    let tokensMinute = row?.tokens_minute ?? 0;
+    let windowStart = row?.minute_window_start ?? now;
+    if (now - windowStart >= minuteWindow) {
+      tokensMinute = 0;
+      windowStart = now;
+      this.db.prepare(`
+        INSERT INTO token_rate (user_id, tokens_minute, minute_window_start)
+        VALUES (?, 0, ?)
+        ON CONFLICT(user_id) DO UPDATE SET tokens_minute = 0, minute_window_start = excluded.minute_window_start
+      `).run(userId, windowStart);
+    }
+
+    if (tokensMinute + estimatedTokens > limit) {
+      return {
+        allowed: false,
+        reason: 'token_rate_limit_minute',
+        limit,
+        current: tokensMinute,
+        estimated: estimatedTokens,
+        resetInMs: minuteWindow - (now - windowStart),
+      };
+    }
+    return { allowed: true };
+  }
+
+  /**
+   * True-up: add ACTUAL token consumption to the user's TPM window after the
+   * response completes. No-op when TPM limiting is disabled.
+   * @param {string} userId
+   * @param {number} totalTokens — actual input+output tokens consumed
+   */
+  recordTokenUsage(userId, totalTokens) {
+    if (!this.enabled || !totalTokens || totalTokens <= 0) return;
+    const limit = Number.parseInt(process.env.LYNKR_TPM_LIMIT, 10);
+    if (!limit || limit <= 0 || Number.isNaN(limit)) return;
+    const now = Date.now();
+    const minuteWindow = 60 * 1000;
+    try {
+      const row = this.db.prepare('SELECT * FROM token_rate WHERE user_id = ?').get(userId);
+      const stale = !row || now - row.minute_window_start >= minuteWindow;
+      this.db.prepare(`
+        INSERT INTO token_rate (user_id, tokens_minute, minute_window_start)
+        VALUES (@user_id, @tokens, @window_start)
+        ON CONFLICT(user_id) DO UPDATE SET
+          tokens_minute = ${stale ? '@tokens' : 'tokens_minute + @tokens'},
+          minute_window_start = @window_start
+      `).run({
+        user_id: userId,
+        tokens: totalTokens,
+        window_start: stale ? now : row.minute_window_start,
+      });
+    } catch (err) {
+      logger.debug({ err: err.message }, '[Budget] token usage record failed');
+    }
   }
 
   checkRateLimit(userId) {

@@ -175,6 +175,12 @@ function init() {
       // providers that report none) — "not measured" is distinct from 0.
       ["cache_read_tokens", "INTEGER"],
       ["cache_creation_tokens", "INTEGER"],
+      // Off-policy evaluation — the bandit's context vector (12-dim JSON
+      // array) for the row's decision. Required by the doubly-robust
+      // estimator's regression term r̂(x, a); IPS/SNIPS work without it.
+      // NULL on rows where the bandit didn't run (deterministic decisions)
+      // or recorded before this column existed.
+      ["context", "TEXT"],
     ];
     for (const [col, type] of additiveCols) {
       if (!existingCols.has(col)) {
@@ -237,7 +243,7 @@ function record(data) {
           retry_count, circuit_breaker_state, quality_score, tokens_per_second,
           cost_efficiency, request_text, response_text,
           base_tier, escalation_source, propensity, candidates, pinned, switch_reason,
-          cache_decision, cache_read_tokens, cache_creation_tokens
+          cache_decision, cache_read_tokens, cache_creation_tokens, context
         ) VALUES (
           @request_id, @session_id, @timestamp, @complexity_score, @tier,
           @agentic_type, @tool_count, @input_tokens, @message_count, @request_type,
@@ -246,7 +252,7 @@ function record(data) {
           @retry_count, @circuit_breaker_state, @quality_score, @tokens_per_second,
           @cost_efficiency, @request_text, @response_text,
           @base_tier, @escalation_source, @propensity, @candidates, @pinned, @switch_reason,
-          @cache_decision, @cache_read_tokens, @cache_creation_tokens
+          @cache_decision, @cache_read_tokens, @cache_creation_tokens, @context
         )`
       );
       if (!insert) return;
@@ -299,6 +305,9 @@ function record(data) {
             : JSON.stringify(data.cache_decision)),
         cache_read_tokens: data.cache_read_tokens ?? null,
         cache_creation_tokens: data.cache_creation_tokens ?? null,
+        context: data.context == null
+          ? null
+          : (typeof data.context === "string" ? data.context : JSON.stringify(data.context)),
       });
     } catch (err) {
       logger.debug({ err: err.message }, "Telemetry record failed");

@@ -30,6 +30,36 @@ function budgetMiddleware(req, res, next) {
     });
   }
 
+  // Token-aware (TPM) rate limiting — off unless LYNKR_TPM_LIMIT is set.
+  // Pre-flight gates on the window's actual consumption plus this request's
+  // cheap estimate; the true-up lands in the res 'finish' handler below.
+  try {
+    const { countPayloadTokens } = require('../../utils/tokens');
+    const estInput = countPayloadTokens(req.body || {}).total || 0;
+    const estOutput = typeof req.body?.max_tokens === 'number' && req.body.max_tokens > 0
+      ? req.body.max_tokens
+      : 1024;
+    const tokenCheck = budgetManager.checkTokenRate(userId, estInput + estOutput);
+    if (!tokenCheck.allowed) {
+      logger.warn({
+        userId,
+        limit: tokenCheck.limit,
+        current: tokenCheck.current,
+        estimated: tokenCheck.estimated,
+      }, 'Token rate limit (TPM) exceeded');
+      return res.status(429).json({
+        error: 'rate_limit_exceeded',
+        message: `Token rate limit exceeded: ${tokenCheck.limit} tokens per minute`,
+        limit: tokenCheck.limit,
+        current: tokenCheck.current,
+        resetInMs: tokenCheck.resetInMs,
+        retryAfter: Math.ceil(tokenCheck.resetInMs / 1000),
+      });
+    }
+  } catch (err) {
+    logger.debug({ err: err.message }, 'TPM check failed — allowing request');
+  }
+
   // Check budget
   const budgetCheck = budgetManager.checkBudget(userId);
   if (!budgetCheck.allowed) {
@@ -68,14 +98,18 @@ function budgetMiddleware(req, res, next) {
     try {
       const usage = res.locals.usage;
       if (!usage) return;
+      const tokensInput = usage.prompt_tokens || usage.input_tokens || 0;
+      const tokensOutput = usage.completion_tokens || usage.output_tokens || 0;
       budgetManager.recordUsage(userId, req.session?.id || null, {
-        tokensInput: usage.prompt_tokens || usage.input_tokens || 0,
-        tokensOutput: usage.completion_tokens || usage.output_tokens || 0,
+        tokensInput,
+        tokensOutput,
         costUsd: usage.cost_usd || 0,
         model: usage.model || null,
         endpoint: req.path,
         latencyMs: Date.now() - req.budgetInfo.startTime,
       });
+      // TPM true-up with actual consumption (no-op unless LYNKR_TPM_LIMIT set).
+      budgetManager.recordTokenUsage(userId, tokensInput + tokensOutput);
     } catch (err) {
       logger.warn({ err: err.message }, 'Failed to record usage after response');
     }
