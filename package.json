@@ -118,5 +118,9 @@
     "nodemon": "^3.1.0",
     "pino-pretty": "^10.2.0"
   },
-  "allowScripts": {}
+  "allowScripts": {},
+  "overrides": {
+    "sharp": "^0.35.4",
+    "adm-zip": "^0.6.0"
+  }
 }
