@@ -1,6 +1,6 @@
 {
   "name": "lynkr",
-  "version": "9.14.6",
+  "version": "9.14.7",
   "files": [
     "index.js",
     "install.sh",
