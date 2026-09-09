@@ -237,6 +237,22 @@ function getConfiguredProviders() {
     });
   }
 
+  // Check Fireworks AI (serverless open models)
+  if (config.fireworks?.apiKey) {
+    providers.push({
+      name: "fireworks",
+      type: "fireworks-ai",
+      baseUrl: config.fireworks.endpoint || "https://api.fireworks.ai/inference/v1",
+      enabled: true,
+      models: [
+        { id: config.fireworks.model || "accounts/fireworks/models/kimi-k2-instruct-0905", name: "Configured Model" },
+        { id: "accounts/fireworks/models/kimi-k2-instruct-0905", name: "Kimi K2 Instruct" },
+        { id: "accounts/fireworks/models/glm-5p2", name: "GLM 5.2" },
+        { id: "accounts/fireworks/models/deepseek-v3p1", name: "DeepSeek V3.1" },
+      ]
+    });
+  }
+
   // Check Vertex AI (Google Cloud)
   if (config.vertex?.projectId) {
     const region = config.vertex.region || "us-east5";

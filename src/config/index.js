@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -152,6 +152,11 @@ const moonshotModel = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2-turbo-previ
 const baiduApiKey = process.env.BAIDU_API_KEY?.trim() || null;
 const baiduEndpoint = process.env.BAIDU_ENDPOINT?.trim() || "https://qianfan.baidubce.com/v2/chat/completions";
 const baiduModel = process.env.BAIDU_MODEL?.trim() || "ernie-4.5-turbo-128k";
+
+// Fireworks AI configuration - OpenAI-compatible serverless inference API
+const fireworksApiKey = process.env.FIREWORKS_API_KEY?.trim() || null;
+const fireworksEndpoint = process.env.FIREWORKS_ENDPOINT?.trim() || "https://api.fireworks.ai/inference/v1/chat/completions";
+const fireworksModel = process.env.FIREWORKS_MODEL?.trim() || "accounts/fireworks/models/kimi-k2-instruct-0905";
 
 // Vertex AI (Google Gemini) configuration
 const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
@@ -662,6 +667,11 @@ var config = {
     endpoint: baiduEndpoint,
     model: baiduModel,
   },
+  fireworks: {
+    apiKey: fireworksApiKey,
+    endpoint: fireworksEndpoint,
+    model: fireworksModel,
+  },
   codex: {
     enabled: process.env.CODEX_ENABLED !== "false",
     binaryPath: process.env.CODEX_BINARY_PATH?.trim() || null,
@@ -1125,6 +1135,8 @@ function reloadConfig() {
   config.moonshot.model = process.env.MOONSHOT_MODEL?.trim() || "kimi-k2-turbo-preview";
   config.baidu.apiKey = process.env.BAIDU_API_KEY?.trim() || null;
   config.baidu.model = process.env.BAIDU_MODEL?.trim() || "ernie-4.5-turbo-128k";
+  config.fireworks.apiKey = process.env.FIREWORKS_API_KEY?.trim() || null;
+  config.fireworks.model = process.env.FIREWORKS_MODEL?.trim() || "accounts/fireworks/models/kimi-k2-instruct-0905";
 
   // Model provider settings
   const newProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();

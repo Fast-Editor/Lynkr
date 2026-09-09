@@ -109,6 +109,26 @@ response → quality score → telemetry (SQLite, .lynkr/telemetry.db)
   (> `LYNKR_KNN_CONFIDENCE_HIGH`) override the heuristic; ambiguous ones
   escalate only when telemetry shows cheap tiers actually failing.
 - The bandit explores only within `TIER_*`-configured models.
+- Capability-decoupled shortfall routing (HyDRA port, off by default):
+  `src/routing/capabilities.js` maps the 15 weighted dims onto 4 heads
+  (`reasoning/codegen/debugging/tool_use`), and `src/routing/shortfall.js`
+  serves the cheapest `TIER_*`-configured model covering them within τ.
+  Switch, tolerance, weights, and model capabilities all live in
+  `config/model-capabilities.json` (no env vars; restart to pick up edits),
+  so catalog changes re-route with zero retraining. When off, shortfall still
+  shadow-computes and logs the legacy-vs-shortfall comparison; when on, a
+  disagreement serves the shortfall pick with `method+=+shortfall` (upward
+  moves also record an `escalations[]` entry). Force paths (risk/force
+  phrases), static mode, and downstream guards (context/vision/kNN/bandit/
+  deadline/tenant) all dominate shortfall.
+- Model capability is a property of the WEIGHTS, not the provider:
+  `capability-seeds/family.js` normalizes `zai:glm-5.2`, `baidu:glm-5.2`
+  and `ollama:glm-5.2` to one family id, so all three servings share caps
+  (quantized GGUF servings take an automatic −0.02 haircut). Resolution
+  order: operator `modelOverrides` → fetched snapshot (`data/`, gitignored)
+  → shipped seeds (`config/model-capability-seeds.json`, reviewed) → family
+  ladder heuristic → tier-slot caps. Every pick carries a `source` tag
+  (override|seed:snapshot|seed:shipped|family|tier) for audit.
 
 ## Key environment knobs
 
@@ -121,6 +141,29 @@ response → quality score → telemetry (SQLite, .lynkr/telemetry.db)
 | `LYNKR_SWITCH_MAX_PROMPT_TOKENS` | 20000 | economic-downgrade cap |
 | `LYNKR_KNN_MIN_INDEX_SIZE` | 100 | entries before kNN advises |
 | `LYNKR_KNN_CONFIDENCE_HIGH` / `_LOW` | 0.7 / 0.4 | override / ambiguous bands |
+
+Shortfall has no env vars — `enabled`, `tau` (~0.01 peak quality, 0.24
+default, ~0.6 aggressive savings), `weights`, tier profiles, and
+`modelOverrides` all live in `config/model-capabilities.json` (restart to
+pick up edits).
+
+## Seeding model capabilities (new-model runbook)
+
+`npm run seed:capabilities` (→ `scripts/seed-capabilities.js --refresh`):
+
+1. Fetches SWE-Bench Verified + models.dev flags (7-day file cache in
+   `data/`, offline-safe) plus any `data/capability-benchmarks/*.json`
+   drop-ins (TerminalBench/LiveCodeBench/AA exports).
+2. Maps bare-model scores to families (scaffold+model composites like
+   "live-swe-agent + claude" are quarantined — they measure harnesses, not
+   weights — and weak matches stay unmapped for review).
+3. Writes `data/capability-seeds.snapshot.json` and prints the diff,
+   candidate graduations (wildcard matches worth an exact entry), and the
+   review lists. `--dry-run` prints without writing; `--check` fails CI
+   when shipped seeds go stale (>90d).
+4. Promote by copying reviewed entries into
+   `config/model-capability-seeds.json` (bump `updatedAt`) and restarting.
+   Unknown families keep working throughout via heuristic → tier fallback.
 
 Auto-calibration and the telemetry DB location are deliberately **not**
 configurable — calibration self-gates on sample count, and telemetry lives

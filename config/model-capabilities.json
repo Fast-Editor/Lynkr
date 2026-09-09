@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "heads": ["reasoning", "codegen", "debugging", "tool_use"],
+  "notes": "Capability profiles are decoupled from the predictor (see src/routing/capabilities.js). Editing this file re-routes traffic with zero retraining — the HyDRA shortfall-matching port. Tier profiles are seeded to mirror the legacy scalar bands (SIMPLE 0-19, MEDIUM 20-50, COMPLEX 51-75, REASONING 76-100). This file is read once at boot (same as config/model-tiers.json) — restart to pick up edits. No env vars: everything shortfall needs lives here.",
+  "enabled": true,
+  "tau": 0.24,
+  "weights": {
+    "reasoning": 0.25,
+    "codegen": 0.25,
+    "debugging": 0.25,
+    "tool_use": 0.25
+  },
+  "tierProfiles": {
+    "SIMPLE": { "reasoning": 0.2, "codegen": 0.3, "debugging": 0.2, "tool_use": 0.3 },
+    "MEDIUM": { "reasoning": 0.45, "codegen": 0.55, "debugging": 0.45, "tool_use": 0.55 },
+    "COMPLEX": { "reasoning": 0.7, "codegen": 0.75, "debugging": 0.7, "tool_use": 0.7 },
+    "REASONING": { "reasoning": 0.9, "codegen": 0.9, "debugging": 0.9, "tool_use": 0.9 }
+  },
+  "modelOverrides": {}
+}

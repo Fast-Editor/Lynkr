@@ -54,6 +54,9 @@
         ],
         "moonshot": [
           "kimi-k2.6"
+        ],
+        "fireworks": [
+          "accounts/fireworks/models/llama-3.1-8b-instruct"
         ]
       }
     },
@@ -109,6 +112,9 @@
         ],
         "moonshot": [
           "kimi-k2.6"
+        ],
+        "fireworks": [
+          "accounts/fireworks/models/kimi-k2-instruct-0905"
         ]
       }
     },
@@ -158,6 +164,9 @@
         ],
         "moonshot": [
           "kimi-k2.6"
+        ],
+        "fireworks": [
+          "accounts/fireworks/models/deepseek-v3p1"
         ]
       }
     },
@@ -205,6 +214,9 @@
         "moonshot": [
           "kimi-k3",
           "kimi-k2.6"
+        ],
+        "fireworks": [
+          "accounts/fireworks/models/glm-5p2"
         ]
       }
     }

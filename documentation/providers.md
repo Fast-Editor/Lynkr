@@ -21,6 +21,7 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 | **OpenAI** | Cloud | GPT-4o, o1, o3 | $$$ | Cloud | Easy |
 | **Atlas Cloud** | Cloud | Qwen, DeepSeek, and other OpenAI-compatible models | $-$$$ | Cloud | Easy |
 | **Moonshot AI (Kimi)** | Cloud | Kimi K2 (thinking + turbo) | $ | Cloud | Easy |
+| **Fireworks AI** | Cloud | Llama, DeepSeek, Qwen, Kimi, GLM (serverless) | $ | Cloud | Easy |
 | **LM Studio** | Local | Local models with GUI | **FREE** | 🔒 100% Local | Easy |
 | **MLX OpenAI Server** | Local | Apple Silicon optimized | **FREE** | 🔒 100% Local | Easy |
 
@@ -868,6 +869,69 @@ curl -X POST https://api.moonshot.ai/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $MOONSHOT_API_KEY" \
   -d '{"model":"kimi-k2-turbo-preview","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+---
+
+### 10a. Fireworks AI (OpenAI-Compatible)
+
+**Best for:** Fast serverless open-weight models (Llama, DeepSeek, Qwen, Kimi, GLM), cheap mid-tier routing
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=fireworks
+FIREWORKS_API_KEY=fw-your-fireworks-api-key
+FIREWORKS_ENDPOINT=https://api.fireworks.ai/inference/v1/chat/completions
+FIREWORKS_MODEL=accounts/fireworks/models/kimi-k2-instruct-0905
+```
+
+#### Getting a Fireworks API Key
+
+1. Visit [app.fireworks.ai](https://app.fireworks.ai)
+2. Sign up or log in
+3. Navigate to API Keys section
+4. Create a new key (`fw-...`)
+
+#### Available Models
+
+Model ids are long-form serverless paths. Tier-selected ids reach the wire unchanged:
+
+```env
+FIREWORKS_MODEL=accounts/fireworks/models/kimi-k2-instruct-0905  # default, tool calling
+FIREWORKS_MODEL=accounts/fireworks/models/glm-5p2                # strong general
+FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v3p1          # strong coding
+FIREWORKS_MODEL=accounts/fireworks/models/llama-3.1-8b-instruct  # cheap/fast
+# Fast serving routers (higher speed, select models):
+# accounts/fireworks/routers/glm-5p2-fast, accounts/fireworks/routers/kimi-k2p6-fast
+```
+
+**Note:** dated suffixes (e.g. `-0905`) rotate — check https://app.fireworks.ai/models for current ids.
+
+#### How It Works
+
+Fireworks uses an **OpenAI-compatible** chat completions API. Lynkr handles all format conversion automatically:
+
+1. Claude Code CLI sends Anthropic-format request to Lynkr
+2. Lynkr converts Anthropic messages → OpenAI chat completions format
+3. Request is sent to Fireworks' `/inference/v1/chat/completions` endpoint
+4. Fireworks response is converted back to Anthropic format
+5. Claude Code CLI receives a standard Anthropic response
+
+#### Important Notes (E2E-unverified — probed from docs, not a live key yet)
+
+- **Streaming:** wired through the SSE transformer like Moonshot/Baidu; confirm chunk shape against a live key before trusting streamed tool calls.
+- **Reasoning models** (R1/GLM): reasoning output shares the answer token budget; the buffered path lifts `reasoning_content` into thinking blocks.
+- **Tool calling:** full OpenAI function-calling support; Fireworks recommends low temperature (0.0–0.3) for deterministic tool selection — a future tuning knob, not yet pinned.
+- **Rate limits:** standard per-minute limits — Lynkr retries with backoff, then tier-fallback climbs on persistent 429s.
+
+#### Test Connection
+
+```bash
+curl https://api.fireworks.ai/inference/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $FIREWORKS_API_KEY" \
+  -d '{"model":"accounts/fireworks/models/kimi-k2-instruct-0905","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ---

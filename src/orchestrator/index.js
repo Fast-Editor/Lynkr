@@ -59,6 +59,8 @@ function getDestinationUrl(providerType) {
       return config.moonshot?.endpoint ?? 'unknown';
     case 'baidu':
       return config.baidu?.endpoint ?? 'unknown';
+    case 'fireworks':
+      return config.fireworks?.endpoint ?? 'unknown';
     case 'codex':
       return 'codex://app-server (local process)';
     default:
@@ -1143,6 +1145,14 @@ function sanitizePayload(payload) {
   } else if (providerType === "baidu") {
     // Baidu Qianfan supports tools - keep them in Anthropic format
     // They will be converted to OpenAI format in invokeBaidu
+    if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
+      delete clean.tools;
+    } else {
+      clean.tools = ensureAnthropicToolFormat(clean.tools);
+    }
+  } else if (providerType === "fireworks") {
+    // Fireworks supports OpenAI-style tools - keep them in Anthropic format
+    // They will be converted to OpenAI format in invokeFireworks
     if (!Array.isArray(clean.tools) || clean.tools.length === 0) {
       delete clean.tools;
     } else {
@@ -2701,6 +2711,12 @@ IMPORTANT TOOL USAGE RULES:
       }
     } else if (actualProvider === "baidu") {
       // Baidu Qianfan responses are already converted to Anthropic format in invokeBaidu
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
+    } else if (actualProvider === "fireworks") {
+      // Fireworks responses are already converted to Anthropic format in invokeFireworks
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
