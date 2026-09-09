@@ -221,6 +221,7 @@ Claude Code / Cursor / Codex / Cline / Continue
 | **Z.ai** | Cloud | GLM-4.7, GLM-4.5-Air | $ |
 | **Moonshot AI** | Cloud | Kimi K2.6, Kimi K3 | $ |
 | **Baidu Qianfan** | Cloud | ERNIE 4.5 Turbo, ERNIE X1.1 | $ (unverified — not yet probed against a live key) |
+| **Fireworks AI** | Cloud | Kimi K2, GLM-5, DeepSeek V3 (serverless) | $ (unverified — not yet probed against a live key) |
 
 **4 local providers** for 100% offline, free usage. **14+ cloud providers** for scale.
 
