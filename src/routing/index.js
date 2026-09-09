@@ -1230,6 +1230,91 @@ async function _determineProviderSmartInner(payload, options = {}) {
   selectedModel = modelSelection.model;
   logger.debug({ tier, provider, model: selectedModel }, '[Routing] Using tier config');
 
+  // Item 1 — capability-decoupled shortfall matching (HyDRA port).
+  // Shadow-computes whenever possible (weighted mode only); serves only when
+  // config/model-capabilities.json has enabled:true. Never overrides risk-high (returned earlier
+  // upstream), static mode (tier null), or legacy scorer mode. Downstream
+  // guards (de-escalation, context, vision, kNN, bandit, deadline, tenant)
+  // still run after and dominate — shortfall only replaces the tier_config pick.
+  let shortfallInfo = null;
+  try {
+    if (tier && config.modelTiers?.enabled && risk?.level !== 'high'
+      && analysis?.mode === 'weighted' && analysis?.breakdown) {
+      const { buildRequirementVector } = require('./capabilities');
+      const sf = require('./shortfall');
+      const req = buildRequirementVector({ dimensions: analysis.breakdown, agenticResult });
+      // Candidates constrained to the user's TIER_* (same eligibility rule
+      // as the bandit in decide.js) with tier labels attached for capability
+      // resolution. Dedupe identical provider:model keeping the highest tier.
+      const seen = new Map();
+      for (const t of ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING']) {
+        for (const m of selector.getModelsForTier(t)) {
+          const key = `${m.provider}:${m.model}`;
+          const prev = seen.get(key);
+          if (!prev || (TIER_DEFINITIONS[t]?.priority || 0) > (TIER_DEFINITIONS[prev.tier]?.priority || 0)) {
+            seen.set(key, { provider: m.provider, model: m.model, tier: t });
+          }
+        }
+      }
+      let registry = null;
+      try { registry = require('./model-registry').getModelRegistrySync(); } catch { registry = null; }
+      let optimizer = null;
+      try { optimizer = require('./cost-optimizer').getCostOptimizer(); } catch { optimizer = null; }
+      const candidates = [...seen.values()].map((c) => {
+        let cost = Number.POSITIVE_INFINITY; // unknown price never wins on cheapness
+        try {
+          const info = registry?.getCost?.(c.model);
+          if (info && !info.unknown) {
+            const est = optimizer?.estimateCost?.(c.model, 1000);
+            cost = Number.isFinite(est?.totalEstimate)
+              ? est.totalEstimate
+              : (Number(info.input) || 0) + (Number(info.output) || 0);
+          }
+        } catch { /* keep Infinity */ }
+        return { ...c, cost };
+      });
+      const result = sf.selectByShortfall(req, candidates);
+      if (result) {
+        const agreed = result.selected.provider === provider && result.selected.model === selectedModel;
+        shortfallInfo = {
+          req,
+          tau: result.tau,
+          selected: result.selected,
+          agreed,
+          legacy: { provider, model: selectedModel, tier },
+        };
+        logger.debug({
+          req,
+          tau: result.tau,
+          legacy: `${tier}:${provider}:${selectedModel}`,
+          shortfall: `${result.selected.tier}:${result.selected.provider}:${result.selected.model}`,
+          agreed,
+        }, '[Routing] Shortfall shadow compare');
+        if (sf.isEnabled() && !agreed) {
+          const fromTier = tier;
+          const fromModel = selectedModel;
+          provider = result.selected.provider;
+          selectedModel = result.selected.model;
+          tier = result.selected.tier;
+          analysis.tier = tier;
+          method = method + '+shortfall';
+          if ((TIER_DEFINITIONS[tier]?.priority || 0) > (TIER_DEFINITIONS[fromTier]?.priority || 0)) {
+            escalations.push({
+              source: 'shortfall',
+              fromTier,
+              toTier: tier,
+              fromModel,
+              toModel: selectedModel,
+            });
+          }
+          logger.info({ from: `${fromTier}:${fromModel}`, to: `${tier}:${selectedModel}` }, '[Routing] Shortfall override');
+        }
+      }
+    }
+  } catch (err) {
+    degradation.record('shortfall', err);
+  }
+
   // WS2.3 — evidence-based de-escalation.
   //
   // The check is intentionally gated by evidence, not a feature flag: the
@@ -1599,6 +1684,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
     knnResult,
     base_tier: baseTier,
     escalations,
+    shortfall: shortfallInfo,
     // Upward escalations take precedence in the source label; a demotion is
     // only surfaced when nothing else escalated (guarded by the wire above,
     // but re-checked here for clarity).

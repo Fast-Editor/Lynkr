@@ -46,6 +46,12 @@ const DEFAULT_OPENAI_SSE_PROVIDERS = [
   "llamacpp",
   "moonshot",
   "baidu",
+  // fireworks (api.fireworks.ai/inference/v1/chat/completions) is documented
+  // as OpenAI-compatible SSE — same baidu caveat applies: E2E-unverified
+  // against a live key as of this addition. If its deltas turn out not to
+  // match choices[0].delta exactly, remove it from this list rather than
+  // patching the shared transformer for one provider's quirk.
+  "fireworks",
 ];
 
 // llama.cpp specific: reasoning-capable local builds (live-confirmed on this

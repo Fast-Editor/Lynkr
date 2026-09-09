@@ -179,12 +179,21 @@ const PROVIDERS = {
     extras: [],
     defaultModel: 'ernie-4.5-turbo-128k',
   },
+  fireworks: {
+    label: 'Fireworks AI (serverless open models)',
+    local: false,
+    creds: [
+      { key: 'FIREWORKS_API_KEY', label: 'Fireworks API key (fw-...)', secret: true },
+    ],
+    extras: [],
+    defaultModel: 'accounts/fireworks/models/kimi-k2-instruct-0905',
+  },
 };
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
   'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'openrouter', 'edenai',
-  'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu',
+  'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu', 'fireworks',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
 
@@ -342,6 +351,9 @@ const BASELINE_ENV = {
   BAIDU_API_KEY: '',
   BAIDU_ENDPOINT: 'https://qianfan.baidubce.com/v2/chat/completions',
   BAIDU_MODEL: 'ernie-4.5-turbo-128k',
+  FIREWORKS_API_KEY: '',
+  FIREWORKS_ENDPOINT: 'https://api.fireworks.ai/inference/v1/chat/completions',
+  FIREWORKS_MODEL: 'accounts/fireworks/models/kimi-k2-instruct-0905',
   LLAMACPP_ENDPOINT: 'http://localhost:8080',
   LLAMACPP_MODEL: 'default',
   LLAMACPP_TIMEOUT_MS: '120000',

@@ -1,0 +1,18 @@
+{
+  "leaderboards": [
+    {
+      "name": "Verified",
+      "results": [
+        { "name": "Claude 4.5 Opus (high) · mini-SWE-agent · 2026-02-17", "resolved": 74.2, "date": "2026-02-17" },
+        { "name": "GPT 5.2 · mini-SWE-agent · 2025-12-11", "resolved": 71.0, "date": "2025-12-11" },
+        { "name": "Kimi K2.5 (high) · mini-SWE-agent · 2026-02-17", "resolved": 62.4, "date": "2026-02-17" },
+        { "name": "Qwen3-Coder 480B-A35B Instruct · mini-SWE-agent · 2025-08-02", "resolved": 69.1, "date": "2025-08-02" },
+        { "name": "broken entry", "resolved": "NaN", "date": "2025-01-01" }
+      ]
+    },
+    {
+      "name": "Lite",
+      "results": [{ "name": "Something Else", "resolved": 10.0 }]
+    }
+  ]
+}

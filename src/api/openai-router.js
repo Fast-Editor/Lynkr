@@ -1143,6 +1143,19 @@ function getConfiguredProviders() {
     });
   }
 
+  if (config.fireworks?.apiKey) {
+    providers.push({
+      name: "fireworks",
+      type: "fireworks-ai",
+      models: [
+        config.fireworks.model || "accounts/fireworks/models/kimi-k2-instruct-0905",
+        "accounts/fireworks/models/kimi-k2-instruct-0905",
+        "accounts/fireworks/models/glm-5p2",
+        "accounts/fireworks/models/deepseek-v3p1"
+      ]
+    });
+  }
+
   if (config.vertex?.projectId) {
     providers.push({
       name: "vertex",

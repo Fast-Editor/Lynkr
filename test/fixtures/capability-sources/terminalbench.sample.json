@@ -1,0 +1,9 @@
+{
+  "source": "terminalbench-2.1-sample",
+  "scale": "percent",
+  "results": {
+    "Claude 4.5 Opus": 55.0,
+    "Kimi K2.5": 41.2,
+    "Completely Unknown Model 9000": 5.0
+  }
+}

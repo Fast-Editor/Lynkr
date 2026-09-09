@@ -44,7 +44,8 @@
     "test:performance": "LYNKR_KNN_DIR=/tmp/lynkr-test-knn DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/hybrid-routing-performance.test.js && DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-tests.js",
     "test:benchmark": "LYNKR_KNN_DIR=/tmp/lynkr-test-knn DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node test/performance-benchmark.js",
     "test:quick": "LYNKR_KNN_DIR=/tmp/lynkr-test-knn DATABRICKS_API_KEY=test-key DATABRICKS_API_BASE=http://test.com node --test test/routing.test.js",
-    "test:all": "npm run test:unit && npm run test:performance && npm run test:benchmark"
+    "test:all": "npm run test:unit && npm run test:performance && npm run test:benchmark",
+    "seed:capabilities": "node scripts/seed-capabilities.js --refresh"
   },
   "keywords": [
     "llm",

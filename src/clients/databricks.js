@@ -2553,6 +2553,147 @@ async function invokeBaidu(body, _incomingHeaders = {}) {
 }
 
 /**
+ * Fireworks AI Provider (serverless inference)
+ *
+ * Fireworks exposes an OpenAI-compatible Chat Completions API
+ * (https://api.fireworks.ai/inference/v1/chat/completions, bearer-token
+ * auth). Modeled on invokeBaidu: request side reuses the shared
+ * openrouter-utils converters, response is converted to Anthropic shape
+ * locally so the orchestrator branch is a plain passthrough.
+ *
+ * Model ids are long-form serverless paths
+ * (accounts/fireworks/models/<slug>, accounts/fireworks/routers/<slug>).
+ * The modelMap below covers bare Anthropic names; tier-selected Fireworks
+ * ids (e.g. TIER_COMPLEX=fireworks:accounts/fireworks/models/glm-5p2)
+ * reach the wire unchanged.
+ *
+ * NOTE (E2E-unverified as of this addition, same caveat Baidu shipped
+ * with): sampling quirks, reasoning_content emission on reasoning models,
+ * finish_reason shape on tool calls, and 429 retryability are best-effort
+ * from public docs, not yet probed against a live key. Revisit once real
+ * traffic surfaces 400s — see Moonshot's kimi-k* precedent for the shape
+ * such fixes take.
+ */
+async function invokeFireworks(body, _incomingHeaders = {}) {
+  if (!config.fireworks?.apiKey) {
+    throw new Error("Fireworks API key is not configured. Set FIREWORKS_API_KEY in your .env file.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.fireworks.endpoint || "https://api.fireworks.ai/inference/v1/chat/completions";
+
+  // Model mapping: Anthropic names → Fireworks serverless ids.
+  const modelMap = {
+    "claude-sonnet-4-5-20250929": "accounts/fireworks/models/kimi-k2-instruct-0905",
+    "claude-sonnet-4-5": "accounts/fireworks/models/kimi-k2-instruct-0905",
+    "claude-sonnet-4.5": "accounts/fireworks/models/kimi-k2-instruct-0905",
+    "claude-3-5-sonnet": "accounts/fireworks/models/kimi-k2-instruct-0905",
+    "claude-opus-4-5": "accounts/fireworks/models/glm-5p2",
+    "claude-opus-4.5": "accounts/fireworks/models/glm-5p2",
+    "claude-3-opus": "accounts/fireworks/models/glm-5p2",
+    "claude-haiku-4-5-20251001": "accounts/fireworks/models/llama-3.1-8b-instruct",
+    "claude-haiku-4-5": "accounts/fireworks/models/llama-3.1-8b-instruct",
+    "claude-3-haiku": "accounts/fireworks/models/llama-3.1-8b-instruct",
+  };
+
+  const requestedModel = body._tierModel || body.model || config.fireworks.model;
+
+  // Honor tier-selected Fireworks ids instead of silently swapping in the
+  // .env default model. Accepts full serverless paths as well as well-known
+  // open-weight family slugs hosted on Fireworks.
+  const FIREWORKS_ID_RE = /^(accounts\/|kimi-|glm-|deepseek-|qwen|llama-|mistral-|mixtral-|phi-|gemma-|grok-|solar-|yi-|fireworks-)/i;
+  const mappedModel = modelMap[requestedModel]
+    || (FIREWORKS_ID_RE.test(requestedModel || "") ? requestedModel : null)
+    || config.fireworks.model
+    || "accounts/fireworks/models/kimi-k2-instruct-0905";
+
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+
+  // Fireworks supports the system role natively.
+  if (body.system) {
+    const systemContent = Array.isArray(body.system)
+      ? body.system.map(s => s.text || s).join("\n")
+      : body.system;
+    messages.unshift({ role: "system", content: systemContent });
+  }
+
+  const { resolveThinkingParam } = require("./provider-capabilities");
+  const fireworksBody = {
+    model: mappedModel,
+    messages,
+    max_tokens: body.max_tokens || 16384,
+    temperature: body.temperature ?? 0.7,
+    top_p: body.top_p ?? 1.0,
+    // Reasoning models (R1/GLM) share the answer budget with thinking output;
+    // the buffered path lifts reasoning_content into thinking blocks.
+    thinking: resolveThinkingParam(body),
+    // Streaming honored once "fireworks" joins DEFAULT_OPENAI_SSE_PROVIDERS
+    // (sse-transformer.js). Buffered requests use the Anthropic conversion
+    // path below regardless.
+    stream: body.stream ?? false,
+  };
+
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    fireworksBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
+    fireworksBody.tool_choice = "auto";
+    fireworksBody.parallel_tool_calls = false;
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${config.fireworks.apiKey}`,
+  };
+
+  logger.debug({
+    endpoint,
+    model: fireworksBody.model,
+    originalModel: requestedModel,
+    messageCount: fireworksBody.messages?.length || 0,
+    hasTools: !!fireworksBody.tools,
+    toolCount: fireworksBody.tools?.length || 0,
+  }, "=== Fireworks REQUEST ===");
+
+  // No retryableStatusesOverride: Fireworks serverless 429s are standard
+  // per-minute rate limits (unlike Moonshot's persistent org quotas), so the
+  // default retry-with-backoff applies. A 429 that survives retries throws
+  // below with status set so tier-fallback climbs instead of hanging.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: fireworksBody,
+  }, "Fireworks");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`Fireworks rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  // Streaming request: hand the raw stream to the orchestrator's stream
+  // branch. The Anthropic conversion below is buffered-only.
+  if (response?.stream) {
+    return response;
+  }
+
+  if (response?.ok && response?.json) {
+    const anthropicJson = convertOpenAIToAnthropic(response.json);
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: anthropicJson,
+      text: JSON.stringify(anthropicJson),
+      contentType: "application/json",
+      headers: response.headers,
+    };
+  }
+
+  return response;
+}
+
+/**
  * Convert OpenAI response to Anthropic format
  */
 function convertOpenAIToAnthropic(response) {
@@ -3144,6 +3285,7 @@ const PROVIDER_INVOKERS = {
   moonshot: invokeMoonshot,
   codex: invokeCodex,
   baidu: invokeBaidu,
+  fireworks: invokeFireworks,
 };
 
 function invokeProvider(provider, body, incomingHeaders) {
@@ -4013,6 +4155,7 @@ module.exports = {
   invokeOllama,
   invokeMoonshot,
   invokeBaidu,
+  invokeFireworks,
   invokeAtlas,
   PROVIDER_INVOKERS,
   stripLynkrBadges,
