@@ -6,6 +6,14 @@ name: Auto tag release
 #     below (plus [skip ci]);
 #   - tag pushes don't match `branches: [main]`, so this workflow never
 #     fires on its own tags — only npm-publish.yml does.
+# NOTE: the final push MUST authenticate with secrets.RELEASE_PAT (a
+# personal access token with Contents: write on Fast-Editor/Lynkr), NOT the
+# automatic GITHUB_TOKEN. GitHub deliberately does not fire workflow runs
+# for pushes made with GITHUB_TOKEN (loop protection) — pushing the tag
+# with it creates the tag but npm-publish.yml never triggers. One-time
+# setup: profile Settings → Developer settings → Personal access tokens →
+# Fine-grained → repo Fast-Editor/Lynkr → Contents: read+write → add as
+# repo secret RELEASE_PAT.
 # If package.json was manually bumped ahead of the last tag, that version
 # is tagged as-is instead of bump-patched.
 
@@ -36,10 +44,17 @@ jobs:
           node-version: 24
 
       - name: Bump patch and tag when package.json is unreleased
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
           set -euo pipefail
+          if [ -z "${RELEASE_PAT:-}" ]; then
+            echo "RELEASE_PAT secret is not set — add a fine-grained PAT (Contents: write) as repo secret RELEASE_PAT. See workflow header." >&2
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${RELEASE_PAT}@github.com/${{ github.repository }}.git"
           PKG_VERSION=$(node -p "require('./package.json').version")
           LAST_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo "v0.0.0")
           LAST_VERSION="${LAST_TAG#v}"
