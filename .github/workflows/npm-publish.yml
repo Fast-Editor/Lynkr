@@ -18,6 +18,13 @@ on:
   # (bot-pushed tags don't fire workflows). The version-match gate below
   # only applies to tag pushes.
   workflow_call:
+    inputs:
+      # Full ref to build, e.g. refs/tags/v9.14.5. The caller passes the tag
+      # it just pushed — without this the job would check out the
+      # pre-bump tree and publish a stale version number.
+      ref:
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -28,6 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tag pushes build the tag itself; reusable callers pass the exact
+          # ref they want published.
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-node@v4
         with:

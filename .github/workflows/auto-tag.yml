@@ -33,6 +33,8 @@ jobs:
   tag:
     if: "!contains(github.event.head_commit.message, 'release: v')"
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,6 +46,7 @@ jobs:
           node-version: 24
 
       - name: Bump patch and tag when package.json is unreleased
+        id: bump
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -53,6 +56,7 @@ jobs:
           LAST_VERSION="${LAST_TAG#v}"
           if [ "$PKG_VERSION" != "$LAST_VERSION" ]; then
             echo "package.json ($PKG_VERSION) differs from last tag ($LAST_TAG) — tagging as-is."
+            echo "tag=v$PKG_VERSION" >> "$GITHUB_OUTPUT"
             git tag "v$PKG_VERSION"
             git push origin "v$PKG_VERSION"
             exit 0
@@ -62,12 +66,16 @@ jobs:
           NEW_VERSION=$(node -p "require('./package.json').version")
           git add package.json package-lock.json
           git commit -m "release: v$NEW_VERSION [skip ci]" || exit 0
+          echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
           git tag "v$NEW_VERSION"
           git push origin main "v$NEW_VERSION"
 
   # Inline publish: runs npm-publish.yml's job in THIS run (same token, no
-  # tag event needed). Skipped when the tag job was skipped or failed.
+  # tag event needed), building exactly the tag the tag job just pushed.
+  # Skipped when the tag job was skipped or failed.
   publish:
     needs: [tag]
     uses: ./.github/workflows/npm-publish.yml
+    with:
+      ref: refs/tags/${{ needs.tag.outputs.tag }}
     secrets: inherit
