@@ -14,6 +14,10 @@ on:
   push:
     tags:
       - "v*"
+  # Also callable from auto-tag.yml, which publishes without a tag event
+  # (bot-pushed tags don't fire workflows). The version-match gate below
+  # only applies to tag pushes.
+  workflow_call:
 
 permissions:
   contents: read
@@ -31,6 +35,9 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Verify tag matches package.json version
+        # Tag pushes only — reusable calls from auto-tag.yml run on the
+        # branch ref, where there is no tag to compare against.
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
           TAG_VERSION="${GITHUB_REF_NAME#v}"
