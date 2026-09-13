@@ -1,0 +1,113 @@
+# OpenCodeReview - GitHub Actions PR Auto-Review (free tier + Lynkr-tier-aligned)
+#
+# Triggers a code review every time a PR is opened/updated on this repo,
+# plus on-demand re-review via `/open-code-review` comments.
+# Hosted 100% on GitHub Actions free minutes (public repo = free).
+#
+# Cost design: Inception Mercury 2.5 diffusion LLM (OpenAI-compatible).
+# Fast (~1000 tok/s) and cheap ($0.20/1M in, $0.75/1M out) with 260K context.
+# `effort: low` + `reasoning_effort: low` keep reviews quick and cheap.
+# To change the model later, edit the repo Variable (no code change):
+#   Settings -> Secrets and variables -> Actions -> Variables -> OCR_LLM_MODEL
+#
+# Required secrets/vars (Settings -> Secrets and variables -> Actions):
+#   secret    OCR_LLM_URL            e.g. https://api.inceptionlabs.ai/v1/chat/completions
+#   secret    OCR_LLM_AUTH_TOKEN     Inception API key
+#   variable  OCR_LLM_MODEL          e.g. mercury-2.5
+#   variable  OCR_LLM_USE_ANTHROPIC  'false' for OpenAI-compatible endpoints
+#
+# Source: https://github.com/alibaba/open-code-review/tree/main/examples/github_actions
+
+name: OpenCodeReview PR Review
+
+concurrency:
+  group: >-
+    ${{
+      (
+        github.event_name == 'pull_request_target'
+        || (
+          github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && github.event.comment.user.type != 'Bot'
+          && (
+            github.event.comment.author_association == 'MEMBER'
+            || github.event.comment.author_association == 'OWNER'
+            || github.event.comment.author_association == 'COLLABORATOR'
+          )
+          && (
+            startsWith(github.event.comment.body, '/open-code-review')
+            || startsWith(github.event.comment.body, '@open-code-review')
+          )
+        )
+      )
+      && format('ocr-{0}', github.event.pull_request.number || github.event.issue.number)
+      || format('noop-{0}', github.run_id)
+    }}
+  cancel-in-progress: true
+
+on:
+  # pull_request_target (not pull_request) so secrets are available for fork
+  # PRs. Safe: the action only reads the diff, never executes PR code.
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: |
+      github.event_name == 'pull_request_target'
+      || (
+        github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && github.event.comment.user.type != 'Bot'
+        && (
+          github.event.comment.author_association == 'MEMBER'
+          || github.event.comment.author_association == 'OWNER'
+          || github.event.comment.author_association == 'COLLABORATOR'
+        )
+        && (
+          startsWith(github.event.comment.body, '/open-code-review')
+          || startsWith(github.event.comment.body, '@open-code-review')
+        )
+      )
+    steps:
+      - name: Get PR context
+        id: pr-context
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const prNumber = context.issue.number;
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            core.setOutput('base_ref', pullRequest.base.ref);
+            core.setOutput('head_sha', pullRequest.head.sha);
+
+      - name: Run OpenCodeReview
+        uses: alibaba/open-code-review@494bf1c8d7a19196ab166960a06fef38d69a1d16 # v1.12.0 (pinned SHA)
+        with:
+          ocr_version: '1.12.0'
+          llm_url: ${{ secrets.OCR_LLM_URL }}
+          llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          llm_model: ${{ vars.OCR_LLM_MODEL }}
+          llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC }}
+          # Keep reviews fast and cheap on the diffusion model: low effort,
+          # low reasoning, sticky summary so re-pushes update one comment.
+          effort: low
+          llm_reasoning_effort: 'low'
+          # Override the action's default thinking-disable payload, which
+          # Mercury doesn't need; send a clean body instead.
+          llm_extra_body: '{}'
+          sticky_summary: 'true'
+          base_ref: ${{ steps.pr-context.outputs.base_ref }}
+          head_sha: ${{ steps.pr-context.outputs.head_sha }}
