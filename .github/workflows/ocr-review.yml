@@ -4,18 +4,16 @@
 # plus on-demand re-review via `/open-code-review` comments.
 # Hosted 100% on GitHub Actions free minutes (public repo = free).
 #
-# Cost design (mirrors local Lynkr tiers in ~/.env):
-#   Lynkr local:  TIER_SIMPLE/MEDIUM/COMPLEX -> openai:muse-spark ($0),
-#                 TIER_REASONING -> azure-openai:gpt-5.6-sol (paid)
-#   CI here:      OpenRouter `:free` model ($0) + `effort: low` so reviews
-#                 stay inside the SIMPLE-tier budget. No server to host.
+# Cost design: Inception Mercury 2.5 diffusion LLM (OpenAI-compatible).
+# Fast (~1000 tok/s) and cheap ($0.20/1M in, $0.75/1M out) with 260K context.
+# `effort: low` + `reasoning_effort: low` keep reviews quick and cheap.
 # To change the model later, edit the repo Variable (no code change):
 #   Settings -> Secrets and variables -> Actions -> Variables -> OCR_LLM_MODEL
 #
 # Required secrets/vars (Settings -> Secrets and variables -> Actions):
-#   secret    OCR_LLM_URL            e.g. https://openrouter.ai/api/v1/chat/completions
-#   secret    OCR_LLM_AUTH_TOKEN     OpenRouter API key (free models cost $0)
-#   variable  OCR_LLM_MODEL          e.g. nvidia/nemotron-3-nano-30b-a3b:free
+#   secret    OCR_LLM_URL            e.g. https://api.inceptionlabs.ai/v1/chat/completions
+#   secret    OCR_LLM_AUTH_TOKEN     Inception API key
+#   variable  OCR_LLM_MODEL          e.g. mercury-2.5
 #   variable  OCR_LLM_USE_ANTHROPIC  'false' for OpenAI-compatible endpoints
 #
 # Source: https://github.com/alibaba/open-code-review/tree/main/examples/github_actions
@@ -102,9 +100,13 @@ jobs:
           llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
           llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC }}
-          # Keep reviews inside the free-tier budget: low effort, sticky
-          # summary so re-pushes update one comment instead of spamming.
+          # Keep reviews fast and cheap on the diffusion model: low effort,
+          # low reasoning, sticky summary so re-pushes update one comment.
           effort: low
+          llm_reasoning_effort: 'low'
+          # Override the action's default thinking-disable payload, which
+          # Mercury doesn't need; send a clean body instead.
+          llm_extra_body: '{}'
           sticky_summary: 'true'
           base_ref: ${{ steps.pr-context.outputs.base_ref }}
           head_sha: ${{ steps.pr-context.outputs.head_sha }}
