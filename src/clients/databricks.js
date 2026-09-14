@@ -2837,6 +2837,126 @@ function sanitizeSchemaForGemini(schema) {
 }
 
 /**
+ * OrcaRouter Provider (OpenAI-compatible gateway)
+ *
+ * OrcaRouter exposes an OpenAI-compatible Chat Completions API at
+ * https://api.orcarouter.ai/v1/chat/completions with Bearer-token auth.
+ * Modeled on invokeFireworks/invokeAtlas: request side reuses the shared
+ * openrouter-utils converters, streaming returns the raw OpenAI SSE stream
+ * (orcarouter is in DEFAULT_OPENAI_SSE_PROVIDERS), buffered responses are
+ * converted to Anthropic shape locally so the orchestrator branch is a plain
+ * passthrough.
+ *
+ * The key comes from the credential seam (src/clients/orcarouter-credentials):
+ * either a user-pasted sk-orca-… key or a key issued via OAuth 2.0 + PKCE.
+ * Downstream code never knows which source produced it.
+ */
+async function invokeOrcaRouter(body, _incomingHeaders = {}) {
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+  const { chatCompletionsUrl } = require("./orcarouter-catalog");
+
+  const apiKey = config.orcarouter?.apiKey;
+  if (!apiKey) {
+    throw new Error("OrcaRouter API key is not configured. Run `lynkr connect orcarouter` or set ORCAROUTER_API_KEY in your .env file.");
+  }
+
+  const endpoint = config.orcarouter?.endpoint || chatCompletionsUrl(config.orcarouter?.apiBaseUrl || "https://api.orcarouter.ai");
+
+  const requestedModel = body._tierModel || body.model || config.orcarouter?.model || "orcarouter/auto";
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+
+  if (body.system) {
+    const systemContent = Array.isArray(body.system)
+      ? body.system.map(s => s.text || s).join("\n")
+      : body.system;
+    messages.unshift({ role: "system", content: systemContent });
+  }
+
+  const { resolveThinkingParam } = require("./provider-capabilities");
+  const orcaBody = {
+    model: requestedModel,
+    messages,
+    max_tokens: body.max_tokens || 16384,
+    temperature: body.temperature ?? 0.7,
+    top_p: body.top_p ?? 1.0,
+    thinking: resolveThinkingParam(body),
+    stream: body.stream ?? false,
+  };
+
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    orcaBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
+    orcaBody.tool_choice = "auto";
+    orcaBody.parallel_tool_calls = false;
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${apiKey}`,
+  };
+
+  logger.debug({
+    endpoint,
+    model: orcaBody.model,
+    originalModel: requestedModel,
+    messageCount: orcaBody.messages?.length || 0,
+    hasTools: !!orcaBody.tools,
+    toolCount: orcaBody.tools?.length || 0,
+  }, "=== OrcaRouter REQUEST ===");
+
+  // Same pre-return 429 check as the other OpenAI-compatible providers:
+  // performJsonRequest's streaming branch never throws on a bad status, so a
+  // 429 would otherwise be silently handed back as a "successful" response
+  // and tier-fallback would never climb. Like Atlas Cloud, chat completions
+  // are billable POSTs and are never replayed automatically — callers can
+  // retry explicitly with their own idempotency policy; only 429 escalates
+  // to tier-fallback.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: orcaBody,
+    maxRetriesOverride: 0,
+    retryableStatusesOverride: [],
+  }, "OrcaRouter");
+
+  // A 401 means the durable key was revoked (there is no refresh grant).
+  // Mark the exact credential generation needsReauth — the UI/status command
+  // surfaces it and the user re-runs `lynkr connect orcarouter`. No retry
+  // loop, no fake refresh.
+  if (response && !response.ok && response.status === 401) {
+    try {
+      const { getCredentialStore } = require("./orcarouter-credentials");
+      getCredentialStore().markRejected(apiKey, null);
+    } catch { /* reauth marking is best-effort — never fail the request path */ }
+  }
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`OrcaRouter rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  if (response?.stream) {
+    return response;
+  }
+
+  if (response?.ok && response?.json) {
+    const anthropicJson = convertOpenAIToAnthropic(response.json);
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: anthropicJson,
+      text: JSON.stringify(anthropicJson),
+      contentType: "application/json",
+      headers: response.headers,
+    };
+  }
+
+  return response;
+}
+
+/**
  * Vertex AI Provider - Gemini Models
  *
  * Despite the name, this calls the Gemini API directly
@@ -3286,6 +3406,7 @@ const PROVIDER_INVOKERS = {
   codex: invokeCodex,
   baidu: invokeBaidu,
   fireworks: invokeFireworks,
+  orcarouter: invokeOrcaRouter,
 };
 
 function invokeProvider(provider, body, incomingHeaders) {
@@ -4157,6 +4278,7 @@ module.exports = {
   invokeBaidu,
   invokeFireworks,
   invokeAtlas,
+  invokeOrcaRouter,
   PROVIDER_INVOKERS,
   stripLynkrBadges,
   destroyHttpAgents,

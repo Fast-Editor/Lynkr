@@ -52,6 +52,9 @@ const DEFAULT_OPENAI_SSE_PROVIDERS = [
   // match choices[0].delta exactly, remove it from this list rather than
   // patching the shared transformer for one provider's quirk.
   "fireworks",
+  // orcarouter (api.orcarouter.ai/v1/chat/completions) is OpenAI-compatible
+  // SSE — E2E-verified live 2026-09-12 through invokeOrcaRouter.
+  "orcarouter",
 ];
 
 // llama.cpp specific: reasoning-capable local builds (live-confirmed on this

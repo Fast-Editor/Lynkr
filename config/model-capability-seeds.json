@@ -7,6 +7,7 @@
     "claude-opus-3*": { "caps": { "reasoning": 0.8, "codegen": 0.82, "debugging": 0.8, "tool_use": 0.78 }, "sources": ["swe-bench-verified"], "note": "curated-estimate" },
     "claude-sonnet-4*": { "caps": { "reasoning": 0.78, "codegen": 0.8, "debugging": 0.78, "tool_use": 0.78 }, "sources": ["swe-bench-verified", "artificial-analysis"], "note": "curated-estimate" },
     "claude-sonnet-3.5": { "caps": { "reasoning": 0.72, "codegen": 0.75, "debugging": 0.72, "tool_use": 0.7 }, "sources": ["swe-bench-verified"], "note": "curated-estimate" },
+    "orcarouter-auto": { "caps": { "reasoning": 0.8, "codegen": 0.82, "debugging": 0.8, "tool_use": 0.82 }, "sources": ["provider-routing:adaptive auto"], "note": "curated-estimate: orcarouter/auto routes across frontier models per request" },
     "claude-haiku*": { "caps": { "reasoning": 0.42, "codegen": 0.48, "debugging": 0.42, "tool_use": 0.45 }, "sources": ["swe-bench-verified"], "note": "curated-estimate" },
     "gpt-5.6*": { "caps": { "reasoning": 0.85, "codegen": 0.85, "debugging": 0.85, "tool_use": 0.82 }, "sources": ["swe-bench-verified"], "note": "curated-estimate: flagship tier" },
     "gpt-5.4*": { "caps": { "reasoning": 0.85, "codegen": 0.85, "debugging": 0.85, "tool_use": 0.82 }, "sources": ["swe-bench-verified"], "note": "curated-estimate: flagship tier" },

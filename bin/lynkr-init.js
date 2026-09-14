@@ -188,12 +188,23 @@ const PROVIDERS = {
     extras: [],
     defaultModel: 'accounts/fireworks/models/kimi-k2-instruct-0905',
   },
+  orcarouter: {
+    label: 'OrcaRouter (OpenAI-compatible gateway — adaptive routing, failover, zero-markup inference)',
+    local: false,
+    creds: [
+      { key: 'ORCAROUTER_API_KEY', label: 'OrcaRouter API key (sk-orca-...; or run `lynkr connect orcarouter` for OAuth + PKCE login)', secret: true },
+    ],
+    extras: [
+      { key: 'ORCAROUTER_MODEL', label: 'default model', default: 'orcarouter/auto' },
+    ],
+    defaultModel: 'orcarouter/auto',
+  },
 };
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
   'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'openrouter', 'edenai',
-  'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu', 'fireworks',
+  'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu', 'fireworks', 'orcarouter',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
 
@@ -354,6 +365,9 @@ const BASELINE_ENV = {
   FIREWORKS_API_KEY: '',
   FIREWORKS_ENDPOINT: 'https://api.fireworks.ai/inference/v1/chat/completions',
   FIREWORKS_MODEL: 'accounts/fireworks/models/kimi-k2-instruct-0905',
+  ORCAROUTER_API_KEY: '',
+  ORCAROUTER_MODEL: 'orcarouter/auto',
+  ORCAROUTER_ENDPOINT: 'https://api.orcarouter.ai/v1/chat/completions',
   LLAMACPP_ENDPOINT: 'http://localhost:8080',
   LLAMACPP_MODEL: 'default',
   LLAMACPP_TIMEOUT_MS: '120000',

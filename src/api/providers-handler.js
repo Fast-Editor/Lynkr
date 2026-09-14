@@ -17,9 +17,11 @@ const router = express.Router();
 
 /**
  * Get all configured providers with their models
- * Reads from config (which comes from .env) to discover what's available
+ * Reads from config (which comes from .env) to discover what's available.
+ * OrcaRouter's model list is a live capability-filtered catalog fetch
+ * (authoritative when the account key works), with a verified seed fallback.
  */
-function getConfiguredProviders() {
+async function getConfiguredProviders() {
   const providers = [];
 
   // Check Databricks
@@ -253,6 +255,27 @@ function getConfiguredProviders() {
     });
   }
 
+  // Check OrcaRouter (OpenAI-compatible gateway). The model list is the live
+  // capability-filtered catalog (text chat) — authoritative when discovery
+  // succeeds, verified seed otherwise. Never a hand-written example list.
+  if (config.orcarouter?.apiKey) {
+    try {
+      const { getOrcaChatModels } = require("../clients/orcarouter-catalog");
+      const { models, source, degraded } = await getOrcaChatModels(config.orcarouter, { capability: "chat" });
+      providers.push({
+        name: "orcarouter",
+        type: "orcarouter",
+        baseUrl: `${config.orcarouter.apiBaseUrl || "https://api.orcarouter.ai"}/v1`,
+        enabled: true,
+        catalog_source: source,
+        catalog_degraded: degraded,
+        models: models.map(m => ({ id: m.id, name: m.name || m.id })),
+      });
+    } catch (err) {
+      logger.debug({ err: err.message }, "OrcaRouter provider discovery failed — omitting from /v1/models");
+    }
+  }
+
   // Check Vertex AI (Google Cloud)
   if (config.vertex?.projectId) {
     const region = config.vertex.region || "us-east5";
@@ -287,9 +310,9 @@ function getPrimaryProvider() {
  * Anthropic-compatible model listing endpoint (cc-relay style).
  * Lists all available models from all configured providers.
  */
-router.get("/models", (req, res) => {
+router.get("/models", async (req, res) => {
   try {
-    const providers = getConfiguredProviders();
+    const providers = await getConfiguredProviders();
     const primaryProvider = getPrimaryProvider();
     const timestamp = Math.floor(Date.now() / 1000);
 
@@ -344,9 +367,9 @@ router.get("/models", (req, res) => {
  * Provider listing endpoint (cc-relay style).
  * Lists all configured providers with their metadata and models.
  */
-router.get("/providers", (req, res) => {
+router.get("/providers", async (req, res) => {
   try {
-    const providers = getConfiguredProviders();
+    const providers = await getConfiguredProviders();
     const primaryProvider = getPrimaryProvider();
     const fallbackProvider = config.modelProvider?.fallbackProvider;
 
@@ -391,10 +414,10 @@ router.get("/providers", (req, res) => {
  *
  * Get details for a specific provider.
  */
-router.get("/providers/:name", (req, res) => {
+router.get("/providers/:name", async (req, res) => {
   try {
     const providerName = req.params.name.toLowerCase();
-    const providers = getConfiguredProviders();
+    const providers = await getConfiguredProviders();
     const provider = providers.find(p => p.name === providerName);
 
     if (!provider) {
@@ -435,9 +458,9 @@ router.get("/providers/:name", (req, res) => {
  *
  * Get current configuration summary (without sensitive data).
  */
-router.get("/config", (req, res) => {
+router.get("/config", async (req, res) => {
   try {
-    const providers = getConfiguredProviders();
+    const providers = await getConfiguredProviders();
 
     res.json({
       model_provider: config.modelProvider?.type || "databricks",

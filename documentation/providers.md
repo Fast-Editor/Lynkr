@@ -14,6 +14,7 @@ Lynkr supports multiple AI model providers, giving you flexibility in choosing t
 | **Databricks** | Cloud | Claude Sonnet 4.5, Opus 4.5 | $$$ | Cloud | Medium |
 | **OpenRouter** | Cloud | 100+ (GPT, Claude, Gemini, Llama, Mistral, etc.) | $-$$ | Cloud | Easy |
 | **Eden AI** | Cloud | 600+ (GPT, Claude, Gemini, Mistral, etc.) | $-$$ | Cloud (EU/GDPR) | Easy |
+| **OrcaRouter** | Cloud | Chat, reasoning, image, video (one endpoint, live catalog) | $ (zero-markup) | Cloud | Easy |
 | **Ollama** | Local | Unlimited (free, offline) | **FREE** | 🔒 100% Local | Easy |
 | **llama.cpp** | Local | Any GGUF model | **FREE** | 🔒 100% Local | Medium |
 | **Azure OpenAI** | Cloud | GPT-4o, GPT-5, o1, o3 | $$$ | Cloud | Medium |
@@ -428,6 +429,72 @@ EDENAI_MODEL=google/gemini-2.5-flash          # Fast, long context
 - ✅ **Pairs with tier routing** — cheap model for SIMPLE, frontier model for REASONING, one key
 
 See [docs.edenai.co](https://www.edenai.co/docs) for the model catalog and pricing.
+
+---
+
+### 3c. OrcaRouter (OpenAI-compatible gateway)
+
+**Best for:** a single OpenAI-compatible endpoint that routes across chat,
+reasoning, image and video models with adaptive routing, automatic failover,
+zero-markup inference, observability, guardrails, and agent-tool governance.
+It also runs gateway-level, zero-trust security for AI agents on the same
+endpoint — screening every prompt/response and governing every tool call on a
+default-deny basis, with no application code changes. OrcaRouter is a
+first-class named provider in Lynkr's registry, config, and model catalog.
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=orcarouter
+ORCAROUTER_API_KEY=sk-orca-your-key
+ORCAROUTER_MODEL=orcarouter/auto
+ORCAROUTER_ENDPOINT=https://api.orcarouter.ai/v1/chat/completions
+```
+
+OrcaRouter can also be selected per tier:
+
+```env
+TIER_SIMPLE=orcarouter:openai/gpt-5.5
+TIER_REASONING=orcarouter:anthropic/claude-opus-4.8
+```
+
+#### Two ways to authenticate
+
+OrcaRouter offers two independent login paths, both producing the same normal
+`sk-orca-…` API key that belongs to you:
+
+1. **API key** — paste an existing key from
+   [orcarouter.ai](https://www.orcarouter.ai) into `.env` as
+   `ORCAROUTER_API_KEY` (same secret location as every other provider).
+2. **Connect with OrcaRouter (OAuth 2.0 + PKCE)** — run
+   `lynkr connect orcarouter`: the command opens the consent screen
+   (`www.orcarouter.ai/auth`, `callback_url=oob`), you paste the one-time code
+   shown, and the client exchanges it at
+   `www.orcarouter.ai/api/v1/auth/keys` for a durable key. No client secret,
+   no pre-registered redirect URI. The issued key is billed to *your* account,
+   visible in your console, and revocable anytime at
+   [orcarouter.ai/console/authorized-apps](https://www.orcarouter.ai/console/authorized-apps).
+   Auth always uses the auth origin (`www.orcarouter.ai`); inference and model
+   discovery always use the API origin (`api.orcarouter.ai/v1`).
+
+#### Model catalog
+
+When OrcaRouter is configured, Lynkr fetches the **live model catalog** from
+`GET https://api.orcarouter.ai/v1/models` (capability-filtered for text chat,
+using the workspace's real, callable models) and exposes it through Lynkr's
+own `/v1/models` and `/v1/providers` endpoints. Model IDs are preserved
+verbatim (`vendor/model` namespaces). During a catalog outage Lynkr falls back
+to a small verified seed with its metadata intact and marks the list degraded.
+
+#### Benefits
+
+- ✅ **Live model discovery** — the dropdown is the real catalog, not a hand-written list
+- ✅ **Two auth choices** — API key or OAuth 2.0 + PKCE, independently usable
+- ✅ **Adaptive routing + failover** behind one OpenAI-compatible endpoint
+- ✅ **Zero-markup inference** with per-model pricing surfaced in the catalog
+- ✅ **Agent-tool governance** on the same endpoint (default-deny screening)
+
+See [www.orcarouter.ai](https://www.orcarouter.ai) for the full platform.
 
 ---
 

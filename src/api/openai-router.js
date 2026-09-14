@@ -986,9 +986,10 @@ router.post("/chat/completions", async (req, res) => {
 
 /**
  * Get all configured providers with their models (cc-relay style)
- * Reads from config (which comes from .env) to discover what's available
+ * Reads from config (which comes from .env) to discover what's available.
+ * OrcaRouter contributes its live capability-filtered chat catalog.
  */
-function getConfiguredProviders() {
+async function getConfiguredProviders() {
   const providers = [];
 
   if (config.databricks?.url && config.databricks?.apiKey) {
@@ -1156,6 +1157,23 @@ function getConfiguredProviders() {
     });
   }
 
+  // OrcaRouter (OpenAI-compatible gateway). The model list is the live
+  // capability-filtered catalog fetch (authoritative when the account key
+  // works), with a verified seed fallback. Never a hand-written example list.
+  if (config.orcarouter?.apiKey) {
+    try {
+      const { getOrcaChatModels } = require("../clients/orcarouter-catalog");
+      const { models } = await getOrcaChatModels(config.orcarouter, { capability: "chat" });
+      providers.push({
+        name: "orcarouter",
+        type: "orcarouter",
+        models: models.map(m => m.id),
+      });
+    } catch (err) {
+      logger.debug({ err: err.message }, "OrcaRouter discovery failed — omitting from OpenAI /v1/models");
+    }
+  }
+
   if (config.vertex?.projectId) {
     providers.push({
       name: "vertex",
@@ -1178,9 +1196,9 @@ function getConfiguredProviders() {
  * List available models from ALL configured providers (cc-relay style).
  * Returns OpenAI-compatible model list with provider field.
  */
-router.get("/models", (req, res) => {
+router.get("/models", async (req, res) => {
   try {
-    const providers = getConfiguredProviders();
+    const providers = await getConfiguredProviders();
     const timestamp = Math.floor(Date.now() / 1000);
     const models = [];
     const seenModelIds = new Set();
