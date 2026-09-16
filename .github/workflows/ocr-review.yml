@@ -61,6 +61,15 @@ jobs:
   code-review:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Single source of truth for the CLI version: the pre-install step and
+      # the pinned action must agree, otherwise the action reinstalls a
+      # different version (slow) or validation drifts.
+      # 2026-09-16: 1.12.0 -> 1.12.4 (latest stable; picks up the BPE-loader
+      # install fix #1228). Action pin stays at v1.12.0 — a newer CLI than the
+      # action is supported by design (action requires CLI >= v1.9.6, and
+      # --effort needs CLI >= v1.10.0).
+      OCR_CLI_VERSION: '1.12.4'
     if: |
       github.event_name == 'pull_request_target'
       || (
@@ -93,10 +102,37 @@ jobs:
             core.setOutput('base_ref', pullRequest.base.ref);
             core.setOutput('head_sha', pullRequest.head.sha);
 
+      - name: Pre-install OpenCodeReview CLI (retry)
+        shell: bash
+        run: |
+          # Hardening (2026-09-16): the pinned action installs the CLI with a
+          # single bare `npm install -g` and hides stderr, so a transient
+          # registry/network flake surfaces later as a cryptic
+          # `Cannot find module '/usr/local/bin/ocr'` in the Run step.
+          # Pre-install here with retries + verification: warms the npm cache
+          # so the action's own install is cheap, and fails fast with a clear
+          # message when the CLI truly cannot be installed.
+          # --no-audit/--no-fund skip the advisory endpoint that flaps during
+          # npm incidents (same policy as ci.yml's Audit step).
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt: npm install -g @alibaba-group/open-code-review@${OCR_CLI_VERSION}"
+            if npm install -g --no-audit --no-fund \
+                "@alibaba-group/open-code-review@${OCR_CLI_VERSION}" \
+              && command -v ocr >/dev/null 2>&1 \
+              && ocr version; then
+              echo "OpenCodeReview CLI ready: $(command -v ocr)"
+              exit 0
+            fi
+            echo "::warning::CLI install attempt $attempt failed — retrying in 10s"
+            sleep 10
+          done
+          echo "::error::Failed to install @alibaba-group/open-code-review@${OCR_CLI_VERSION} after 3 attempts (check https://status.npmjs.org)"
+          exit 1
+
       - name: Run OpenCodeReview
         uses: alibaba/open-code-review@494bf1c8d7a19196ab166960a06fef38d69a1d16 # v1.12.0 (pinned SHA)
         with:
-          ocr_version: '1.12.0'
+          ocr_version: ${{ env.OCR_CLI_VERSION }}
           llm_url: ${{ secrets.OCR_LLM_URL }}
           llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
