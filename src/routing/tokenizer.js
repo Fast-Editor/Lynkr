@@ -114,14 +114,31 @@ function _extractText(content) {
 
 function _imageTokenEstimate(content) {
   if (!Array.isArray(content)) return 0;
-  let imageBase64Bytes = 0;
+  let imageCount = 0;
   for (const block of content) {
-    if (block?.type === 'image' && block.source?.data) {
-      imageBase64Bytes += block.source.data.length;
+    if (!block || typeof block !== 'object') continue;
+    // Fixed per-image estimate (Anthropic ~1k-1.5k/image, OpenAI tiles similar).
+    // Never count base64 bytes as text — 1MB of base64 is not 170k tokens.
+    if (block.type === 'image' || block.type === 'image_url' || block.type === 'input_image') {
+      imageCount += 1;
+    } else if (block.image_url?.url || block.inlineData?.data || block.inline_data?.data) {
+      imageCount += 1;
+    } else if (block.type === 'tool_result' && block.content) {
+      // Nested screenshots inside tool results
+      const nested = Array.isArray(block.content) ? block.content : [block.content];
+      for (const nb of nested) {
+        if (nb && typeof nb === 'object' && (nb.type === 'image' || nb.type === 'image_url' || nb.image_url?.url)) {
+          imageCount += 1;
+        }
+      }
     }
   }
-  // Rough heuristic mirroring previous behavior: ~1 token per 6 base64 chars
-  return Math.floor(imageBase64Bytes / 6);
+  try {
+    const { VISION_IMAGE_TOKEN_ESTIMATE } = require('./vision');
+    return imageCount * VISION_IMAGE_TOKEN_ESTIMATE;
+  } catch {
+    return imageCount * 1500;
+  }
 }
 
 /**

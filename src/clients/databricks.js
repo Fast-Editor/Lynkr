@@ -1811,6 +1811,62 @@ async function invokeLMStudio(body, _incomingHeaders = {}) {
 }
 
 /**
+ * Map a single Anthropic content block to Bedrock Converse content.
+ * Text -> {text}; image base64 -> {image:{format, source:{bytes}}};
+ * image URL / unsupported -> text placeholder (Converse has no URL fetch).
+ * Returns null for cache_control-only / empty blocks.
+ *
+ * @param {object|string} block
+ * @returns {object|null}
+ */
+function anthropicBlockToConverseContent(block) {
+  if (block == null) return null;
+  if (typeof block === 'string') return block ? { text: block } : null;
+  if (block.type === 'text' && typeof block.text === 'string') {
+    return block.text ? { text: block.text } : null;
+  }
+  if (block.type === 'image' && block.source) {
+    const src = block.source;
+    if (src.type === 'base64' && src.data) {
+      const mediaType = (src.media_type || 'image/jpeg').toLowerCase();
+      const format = mediaType.includes('png') ? 'png'
+        : mediaType.includes('gif') ? 'gif'
+        : mediaType.includes('webp') ? 'webp'
+        : 'jpeg';
+      try {
+        return { image: { format, source: { bytes: src.data } } };
+      } catch { return null; }
+    }
+    if (src.type === 'url' && src.url) {
+      return { text: `[Image URL: ${src.url}]` };
+    }
+  }
+  // OpenAI-shaped image_url (may already be converted upstream)
+  const imageUrl = block.image_url?.url || (typeof block.url === 'string' ? block.url : null);
+  if ((block.type === 'image_url' || block.type === 'input_image' || imageUrl) && imageUrl) {
+    const dataMatch = String(imageUrl).match(/^data:(image\/[^;]+);base64,(.+)$/);
+    if (dataMatch) {
+      const mediaType = dataMatch[1].toLowerCase();
+      const format = mediaType.includes('png') ? 'png'
+        : mediaType.includes('gif') ? 'gif'
+        : mediaType.includes('webp') ? 'webp'
+        : 'jpeg';
+      return { image: { format, source: { bytes: dataMatch[2] } } };
+    }
+    return { text: `[Image URL: ${imageUrl}]` };
+  }
+  if (block.type === 'tool_use' || block.type === 'tool_result' || block.type === 'thinking') {
+    // Tool/thinking blocks are handled by the toolConfig path or dropped for
+    // pure-text turns — preserve text content when present.
+    const text = block.text || (typeof block.content === 'string' ? block.content : null);
+    return text ? { text } : null;
+  }
+  if (typeof block.text === 'string' && block.text) return { text: block.text };
+  if (typeof block.content === 'string' && block.content) return { text: block.content };
+  return null;
+}
+
+/**
  * Flatten an Anthropic-style content value into a plain string for the
  * Bedrock Converse API.
  *
@@ -1919,9 +1975,10 @@ async function invokeBedrock(body, _incomingHeaders = {}) {
       .map(msg => ({
         role: msg.role,
         content: Array.isArray(msg.content)
-          ? msg.content.map(c => ({ text: c.text || c.content || "" }))
-          : [{ text: msg.content }]
+          ? msg.content.map(c => anthropicBlockToConverseContent(c)).filter(Boolean)
+          : [{ text: String(msg.content ?? '') }]
       }))
+      .map(m => ({ ...m, content: m.content.length > 0 ? m.content : [{ text: ' ' }] }))
   };
 
   // Add system prompt (from Anthropic system field OR extracted from messages)
@@ -3128,6 +3185,33 @@ IMPORTANT TOOL USAGE RULES:
       for (const block of msg.content) {
         if (block.type === "text") {
           parts.push({ text: block.text });
+        } else if (block.type === "image" && block.source?.type === "base64" && block.source?.data) {
+          parts.push({
+            inlineData: {
+              mimeType: block.source.media_type || "image/jpeg",
+              data: block.source.data,
+            },
+          });
+        } else if (block.type === "image" && block.source?.type === "url" && block.source?.url) {
+          parts.push({ text: `[Image URL: ${block.source.url}]` });
+        } else if ((block.type === "image_url" || block.type === "input_image") && block.image_url?.url) {
+          const url = block.image_url.url;
+          const dataMatch = String(url).match(/^data:(image\/[^;]+);base64,(.+)$/);
+          if (dataMatch) {
+            parts.push({ inlineData: { mimeType: dataMatch[1], data: dataMatch[2] } });
+          } else {
+            parts.push({ text: `[Image URL: ${url}]` });
+          }
+        } else if (block.image_url?.url) {
+          const url = block.image_url.url;
+          const dataMatch = String(url).match(/^data:(image\/[^;]+);base64,(.+)$/);
+          if (dataMatch) {
+            parts.push({ inlineData: { mimeType: dataMatch[1], data: dataMatch[2] } });
+          } else {
+            parts.push({ text: `[Image URL: ${url}]` });
+          }
+        } else if (block.inlineData?.data) {
+          parts.push({ inlineData: block.inlineData });
         } else if (block.type === "tool_use") {
           // Assistant's tool call
           parts.push({

@@ -50,11 +50,19 @@ const ANONYMIZE_PATTERNS = [
   [/\/home\/[^/\s]+/g, "/home/<USER>"],
   // IPs
   [/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, "<IP>"],
+  // Inline base64 image bytes (never persist image data to training JSONL)
+  [/data:image\/[^;,]+;base64,[A-Za-z0-9+/=]{200,}/g, "<REDACTED_IMAGE>"],
   // Hostnames containing service-now / corporate domains (configurable)
   [/[A-Za-z0-9-]+\.service-now\.com/gi, "<SERVICENOW_HOST>"],
 ];
 
 function anonymize(value) {
+  // Strip image bytes at the structural level first (raw base64 source.data
+  // has no data: prefix for the regex to catch).
+  try {
+    const { redactVisionBytes } = require("../routing/vision");
+    value = redactVisionBytes(value);
+  } catch { /* best-effort */ }
   if (typeof value === "string") {
     let out = value;
     for (const [re, replacement] of ANONYMIZE_PATTERNS) {

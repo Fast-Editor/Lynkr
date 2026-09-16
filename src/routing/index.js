@@ -61,16 +61,23 @@ const LOCAL_PROVIDERS = ['ollama', 'llamacpp', 'lmstudio'];
 
 /**
  * Returns true when any message content block is an image.
- * Handles both string content and structured content arrays.
+ * Delegates to the central vision detector (covers base64/url/document/
+ * tool_result-nested/Gemini inlineData). Kept as a thin wrapper for
+ * backwards compatibility with existing call sites and tests.
  */
 function _payloadHasImages(payload) {
-  const messages = payload?.messages;
-  if (!Array.isArray(messages)) return false;
-  return messages.some(msg => {
-    const content = msg?.content;
-    if (!Array.isArray(content)) return false;
-    return content.some(block => block?.type === 'image' || block?.type === 'image_url');
-  });
+  try {
+    const { payloadNeedsVision } = require('./vision');
+    return payloadNeedsVision(payload);
+  } catch {
+    const messages = payload?.messages;
+    if (!Array.isArray(messages)) return false;
+    return messages.some(msg => {
+      const content = msg?.content;
+      if (!Array.isArray(content)) return false;
+      return content.some(block => block?.type === 'image' || block?.type === 'image_url');
+    });
+  }
 }
 
 /**
@@ -217,10 +224,8 @@ function _runPinGuards(payload, pin) {
 
   if (_payloadHasImages(payload)) {
     try {
-      const { getModelRegistrySync } = require('./model-registry');
-      const registry = getModelRegistrySync();
-      const modelInfo = pin.model ? registry.getCost(pin.model) : null;
-      if (!modelInfo?.vision) {
+      const { providerSupportsVision } = require('./vision');
+      if (!providerSupportsVision(pin.provider, pin.model)) {
         return { ok: false, reason: 'vision', risk, promptTokensEst };
       }
     } catch (err) {
@@ -756,6 +761,26 @@ function checkSessionPin(payload, options = {}) {
             pinnedTier: pin.tier,
             promptTokensEst,
           }, '[Routing] Session outgrew pinned model\'s context window — pin dropped, next boundary re-routes to a context-capable model');
+          return { serve: true, pin, reason: 'tool_history_pin_dropped', sessionId };
+        }
+      }
+    } catch { /* never block the pin-serve path */ }
+    // Vision escape hatch. Same safe pattern as context-overflow above: an
+    // image arriving mid-tool-loop must not stay pinned to a text-only model
+    // (upstream 400). Serve the pin THIS turn (tool-call IDs aren't portable),
+    // drop it so the next boundary re-routes to a vision-capable model.
+    try {
+      if (_payloadHasImages(payload)) {
+        const { providerSupportsVision } = require('./vision');
+        if (!providerSupportsVision(pin.provider, pin.model)) {
+          sessionAffinity.removePin(sessionId);
+          logger.warn({
+            sessionId,
+            trigger: 'vision_mid_loop',
+            pinnedModel: pin.model,
+            pinnedProvider: pin.provider,
+            pinnedTier: pin.tier,
+          }, '[Routing] Image arrived mid-tool-loop on text-only pin — pin dropped, next boundary re-routes to vision-capable model');
           return { serve: true, pin, reason: 'tool_history_pin_dropped', sessionId };
         }
       }
@@ -1453,15 +1478,14 @@ async function _determineProviderSmartInner(payload, options = {}) {
   }
 
   // Phase 1.4 — vision capability guard.
-  // If the payload contains image content blocks but the selected model lacks
-  // vision support, silently swap to the cheapest vision-capable model at or
-  // above the current tier. Prevents silent upstream failures.
+  // If the payload contains image content blocks but the selected
+  // provider/model combo cannot carry vision, swap to the cheapest
+  // vision-capable model at or above the current tier. Prevents silent
+  // upstream failures. Uses per-provider gate, not registry flag alone.
   if (_payloadHasImages(payload)) {
     try {
-      const { getModelRegistrySync } = require('./model-registry');
-      const registry = getModelRegistrySync();
-      const modelInfo = registry.getCost(selectedModel);
-      if (!modelInfo?.vision) {
+      const { providerSupportsVision } = require('./vision');
+      if (!providerSupportsVision(provider, selectedModel)) {
         const visionModel = selector.findVisionCapable(tier);
         if (visionModel) {
           const fromTier = tier;

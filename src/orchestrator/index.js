@@ -950,7 +950,14 @@ function sanitizePayload(payload) {
     || config.modelProvider?.type
     || "databricks";
   const willFlatten = providerType !== "azure-anthropic";
-  const clean = clonePayloadSmart(payload ?? {}, { willFlatten });
+  // Vision payloads must keep image bytes through the clone: flatten-aware
+  // cloning replaces them with {_skipped:true} placeholders that downstream
+  // converters can no longer recover. Full-clone when images are present.
+  let needsVisionForClone = false;
+  try {
+    needsVisionForClone = require("../routing/vision").payloadNeedsVision(payload);
+  } catch { needsVisionForClone = false; }
+  const clean = clonePayloadSmart(payload ?? {}, { willFlatten: willFlatten && !needsVisionForClone });
   const requestedModel =
     (typeof payload?.model === "string" && payload.model.trim().length > 0
       ? payload.model.trim()
@@ -1033,17 +1040,28 @@ function sanitizePayload(payload) {
     const { modelNameSupportsTools } = require("../clients/ollama-utils");
     const modelSupportsTools = modelNameSupportsTools(config.ollama?.model);
 
+    // Preserve image blocks for vision-capable Ollama models (e.g. llava,
+    // llama3.2-vision): the native /v1/messages path forwards them verbatim,
+    // the legacy /api/chat path drops what it can't handle. Text-only
+    // filtering below must not blind the native path.
+    const msgHasVision = (msg) => Array.isArray(msg?.content) && msg.content.some((b) =>
+      b?.type === 'image' || b?.type === 'image_url' || b?.image_url?.url || b?.source?.data
+    );
     if (!modelSupportsTools) {
       // Filter out tool_result content blocks for models without tool support
+      // (but keep text + images so vision still works).
       clean.messages = clean.messages
         .map((msg) => {
           if (Array.isArray(msg.content)) {
-            // Filter out tool_use and tool_result blocks
-            const textBlocks = msg.content.filter(
-              (block) => block.type === "text" && block.text
+            const keepBlocks = msg.content.filter(
+              (block) => (block.type === "text" && block.text) || msgHasVision({ content: [block] })
             );
-            if (textBlocks.length > 0) {
-              // Convert to simple string format for Ollama
+            if (keepBlocks.length > 0) {
+              const textBlocks = keepBlocks.filter((b) => b.type === "text" && b.text);
+              // If only images remain, keep array form for the native path
+              if (textBlocks.length === 0) return { role: msg.role, content: keepBlocks };
+              // Mixed text+images: keep array form (native) — legacy drops images
+              if (keepBlocks.some((b) => b.type !== "text")) return { role: msg.role, content: keepBlocks };
               return {
                 role: msg.role,
                 content: textBlocks.map((b) => b.text).join("\n"),
@@ -1056,9 +1074,10 @@ function sanitizePayload(payload) {
         .filter(Boolean);
     } else {
       // Keep tool blocks for tool-capable models
-      // But flatten content to simple string for better compatibility
+      // Preserve image arrays; flatten pure-text arrays for compatibility.
       clean.messages = clean.messages.map((msg) => {
         if (Array.isArray(msg.content)) {
+          if (msgHasVision(msg)) return msg;
           const textBlocks = msg.content.filter(
             (block) => block.type === "text" && block.text
           );
