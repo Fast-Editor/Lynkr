@@ -184,24 +184,23 @@ class ModelTierSelector {
 
   /**
    * Find a vision-capable model at or above `preferredTier`.
-   * Walks tier order from preferred upward; returns null when none available.
+   * Walks tiers in priority order (cheapest upward); returns null when none.
+   * Uses per-provider gate so registry-true but transportless combos are skipped.
    */
   findVisionCapable(preferredTier = null) {
-    const { getModelRegistrySync } = require('./model-registry');
-    const registry = getModelRegistrySync();
-    const tierOrder = preferredTier
-      ? [preferredTier, 'COMPLEX', 'REASONING', 'MEDIUM', 'SIMPLE']
-      : ['COMPLEX', 'REASONING', 'MEDIUM', 'SIMPLE'];
-    const seen = new Set();
+    const { providerSupportsVision } = require('./vision');
+    const priority = { SIMPLE: 1, MEDIUM: 2, COMPLEX: 3, REASONING: 4 };
+    const allTiers = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
+    const minPriority = preferredTier ? (priority[preferredTier] ?? 1) : 1;
+    const tierOrder = allTiers.filter((t) => (priority[t] ?? 99) >= minPriority);
+    // Fall back to full sweep (handles unknown tier names gracefully)
+    if (preferredTier && !tierOrder.includes(preferredTier)) tierOrder.unshift(preferredTier);
     for (const t of tierOrder) {
-      if (seen.has(t)) continue;
-      seen.add(t);
       const tierConfig = this.tierConfig[t];
       if (!tierConfig?.preferred) continue;
       for (const [provider, models] of Object.entries(tierConfig.preferred)) {
         for (const model of models) {
-          const info = registry.getCost(model);
-          if (info?.vision) return { provider, model, tier: t };
+          if (providerSupportsVision(provider, model)) return { provider, model, tier: t };
         }
       }
     }

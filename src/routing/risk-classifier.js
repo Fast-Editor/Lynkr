@@ -102,7 +102,19 @@ function analyzeRisk(payload) {
     }
   }
   text = stripSystemReminders(text);
-  if (typeof payload?.system === 'string') text += ' ' + payload.system;
+  // Harness-aware classification: OCR ships its review ruleset (NPE,
+  // thread-safety, XSS, SQL injection) as system text on every bundle. Those
+  // rule words are risk keywords ("security", "credential", "secret") the
+  // diff never contained — including system would force-escalate every
+  // bundle to high/REASONING. Classify on the task (diff bundle), execute
+  // on the full request. Fall back to tool fingerprint when the profile
+  // hasn't been attached yet (direct analyzeRisk calls in tests/guards).
+  const isOCR = payload?._clientProfile?.name === 'open-code-review'
+    || (Array.isArray(payload?.tools) && payload.tools.some((t) => {
+      const n = t?.name || t?.function?.name;
+      return n === 'code_comment' || n === 'task_done';
+    }));
+  if (!isOCR && typeof payload?.system === 'string') text += ' ' + payload.system;
 
   const prob = _predict(text, model);
   let level;

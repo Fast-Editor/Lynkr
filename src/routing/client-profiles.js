@@ -158,6 +158,25 @@ const PROFILES = {
       minToolFingerprintMatch: 0.8,
     },
   },
+  'open-code-review': {
+    name: 'open-code-review',
+    baselineTools: new Set([
+      // Alibaba open-code-review focused review toolset —
+      // internal/tool/definitions.go: task_done, code_comment, file_read,
+      // file_read_diff (+ search variants). These attach to every review
+      // bundle by design; counting them as agentic intent would floor every
+      // bundle at ITERATIVE/COMPLEX even for a 10-line typo fix. Real
+      // complexity still comes through diff size + file_read chains.
+      'task_done', 'code_comment', 'file_read', 'file_read_diff',
+    ]),
+    detect: {
+      // UA shape: `open-code-review/<ver> | <provider>` (internal/llm/client.go
+      // userAgent). Fingerprint fallback at 0.5: minimal bundles may carry
+      // only code_comment + task_done.
+      headerPatterns: [/open-code-review/i],
+      minToolFingerprintMatch: 0.5,
+    },
+  },
 };
 
 // Union of every baseline tool across all known profiles — used for the
