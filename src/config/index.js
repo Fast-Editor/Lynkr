@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -157,6 +157,39 @@ const baiduModel = process.env.BAIDU_MODEL?.trim() || "ernie-4.5-turbo-128k";
 const fireworksApiKey = process.env.FIREWORKS_API_KEY?.trim() || null;
 const fireworksEndpoint = process.env.FIREWORKS_ENDPOINT?.trim() || "https://api.fireworks.ai/inference/v1/chat/completions";
 const fireworksModel = process.env.FIREWORKS_MODEL?.trim() || "accounts/fireworks/models/kimi-k2-instruct-0905";
+
+// OrcaRouter configuration — OpenAI-compatible gateway (adaptive routing,
+// failover, zero-markup inference). The public relay is api.orcarouter.ai/v1;
+// authentication (OAuth 2.0 + PKCE code exchange) lives on www.orcarouter.ai.
+// A shared self-hosted ORCA_BASE_URL falls back for both origins; the explicit
+// auth/API overrides win when set. Never derive one origin from the other.
+const orcaRouterApiKey = process.env.ORCAROUTER_API_KEY?.trim() || null;
+const orcaRouterAuthBaseUrl = trimTrailingSlash(
+  process.env.ORCA_AUTH_BASE_URL || process.env.ORCA_BASE_URL || "https://www.orcarouter.ai"
+);
+const orcaRouterApiBaseUrl = trimTrailingSlash(
+  process.env.ORCA_API_BASE_URL || process.env.ORCA_BASE_URL || "https://api.orcarouter.ai"
+);
+const orcaRouterEndpoint = process.env.ORCAROUTER_ENDPOINT?.trim()
+  || `${orcaRouterApiBaseUrl}/v1/chat/completions`;
+const orcaRouterModel = process.env.ORCAROUTER_MODEL?.trim() || "orcarouter/auto";
+
+// Fail closed on plaintext remote OrcaRouter origins — the Bearer key must
+// never travel over HTTP. Same HTTPS-or-loopback policy as the auth origin.
+// Validated lazily (not at require time) so unit tests and unrelated
+// providers never break on an unset/invalid Orca env.
+function assertOrcaOriginsAllowed() {
+  const { assertAllowedOrigin } = require("../clients/orcarouter-credentials");
+  assertAllowedOrigin(orcaRouterAuthBaseUrl, { allowHttpLoopback: true });
+  assertAllowedOrigin(orcaRouterApiBaseUrl, { allowHttpLoopback: true });
+  try {
+    const epOrigin = new URL(orcaRouterEndpoint).origin;
+    assertAllowedOrigin(epOrigin, { allowHttpLoopback: true });
+  } catch (err) {
+    if (/must be HTTPS|not a valid URL/.test(err.message)) throw err;
+    throw new Error(`OrcaRouter endpoint is not a valid URL: ${orcaRouterEndpoint}`);
+  }
+}
 
 // Vertex AI (Google Gemini) configuration
 const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
@@ -313,6 +346,12 @@ if (modelProvider === "atlas" && !atlasCloudApiKey) {
   );
 }
 
+if (modelProvider === "orcarouter" && !orcaRouterApiKey) {
+  throw new Error(
+    "Set ORCAROUTER_API_KEY before starting the proxy.",
+  );
+}
+
 if (modelProvider === "ollama") {
   try {
     new URL(ollamaEndpoint);
@@ -361,7 +400,7 @@ const tiersConfigured = !!(
 if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, bedrock`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, bedrock, orcarouter`);
   }
   let fallbackMisconfigured = false;
   if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
@@ -377,6 +416,9 @@ if (fallbackEnabled && tiersConfigured) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "atlas" && !atlasCloudApiKey) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "orcarouter" && !orcaRouterApiKey) {
     fallbackMisconfigured = true;
   }
   if (fallbackMisconfigured) {
@@ -671,6 +713,13 @@ var config = {
     apiKey: fireworksApiKey,
     endpoint: fireworksEndpoint,
     model: fireworksModel,
+  },
+  orcarouter: {
+    apiKey: orcaRouterApiKey,
+    model: orcaRouterModel,
+    endpoint: orcaRouterEndpoint,
+    authBaseUrl: orcaRouterAuthBaseUrl,
+    apiBaseUrl: orcaRouterApiBaseUrl,
   },
   codex: {
     enabled: process.env.CODEX_ENABLED !== "false",
@@ -1137,6 +1186,17 @@ function reloadConfig() {
   config.baidu.model = process.env.BAIDU_MODEL?.trim() || "ernie-4.5-turbo-128k";
   config.fireworks.apiKey = process.env.FIREWORKS_API_KEY?.trim() || null;
   config.fireworks.model = process.env.FIREWORKS_MODEL?.trim() || "accounts/fireworks/models/kimi-k2-instruct-0905";
+  config.orcarouter.apiKey = process.env.ORCAROUTER_API_KEY?.trim() || null;
+  config.orcarouter.model = process.env.ORCAROUTER_MODEL?.trim() || "orcarouter/auto";
+  const orcaAuth = trimTrailingSlash(
+    process.env.ORCA_AUTH_BASE_URL || process.env.ORCA_BASE_URL || "https://www.orcarouter.ai"
+  );
+  const orcaApi = trimTrailingSlash(
+    process.env.ORCA_API_BASE_URL || process.env.ORCA_BASE_URL || "https://api.orcarouter.ai"
+  );
+  config.orcarouter.authBaseUrl = orcaAuth;
+  config.orcarouter.apiBaseUrl = orcaApi;
+  config.orcarouter.endpoint = process.env.ORCAROUTER_ENDPOINT?.trim() || `${orcaApi}/v1/chat/completions`;
 
   // Model provider settings
   const newProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
@@ -1225,3 +1285,4 @@ if (missingTiers.length > 0) {
 }
 
 module.exports = config;
+module.exports.assertOrcaOriginsAllowed = assertOrcaOriginsAllowed;

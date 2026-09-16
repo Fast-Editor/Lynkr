@@ -18,6 +18,7 @@ function providerMeta() {
     vertex:            { type: 'cloud', configured: !!c.vertex?.projectId },
     moonshot:          { type: 'cloud', configured: !!c.moonshot?.apiKey },
     fireworks:         { type: 'cloud', configured: !!c.fireworks?.apiKey },
+    orcarouter:        { type: 'cloud', configured: !!c.orcarouter?.apiKey },
     ollama:            { type: 'local', configured: !!c.ollama?.endpoint },
     llamacpp:          { type: 'local', configured: !!c.llamacpp?.endpoint },
     lmstudio:          { type: 'local', configured: !!c.lmstudio?.endpoint },

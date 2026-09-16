@@ -47,6 +47,7 @@ const PROVIDER_CACHE_DEFAULTS = {
   moonshot:   { readMult: 0.1,  writeMult: 0, ttlMs: 5 * 60 * 1000, mechanism: 'automatic' },
   openrouter: { readMult: 0.1,  writeMult: 0, ttlMs: 5 * 60 * 1000, mechanism: 'automatic' },
   edenai:     { readMult: 0.1,  writeMult: 0, ttlMs: 5 * 60 * 1000, mechanism: 'automatic' },
+  orcarouter: { readMult: 0.1,  writeMult: 0, ttlMs: 5 * 60 * 1000, mechanism: 'automatic' },
   // DeepSeek direct (via aggregators today, kept for model-level matches):
   deepseek:   { readMult: 0.02, writeMult: 0, ttlMs: 5 * 60 * 1000, mechanism: 'automatic' },
 

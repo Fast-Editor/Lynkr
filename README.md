@@ -211,6 +211,7 @@ Claude Code / Cursor / Codex / Cline / Continue
 | **llama.cpp** | Local | Any GGUF model | **Free** |
 | **LM Studio** | Local | Local models with GUI | **Free** |
 | **OpenRouter** | Cloud | GPT-4o, Claude 3.5, Llama 3, Gemini | $ |
+| **OrcaRouter** | Cloud | Chat, reasoning, image, video (one endpoint, live catalog) | $ (zero-markup) |
 | **AWS Bedrock** | Cloud | Claude, Llama, Mistral, Titan | $$ |
 | **Databricks** | Cloud | Claude Sonnet 4.5, Opus 4.6 | $$$ |
 | **Azure OpenAI** | Cloud | GPT-4o, o1, o3 | $$$ |

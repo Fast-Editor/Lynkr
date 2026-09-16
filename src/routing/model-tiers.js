@@ -354,6 +354,8 @@ class ModelTierSelector {
         return config.baidu?.model || null;
       case 'fireworks':
         return config.fireworks?.model || null;
+      case 'orcarouter':
+        return config.orcarouter?.model || null;
       case 'codex':
         return config.codex?.model || null;
       case 'vertex':

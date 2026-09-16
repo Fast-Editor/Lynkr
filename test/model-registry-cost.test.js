@@ -1,9 +1,77 @@
 const assert = require("assert");
 const { describe, it } = require("node:test");
 
-const { getModelRegistrySync } = require("../src/routing/model-registry");
+// The unit runner injects DATABRICKS_API_KEY/BASE inline (npm run test:unit),
+// and the registry's logger transitively requires src/config which throws
+// without them. Same inline harness as the repo's other bare node --test
+// suites (dispatch-registry, context-window-header), so this file can be run
+// directly by the independent verifier with a plain argv array.
+process.env.DATABRICKS_API_KEY = process.env.DATABRICKS_API_KEY || "test-key";
+process.env.DATABRICKS_API_BASE = process.env.DATABRICKS_API_BASE || "http://test.com";
+process.env.LOG_FILE_ENABLED = process.env.LOG_FILE_ENABLED || "false";
 
-const reg = getModelRegistrySync();
+const { ModelRegistry } = require("../src/routing/model-registry");
+
+// Deterministic small pricing fixture (tracked) — the production cache
+// (data/model-prices-cache.json) is gitignored and absent in a fresh
+// verification checkout, and getModelRegistrySync loads it synchronously.
+// The fixture is written in the RAW per-token LiteLLM / models.dev wire
+// format that _processLiteLLM/_processModelsDev actually consume, so the
+// test exercises the same builders a cache load uses without depending on
+// the ~4 MB production file. Values mirror the live LiteLLM entries for
+// gpt-5.2 / gpt-5.2-chat (input 1.75 / output 14 / context 128000, i.e.
+// per-token 0.00000175 / 0.000014).
+const PRICING_FIXTURE = {
+  litellm: {
+    "gpt-5.2-chat": {
+      input_cost_per_token: 0.00000175,
+      output_cost_per_token: 0.000014,
+      cache_read_input_token_cost: 0.000000175,
+      max_input_tokens: 128000,
+      max_output_tokens: 16384,
+      supports_function_calling: true,
+      supports_vision: true,
+    },
+    "gpt-5.2": {
+      input_cost_per_token: 0.00000175,
+      output_cost_per_token: 0.000014,
+      cache_read_input_token_cost: 0.000000175,
+      max_input_tokens: 128000,
+      max_output_tokens: 4096,
+      supports_function_calling: true,
+      supports_vision: false,
+    },
+  },
+  modelsDev: {
+    gpt: {
+      models: {
+        "5.2": {
+          cost: { input: 1.75, output: 14, cache_read: 0.175 },
+          context: 128000,
+          output: 4096,
+          tool_call: true,
+          reasoning: true,
+          input: ["text"],
+        },
+      },
+    },
+  },
+};
+
+/** Build a fresh, fully-populated registry from the tracked fixture. */
+function buildFixtureRegistry() {
+  const r = new ModelRegistry();
+  r.litellmPrices = r._processLiteLLM(PRICING_FIXTURE.litellm);
+  r.modelsDevPrices = r._processModelsDev(PRICING_FIXTURE.modelsDev);
+  r._buildIndex();
+  r.loaded = true;
+  return r;
+}
+
+// Module-level fixture registry for the cost-ladder suite (no data/ dir
+// needed). The WS8.1 stale-cache suite below builds its own stubbed
+// instances, so the fixture is only shared by the resolution-ladder tests.
+const reg = buildFixtureRegistry();
 
 describe("model-registry cost resolution ladder", () => {
   it("resolves a known model exactly", () => {

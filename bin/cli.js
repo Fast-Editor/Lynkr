@@ -15,6 +15,7 @@ const SUBCOMMANDS = {
   "desktop-token": path.join(__dirname, "lynkr-desktop-token.js"),
   restart:       path.join(__dirname, "lynkr-restart.js"),
   run:           path.join(__dirname, "run.js"),
+  connect:       path.join(__dirname, "lynkr-connect-orcarouter.js"),
 };
 
 const sub = process.argv[2];

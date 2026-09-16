@@ -61,6 +61,8 @@ function getDestinationUrl(providerType) {
       return config.baidu?.endpoint ?? 'unknown';
     case 'fireworks':
       return config.fireworks?.endpoint ?? 'unknown';
+    case 'orcarouter':
+      return config.orcarouter?.endpoint ?? 'https://api.orcarouter.ai/v1/chat/completions';
     case 'codex':
       return 'codex://app-server (local process)';
     default:
