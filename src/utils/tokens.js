@@ -50,9 +50,9 @@ function countPayloadTokens(payload) {
             return sum + estimateTokens(block.text || '');
           } else if (block.type === 'tool_result') {
             return sum + estimateTokens(block.content || '');
-          } else if (block.type === 'image') {
-            // Images: rough estimate based on source length
-            return sum + estimateTokens(JSON.stringify(block.source || {}));
+          } else if (block.type === 'image' || block.type === 'image_url' || block.type === 'input_image' || block.image_url?.url || block.inlineData?.data || block.inline_data?.data) {
+            // Fixed per-image estimate — never count base64 bytes as text.
+            return sum + 1500;
           }
           return sum + estimateTokens(JSON.stringify(block));
         }, 0);

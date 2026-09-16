@@ -37,6 +37,45 @@ function stableStringify(value) {
   return JSON.stringify(normaliseObject(value));
 }
 
+/**
+ * Replace image bytes with short hashes for cache keys.
+ * Prevents multi-MB base64 from entering SQLite keys/values index path and
+ * gives stable keys for identical images without hashing megabytes per request.
+ */
+function stripImageBytesForKey(messages) {
+  if (!Array.isArray(messages)) return messages;
+  let hashImageData = null;
+  try {
+    hashImageData = require('../routing/vision').hashImageData;
+  } catch { hashImageData = null; }
+  const shortHash = (s) => {
+    if (!hashImageData || typeof s !== 'string') return `[image:${String(s ?? '').length}]`;
+    try { return `[image:${hashImageData(s)}]`; } catch { return `[image:${String(s).length}]`; }
+  };
+  return messages.map((msg) => {
+    if (!msg || !Array.isArray(msg.content)) return msg;
+    return {
+      ...msg,
+      content: msg.content.map((block) => {
+        if (!block || typeof block !== 'object') return block;
+        if (block.type === 'image' && typeof block.source?.data === 'string') {
+          return { ...block, source: { ...block.source, data: shortHash(block.source.data) } };
+        }
+        if (typeof block.image_url?.url === 'string' && block.image_url.url.startsWith('data:image')) {
+          return { ...block, image_url: { ...block.image_url, url: shortHash(block.image_url.url) } };
+        }
+        if (typeof block.inlineData?.data === 'string') {
+          return { ...block, inlineData: { ...block.inlineData, data: shortHash(block.inlineData.data) } };
+        }
+        if (block.type === 'tool_result' && Array.isArray(block.content)) {
+          return { ...block, content: stripImageBytesForKey([{ content: block.content }])[0].content };
+        }
+        return block;
+      }),
+    };
+  });
+}
+
 class PromptCache {
   constructor(options = {}) {
     this.enabled = options.enabled === true;
@@ -158,7 +197,7 @@ class PromptCache {
       const canonical = {
         model: payload.model ?? null,
         input: payload.input ?? null,
-        messages: payload.messages ? normaliseObject(payload.messages) : null,
+        messages: payload.messages ? normaliseObject(stripImageBytesForKey(payload.messages)) : null,
         tools: payload.tools ? normaliseObject(payload.tools) : null,
         tool_choice: payload.tool_choice ? normaliseObject(payload.tool_choice) : null,
         temperature: payload.temperature ?? null,

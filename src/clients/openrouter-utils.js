@@ -55,6 +55,25 @@ function convertAnthropicToolsToOpenRouter(anthropicTools) {
  * - User messages with tool_result blocks → OpenRouter tool role messages
  * - Regular text content → OpenRouter text content
  */
+function anthropicImageToOpenAIUrl(block) {
+  if (!block || typeof block !== 'object') return null;
+  // Anthropic: {type:'image', source:{type:'base64', media_type, data}}
+  if (block.type === 'image' && block.source?.type === 'base64' && block.source?.data) {
+    const mediaType = block.source.media_type || 'image/jpeg';
+    return `data:${mediaType};base64,${block.source.data}`;
+  }
+  if (block.type === 'image' && block.source?.type === 'url' && block.source?.url) {
+    return block.source.url;
+  }
+  // Already OpenAI-shaped
+  if ((block.type === 'image_url' || block.type === 'input_image') && block.image_url?.url) {
+    return block.image_url.url;
+  }
+  if (block.image_url?.url) return block.image_url.url;
+  if (typeof block.url === 'string' && block.url.startsWith('data:image')) return block.url;
+  return null;
+}
+
 function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
   if (!Array.isArray(anthropicMessages)) return [];
 
@@ -124,32 +143,80 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
       // providers 400 the unpaired function_call.
       else if (msg.role === 'user' && toolResultBlocks.length > 0) {
         // Tool results first — adjacent to their assistant tool_calls.
+        // Preserve nested screenshots: emit text to the tool message and
+        // re-attach images as a following user message with image_url parts.
+        const pendingImages = [];
         for (const toolResult of toolResultBlocks) {
+          let toolText = '';
+          const trContent = toolResult.content;
+          if (typeof trContent === 'string') {
+            toolText = trContent;
+          } else if (Array.isArray(trContent)) {
+            const texts = [];
+            for (const b of trContent) {
+              if (b?.type === 'text' && b.text) texts.push(b.text);
+              else {
+                const url = anthropicImageToOpenAIUrl(b);
+                if (url) pendingImages.push(url);
+                else if (b) texts.push(typeof b === 'string' ? b : JSON.stringify(b));
+              }
+            }
+            toolText = texts.join('\n');
+          } else {
+            try { toolText = JSON.stringify(trContent || {}); } catch { toolText = ''; }
+          }
           converted.push({
             role: 'tool',
             tool_call_id: toolResult.tool_use_id || `call_${Date.now()}`,
-            content: typeof toolResult.content === 'string'
-              ? toolResult.content
-              : JSON.stringify(toolResult.content || {})
+            content: toolText
           });
         }
 
-        // Then any user-authored/injected text as a user message.
+        // Then any user-authored/injected text + images as a user message.
         const textContent = textBlocks.map(block => block.text || '').join('\n');
-        if (textContent) {
-          converted.push({
-            role: 'user',
-            content: textContent
-          });
+        for (const b of content) {
+          const url = anthropicImageToOpenAIUrl(b);
+          if (url) pendingImages.push(url);
+        }
+        if (textContent || pendingImages.length > 0) {
+          if (pendingImages.length === 0) {
+            converted.push({ role: 'user', content: textContent });
+          } else {
+            const parts = [];
+            if (textContent) parts.push({ type: 'text', text: textContent });
+            for (const url of pendingImages) {
+              parts.push({ type: 'image_url', image_url: { url } });
+            }
+            converted.push({ role: 'user', content: parts });
+          }
         }
       }
-      // Regular message with just text
+      // Regular message (may carry text + images)
       else {
         const textContent = textBlocks.map(block => block.text || '').join('\n');
-        const message = {
-          role: msg.role,
-          content: textContent || ''
-        };
+        const imageUrls = [];
+        for (const b of content) {
+          const url = anthropicImageToOpenAIUrl(b);
+          if (url) imageUrls.push(url);
+        }
+        // Document blocks with embedded base64 images
+        for (const b of content) {
+          if (b?.type === 'document' && b.source?.data && imageUrls.length === 0) {
+            // PDFs aren't image_url-compatible — keep a text placeholder so the
+            // turn isn't silently emptied (becomes ' ' downstream if nothing else).
+          }
+        }
+        let message;
+        if (imageUrls.length === 0) {
+          message = { role: msg.role, content: textContent || '' };
+        } else {
+          const parts = [];
+          if (textContent) parts.push({ type: 'text', text: textContent });
+          for (const url of imageUrls) {
+            parts.push({ type: 'image_url', image_url: { url } });
+          }
+          message = { role: msg.role, content: parts };
+        }
         if (msg.role === 'assistant' && thinkingText) {
           message.reasoning_content = thinkingText;
         }
@@ -188,6 +255,9 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
     if (m.role === 'tool') continue;
     const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
     if (hasToolCalls) continue;
+    // Array content (text + image_url parts) must be preserved verbatim —
+    // only string content gets the empty-string guard.
+    if (Array.isArray(m.content)) continue;
     if (typeof m.content !== 'string' || m.content.trim() === '') {
       m.content = ' ';
     }

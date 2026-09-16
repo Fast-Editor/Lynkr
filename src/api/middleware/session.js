@@ -8,12 +8,21 @@ const FALLBACK_HEADERS = [
   "x-claude-session",
   "x-claude-conversation-id",
   "anthropic-session-id",
+  // open-code-review per-bundle affinity: internal/llm/sessionkey.go sends
+  // `x-session-affinity: <ocr_session_key>` (real task key, or an
+  // auto-generated fallback). Each file bundle gets its own key so bundles
+  // route independently instead of sharing one PR-wide pin.
+  "x-session-affinity",
 ];
 
 function normaliseSessionId(value) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
-  return trimmed.length ? trimmed : null;
+  if (!trimmed.length) return null;
+  // Ignore unsubstituted templates (OCR sends literal "{ocr_session_key}"
+  // when no key is configured — its own client falls back to auto-generated).
+  if (trimmed.includes("{") && trimmed.includes("}")) return null;
+  return trimmed;
 }
 
 function _contentText(content) {

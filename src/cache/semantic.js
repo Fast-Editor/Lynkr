@@ -162,6 +162,13 @@ class SemanticCache {
         }
         return count;
       }, 0),
+      // Vision hash: same text + different image must NOT hit. Null when no
+      // images (backwards compatible with existing entries).
+      visionHash: (() => {
+        try {
+          return require('../routing/vision').visionContextHash(messages);
+        } catch { return null; }
+      })(),
     };
 
     hash.update(JSON.stringify(conversationState));

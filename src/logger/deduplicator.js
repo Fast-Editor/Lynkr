@@ -244,6 +244,11 @@ class ContentDeduplicator {
       return null;
     }
 
+    // Redact image bytes before anything touches disk.
+    try {
+      content = require('../routing/vision').redactVisionBytes(content);
+    } catch { /* best-effort */ }
+
     let stringContent = typeof content === "string" ? content : JSON.stringify(content);
 
     // Sanitize content before hashing (if enabled)
@@ -291,6 +296,11 @@ class ContentDeduplicator {
     if (!content || !precomputedHash) {
       return null;
     }
+
+    // Redact image bytes before anything touches disk.
+    try {
+      content = require('../routing/vision').redactVisionBytes(content);
+    } catch { /* best-effort */ }
 
     let stringContent = typeof content === "string" ? content : JSON.stringify(content);
 

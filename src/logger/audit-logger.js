@@ -127,6 +127,12 @@ function hashAndTruncate(content, maxLength, deduplicator) {
     return { hash: null, content: null, truncated: false, originalLength: null };
   }
 
+  // Redact image bytes before hashing/storing — never persist base64 to disk.
+  try {
+    const { redactVisionBytes } = require('../routing/vision');
+    content = redactVisionBytes(content);
+  } catch { /* redaction is best-effort */ }
+
   // Hash the ORIGINAL content before any truncation
   const hash = deduplicator ? deduplicator.hashContent(content) : null;
 
