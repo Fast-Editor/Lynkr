@@ -210,21 +210,21 @@ function sanitizeModel(raw) {
 }
 
 /**
- * Chat-compatible? Whitelists endpoint types this client can speak and
- * excludes non-text-specialist models (image-generation / openai-video /
- * jina-rerank / embeddings-only).
+ * Chat-compatible? Whitelists endpoint types this client can speak.
+ * Mixed-capability models (e.g. ["openai", "embeddings"]) are chat-capable;
+ * only models with NO chat endpoint (image-generation / openai-video /
+ * jina-rerank / embeddings-only) are excluded.
  * @param {object} model
  * @returns {boolean}
  */
 function isChatCapable(model) {
   const ep = model?.supported_endpoint_types;
   if (!Array.isArray(ep) || ep.length === 0) return false;
-  const hasChat = ep.some((t) => CHAT_ENDPOINT_TYPES.has(t));
-  if (!hasChat) return false;
-  // Exclude models whose only endpoints are image/video/rerank/embeddings.
-  return !ep.some((t) =>
-    ["image-generation", "openai-video", "jina-rerank", "embeddings"].includes(t)
-  );
+  // Chat-capable = speaks at least one chat wire format. Mixed-capability
+  // models (e.g. ["openai", "embeddings"]) handle chat fine — do NOT exclude
+  // them for also advertising image/video/rerank/embeddings endpoints.
+  // (Only chat vs non-chat matters; embeddings-only etc. fail hasChat above.)
+  return ep.some((t) => CHAT_ENDPOINT_TYPES.has(t));
 }
 
 /**
