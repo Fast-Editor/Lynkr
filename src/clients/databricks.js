@@ -2863,6 +2863,17 @@ async function invokeOrcaRouter(body, _incomingHeaders = {}) {
     throw new Error("OrcaRouter API key is not configured. Run `lynkr connect orcarouter` or set ORCAROUTER_API_KEY in your .env file.");
   }
 
+  // Defense in depth: never send the Bearer key over remote plaintext HTTP.
+  // chatCompletionsUrl() already validates the base; validate an explicit
+  // ORCAROUTER_ENDPOINT override here too (config is lazy by design).
+  try {
+    const { assertAllowedOrigin } = require("./orcarouter-credentials");
+    const epOrigin = new URL(config.orcarouter?.endpoint || chatCompletionsUrl(config.orcarouter?.apiBaseUrl)).origin;
+    assertAllowedOrigin(epOrigin, { allowHttpLoopback: true });
+  } catch (err) {
+    throw new Error(`OrcaRouter endpoint rejected: ${err.message}`);
+  }
+
   const endpoint = config.orcarouter?.endpoint || chatCompletionsUrl(config.orcarouter?.apiBaseUrl || "https://api.orcarouter.ai");
 
   const requestedModel = body._tierModel || body.model || config.orcarouter?.model || "orcarouter/auto";

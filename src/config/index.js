@@ -174,6 +174,23 @@ const orcaRouterEndpoint = process.env.ORCAROUTER_ENDPOINT?.trim()
   || `${orcaRouterApiBaseUrl}/v1/chat/completions`;
 const orcaRouterModel = process.env.ORCAROUTER_MODEL?.trim() || "orcarouter/auto";
 
+// Fail closed on plaintext remote OrcaRouter origins — the Bearer key must
+// never travel over HTTP. Same HTTPS-or-loopback policy as the auth origin.
+// Validated lazily (not at require time) so unit tests and unrelated
+// providers never break on an unset/invalid Orca env.
+function assertOrcaOriginsAllowed() {
+  const { assertAllowedOrigin } = require("../clients/orcarouter-credentials");
+  assertAllowedOrigin(orcaRouterAuthBaseUrl, { allowHttpLoopback: true });
+  assertAllowedOrigin(orcaRouterApiBaseUrl, { allowHttpLoopback: true });
+  try {
+    const epOrigin = new URL(orcaRouterEndpoint).origin;
+    assertAllowedOrigin(epOrigin, { allowHttpLoopback: true });
+  } catch (err) {
+    if (/must be HTTPS|not a valid URL/.test(err.message)) throw err;
+    throw new Error(`OrcaRouter endpoint is not a valid URL: ${orcaRouterEndpoint}`);
+  }
+}
+
 // Vertex AI (Google Gemini) configuration
 const vertexApiKey = process.env.VERTEX_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;
 const vertexModel = process.env.VERTEX_MODEL?.trim() || "gemini-2.0-flash";
@@ -1268,3 +1285,4 @@ if (missingTiers.length > 0) {
 }
 
 module.exports = config;
+module.exports.assertOrcaOriginsAllowed = assertOrcaOriginsAllowed;

@@ -113,16 +113,39 @@ const VERIFIED_SEED = [
 ];
 
 // Cache last-known-good live catalog so a momentary outage doesn't blank the
-// dropdown. Bounded (never grows unboundedly) and keyed by API base.
-let lastKnownGood = new Map(); // apiBase -> { models, fetchedAt }
+// dropdown. Keyed by API base + credential fingerprint + capability: model
+// visibility depends on the account, so a failed fetch after rotation must
+// never serve the previous account's models.
+let lastKnownGood = new Map(); // cacheKey -> { models, fetchedAt }
+
+function fingerprintKey(apiKey) {
+  try {
+    return require("crypto").createHash("sha256").update(String(apiKey || "")).digest("hex").slice(0, 16);
+  } catch {
+    return "nokey";
+  }
+}
+
+function catalogCacheKey(apiBase, apiKey, capability) {
+  const base = String(apiBase || "https://api.orcarouter.ai").replace(/\/+$/, "");
+  return `${base}::${fingerprintKey(apiKey)}::${capability || "chat"}`;
+}
 
 /**
  * Build the chat-completions endpoint URL for the configured origin.
+ * Rejects remote plaintext HTTP so a misconfigured base can never carry the
+ * Bearer key in clear text (same HTTPS-or-loopback policy as auth origin).
  * @param {string} apiBase - e.g. https://api.orcarouter.ai
  * @returns {string} e.g. https://api.orcarouter.ai/v1/chat/completions
  */
 function chatCompletionsUrl(apiBase) {
-  return `${String(apiBase || "https://api.orcarouter.ai").replace(/\/+$/, "")}/v1/chat/completions`;
+  const base = String(apiBase || "https://api.orcarouter.ai").replace(/\/+$/, "");
+  try {
+    require("./orcarouter-credentials").assertAllowedOrigin(base, { allowHttpLoopback: true });
+  } catch (err) {
+    throw new Error(`OrcaRouter API base rejected: ${err.message}`);
+  }
+  return `${base}/v1/chat/completions`;
 }
 
 /**
@@ -135,6 +158,13 @@ function chatCompletionsUrl(apiBase) {
  */
 async function fetchOrcaCatalog({ apiBase, apiKey, capability = "chat" }) {
   const base = String(apiBase || "https://api.orcarouter.ai").replace(/\/+$/, "");
+  // Fail closed on plaintext remote bases — never send the Bearer key over HTTP.
+  try {
+    require("./orcarouter-credentials").assertAllowedOrigin(base, { allowHttpLoopback: true });
+  } catch (err) {
+    return { ok: false, reason: err.message, degraded: true };
+  }
+  const cacheKey = catalogCacheKey(base, apiKey, capability);
   const url = `${base}/v1/models${capability ? `?capability=${encodeURIComponent(capability)}` : ""}`;
   try {
     const res = await fetch(url, {
@@ -161,11 +191,11 @@ async function fetchOrcaCatalog({ apiBase, apiKey, capability = "chat" }) {
     if (models.length === 0) {
       return { ok: false, reason: "catalog empty after sanitize", degraded: true };
     }
-    lastKnownGood.set(base, { models, fetchedAt: Date.now() });
+    lastKnownGood.set(cacheKey, { models, fetchedAt: Date.now() });
     return { ok: true, models, capability };
   } catch (err) {
     logger.debug({ err: err.message, base }, "OrcaRouter catalog fetch threw");
-    const cached = lastKnownGood.get(base);
+    const cached = lastKnownGood.get(cacheKey);
     if (cached && cached.models) {
       return { ok: true, models: cached.models, degraded: true, cached: true, reason: err.message };
     }
@@ -295,4 +325,6 @@ module.exports = {
   sanitizeModel,
   VERIFIED_SEED,
   CHAT_ENDPOINT_TYPES,
+  catalogCacheKey,
+  _lastKnownGood: lastKnownGood,
 };

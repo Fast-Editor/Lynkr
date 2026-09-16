@@ -344,11 +344,41 @@ async function exchangeCode({ authBaseUrl, code, verifier, fetchImpl = fetch }) 
 /**
  * Full PKCE connect (Flow B): generate verifier+state, build authorize URL,
  * accept the pasted one-time code, exchange it, persist the durable key.
- * @param {object} opts - { authBaseUrl, appName, code?, env, fetchImpl }
+ *
+ * Two-phase usage (same process — the verifier is the PKCE binding):
+ *   const started = await connectWithPkce({ appName });
+ *   // ... user authorizes started.authorizeUrl, pastes code ...
+ *   const result = await connectWithPkce({ appName, code, verifier: started.verifier, state: started.state });
+ * @param {object} opts - { authBaseUrl, appName, code?, verifier?, state?, env, fetchImpl }
  * @returns {Promise<{ok:boolean, authorizeUrl?:string, credential?:OrcaCredential, error?:object}>}
  */
-async function connectWithPkce(opts) {
+async function connectWithPkce(opts = {}) {
   const authBaseUrl = resolveAuthBase(opts.env || process.env);
+  // Second phase: reuse the verifier that produced the challenge. Generating
+  // a fresh verifier here would never match the authorized challenge and the
+  // exchange would always fail — fail fast with an actionable error instead.
+  if (opts.code) {
+    const verifier = typeof opts.verifier === "string" ? opts.verifier.trim() : "";
+    if (!verifier) {
+      return {
+        ok: false,
+        error: {
+          code: "missing_verifier",
+          message: "PKCE verifier missing — restart `lynkr connect orcarouter` and exchange the code in the same process.",
+        },
+      };
+    }
+    const exchanged = await exchangeCode({ authBaseUrl, code: opts.code, verifier, fetchImpl: opts.fetchImpl });
+    if (!exchanged.ok) return exchanged;
+
+    // Persist the durable key. The PKCE flow only issues keys via this seam.
+    const credential = store.save(exchanged.credential.key, {
+      source: "pkce",
+      scope: exchanged.credential.scope,
+    });
+    return { ok: true, credential, authorizeUrl: undefined };
+  }
+
   const verifier = generateVerifier();
   const state = generateState();
   const authorizeUrl = buildAuthorizeUrl({
@@ -360,19 +390,7 @@ async function connectWithPkce(opts) {
 
   // No code yet → hand back the authorize URL for the caller/UI to show and
   // the user to paste the code. The verifier stays in-process only.
-  if (!opts.code) {
-    return { ok: true, authorizeUrl, state, verifier };
-  }
-
-  const exchanged = await exchangeCode({ authBaseUrl, code: opts.code, verifier, fetchImpl: opts.fetchImpl });
-  if (!exchanged.ok) return exchanged;
-
-  // Persist the durable key. The PKCE flow only issues keys via this seam.
-  const credential = store.save(exchanged.credential.key, {
-    source: "pkce",
-    scope: exchanged.credential.scope,
-  });
-  return { ok: true, credential, authorizeUrl };
+  return { ok: true, authorizeUrl, state, verifier };
 }
 
 // Shared default store for the seam (tests may construct their own).

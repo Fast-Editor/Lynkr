@@ -61,6 +61,42 @@ function readEnvLines() {
 
 function writeEnvLines(lines) {
   fs.writeFileSync(ENV_PATH, lines.join("\n") + "\n", { mode: 0o600 });
+  // mode only applies on creation — tighten existing files explicitly so a
+  // previously 0644 .env doesn't leave the new OAuth key world-readable.
+  try {
+    fs.chmodSync(ENV_PATH, 0o600);
+  } catch {
+    /* best-effort: e.g. read-only FS in CI */
+  }
+}
+
+function readEnvKey(key) {
+  try {
+    const lines = readEnvLines();
+    for (const line of lines) {
+      const m = line.match(/^([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (m && m[1] === key) {
+        const v = (m[2] || "").trim();
+        return v || null;
+      }
+    }
+  } catch {
+    /* missing/unreadable .env → no file-backed value */
+  }
+  return null;
+}
+
+// File-backed env for status: process.env wins, .env file is the fallback so
+// a key saved by a previous `connect` process is visible without re-export.
+function statusEnv() {
+  const env = { ...process.env };
+  for (const k of ["ORCAROUTER_API_KEY", "ORCA_API_BASE_URL", "ORCA_AUTH_BASE_URL", "ORCA_BASE_URL"]) {
+    if (!env[k]) {
+      const v = readEnvKey(k);
+      if (v) env[k] = v;
+    }
+  }
+  return env;
 }
 
 function upsertEnvKey(key, value) {
@@ -111,13 +147,20 @@ function fail(msg) {
 }
 
 function status() {
-  const store = getCredentialStore();
+  // Read through a file-backed store: a key saved to .env by either
+  // connection path must show up in a later process without requiring export.
+  const { OrcaCredentialStore } = require("../src/clients/orcarouter-credentials");
+  const env = statusEnv();
+  const store = new OrcaCredentialStore({
+    env,
+    loadSecret: () => env.ORCAROUTER_API_KEY || null,
+  });
   const st = store.read();
   console.log(st.present
     ? `OrcaRouter credential: ${st.masked} (generation ${st.generation})${st.needsReauth ? " — needs reauthentication" : ""}`
     : "No OrcaRouter credential configured.");
-  console.log(`  API base:  ${resolveApiBase()}`);
-  console.log(`  Auth base: ${resolveAuthBase()}`);
+  console.log(`  API base:  ${resolveApiBase(env)}`);
+  console.log(`  Auth base: ${resolveAuthBase(env)}`);
 }
 
 async function runConnect(opts) {
@@ -153,8 +196,9 @@ async function runConnect(opts) {
   const code = opts.code || (await ask("2. Paste the one-time code from the consent screen: ")).trim();
   if (!code) fail("No code provided.");
 
-  // Exchange the code for the durable key using the SAME verifier.
-  const result = await connectWithPkce({ appName: "Lynkr", code });
+  // Exchange the code for the durable key using the SAME verifier that
+  // produced the challenge (PKCE binding — a fresh verifier would mismatch).
+  const result = await connectWithPkce({ appName: "Lynkr", code, verifier: started.verifier, state: started.state });
   if (!result.ok) {
     fail(result.error?.message || `OrcaRouter exchange failed (HTTP ${result.error?.status || "?"})`);
   }
@@ -199,4 +243,4 @@ if (require.main === module || process.env._LYNKR_SUBCMD === "connect") {
   main().catch((err) => fail(err.message));
 }
 
-module.exports = { runConnect, parseArgs, upsertEnvKey, clearEnvKey };
+module.exports = { runConnect, parseArgs, upsertEnvKey, clearEnvKey, readEnvKey, statusEnv, status };

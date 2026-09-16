@@ -305,7 +305,8 @@ describe("OrcaRouter credential seam (API key + PKCE)", () => {
       assert.ok(started.authorizeUrl.startsWith("https://www.orcarouter.ai/auth?"));
       assert.ok(!started.authorizeUrl.includes(started.verifier), "verifier must not be in the authorize URL");
 
-      const result = await mod.connectWithPkce({ appName: "Lynkr", code: "one-time-code" });
+      // Second phase must reuse the SAME verifier that produced the challenge.
+      const result = await mod.connectWithPkce({ appName: "Lynkr", code: "one-time-code", verifier: started.verifier, state: started.state });
       assert.equal(result.ok, true);
       assert.equal(result.credential.key, "sk-orca-pkce-issued");
       assert.equal(result.credential.source, "pkce");
@@ -321,10 +322,17 @@ describe("OrcaRouter credential seam (API key + PKCE)", () => {
       global.fetch = async () => new Response(JSON.stringify({ error: "denied", error_description: "The user declined" }), { status: 403, headers: { "content-type": "application/json" } });
       const mod = require("../src/clients/orcarouter-credentials");
       const started = await mod.connectWithPkce({ appName: "Lynkr" });
-      const result = await mod.connectWithPkce({ appName: "Lynkr", code: "declined-code" });
+      const result = await mod.connectWithPkce({ appName: "Lynkr", code: "declined-code", verifier: started.verifier, state: started.state });
       assert.equal(result.ok, false);
       assert.ok(!JSON.stringify(result).includes(started.verifier), "verifier leaked into error result");
       assert.ok(!JSON.stringify(result).includes("declined-code"));
+    });
+
+    it("fails closed when the second phase has no verifier (no silent fresh verifier)", async () => {
+      const mod = require("../src/clients/orcarouter-credentials");
+      const result = await mod.connectWithPkce({ appName: "Lynkr", code: "one-time-code" });
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "missing_verifier");
     });
   });
 });
