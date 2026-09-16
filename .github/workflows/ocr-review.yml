@@ -70,6 +70,22 @@ jobs:
       # action is supported by design (action requires CLI >= v1.9.6, and
       # --effort needs CLI >= v1.10.0).
       OCR_CLI_VERSION: '1.12.4'
+
+      # ROOT CAUSE of the `Cannot find module '/usr/local/bin/ocr'` failures
+      # (2026-09-16): every `ocr` invocation spawns scripts/update.js detached,
+      # which runs `npm i -g @alibaba-group/open-code-review@<latest>` whenever
+      # npm `latest` is newer than the installed CLI. That global reinstall
+      # unlinks/relinks /usr/local/bin/ocr mid-job, deleting the binary out
+      # from under the later `ocr review` (exit 1, 0s, empty result). Verified
+      # locally: install 1.12.0 with 1.12.4 as latest -> update.js executes
+      # `npm i -g @alibaba-group/open-code-review@1.12.4`. The launcher honors
+      # OCR_NO_UPDATE (bin/ocr.js) and passes env through to all children, so
+      # setting it here disables the self-upgrade in every step, including the
+      # pinned action's internal `ocr` calls. Repro: Sep-14 run passed (latest
+      # == installed 1.12.0, updater no-op); Sep-16 runs failed (1.12.3/1.12.4
+      # released that day, updater fired).
+      OCR_NO_UPDATE: '1'
+
     if: |
       github.event_name == 'pull_request_target'
       || (
