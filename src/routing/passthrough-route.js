@@ -123,19 +123,62 @@ function resolveTierModel({ tierName = null, tierModel = null, selectModelFn = n
  * Downgrade gate (rule 5): is there enough live warmth to justify holding
  * the pinned model instead of following the fresh lower tier down?
  * Mirrors cache-switch-cost.js staleness/TTL handling: stale-model state,
- * TTL-cold state, absent state and small prefixes all allow the downgrade.
+ * TTL-cold state, absent state and small prefixes all allow the downgrade
+ * without further math.
+ *
+ * Above the trivial floor, the decision is dollar break-even via the SAME
+ * evaluator the normal flow uses: holding Opus to "save" a re-read is only
+ * rational when the re-read costs more than the per-turn premium over the
+ * session's expected remaining turns. With Opus ~18x Haiku on output the
+ * break-even typically clears in a fraction of a turn, so holds are rare
+ * by design — surviving only when the session is nearly over (nothing to
+ * amortize a rebuild over) or pricing is unknown (fail toward the hold).
+ *
+ * @param {string|null} pinModel - currently serving (pinned) model
+ * @param {object|null} cacheState - sessionAffinity.getCacheState(sessionId)
+ * @param {object} [opts]
+ * @param {string|null} [opts.downgradeModel] - model a downgrade would serve
+ * @param {number|null} [opts.remainingTurns] - expected turns left (null → evaluator default)
+ * @param {function|null} [opts.evaluateSwitch] - injectable evaluator (tests)
  */
-function shouldHoldForCache(pinModel, cacheState) {
+function shouldHoldForCache(pinModel, cacheState, opts = {}) {
   if (!cacheState || typeof cacheState !== 'object') return null;
   if (cacheState.cold) return { hold: false, reason: 'downgrade_cache_cold' };
   if (cacheState.model && pinModel && cacheState.model !== pinModel) {
     return { hold: false, reason: 'downgrade_cache_stale' };
   }
   const warm = Number(cacheState.warmPrefixTokens) || 0;
-  if (warm >= holdMinPrefixTokens()) {
-    return { hold: true, reason: 'hold_upgraded_pin_warm', warmPrefixTokens: warm };
+  if (warm < holdMinPrefixTokens()) {
+    return { hold: false, reason: 'downgrade_prefix_small', warmPrefixTokens: warm };
   }
-  return { hold: false, reason: 'downgrade_prefix_small', warmPrefixTokens: warm };
+  try {
+    const evaluate = opts.evaluateSwitch
+      || require('./cache-switch-cost').evaluateSwitch;
+    const ev = evaluate({
+      cacheState,
+      current: { provider: cacheState.provider || 'azure-anthropic', model: pinModel },
+      target: { provider: cacheState.provider || 'azure-anthropic', model: opts.downgradeModel || null },
+      expectedRemainingTurns: opts.remainingTurns ?? null,
+    });
+    if (ev && ev.switchAllowed) {
+      return {
+        hold: false,
+        reason: 'downgrade_break_even_cleared',
+        warmPrefixTokens: warm,
+        breakEvenTurns: ev.breakEvenTurns ?? null,
+        expectedRemainingTurns: ev.expectedRemainingTurns ?? null,
+      };
+    }
+    return {
+      hold: true,
+      reason: 'hold_break_even_blocked',
+      warmPrefixTokens: warm,
+      breakEvenTurns: ev && ev.breakEvenTurns !== undefined ? ev.breakEvenTurns : null,
+      expectedRemainingTurns: ev && ev.expectedRemainingTurns !== undefined ? ev.expectedRemainingTurns : null,
+    };
+  } catch {
+    return { hold: true, reason: 'hold_evaluator_failed', warmPrefixTokens: warm };
+  }
 }
 
 /**
@@ -148,9 +191,12 @@ function shouldHoldForCache(pinModel, cacheState) {
  * @param {object|null} [args.cacheState] - sessionAffinity.getCacheState(sessionId):
  *   {warmPrefixTokens, provider, model, lastRequestAt, ttlMs, cold} or null.
  *   Caller (router fork) loads it; kept out of here so this stays pure.
+ * @param {number|null} [args.remainingTurns] - expected turns left, for the
+ *   break-even gate (null → evaluator default). Caller loads via telemetry.
+ * @param {function|null} [args.evaluateSwitch] - injectable evaluator (tests).
  * @returns {{model:string|null, action:'verbatim'|'upgrade'|'pin_hold', reason:string, warmPrefixTokens:number|null}}
  */
-function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel = null, tierMethod = null, tierPinned = null, cacheState = null } = {}) {
+function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel = null, tierMethod = null, tierPinned = null, cacheState = null, remainingTurns = null, evaluateSwitch = null } = {}) {
   try {
     if (!isRoutingEnabled()) {
       return { model: clientModel, action: 'verbatim', reason: 'routing_disabled', warmPrefixTokens: null };
@@ -168,7 +214,11 @@ function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel
     }
     const pinRank = familyRank(pinModel);
     if (pinRank !== null && pinRank > clientRank) {
-      const gate = shouldHoldForCache(pinModel, cacheState);
+      const gate = shouldHoldForCache(pinModel, cacheState, {
+        downgradeModel: clientModel,
+        remainingTurns,
+        ...(evaluateSwitch ? { evaluateSwitch } : {}),
+      });
       if (gate && gate.hold) {
         return { model: pinModel, action: 'pin_hold', reason: gate.reason, warmPrefixTokens: gate.warmPrefixTokens ?? null };
       }

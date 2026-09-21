@@ -1517,6 +1517,12 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           tierMethod: tier?.method || null,
           tierPinned: tier?.pinned ?? null,
           cacheState: _pinCacheState,
+          remainingTurns: (() => {
+            try {
+              const msgCount = Array.isArray(req.body?.messages) ? req.body.messages.length : 0;
+              return require("../routing/telemetry").getExpectedRemainingTurns(msgCount);
+            } catch { return null; }
+          })(),
         });
       } catch (err) {
         logger.debug({ err: err.message }, '[Routing] Passthrough route decide failed — verbatim');

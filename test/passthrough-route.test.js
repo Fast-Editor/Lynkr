@@ -98,19 +98,27 @@ describe('decidePassthroughModel', () => {
     assert.strictEqual(r.model, HAIKU);
   });
 });
-
-describe('downgrade gate (normal-flow hysteresis)', () => {  const warm = (tokens, extra = {}) => ({
-    warmPrefixTokens: tokens, provider: 'azure-anthropic', model: SONNET,
+describe('downgrade gate (dollar break-even, normal-flow math)', () => {
+  const warm = (tokens, extra = {}) => ({
+    warmPrefixTokens: tokens, provider: 'azure-anthropic', model: OPUS,
     lastRequestAt: Date.now(), ttlMs: 300000, cold: false, ...extra,
   });
-  const args = (cacheState) => ({ tierModel: HAIKU, clientModel: HAIKU, pinModel: SONNET, cacheState });
+  const args = (cacheState, extra = {}) => ({
+    tierModel: HAIKU, clientModel: HAIKU, pinModel: OPUS, cacheState, ...extra,
+  });
 
-  it('holds the pin on a large warm prefix', () => {
+  it('downgrades on a warm prefix when sessions remain (Opus premium dwarfs one re-read)', () => {
+    // Real registry prices: break-even clears in a fraction of a turn.
     const r = route.decidePassthroughModel(args(warm(12500)));
+    assert.strictEqual(r.action, 'verbatim');
+    assert.strictEqual(r.reason, 'downgrade_break_even_cleared');
+  });
+
+  it('holds when the session is nearly over (nothing to amortize over)', () => {
+    const r = route.decidePassthroughModel(args(warm(12500), { remainingTurns: 0.2 }));
     assert.strictEqual(r.action, 'pin_hold');
-    assert.strictEqual(r.model, SONNET);
-    assert.strictEqual(r.reason, 'hold_upgraded_pin_warm');
-    assert.strictEqual(r.warmPrefixTokens, 12500);
+    assert.strictEqual(r.model, OPUS);
+    assert.strictEqual(r.reason, 'hold_break_even_blocked');
   });
 
   it('downgrades on a TTL-cold prefix', () => {
@@ -120,15 +128,19 @@ describe('downgrade gate (normal-flow hysteresis)', () => {  const warm = (token
   });
 
   it('downgrades on stale-model cache state', () => {
-    const r = route.decidePassthroughModel(args(warm(12500, { model: OPUS })));
+    const r = route.decidePassthroughModel(args(warm(12500, { model: SONNET })));
     assert.strictEqual(r.action, 'verbatim');
     assert.strictEqual(r.reason, 'downgrade_cache_stale');
   });
 
-  it('downgrades on a small warm prefix', () => {
-    const r = route.decidePassthroughModel(args(warm(300)));
+  it('downgrades on a small warm prefix without running the math', () => {
+    let called = false;
+    const r = route.decidePassthroughModel(args(warm(300), {
+      evaluateSwitch: (...a) => { called = true; return null; },
+    }));
     assert.strictEqual(r.action, 'verbatim');
     assert.strictEqual(r.reason, 'downgrade_prefix_small');
+    assert.strictEqual(called, false);
   });
 
   it('upgrades always fire, even on a warm prefix (correctness beats cache)', () => {
@@ -143,6 +155,21 @@ describe('downgrade gate (normal-flow hysteresis)', () => {  const warm = (token
     const r = route.decidePassthroughModel(args(warm(1999)));
     assert.strictEqual(r.action, 'verbatim');
     assert.strictEqual(r.reason, 'downgrade_prefix_small');
+  });
+
+  it('evaluator failure fails toward the hold (never strand on an error)', () => {
+    const r = route.decidePassthroughModel(args(warm(9000), {
+      evaluateSwitch: () => { throw new Error('econ down'); },
+    }));
+    assert.strictEqual(r.action, 'pin_hold');
+    assert.strictEqual(r.reason, 'hold_evaluator_failed');
+  });
+
+  it('unpriced target holds (economics unknown, fail toward pin)', () => {
+    const r = route.decidePassthroughModel(args(warm(9000), {
+      evaluateSwitch: () => ({ switchAllowed: false, reason: 'never_profitable', breakEvenTurns: Infinity }),
+    }));
+    assert.strictEqual(r.action, 'pin_hold');
   });
 });
 
