@@ -69,7 +69,9 @@ function convertOpenAIToAnthropic(openaiRequest) {
           } else if (part.type === "image_url") {
             const url = part.image_url?.url || "";
             if (url.startsWith("data:")) {
-              const match = url.match(/^data:([^;]+);base64,(.+)$/);
+              // Accept base64 and base64url alphabets; anything else falls
+              // through to url-shape (provider validates downstream).
+              const match = url.match(/^data:([^;]+);base64,([A-Za-z0-9+/=_-]+)$/);
               if (match) {
                 // Image payloads become Anthropic image blocks; anything
                 // else (e.g. application/pdf) becomes a document block so
@@ -86,7 +88,7 @@ function convertOpenAIToAnthropic(openaiRequest) {
             // a data URL whose media type + base64 payload map directly
             // (issue #115: previously forwarded unchanged → upstream 400).
             const dataUrl = part.file.file_data || "";
-            const match = typeof dataUrl === "string" && dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+            const match = typeof dataUrl === "string" && dataUrl.match(/^data:([^;]+);base64,([A-Za-z0-9+/=_-]+)$/);
             if (match) {
               return { type: "document", source: { type: "base64", media_type: match[1], data: match[2] } };
             }

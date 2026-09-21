@@ -1,5 +1,5 @@
 const config = require("../config");
-const { invokeModel } = require("../clients/databricks");
+const { invokeModel, toolsDeclined } = require("../clients/databricks");
 const { appendTurnToSession } = require("../sessions/record");
 const { upsertSession } = require("../sessions/store");
 const policy = require("../policy");
@@ -1113,7 +1113,10 @@ function sanitizePayload(payload) {
     if (tools) clean.tools = tools;
     else delete clean.tools;
   } else if (providerType === "azure-anthropic") {
-    const { toolsDeclined } = require("../clients/databricks");
+    // toolsDeclined is imported top-level from ../clients/databricks
+    // alongside invokeModel — same module instance, no inline require
+    // needed (a guarded re-require would imply a failure mode that cannot
+    // occur without breaking everything else first).
     // A caller that declined tools gets none — never substitute defaults
     // (issue #114: substitution here turned tool_choice "none" into an
     // unrelated tool set with the choice deleted).

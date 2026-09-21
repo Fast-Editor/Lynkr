@@ -46,6 +46,13 @@ const TIER_DEFINITIONS = {
   },
 };
 
+// Midpoint of each tier band: the score a decision carries when only the
+// tier is known (reconcile caps, Jev overrides, badges). Single source of
+// truth — intent-score and jev-router import this rather than keeping
+// private copies that can drift (midpoints must stay inside the bands
+// above, including calibrated overrides).
+const TIER_MIDPOINT = { SIMPLE: 10, MEDIUM: 35, COMPLEX: 63, REASONING: 88 };
+
 class ModelTierSelector {
   constructor() {
     this.tierConfig = null;
@@ -526,4 +533,5 @@ module.exports = {
   getModelTierSelector,
   reloadCalibratedThresholds,
   TIER_DEFINITIONS,
+  TIER_MIDPOINT,
 };

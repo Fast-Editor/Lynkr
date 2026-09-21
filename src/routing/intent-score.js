@@ -338,9 +338,8 @@ function _reconcile(anchorScore, anchorClass, classifierResult) {
   const anchorIdx = TIER_ORDER.indexOf(anchorTier);
   const classifierIdx = TIER_ORDER.indexOf(classifierTier);
 
-  // Midpoints of each tier band (from model-tiers.js defaults):
-  //   SIMPLE 0-19 → 10, MEDIUM 20-50 → 35, COMPLEX 51-75 → 63, REASONING 76-100 → 88
-  const TIER_MIDPOINT = { SIMPLE: 10, MEDIUM: 35, COMPLEX: 63, REASONING: 88 };
+  // Midpoints live in model-tiers.js (single source of truth).
+  const { TIER_MIDPOINT } = require('./model-tiers');
 
   if (classifierIdx < anchorIdx) {
     // Classifier says LOWER tier — trust it. Fixes over-routing.

@@ -206,11 +206,10 @@ function _pri(tier) {
   return _TIER_PRI[tier] || 0;
 }
 
-// Tier midpoints (mirrors intent-score _reconcile) so an override keeps the
-// numeric score coherent with the decided tier for drift math, badges and
-// telemetry. Deliberately duplicated, not imported: intent-score doesn't
-// export the table and this module stays dependency-free.
-const TIER_MIDPOINT = { SIMPLE: 10, MEDIUM: 35, COMPLEX: 63, REASONING: 88 };
+// Tier midpoints live in model-tiers.js (single source of truth, shared
+// with intent-score reconcile) so a decided tier maps to a coherent numeric
+// score for drift math, badges and telemetry.
+const { TIER_MIDPOINT } = require('./model-tiers');
 
 /**
  * Jev tier override (pure): when a high-confidence Jev verdict disagrees

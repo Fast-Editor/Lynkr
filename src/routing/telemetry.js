@@ -320,7 +320,7 @@ function record(data) {
           : (typeof data.context === "string" ? data.context : JSON.stringify(data.context)),
         jev_verdict: data.jev_verdict ?? null,
         jev_confidence: data.jev_confidence ?? null,
-        jev_probabilities: data.jev_probabilities == null
+        jev_probabilities: data.jev_probabilities === null || data.jev_probabilities === undefined
           ? null
           : (typeof data.jev_probabilities === "string" ? data.jev_probabilities : JSON.stringify(data.jev_probabilities)),
         jev_model: data.jev_model ?? null,
@@ -1172,7 +1172,7 @@ function jevFields(src) {
   return {
     jev_verdict: j.tier ?? null,
     jev_confidence: j.confidence ?? null,
-    jev_probabilities: j.probabilities == null
+    jev_probabilities: j.probabilities === null || j.probabilities === undefined
       ? null
       : (typeof j.probabilities === 'string' ? j.probabilities : JSON.stringify(j.probabilities)),
     jev_model: j.model ?? null,
