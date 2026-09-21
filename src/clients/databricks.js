@@ -10,6 +10,30 @@ const { createBulkhead } = require("./resilience");
 const logger = require("../logger");
 const { STANDARD_TOOLS, STANDARD_TOOL_NAMES } = require("./standard-tools");
 const { convertAnthropicToolsToOpenRouter } = require("./openrouter-utils");
+
+/**
+ * Capability-boundary guard (issue #114): a caller that sets
+ * tool_choice "none" grants no tools. Substituting STANDARD_TOOLS widens
+ * the grant to shell execution with zero caller-visible signal, so every
+ * injection site below must consult this first. Matches the convention
+ * already used by the OpenRouter ingress path.
+ */
+function toolsDeclined(body) {
+  const tc = body?.tool_choice;
+  if (typeof tc === 'string') return tc.toLowerCase() === 'none';
+  if (tc && typeof tc === 'object') return tc.type === 'none';
+  return false;
+}
+
+/**
+ * Carry the caller's tool_choice through where the target expresses it.
+ * Only "none" is forwarded verbatim (the safety-critical value — the model
+ * must not be offered tools the caller forbade); everything else keeps the
+ * historical "auto" default so exotic shapes never 400 strict providers.
+ */
+function forwardToolChoice(body) {
+  return toolsDeclined(body) ? 'none' : 'auto';
+}
 const {
   detectModelFamily
 } = require("./bedrock-utils");
@@ -190,8 +214,9 @@ async function invokeDatabricks(body, _incomingHeaders = {}) {
   // Create a copy of body to avoid mutating the original
   const databricksBody = { ...body };
 
-  // Inject standard tools if client didn't send any (passthrough mode)
-  if (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0) {
+  // Inject standard tools if client didn't send any (passthrough mode).
+  // Never when the caller declined tools (issue #114).
+  if (!toolsDeclined(body) && (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0)) {
     databricksBody.tools = STANDARD_TOOLS;
     logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
@@ -535,7 +560,7 @@ async function invokeOllama(body, _incomingHeaders = {}) {
 
   if (!supportsTools) {
     toolsToSend = null;
-  } else if (injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+  } else if (!toolsDeclined(body) && injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
   }
@@ -827,7 +852,7 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.debug({
@@ -844,6 +869,10 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
       toolNames: toolsToSend.map(t => t.name || t.function?.name),
       toolsInjected
     }, "Sending tools to OpenRouter");
+  } else if (toolsDeclined(body)) {
+    // Explicit none with nothing to offer: state it so the upstream never
+    // defaults into tool use (issue #114).
+    openRouterBody.tool_choice = "none";
   }
 
   // Same pre-return 429 check as invokeMoonshot/invokeBaidu — see the comment
@@ -904,7 +933,7 @@ async function invokeEdenAI(body, _incomingHeaders = {}) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.debug({
@@ -921,6 +950,10 @@ async function invokeEdenAI(body, _incomingHeaders = {}) {
       toolNames: toolsToSend.map(t => t.name || t.function?.name),
       toolsInjected
     }, "Sending tools to Eden AI");
+  } else if (toolsDeclined(body)) {
+    // Explicit none with nothing to offer: state it so the upstream never
+    // defaults into tool use (issue #114).
+    edenAIBody.tool_choice = "none";
   }
 
   return performJsonRequest(endpoint, { headers, body: edenAIBody }, "EdenAI");
@@ -1009,7 +1042,7 @@ async function invokeAzureOpenAI(body, _incomingHeaders = {}) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.debug({
@@ -1022,7 +1055,7 @@ async function invokeAzureOpenAI(body, _incomingHeaders = {}) {
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     azureBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     azureBody.parallel_tool_calls = true;
-    azureBody.tool_choice = "auto";  // Explicitly enable tool use (helps GPT models understand they should use tools)
+    azureBody.tool_choice = forwardToolChoice(body);  // Explicitly enable tool use (helps GPT models understand they should use tools)
     logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name || t.function?.name),
@@ -1457,7 +1490,7 @@ async function invokeOpenAI(body, _incomingHeaders = {}) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.debug({
@@ -1470,7 +1503,7 @@ async function invokeOpenAI(body, _incomingHeaders = {}) {
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     openAIBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     openAIBody.parallel_tool_calls = false;  // Disable parallel tool calls - GPT often makes duplicate calls
-    openAIBody.tool_choice = "auto";  // Let the model decide when to use tools
+    openAIBody.tool_choice = forwardToolChoice(body);  // Let the model decide when to use tools
     logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name || t.function?.name),
@@ -1538,7 +1571,7 @@ async function invokeAtlas(body) {
 
   let toolsToSend = body.tools;
   let toolsInjected = false;
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
   }
@@ -1546,7 +1579,7 @@ async function invokeAtlas(body) {
   if (toolsToSend.length > 0) {
     atlasBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     atlasBody.parallel_tool_calls = false;
-    atlasBody.tool_choice = "auto";
+    atlasBody.tool_choice = forwardToolChoice(body);
   }
 
   logger.debug({
@@ -1681,7 +1714,7 @@ async function invokeLlamaCpp(body, _incomingHeaders = {}) {
   let toolsInjected = false;
 
   const injectToolsLlamacpp = process.env.INJECT_TOOLS_LLAMACPP !== "false";
-  if (injectToolsLlamacpp && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
+  if (!toolsDeclined(body) && injectToolsLlamacpp && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.debug({
@@ -1695,7 +1728,7 @@ async function invokeLlamaCpp(body, _incomingHeaders = {}) {
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     llamacppBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
-    llamacppBody.tool_choice = "auto";
+    llamacppBody.tool_choice = forwardToolChoice(body);
     logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name || t.function?.name),
@@ -1779,7 +1812,7 @@ async function invokeLMStudio(body, _incomingHeaders = {}) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     toolsInjected = true;
     logger.debug({
@@ -1791,7 +1824,7 @@ async function invokeLMStudio(body, _incomingHeaders = {}) {
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     lmstudioBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
-    lmstudioBody.tool_choice = "auto";
+    lmstudioBody.tool_choice = forwardToolChoice(body);
     logger.debug({
       toolCount: toolsToSend.length,
       toolNames: toolsToSend.map(t => t.name || t.function?.name),
@@ -1938,7 +1971,7 @@ async function invokeBedrock(body, _incomingHeaders = {}) {
   // Inject standard tools if needed
   let toolsToSend = body.tools;
 
-  if (!Array.isArray(toolsToSend) || toolsToSend.length === 0) {
+  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
     toolsToSend = STANDARD_TOOLS;
     logger.debug({
       injectedToolCount: STANDARD_TOOLS.length,
@@ -2199,7 +2232,7 @@ async function invokeZai(body, _incomingHeaders = {}) {
       zaiBody.tools = tools;
       // Use "auto" to let the model decide when to use tools
       // "required" was forcing tools even for simple greetings
-      zaiBody.tool_choice = "auto";
+      zaiBody.tool_choice = forwardToolChoice(body);
       zaiBody.parallel_tool_calls = false;  // Disabled: duplicate-call risk
     }
 
@@ -2230,8 +2263,9 @@ async function invokeZai(body, _incomingHeaders = {}) {
     // that's a different bug — add zai to DEFAULT_OPENAI_SSE_PROVIDERS then,
     // don't reintroduce this override.
 
-    // Inject standard tools if client didn't send any (passthrough mode)
-    if (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0) {
+    // Inject standard tools if client didn't send any (passthrough mode).
+    // Never when the caller declined tools (issue #114).
+    if (!toolsDeclined(body) && (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0)) {
       zaiBody.tools = STANDARD_TOOLS;
       logger.debug({
         injectedToolCount: STANDARD_TOOLS.length,
@@ -2404,7 +2438,7 @@ async function invokeMoonshot(body, _incomingHeaders = {}) {
 
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     moonshotBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
-    moonshotBody.tool_choice = "auto";
+    moonshotBody.tool_choice = forwardToolChoice(body);
     moonshotBody.parallel_tool_calls = false;
   }
 
@@ -2558,7 +2592,7 @@ async function invokeBaidu(body, _incomingHeaders = {}) {
 
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     baiduBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
-    baiduBody.tool_choice = "auto";
+    baiduBody.tool_choice = forwardToolChoice(body);
     baiduBody.parallel_tool_calls = false;
   }
 
@@ -2696,7 +2730,7 @@ async function invokeFireworks(body, _incomingHeaders = {}) {
 
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     fireworksBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
-    fireworksBody.tool_choice = "auto";
+    fireworksBody.tool_choice = forwardToolChoice(body);
     fireworksBody.parallel_tool_calls = false;
   }
 
@@ -2956,7 +2990,7 @@ async function invokeOrcaRouter(body, _incomingHeaders = {}) {
 
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     orcaBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
-    orcaBody.tool_choice = "auto";
+    orcaBody.tool_choice = forwardToolChoice(body);
     orcaBody.parallel_tool_calls = false;
   }
 
@@ -3767,6 +3801,7 @@ async function invokeModel(body, options = {}) {
       candidates: routingResult.candidates ?? null,
       pinned: routingResult.pinned ? 1 : 0,
       switch_reason: routingResult.switch_reason ?? null,
+      ...telemetry.jevFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       cache_read_tokens: result.json?.usage?.cache_read_input_tokens ?? null,
       cache_creation_tokens: result.json?.usage?.cache_creation_input_tokens ?? null,
@@ -4002,6 +4037,7 @@ async function invokeModel(body, options = {}) {
         candidates: routingResult.candidates ?? null,
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
+      ...telemetry.jevFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       });
 
@@ -4115,6 +4151,7 @@ async function invokeModel(body, options = {}) {
           candidates: routingResult.candidates ?? null,
           pinned: routingResult.pinned ? 1 : 0,
           switch_reason: routingResult.switch_reason ?? null,
+      ...telemetry.jevFields(routingResult),
           cache_decision: routingResult._cacheDecision ?? null,
         });
 
@@ -4212,6 +4249,7 @@ async function invokeModel(body, options = {}) {
         candidates: routingResult.candidates ?? null,
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
+      ...telemetry.jevFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       cache_read_tokens: fallbackResult.json?.usage?.cache_read_input_tokens ?? null,
       cache_creation_tokens: fallbackResult.json?.usage?.cache_creation_input_tokens ?? null,
@@ -4273,6 +4311,7 @@ async function invokeModel(body, options = {}) {
         candidates: routingResult.candidates ?? null,
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
+      ...telemetry.jevFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       });
 
@@ -4364,6 +4403,8 @@ function destroyHttpAgents() {
 
 module.exports = {
   invokeModel,
+  toolsDeclined,
+  forwardToolChoice,
   computeCostUsd,
   convertOpenAIToAnthropic,
   invokeAzureAnthropic,

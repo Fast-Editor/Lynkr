@@ -147,6 +147,11 @@ class ModelTierSelector {
   getTier(complexityScore) {
     const score = Math.max(0, Math.min(100, complexityScore || 0));
     const ranges = this.ranges || this._defaultRanges();
+    // First match wins in TIER_DEFINITIONS order (SIMPLE, MEDIUM, COMPLEX,
+    // REASONING). Calibrated ranges can overlap (observed: MEDIUM [20,50] vs
+    // COMPLEX [30,75]) — in the overlap the EARLIER tier wins, so the
+    // effective COMPLEX floor is 51, not 30. Keep this in mind when reading
+    // data/calibrated-thresholds.json.
     for (const tier of Object.keys(TIER_DEFINITIONS)) {
       const [lo, hi] = ranges[tier];
       if (score >= lo && score <= hi) return tier;

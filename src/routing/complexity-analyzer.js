@@ -104,16 +104,28 @@ const FORCE_REASONING_PATTERNS = [
   /\b(prove|proof|formal\s+proof|verify|verification)\b/i,
   /\b(from\s+first\s+principles)\b/i,
   /\b(reason\s+(through|about|from)\s+(the|this))/i,
+  // Frontier planning: asking FOR a plan/strategy/design of technical work
+  // (not asking about one). Two-sided lookahead — a plan word AND a technical
+  // scope word must both be present, so "plan my vacation", "lesson plan"
+  // and "business plan" stay quiet while "give me a plan to refactor X",
+  // "draft an RFC to redesign Y" and "migration strategy for Z" escalate.
+  // Deliberately excludes bare "give me a plan" (nothing technical to plan)
+  // and generic nouns (module/api/database) that misfire on non-technical
+  // asks. Known overlap: "explain the deployment plan" fires — accepted,
+  // deployment planning benefits from the strong model anyway.
+  /(?=.*\b(plans?|roadmaps?|strateg(y|ies)|blueprints?|proposals?|rfcs?|design\s+docs?)\b)(?=.*\b(refactor\w*|implement\w*|migrat\w+|architect\w+|redesign\w*|restructur\w+|rewrit\w+|overhaul\w*|codebases?|infrastructure|pipelines?|deploy\w*|systems?)\b)/i,
 ];
 
 // Force COMPLEX patterns - route to COMPLEX (GLM in config B) regardless of
 // score. Architecture/refactor/code-review are substantial but not
 // security-critical, so GLM is appropriate.
 const FORCE_CLOUD_PATTERNS = [
-  /\b(architect(ure)?\s+(review|design|diagram)|system\s+design)\b/i,
+  /\b(architect\w*\s+(review|design|diagram)|system\s+design)\b/i,
   /\b(refactor\s+(entire|whole|all|the\s+entire)|complete\s+rewrite)\b/i,
   /\b(code\s+review|pr\s+review|pull\s+request\s+review)\b/i,
-  /\b(debug(ging)?\s+(complex|difficult|hard|tricky))\b/i,
+  // "debug this tricky race" reads naturally but the adjectives rarely sit
+  // adjacent to the verb, so up to two words may intervene.
+  /\bdebug(?:ging)?\s+(?:\w+\s+){0,2}(complex|difficult|hard|tricky)\b/i,
   /\b(production\s+(issue|bug|incident|outage))\b/i,
 ];
 
@@ -655,8 +667,13 @@ function calculateWeightedScore(payload, content) {
   const avgLength = content.length / Math.max(sentences.length, 1);
   dimensions.promptComplexity = Math.min(avgLength / 2, 100);
 
-  // 3. Technical depth (keyword density)
-  const techMatches = (content.match(PATTERNS.technical) || []).length;
+  // 3. Technical depth (keyword density). NOTE: uses a local global-flag
+  // copy — the shared PATTERNS.technical must stay flag-less because .test()
+  // callers above depend on stateless matching (a shared /g regex carries
+  // lastIndex between calls). String.match with a non-global regex returns
+  // at most one hit, which used to cap this dimension at 15 regardless of
+  // density and starved COMPLEX-tier scores of their strongest signal.
+  const techMatches = (content.match(new RegExp(PATTERNS.technical.source, 'gi')) || []).length;
   dimensions.technicalDepth = Math.min(techMatches * 15, 100);
 
   // 4. Domain specificity (how many domains are touched)

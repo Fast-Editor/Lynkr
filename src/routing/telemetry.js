@@ -181,6 +181,14 @@ function init() {
       // NULL on rows where the bandit didn't run (deterministic decisions)
       // or recorded before this column existed.
       ["context", "TEXT"],
+      // Jev routing judge — shadow verdict recorded alongside every scored
+      // decision so heuristic/Jev eras stay separable. NULL when Jev didn't
+      // run (pinned serves, side frames, no key) or predates this column.
+      ["jev_verdict", "TEXT"],
+      ["jev_confidence", "REAL"],
+      ["jev_probabilities", "TEXT"],
+      ["jev_model", "TEXT"],
+      ["criteria_hash", "TEXT"],
     ];
     for (const [col, type] of additiveCols) {
       if (!existingCols.has(col)) {
@@ -243,7 +251,8 @@ function record(data) {
           retry_count, circuit_breaker_state, quality_score, tokens_per_second,
           cost_efficiency, request_text, response_text,
           base_tier, escalation_source, propensity, candidates, pinned, switch_reason,
-          cache_decision, cache_read_tokens, cache_creation_tokens, context
+          cache_decision, cache_read_tokens, cache_creation_tokens, context,
+          jev_verdict, jev_confidence, jev_probabilities, jev_model, criteria_hash
         ) VALUES (
           @request_id, @session_id, @timestamp, @complexity_score, @tier,
           @agentic_type, @tool_count, @input_tokens, @message_count, @request_type,
@@ -252,7 +261,8 @@ function record(data) {
           @retry_count, @circuit_breaker_state, @quality_score, @tokens_per_second,
           @cost_efficiency, @request_text, @response_text,
           @base_tier, @escalation_source, @propensity, @candidates, @pinned, @switch_reason,
-          @cache_decision, @cache_read_tokens, @cache_creation_tokens, @context
+          @cache_decision, @cache_read_tokens, @cache_creation_tokens, @context,
+          @jev_verdict, @jev_confidence, @jev_probabilities, @jev_model, @criteria_hash
         )`
       );
       if (!insert) return;
@@ -308,6 +318,13 @@ function record(data) {
         context: data.context == null
           ? null
           : (typeof data.context === "string" ? data.context : JSON.stringify(data.context)),
+        jev_verdict: data.jev_verdict ?? null,
+        jev_confidence: data.jev_confidence ?? null,
+        jev_probabilities: data.jev_probabilities == null
+          ? null
+          : (typeof data.jev_probabilities === "string" ? data.jev_probabilities : JSON.stringify(data.jev_probabilities)),
+        jev_model: data.jev_model ?? null,
+        criteria_hash: data.criteria_hash ?? null,
       });
     } catch (err) {
       logger.debug({ err: err.message }, "Telemetry record failed");
@@ -1136,8 +1153,36 @@ function getAnalytics(opts = {}) {
   }
 }
 
+/**
+ * Map a Jev verdict (decision.jev or analysis.jev shape) onto the
+ * jev_* telemetry columns. Null-safe: anything missing yields all-null
+ * fields so call sites spread this unconditionally.
+ */
+function jevFields(src) {
+  const j = (src && typeof src === 'object')
+    ? (src.jev && typeof src.jev === 'object' ? src.jev
+      : (src.analysis && typeof src.analysis === 'object' && src.analysis.jev ? src.analysis.jev : null))
+    : null;
+  if (!j) {
+    return {
+      jev_verdict: null, jev_confidence: null, jev_probabilities: null,
+      jev_model: null, criteria_hash: null,
+    };
+  }
+  return {
+    jev_verdict: j.tier ?? null,
+    jev_confidence: j.confidence ?? null,
+    jev_probabilities: j.probabilities == null
+      ? null
+      : (typeof j.probabilities === 'string' ? j.probabilities : JSON.stringify(j.probabilities)),
+    jev_model: j.model ?? null,
+    criteria_hash: j.criteriaHash ?? j.criteria_hash ?? null,
+  };
+}
+
 module.exports = {
   record,
+  jevFields,
   query,
   getStats: getStatsCached,
   getProviderStats: getProviderStatsCached,

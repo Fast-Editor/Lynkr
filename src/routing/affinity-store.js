@@ -59,9 +59,25 @@ function _db() {
       // Additive migration for cache-aware routing (Phase 1): JSON blob
       // holding {warmPrefixTokens, provider, model, lastRequestAt, ttlMs},
       // updated after every upstream response that reports cache usage.
+      // NOTE (2026-09-18): superseded by the dedicated session_cache_state
+      // table below. The column stays (and old blobs stay readable nowhere —
+      // loadCacheState reads the new table), but NOTHING writes it anymore:
+      // sharing the pins table let cache-only rows (no tier) be served as
+      // routing pins, permanently locking sessions with no escalation path.
       if (!cols.has("cache_state")) {
         db.exec("ALTER TABLE session_pins ADD COLUMN cache_state TEXT");
       }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS session_cache_state (
+          session_id         TEXT PRIMARY KEY,
+          warm_prefix_tokens INTEGER NOT NULL,
+          provider           TEXT NOT NULL,
+          model              TEXT,
+          last_request_at    INTEGER NOT NULL,
+          ttl_ms             INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cache_state_ts ON session_cache_state(last_request_at);
+      `);
       schemaEnsured = true;
     } catch (err) {
       degradation.record("feedback", err);
@@ -168,9 +184,10 @@ function save(sessionId, pin) {
 
 /**
  * Persist per-session prompt-cache state (Phase 1, cache-aware routing).
- * Piggybacks on the session_pins row; creates a minimal row when the session
- * has no pin yet (possible when sticky sessions are disabled but tracking
- * is on). Best-effort like everything else in this module.
+ * Lives in its OWN table (session_cache_state), deliberately separate from
+ * session_pins: the old piggyback design wrote tier-less rows that got
+ * served as routing pins, locking sessions with no escalation path.
+ * Best-effort like everything else in this module.
  *
  * @param {string} sessionId
  * @param {{warmPrefixTokens:number, provider:string, model:string|null, lastRequestAt:number, ttlMs:number}} state
@@ -180,21 +197,25 @@ function saveCacheState(sessionId, state) {
   const db = _db();
   if (!db) return;
   try {
-    const json = JSON.stringify(state);
-    const res = _stmt(
+    _stmt(
       db,
-      "cache_state_update",
-      "UPDATE session_pins SET cache_state = ? WHERE session_id = ?"
-    ).run(json, sessionId);
-    if (res.changes === 0) {
-      _stmt(
-        db,
-        "cache_state_insert",
-        `INSERT INTO session_pins (session_id, provider, model, ts, cache_state)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(session_id) DO UPDATE SET cache_state = excluded.cache_state`
-      ).run(sessionId, state.provider, state.model ?? null, Date.now(), json);
-    }
+      "cache_state_upsert",
+      `INSERT INTO session_cache_state (session_id, warm_prefix_tokens, provider, model, last_request_at, ttl_ms)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         warm_prefix_tokens = excluded.warm_prefix_tokens,
+         provider = excluded.provider,
+         model = excluded.model,
+         last_request_at = excluded.last_request_at,
+         ttl_ms = excluded.ttl_ms`
+    ).run(
+      sessionId,
+      state.warmPrefixTokens ?? 0,
+      state.provider,
+      state.model ?? null,
+      state.lastRequestAt ?? Date.now(),
+      state.ttlMs ?? 5 * 60 * 1000
+    );
   } catch (err) {
     degradation.record("feedback", err);
   }
@@ -216,11 +237,16 @@ function loadCacheState(sessionId) {
     const row = _stmt(
       db,
       "cache_state_load",
-      "SELECT cache_state FROM session_pins WHERE session_id = ?"
+      "SELECT warm_prefix_tokens, provider, model, last_request_at, ttl_ms FROM session_cache_state WHERE session_id = ?"
     ).get(sessionId);
-    if (!row?.cache_state) return null;
-    const parsed = JSON.parse(row.cache_state);
-    return parsed && typeof parsed === "object" ? parsed : null;
+    if (!row) return null;
+    return {
+      warmPrefixTokens: Number(row.warm_prefix_tokens) || 0,
+      provider: row.provider,
+      model: row.model ?? null,
+      lastRequestAt: Number(row.last_request_at) || 0,
+      ttlMs: Number(row.ttl_ms) || 5 * 60 * 1000,
+    };
   } catch (err) {
     degradation.record("feedback", err);
     return null;

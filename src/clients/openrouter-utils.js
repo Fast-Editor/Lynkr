@@ -208,6 +208,26 @@ function convertAnthropicMessagesToOpenRouter(anthropicMessages) {
         }
         let message;
         if (imageUrls.length === 0) {
+          // Fail loudly instead of emptying: an attachment-only message
+          // whose blocks have no OpenAI representation (document, file,
+          // video, audio) must error naming the block, not become "" and
+          // earn a confident 2xx answer about an attachment never received
+          // (issue #115). Thinking-only turns are exempt — thinking models
+          // legitimately send those.
+          const unconvertible = content
+            .filter((b) => b && typeof b === 'object'
+              && ['document', 'file', 'video', 'audio', 'input_audio'].includes(b.type))
+            .map((b) => b.type);
+          if (unconvertible.length > 0 && !textContent) {
+            const err = new Error(
+              `Cannot convert ${[...new Set(unconvertible)].join('/')} content block(s) to OpenAI format: ` +
+              `no equivalent representation exists.`
+            );
+            err.statusCode = 400;
+            err.code = 'unsupported_content_block';
+            err.isOperational = true;
+            throw err;
+          }
           message = { role: msg.role, content: textContent || '' };
         } else {
           const parts = [];

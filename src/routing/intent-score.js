@@ -410,24 +410,47 @@ async function scoreIntent(payload, opts = {}) {
         const [lo, hi] = CLASS_BANDS[cls];
         const anchorScore = Math.max(lo, Math.min(hi, blendScore(sims)));
 
-        // LLM classifier — second opinion. Skipped in tests (opts.skipClassifier)
-        // to keep unit tests hermetic. Runs live otherwise.
+        // Jev routing judge — second opinion. Skipped in tests (opts.skipClassifier)
+        // to keep unit tests hermetic (or stubbed via opts.jevFetchFn). Runs live
+        // otherwise. Replaces the qwen difficulty classifier in the same result
+        // shape ({tier, confidence}) so _reconcile semantics are unchanged;
+        // Jev extras (probabilities, risky, model, criteriaHash) ride along
+        // for telemetry and the shortfall floor. Fail-soft null preserves the
+        // anchor-only path exactly.
+        //
+        // Hermeticity note: suites asserting deterministic routing scrub
+        // TYPESAFE_API_KEY (no key → Jev leg returns null before any fetch),
+        // the same posture as the repo's live-Ollama tolerance. Never gate
+        // on NODE_ENV — .env pins it to production in every context.
         let classifierResult = null;
+        let jevResult = null;
         if (!opts.skipClassifier) {
           try {
-            const { classifyDifficulty } = require('./difficulty-classifier');
-            classifierResult = await classifyDifficulty(text, {
-              forceMatched: opts.forceMatched,
-              riskLevel: opts.riskLevel,
-              // Condensed prior turns, threaded by the router's window loop.
-              // Without it a short follow-up ("Who kills him ?") is
-              // unclassifiable in isolation.
+            const { classifyJev } = require('./jev-router');
+            const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
+            const toolDefs = Array.isArray(payload?.tools) ? payload.tools : [];
+            const toolResults = msgs.filter((m) =>
+              m?.role === 'user' && Array.isArray(m.content) && m.content.some((c) => c?.type === 'tool_result')
+            ).length;
+            const jevFetchFn = opts.jevFetchFn;
+            jevResult = await classifyJev(text, {
               context: typeof payload?._conversationContext === 'string'
                 ? payload._conversationContext
                 : null,
+              signals: {
+                message_count: msgs.length,
+                tools_attached: toolDefs.length,
+                effective_tools: toolDefs.length,
+                has_tool_history: toolResults > 0,
+                session_turn: Math.max(1, Math.ceil(msgs.length / 2)),
+              },
+              fetchFn: jevFetchFn,
             });
+            if (jevResult) {
+              classifierResult = { tier: jevResult.tier, confidence: jevResult.confidence };
+            }
           } catch (err) {
-            logger.debug({ err: err.message }, '[IntentScore] classifier failed — anchor only');
+            logger.debug({ err: err.message }, '[IntentScore] Jev classifier failed — anchor only');
           }
         }
 
@@ -453,6 +476,19 @@ async function scoreIntent(payload, opts = {}) {
           classifierTier: classifierResult?.tier ?? null,
           classifierConfidence: classifierResult?.confidence ?? null,
           reconciled,
+          // Jev verdict details for telemetry + shortfall floor downstream.
+          // Null unless the Jev leg ran (same conditions as classifierResult,
+          // plus LRU-cached repeats which still carry the original extras).
+          jev: jevResult ? {
+            tier: jevResult.tier,
+            confidence: jevResult.confidence,
+            probabilities: jevResult.probabilities ?? null,
+            risky: jevResult.risky ?? null,
+            model: jevResult.model ?? null,
+            criteriaHash: jevResult.criteriaHash ?? null,
+            latencyMs: jevResult.latencyMs ?? null,
+            cached: !!jevResult.cached,
+          } : null,
         });
       }
     }

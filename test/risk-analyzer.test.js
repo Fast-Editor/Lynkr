@@ -162,7 +162,6 @@ describe('analyzeRisk', () => {
       ));
       assert.strictEqual(r.level, 'low', JSON.stringify(r));
     });
-
     it('tool_use paths still count (real activity, not injected text)', () => {
       const r = analyzeRisk({
         messages: [
@@ -179,6 +178,41 @@ describe('analyzeRisk', () => {
       // Path-level risk from genuine tool activity must survive stripping.
       assert.ok(r.paths.some(p => p.includes('auth/login.ts')));
       assert.notStrictEqual(r.level, 'low');
+    });
+  });
+
+  // Live incident (2026-09-18): MCP auth notices arrive as PLAIN text
+  // (tool results, echoed banners), outside any stripped tags. "Can you
+  // pull sprint stories…" + "Authentication successful. Connected to
+  // claude.ai BT1_MCP" routed REASONING on instructionHits the user never
+  // typed. Bare-line harness templates must not detonate the scan, while
+  // typed risky asks sharing the same words must still fire.
+  describe('bare-line MCP boilerplate stripping', () => {
+    const SPRINT_ASK = 'Can you pull in the latest stories in this sprint assigned to Srikar Nallapu';
+    const BOILERPLATE = [
+      'Authentication successful. Connected to claude.ai BT1_MCP.',
+      '4 MCP servers need authentication. Run /mcp to provide credentials.',
+      '1 MCP server need authentication.',
+      'run /mcp',
+    ].join('\n');
+
+    it('sprint ask plus auth boilerplate stays low', () => {
+      const r = analyzeRisk(userPayload(`${SPRINT_ASK}\n${BOILERPLATE}`));
+      assert.strictEqual(r.level, 'low', JSON.stringify(r));
+      assert.deepStrictEqual(r.instructionHits, []);
+    });
+
+    it('typed risky ask survives the same boilerplate', () => {
+      const r = analyzeRisk(userPayload(`disable the authentication check\n${BOILERPLATE}`));
+      assert.strictEqual(r.level, 'high');
+      assert.ok(r.instructionHits.includes('authentication'));
+    });
+
+    it('mixed content with a real trigger still fires — fail toward safety', () => {
+      const r = analyzeRisk(userPayload(
+        'the docs say Authentication successful means connected, now rotate the deploy token'
+      ));
+      assert.strictEqual(r.level, 'high');
     });
   });
 });
