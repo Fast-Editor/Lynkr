@@ -402,3 +402,45 @@ describe("pin: context-overflow escape hatch (tool-loop sessions)", () => {
     assert.ok(affinity.getPin("s-unknown"), "no context data → no drop");
   });
 });
+
+describe("checkSessionPin: tier-less pins (legacy cache-only rows)", () => {
+  beforeEach(() => affinity._clearAll());
+
+  const plainPayload = (sid) => ({
+    _sessionId: sid,
+    messages: [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "reply" },
+      { role: "user", content: "follow up" },
+    ],
+  });
+
+  it("does not serve a tier-less pin on plain turns (re-routes fresh)", () => {
+    // Live 2026-09-18: cache warmth piggybacked on session_pins rows; the
+    // tier-less rows got served as pins and locked sessions with no
+    // escalation path (drift math on a null tier never fires).
+    affinity.setPin("s-notier", { provider: "azure-anthropic", model: "claude-haiku-4-5-20251001" }, {});
+    const r = routing.checkSessionPin(plainPayload("s-notier"));
+    assert.strictEqual(r.serve, false);
+    assert.strictEqual(r.reason, "tierless_pin");
+  });
+
+  it("still serves a tier-less pin mid tool-loop (provider stickiness wins)", () => {
+    affinity.setPin("s-notier-tools", { provider: "azure-anthropic", model: "claude-haiku-4-5-20251001" }, {});
+    const r = routing.checkSessionPin({
+      _sessionId: "s-notier-tools",
+      messages: [
+        { role: "user", content: "do it" },
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "data" }] },
+      ],
+    });
+    assert.strictEqual(r.serve, true);
+  });
+
+  it("tiered pins still serve (control)", () => {
+    affinity.setPin("s-tiered", { provider: "azure-anthropic", model: "m", tier: "SIMPLE" }, {});
+    const r = routing.checkSessionPin(plainPayload("s-tiered"));
+    assert.strictEqual(r.serve, true);
+  });
+});

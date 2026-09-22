@@ -1,5 +1,5 @@
 const config = require("../config");
-const { invokeModel } = require("../clients/databricks");
+const { invokeModel, toolsDeclined } = require("../clients/databricks");
 const { appendTurnToSession } = require("../sessions/record");
 const { upsertSession } = require("../sessions/store");
 const policy = require("../policy");
@@ -1113,15 +1113,50 @@ function sanitizePayload(payload) {
     if (tools) clean.tools = tools;
     else delete clean.tools;
   } else if (providerType === "azure-anthropic") {
-    const tools = sanitiseAzureTools(clean.tools);
-    clean.tools =
-      tools && tools.length > 0
-        ? tools
-        : DEFAULT_AZURE_TOOLS.map((tool) => ({
-          name: tool.name,
-          input_schema: JSON.parse(JSON.stringify(tool.input_schema)),
-        }));
-    delete clean.tool_choice;
+    // toolsDeclined is imported top-level from ../clients/databricks
+    // alongside invokeModel — same module instance, no inline require
+    // needed (a guarded re-require would imply a failure mode that cannot
+    // occur without breaking everything else first).
+    // A caller that declined tools gets none — never substitute defaults
+    // (issue #114: substitution here turned tool_choice "none" into an
+    // unrelated tool set with the choice deleted).
+    if (toolsDeclined(clean)) {
+      delete clean.tools;
+      clean.tool_choice = "none";
+    } else {
+      const tools = sanitiseAzureTools(clean.tools);
+      if (Array.isArray(clean.tools) && clean.tools.length > 0 && (!tools || tools.length === 0)) {
+        // The caller declared tools and every one was rejected: substituting
+        // unrelated defaults would silently change the contract, so fail
+        // loudly naming the tools instead (issue #114).
+        const names = clean.tools
+          .map((t) => t?.name || t?.function?.name || "unnamed")
+          .filter(Boolean);
+        const err = new Error(
+          `azure-anthropic supports only built-in tools (WebSearch, WebFetch, Bash family); ` +
+          `rejected tool(s): ${names.join(", ")}. Remove them or route to a provider that serves them.`
+        );
+        err.statusCode = 400;
+        err.code = "unsupported_tools";
+        err.isOperational = true;
+        throw err;
+      }
+      const declaredNames = Array.isArray(clean.tools)
+        ? clean.tools.map((t) => t?.name || t?.function?.name).filter(Boolean)
+        : [];
+      clean.tools =
+        tools && tools.length > 0
+          ? tools
+          : DEFAULT_AZURE_TOOLS.map((tool) => ({
+            name: tool.name,
+            input_schema: JSON.parse(JSON.stringify(tool.input_schema)),
+          }));
+      const dropped = declaredNames.filter((n) => !(tools || []).some((k) => k.name === n));
+      if (dropped.length > 0) {
+        logger.debug({ dropped }, '[azure-anthropic] Partial tool substitution: unlisted tools dropped');
+      }
+      delete clean.tool_choice;
+    }
   } else if (providerType === "ollama") {
     // Always pass tools through to Ollama in Anthropic format when they exist.
     // Ollama (v0.14+ native /v1/messages) accepts the Anthropic tool shape; if
@@ -3249,6 +3284,8 @@ function trimLoopMessages(messages, max) {
 
 module.exports = {
   processMessage,
+  // Exported for unit testing of sanitizePayload tool handling.
+  sanitizePayload,
   // Exported for unit testing of response-metadata conversion.
   toAnthropicResponse,
   // Exported for unit testing of loop trimming (task-preservation contract).

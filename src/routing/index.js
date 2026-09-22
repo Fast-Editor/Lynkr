@@ -805,6 +805,17 @@ function checkSessionPin(payload, options = {}) {
   const guards = _runPinGuards(payload, pin);
   if (!guards.ok) return { serve: false, pin, sessionId, reason: guards.reason };
 
+  // Tier-less pins (legacy cache-only rows predating the session_cache_state
+  // split) must not drive tier decisions: drift math on a null tier never
+  // fires, so serving them locks the session with no escalation path.
+  // Exempted when ANY tool blocks exist anywhere in the payload: an
+  // unresolved tool_use breaks if the provider switches, so provider
+  // stickiness wins there (same safety rationale as the tool_history path
+  // above, which returns before reaching this check).
+  if (!pin.tier && !_payloadHasAnyToolBlocks(payload)) {
+    return { serve: false, pin, sessionId, reason: 'tierless_pin' };
+  }
+
   if (refreshOk) {
     sessionAffinity.setPin(sessionId, pin, {
       messageCount: Math.max(messageCount, pin.messageCount ?? 0),
@@ -1095,6 +1106,11 @@ async function _determineProviderSmartInner(payload, options = {}) {
       analysis.score = intent.score;
       analysis.scoreMode = intent.mode; // 'anchor' | 'lexical' (clean-text fallback)
       analysis.anchorClass = intent.class ?? null;
+      // Jev verdict rides alongside the score so the shortfall floor,
+      // risk corroboration and telemetry can consume it downstream.
+      // Null unless the Jev leg ran (pinned serves, side frames and
+      // classifier skips leave no verdict — same as classifierResult).
+      if (intent.jev && typeof intent.jev === 'object') analysis.jev = intent.jev;
       intentScored = true;
       logger.debug({
         score: intent.score,
@@ -1213,11 +1229,46 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // (agentic minTier, context, vision, kNN-ambiguous) for telemetry.
   let baseTier = null;
   const escalations = [];
+  let _jevOverrode = false;
   if (config.modelTiers?.enabled) {
     try {
       const selector = getModelTierSelector();
       tier = selector.getTier(analysis.score);
       baseTier = tier;
+
+      // Jev tier override: a high-confidence measured verdict replaces the
+      // score-band tier in either direction (score bands stay the fallback
+      // for Jev-null/low-confidence). Runs BEFORE agentic floors and risk
+      // lifts so structural guarantees can still lift above the verdict —
+      // never below it. Score is set to the tier midpoint so drift math,
+      // badges and telemetry stay coherent with the decided tier.
+      try {
+        const { jevTierOverride } = require('./jev-router');
+        const _ov = jevTierOverride({
+          baseTier,
+          jevTier: analysis.jev?.tier,
+          jevConfidence: analysis.jev?.confidence,
+        });
+        if (_ov) {
+          escalations.push({
+            source: 'jev_override',
+            fromTier: tier,
+            toTier: _ov.tier,
+            fromModel: null,
+            toModel: null,
+          });
+          logger.debug({
+            fromTier: tier,
+            toTier: _ov.tier,
+            jevConfidence: analysis.jev?.confidence ?? null,
+          }, '[Routing] Jev tier override');
+          tier = _ov.tier;
+          if (typeof _ov.score === 'number') analysis.score = _ov.score;
+          _jevOverrode = true;
+        }
+      } catch (err) {
+        degradation.record('tier_select', err);
+      }
 
       // Check if agentic detection requires a higher tier
       if (agenticResult?.minTier) {
@@ -1237,6 +1288,30 @@ async function _determineProviderSmartInner(payload, options = {}) {
         }
       }
 
+      // Jev risk corroboration (escalate-only): a high Noul on auth /
+      // secrets / production / destructive content lifts SIMPLE/MEDIUM one
+      // band when the keyword analyzer stayed quiet. Never clears a keyword
+      // hit (that path returned far above), never jumps two bands, never
+      // fires without a verdict (fail-soft null skips silently). Mirrors the
+      // kNN-ambiguous escalate pattern with a ledger entry.
+      try {
+        const { jevRiskLift } = require('./jev-router');
+        const _lifted = jevRiskLift({ tier, risky: analysis.jev?.risky, riskLevel: risk?.level });
+        if (_lifted) {
+          escalations.push({
+            source: 'jev_risk',
+            fromTier: tier,
+            toTier: _lifted,
+            fromModel: null,
+            toModel: null,
+          });
+          logger.debug({ fromTier: tier, toTier: _lifted, risky: analysis.jev.risky }, '[Routing] Jev risk corroboration — one-band lift');
+          tier = _lifted;
+        }
+      } catch (err) {
+        degradation.record('tier_select', err);
+      }
+
       // Select model for the tier (will be applied after provider selection)
       analysis.tier = tier;
     } catch (err) {
@@ -1247,7 +1322,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // Apply routing decision based on tier config (TIER_* env vars take precedence
   // but Phase 1.2 lets the cost-optimizer pick a cheaper qualifying model when safe).
   let provider;
-  let method = 'tier_config';
+  let method = _jevOverrode ? 'tier_config+jev_override' : 'tier_config';
   let costOptimized = false;
 
   const selector = getModelTierSelector();
@@ -1336,6 +1411,51 @@ async function _determineProviderSmartInner(payload, options = {}) {
           }
           logger.info({ from: `${fromTier}:${fromModel}`, to: `${tier}:${selectedModel}` }, '[Routing] Shortfall override');
         }
+      }
+    }
+  } catch (err) {
+    degradation.record('shortfall', err);
+  }
+
+  // Jev shortfall floor: a high-confidence Jev tier is a measured verdict,
+  // not a heuristic guess — cheapest-covering must not demote below it.
+  // Floor target is the stronger of (scored legacy pick, Jev verdict):
+  // score-derived highs are never talked down by the judge, and judged
+  // highs are never talked down by the price optimizer (see jevFloorTarget).
+  // De-escalation below still runs after this, so evidence gates apply like
+  // any other decision.
+  try {
+    const { jevFloorTarget } = require('./jev-router');
+    const _floorTier = shortfallInfo && shortfallInfo.legacy
+      ? jevFloorTarget({
+        selectedTier: tier,
+        legacyTier: shortfallInfo.legacy.tier,
+        jevTier: analysis.jev?.tier,
+        jevConfidence: analysis.jev?.confidence,
+      })
+      : null;
+    if (_floorTier) {
+      const _floorSel = selector.selectModel(_floorTier, null);
+      if (_floorSel && _floorSel.provider && _floorSel.model) {
+        const _fromTier = tier;
+        const _fromModel = selectedModel;
+        provider = _floorSel.provider;
+        selectedModel = _floorSel.model;
+        tier = _floorTier;
+        analysis.tier = tier;
+        method = method + '+jev_floor_hold';
+        escalations.push({
+          source: 'jev_floor',
+          fromTier: _fromTier,
+          toTier: tier,
+          fromModel: _fromModel,
+          toModel: selectedModel,
+        });
+        logger.info({
+          from: `${_fromTier}:${_fromModel}`,
+          to: `${tier}:${selectedModel}`,
+          jevConfidence: analysis.jev?.confidence ?? null,
+        }, '[Routing] Jev floor hold — shortfall demotion refused');
       }
     }
   } catch (err) {

@@ -125,9 +125,22 @@ function findHits(keywords, haystack) {
  * not what the harness injected; genuinely risky asks live in the typed
  * text and still fire. (The intent scorers have stripped these blocks
  * since WS3 — this brings the risk scan in line.)
+ *
+ * Bare-line MCP boilerplate (HARNESS_BOILERPLATE_LINE) gets the same
+ * treatment: auth notices also arrive as PLAIN text outside any tags.
  * @param {string} text
  * @returns {string}
  */
+// Bare-line harness boilerplate that escapes the tag stripping above: MCP
+// auth notices also arrive as PLAIN text (tool results, echoed banners),
+// where the same credential-flavored words detonate the keyword scan —
+// live 2026-09-18: "Can you pull sprint stories…" + an "Authentication
+// successful. Connected to claude.ai BT1_MCP" notice routed REASONING on
+// instructionHits ["authentication"] the user never typed. Full-LINE match
+// only: these are fixed harness templates, never user prose — typed risky
+// asks ("disable the authentication check") span the line differently and
+// keep firing. Tool_use inputs are untouched (real activity still counts).
+const HARNESS_BOILERPLATE_LINE = /^\s*(authentication successful[.!]?(\s+connected to .+)?|connected to \S+ MCP\.?|(\d+\s+)?MCP servers? need authentication\b.*|run \/mcp\b.*)\s*$/i;
 function stripSystemReminders(text) {
   if (typeof text !== 'string' || !text) return '';
   return text
@@ -139,7 +152,10 @@ function stripSystemReminders(text) {
     // "Hi", force-escalated to COMPLEX on it) and <user_instructions>
     // carries AGENTS.md contents the user never typed this turn.
     .replace(/<environment_context>[\s\S]*?<\/environment_context>/g, ' ')
-    .replace(/<user_instructions>[\s\S]*?<\/user_instructions>/g, ' ');
+    .replace(/<user_instructions>[\s\S]*?<\/user_instructions>/g, ' ')
+    .split('\n')
+    .filter((line) => !HARNESS_BOILERPLATE_LINE.test(line))
+    .join('\n');
 }
 
 /**

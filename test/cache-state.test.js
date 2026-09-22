@@ -187,3 +187,40 @@ describe("session-affinity: recordCacheUsage / getCacheState", () => {
     assert.strictEqual(affinity.getCacheState("c6"), null);
   });
 });
+
+describe("pins require a tier (cache-only rows never serve)", () => {
+  beforeEach(() => {
+    affinity._clearAll();
+  });
+
+  it("cache-state-only session has no pin but has cache state", () => {
+    // Live 2026-09-18: cache warmth was piggybacked on session_pins rows,
+    // and tier-less rows got served as pins — locking sessions with no
+    // escalation path. Cache state now lives in its own table, so a session
+    // with only warmth has getPin() === null by construction (no row at
+    // all), while getCacheState() still works for the downgrade gate.
+    store.saveCacheState("t1", {
+      warmPrefixTokens: 7000,
+      provider: "azure-anthropic",
+      model: "claude-haiku-4-5-20251001",
+      lastRequestAt: Date.now(),
+      ttlMs: 300000,
+    });
+    assert.strictEqual(affinity.getPin("t1"), null);
+    assert.strictEqual(affinity.getCacheState("t1").warmPrefixTokens, 7000);
+  });
+
+  it("provider-only legacy pins still serve (tool-chain affinity needs no tier)", () => {
+    affinity.setPin("t2", { provider: "azure-anthropic", model: "m" });
+    const pin = affinity.getPin("t2");
+    assert.strictEqual(pin.provider, "azure-anthropic");
+    assert.strictEqual(pin.model, "m");
+  });
+
+  it("full pins still serve (control)", () => {
+    affinity.setPin("t3", { provider: "azure-anthropic", model: "m", tier: "SIMPLE" });
+    const pin = affinity.getPin("t3");
+    assert.strictEqual(pin.tier, "SIMPLE");
+    assert.strictEqual(pin.model, "m");
+  });
+});

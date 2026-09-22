@@ -46,6 +46,13 @@ const TIER_DEFINITIONS = {
   },
 };
 
+// Midpoint of each tier band: the score a decision carries when only the
+// tier is known (reconcile caps, Jev overrides, badges). Single source of
+// truth — intent-score and jev-router import this rather than keeping
+// private copies that can drift (midpoints must stay inside the bands
+// above, including calibrated overrides).
+const TIER_MIDPOINT = { SIMPLE: 10, MEDIUM: 35, COMPLEX: 63, REASONING: 88 };
+
 class ModelTierSelector {
   constructor() {
     this.tierConfig = null;
@@ -147,6 +154,11 @@ class ModelTierSelector {
   getTier(complexityScore) {
     const score = Math.max(0, Math.min(100, complexityScore || 0));
     const ranges = this.ranges || this._defaultRanges();
+    // First match wins in TIER_DEFINITIONS order (SIMPLE, MEDIUM, COMPLEX,
+    // REASONING). Calibrated ranges can overlap (observed: MEDIUM [20,50] vs
+    // COMPLEX [30,75]) — in the overlap the EARLIER tier wins, so the
+    // effective COMPLEX floor is 51, not 30. Keep this in mind when reading
+    // data/calibrated-thresholds.json.
     for (const tier of Object.keys(TIER_DEFINITIONS)) {
       const [lo, hi] = ranges[tier];
       if (score >= lo && score <= hi) return tier;
@@ -521,4 +533,5 @@ module.exports = {
   getModelTierSelector,
   reloadCalibratedThresholds,
   TIER_DEFINITIONS,
+  TIER_MIDPOINT,
 };

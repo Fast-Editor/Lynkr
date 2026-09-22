@@ -12,11 +12,21 @@
   "substantive": [
     "Review this retry helper for bugs and race conditions",
     "give me a plan to refactor this code",
-    "Read the current repo and explain it to me"
+    "Read the current repo and explain it to me",
+    "Implement a distributed rate limiter with Redis",
+    "Run the unit tests and summarize failures",
+    "What does this function do",
+    "List the exports from this file",
+    "Fix the linter warnings",
+    "Add error handling to this try block",
+    "Write a test for the login function",
+    "Debug this null reference error"
   ],
   "heavyweight": [
     "Do an architecture review of the orchestrator",
     "analyze every module in src/ for circular dependencies and give me a dependency-order refactor plan",
-    "design a horizontally scalable architecture for this service with failure-mode analysis"
+    "design a horizontally scalable architecture for this service with failure-mode analysis",
+    "Compare how databricks.js and openai-format.js each handle non-2xx upstream responses, then propose a unified error-normalization helper both could share",
+    "Code review the PR #84 routing hardening changes"
   ]
 }

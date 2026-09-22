@@ -73,61 +73,53 @@ function compressToolDescriptions(tools, mode = null) {
   // Normalize to Anthropic shape: OpenAI-format callers (OpenWorker, aisuite,
   // any OpenAI SDK) send {type:"function", function:{name, description, parameters}}.
   // Unwrap once here so the compression logic below can assume input_schema exists.
-  tools = tools.map(tool =>
-    tool?.type === "function" && tool.function
-      ? {
-          name: tool.function.name,
-          description: tool.function.description,
-          input_schema: tool.function.parameters || { type: "object", properties: {} },
-        }
-      : tool
-  );
+  // Every other key on the function object (strict, and any future keywords)
+  // passes through untouched — an allowlist here silently drops enforceable
+  // constraints (issue #116).
+  tools = tools.map(tool => {
+    if (tool?.type !== "function" || !tool.function) return tool;
+    const { parameters, ...kept } = tool.function;
+    return {
+      ...kept,
+      input_schema: parameters || { type: "object", properties: {} },
+    };
+  });
 
   return tools.map(tool => {
-    const input_schema = tool.input_schema || { type: "object", properties: {} };
-    const compressed = {
-      name: tool.name,
-      input_schema: {
-        type: input_schema.type || "object",
-        properties: {},
-        required: input_schema.required || [],
-      }
-    };
-
-    // Add minimal description only if it exists
-    if (tool.description) {
-      compressed.description = compressText(tool.description, 50);
+    // Copy everything through; compression below targets description TEXT
+    // only, never schema shape (issue #116: an allowlist rebuild silently
+    // dropped strict/pattern/const/oneOf and misleveled additionalProperties).
+    const out = { ...tool };
+    if (typeof out.description === 'string' && out.description) {
+      out.description = compressText(out.description, 50);
     }
-
-    // Compress property descriptions
-    if (input_schema.properties) {
-      for (const [key, value] of Object.entries(input_schema.properties)) {
-        compressed.input_schema.properties[key] = {
-          type: value.type,
-        };
-
-        // Only include description if it's critical
-        if (value.description && !isObviousFromName(key)) {
-          compressed.input_schema.properties[key].description = compressText(value.description, 30);
-        }
-
-        // Preserve enum, format, and other critical constraints
-        if (value.enum) compressed.input_schema.properties[key].enum = value.enum;
-        if (value.format) compressed.input_schema.properties[key].format = value.format;
-        if (value.items) compressed.input_schema.properties[key].items = value.items;
-        if (value.additionalProperties !== undefined) {
-          compressed.input_schema.properties[key].additionalProperties = value.additionalProperties;
-        }
-      }
+    if (out.input_schema && typeof out.input_schema === 'object') {
+      out.input_schema = compressSchemaDescriptions(out.input_schema, null);
     }
-
-    // Preserve additionalProperties if set
-    if (input_schema.additionalProperties !== undefined) {
-      compressed.input_schema.additionalProperties = input_schema.additionalProperties;
-    }
-
-    return compressed;
+    return out;
   });
+}
+
+/**
+ * Recursively compress `description` strings in a JSON Schema, preserving
+ * every other keyword byte-for-byte in shape. Descriptions obvious from the
+ * property name are dropped, the rest truncated — matching the historical
+ * minimal-mode behavior without an allowlist that lags the spec.
+ */
+function compressSchemaDescriptions(node, key) {
+  if (Array.isArray(node)) return node.map((v) => compressSchemaDescriptions(v, key));
+  if (node && typeof node === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(node)) {
+      if (k === 'description' && typeof v === 'string') {
+        if (!isObviousFromName(key)) out[k] = compressText(v, 30);
+      } else {
+        out[k] = compressSchemaDescriptions(v, k);
+      }
+    }
+    return out;
+  }
+  return node;
 }
 
 /**

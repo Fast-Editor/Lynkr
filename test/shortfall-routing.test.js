@@ -3,6 +3,15 @@ const { describe, it, beforeEach, afterEach } = require('node:test');
 
 describe('shortfall routing integration', () => {
   let originalEnv;
+  const scrubJevKey = () => {
+    // Hermeticity: with a real TYPESAFE_API_KEY present (operator .env),
+    // the Jev leg would fire live verdicts and flip deterministic routing
+    // assertions below. No key → Jev returns null pre-fetch (see intent-score
+    // hermeticity note). NOTE: config dotenv-reloads .env at require time,
+    // so the effective scrub happens in-test right after require() calls;
+    // this beforeEach scrub covers already-cached modules.
+    delete process.env.TYPESAFE_API_KEY;
+  };
 
   beforeEach(() => {
     for (const m of [
@@ -16,6 +25,7 @@ describe('shortfall routing integration', () => {
       try { delete require.cache[require.resolve(m)]; } catch { /* not loaded */ }
     }
     originalEnv = { ...process.env };
+    scrubJevKey();
     process.env.FALLBACK_PROVIDER = 'databricks';
     process.env.DATABRICKS_API_KEY = 'test-key';
     process.env.DATABRICKS_API_BASE = 'http://test.com';
@@ -50,6 +60,10 @@ describe('shortfall routing integration', () => {
 
   it('serves the shortfall pick with +shortfall method when enabled', async () => {
     const routing = require('../src/clients/routing');
+    // Scrub AFTER require: config dotenv-reloads .env at require time,
+    // which resurrects any key deleted in beforeEach. No key → Jev leg
+    // stays null and routing is fully deterministic.
+    delete process.env.TYPESAFE_API_KEY;
     // Toggle via config injection (no env vars) — same instance routing uses.
     require('../src/routing/shortfall')._setProfilesForTests({ enabled: true });
     const result = await routing.determineProviderSmart({ messages: [{ role: 'user', content: TRIVIAL }] });

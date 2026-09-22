@@ -46,8 +46,8 @@ This stores your OAuth token for Lynkr to forward.
 ```bash
 # .env
 TIER_SIMPLE=ollama:llama3.2                    # Free local
-TIER_COMPLEX=anthropic:claude-sonnet-4          # Uses OAuth
-TIER_REASONING=anthropic:claude-opus-4          # Uses OAuth
+TIER_COMPLEX=azure-anthropic:claude-sonnet-4-5          # Uses OAuth
+TIER_REASONING=azure-anthropic:claude-opus-4-5          # Uses OAuth
 
 OLLAMA_ENDPOINT=http://localhost:11434
 
@@ -111,7 +111,7 @@ claude login
 # 2. Comment out API key in .env
 # .env
 TIER_SIMPLE=ollama:llama3.2
-TIER_COMPLEX=anthropic:claude-sonnet-4
+TIER_COMPLEX=azure-anthropic:claude-sonnet-4-5
 # ANTHROPIC_API_KEY=  ← Commented out
 
 # 3. Run wrap
@@ -131,8 +131,8 @@ lynkr wrap claude
 # .env
 TIER_SIMPLE=ollama:llama3.2          # No auth
 TIER_MEDIUM=openai:gpt-4o-mini       # API key
-TIER_COMPLEX=anthropic:claude-sonnet-4   # OAuth
-TIER_REASONING=anthropic:claude-opus-4   # OAuth
+TIER_COMPLEX=azure-anthropic:claude-sonnet-4-5   # OAuth
+TIER_REASONING=azure-anthropic:claude-opus-4-5   # OAuth
 
 OPENAI_API_KEY=sk-...
 # NO ANTHROPIC_API_KEY
@@ -291,7 +291,7 @@ lynkr wrap claude
 **Checklist:**
 1. ✅ Logged in? Run `claude --version` (should show user info)
 2. ✅ Using wrap? OAuth only works with `lynkr wrap claude`, not `npm start`
-3. ✅ Tier configured? `TIER_COMPLEX=anthropic:claude-sonnet-4` in `.env`
+3. ✅ Tier configured? `TIER_COMPLEX=azure-anthropic:claude-sonnet-4-5` in `.env`
 4. ✅ Check logs: Look for "Using OAuth token" message
 
 ---
@@ -307,7 +307,7 @@ claude login
 # 2. Configure
 cat > .env <<EOF
 TIER_SIMPLE=ollama:llama3.2
-TIER_COMPLEX=anthropic:claude-sonnet-4
+TIER_COMPLEX=azure-anthropic:claude-sonnet-4-5
 OLLAMA_ENDPOINT=http://localhost:11434
 EOF
 

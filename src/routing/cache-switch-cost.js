@@ -61,12 +61,23 @@ function _cfg() {
  * @param {number} [args.outputTokensPerTurn] - est. output tokens per turn.
  * @param {number|null} [args.expectedRemainingTurns] - median remaining
  *   turns; falls back to the conservative config default when null.
+ * @param {number|null} [args.sessionBurnPressure] - 0..1 quota pressure from
+ *   quota-ledger.js (sustained expensive serving on a flat subscription).
+ *   Enables a parallel QUOTA break-even leg: while dollar math prices the
+ *   rebuild in USD, quota math prices it in ledger units (model weight ×
+ *   tokens, Haiku = 1.0). Either leg clearing allows the switch, so high
+ *   burn opens descents the dollar leg alone would hold. Null/0 disables
+ *   the quota leg entirely — pure dollar behavior, byte-for-byte backward
+ *   compatible. Upgrades never route through this gate, so pressure can
+ *   only accelerate descents, never block capability.
  * @param {Object} [args.deps] - test injection: {resolveCacheEconomics}.
  * @returns {{
  *   switchAllowed: boolean,
  *   reason: string,
  *   breakEvenTurns: number|null,
  *   expectedRemainingTurns: number,
+ *   quotaBreakEvenTurns: number|null,
+ *   burnPressureApplied: number,
  *   warmPrefixTokens: number,
  *   switchOnceUsd: number|null,
  *   stayPerTurnUsd: number|null,
@@ -81,18 +92,24 @@ function evaluateSwitch({
   newTokensPerTurn,
   outputTokensPerTurn,
   expectedRemainingTurns,
+  sessionBurnPressure = null,
   deps = {},
 } = {}) {
   const cfg = _cfg();
   const remaining = Number.isFinite(expectedRemainingTurns) && expectedRemainingTurns > 0
     ? expectedRemainingTurns
     : cfg.defaultRemainingTurns;
+  const burnPressure = Number.isFinite(sessionBurnPressure)
+    ? Math.max(0, Math.min(1, sessionBurnPressure))
+    : 0;
 
   const base = {
     switchAllowed: true,
     reason: 'no_cache_state',
     breakEvenTurns: null,
     expectedRemainingTurns: remaining,
+    quotaBreakEvenTurns: null,
+    burnPressureApplied: burnPressure,
     warmPrefixTokens: cacheState?.warmPrefixTokens ?? 0,
     switchOnceUsd: null,
     stayPerTurnUsd: null,
@@ -174,19 +191,46 @@ function evaluateSwitch({
   const breakEvenTurns = switchOnce / savingsPerTurn;
   const allowed = breakEvenTurns <= remaining;
 
+  // Quota leg (flat subscriptions): re-run the same break-even in ledger
+  // units when the session is burning. Model weight = (input+output $/M) /
+  // Haiku baseline — quota burn tracks price ratios, which is exactly what
+  // the ledger records. A rebuild that never pays in dollars can still pay
+  // in runway when every held turn burns 5x the units a descent would.
+  let quotaBreakEvenTurns = null;
+  let quotaAllowed = false;
+  if (burnPressure > 0) {
+    const wCur = (econCur.inputPerM + econCur.outputPerM) / 6;
+    const wTgt = (econTgt.inputPerM + econTgt.outputPerM) / 6;
+    if (wCur > wTgt) {
+      const perTurnTokens = (W + N + O) / 1000;
+      const quotaSavingsPerTurn = perTurnTokens * (wCur - wTgt);
+      if (quotaSavingsPerTurn > 0) {
+        quotaBreakEvenTurns = ((W + N) / 1000) * wTgt / quotaSavingsPerTurn;
+        quotaAllowed = quotaBreakEvenTurns <= remaining;
+      }
+    }
+  }
+  const finalAllowed = allowed || quotaAllowed;
+
   logger.debug({
     current: `${current.provider}:${current.model}`,
     target: `${target.provider}:${target.model}`,
     warmPrefixTokens: W,
     breakEvenTurns: Number(breakEvenTurns.toFixed(2)),
     expectedRemainingTurns: remaining,
+    quotaBreakEvenTurns: quotaBreakEvenTurns === null ? null : Number(quotaBreakEvenTurns.toFixed(2)),
+    burnPressureApplied: burnPressure,
     allowed,
+    quotaAllowed,
   }, '[CacheSwitchCost] break-even evaluated');
 
   return {
     ...priced,
-    switchAllowed: allowed,
-    reason: allowed ? 'break_even_cleared' : 'break_even_blocked',
+    quotaBreakEvenTurns,
+    switchAllowed: finalAllowed,
+    reason: finalAllowed
+      ? (allowed ? 'break_even_cleared' : 'quota_break_even_cleared')
+      : 'break_even_blocked',
     breakEvenTurns,
   };
 }

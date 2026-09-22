@@ -69,12 +69,47 @@ function convertOpenAIToAnthropic(openaiRequest) {
           } else if (part.type === "image_url") {
             const url = part.image_url?.url || "";
             if (url.startsWith("data:")) {
-              const match = url.match(/^data:(image\/[^;]+);base64,(.+)$/);
+              // Accept base64 and base64url alphabets; anything else falls
+              // through to url-shape (provider validates downstream).
+              const match = url.match(/^data:([^;]+);base64,([A-Za-z0-9+/=_-]+)$/);
               if (match) {
-                return { type: "image", source: { type: "base64", media_type: match[1], data: match[2] } };
+                // Image payloads become Anthropic image blocks; anything
+                // else (e.g. application/pdf) becomes a document block so
+                // the bytes survive the translation (issue #115).
+                if (match[1].startsWith("image/")) {
+                  return { type: "image", source: { type: "base64", media_type: match[1], data: match[2] } };
+                }
+                return { type: "document", source: { type: "base64", media_type: match[1], data: match[2] } };
               }
             }
             return { type: "image", source: { type: "url", url } };
+          } else if (part.type === "file" && part.file) {
+            // OpenAI file part → Anthropic document block. file_data carries
+            // a data URL whose media type + base64 payload map directly
+            // (issue #115: previously forwarded unchanged → upstream 400).
+            const dataUrl = part.file.file_data || "";
+            const match = typeof dataUrl === "string" && dataUrl.match(/^data:([^;]+);base64,([A-Za-z0-9+/=_-]+)$/);
+            if (match) {
+              return { type: "document", source: { type: "base64", media_type: match[1], data: match[2] } };
+            }
+            const err = new Error(
+              `Cannot translate OpenAI file part "${part.file.filename || "unnamed"}" to Anthropic format: ` +
+              `file_data must be a base64 data: URL.`
+            );
+            err.statusCode = 400;
+            err.code = "unsupported_content_block";
+            err.isOperational = true;
+            throw err;
+          } else if (part.type === "input_audio") {
+            // No Anthropic equivalent — fail loudly naming the block rather
+            // than forwarding bytes the upstream rejects opaquely (issue #115).
+            const err = new Error(
+              "Cannot translate OpenAI input_audio content to Anthropic format: audio input is not supported."
+            );
+            err.statusCode = 400;
+            err.code = "unsupported_content_block";
+            err.isOperational = true;
+            throw err;
           } else if (part.type === "document" || part.type === "image") {
             return part;
           }
