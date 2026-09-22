@@ -11,6 +11,8 @@ const RESOURCES = {
   session_pins: {
     describe: "Session → provider affinity pins",
     table: "session_pins",
+    countQuery: "SELECT COUNT(*) as n FROM session_pins",
+    deleteQuery: "DELETE FROM session_pins",
   },
 };
 
@@ -57,10 +59,10 @@ const targets = target === "all" ? Object.keys(RESOURCES) : [target];
 
 let hadError = false;
 for (const t of targets) {
-  const { table } = RESOURCES[t];
+  const { countQuery, deleteQuery } = RESOURCES[t];
   try {
-    const before = db.prepare(`SELECT COUNT(*) as n FROM ${table}`).get().n;
-    db.prepare(`DELETE FROM ${table}`).run();
+    const before = db.prepare(countQuery).get().n;
+    db.prepare(deleteQuery).run();
     console.log(`✓ cleared ${t} (${before} rows)`);
   } catch (err) {
     hadError = true;
