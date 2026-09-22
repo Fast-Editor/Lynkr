@@ -20,10 +20,15 @@
  *   2. Side-channel tiers (suggestion/autocomplete/bare/drift frames routed to
  *      static SIMPLE) → verbatim. Never spend Opus on harness wrapper text.
  *   3. Unknown client model or unrankable tier model → verbatim (fail-closed).
- *   4. Tier model outranks client model → upgrade to the tier model. Upgrades
- *      always fire, even on a warm prefix — correctness beats one cold turn,
- *      same policy as the normal flow's hard triggers (cache-switch-cost.js
- *      scope: escalations are never gated).
+ *   4. Tier model outranks client model → upgrade to the tier model, with one
+ *      exception (rule 4a): stepping DOWN from a higher pin (pin Opus, fresh
+ *      verdict Sonnet) consults the downgrade gate for the pin→tier move. A
+ *      warm Opus prefix survives a Sonnet verdict when break-even blocks;
+ *      genuine upgrades (no higher pin, or pin at/below the tier) fire
+ *      ungated — correctness beats one cold turn, same policy as the normal
+ *      flow's hard triggers (cache-switch-cost.js scope: escalations are
+ *      never gated). Without 4a every Opus→Sonnet transition destroyed the
+ *      warm prefix with no math.
  *   5. Pinned (previously served) model outranks client model → downgrade
  *      gate: hold the pin (pin_hold) ONLY while real warmth is at stake —
  *      cacheState present, fresh (not TTL-cold), recorded for this same
@@ -129,16 +134,19 @@ function resolveTierModel({ tierName = null, tierModel = null, selectModelFn = n
  * Above the trivial floor, the decision is dollar break-even via the SAME
  * evaluator the normal flow uses: holding Opus to "save" a re-read is only
  * rational when the re-read costs more than the per-turn premium over the
- * session's expected remaining turns. With Opus ~18x Haiku on output the
- * break-even typically clears in a fraction of a turn, so holds are rare
- * by design — surviving only when the session is nearly over (nothing to
- * amortize a rebuild over) or pricing is unknown (fail toward the hold).
+ * session's expected remaining turns. With Opus ~5x Haiku on output
+ * (registry: $25/M vs $5/M) the break-even typically clears in ~1-2 turns,
+ * so holds are rare by design — surviving only when the session is nearly
+ * over (nothing to amortize a rebuild over), quota pressure has shortened
+ * the horizon to ~nothing, or pricing is unknown (fail toward the hold).
  *
  * @param {string|null} pinModel - currently serving (pinned) model
  * @param {object|null} cacheState - sessionAffinity.getCacheState(sessionId)
  * @param {object} [opts]
  * @param {string|null} [opts.downgradeModel] - model a downgrade would serve
  * @param {number|null} [opts.remainingTurns] - expected turns left (null → evaluator default)
+ * @param {number|null} [opts.sessionBurnPressure] - 0..1 quota pressure,
++ *   threaded into evaluateSwitch (null/0 = untouched horizon)
  * @param {function|null} [opts.evaluateSwitch] - injectable evaluator (tests)
  */
 function shouldHoldForCache(pinModel, cacheState, opts = {}) {
@@ -159,6 +167,7 @@ function shouldHoldForCache(pinModel, cacheState, opts = {}) {
       current: { provider: cacheState.provider || 'azure-anthropic', model: pinModel },
       target: { provider: cacheState.provider || 'azure-anthropic', model: opts.downgradeModel || null },
       expectedRemainingTurns: opts.remainingTurns ?? null,
+      ...(opts.sessionBurnPressure != null ? { sessionBurnPressure: opts.sessionBurnPressure } : {}),
     });
     if (ev && ev.switchAllowed) {
       return {
@@ -193,10 +202,12 @@ function shouldHoldForCache(pinModel, cacheState, opts = {}) {
  *   Caller (router fork) loads it; kept out of here so this stays pure.
  * @param {number|null} [args.remainingTurns] - expected turns left, for the
  *   break-even gate (null → evaluator default). Caller loads via telemetry.
+ * @param {number|null} [args.sessionBurnPressure] - 0..1 quota pressure,
+ *   threaded into both gate calls (null/0 = untouched horizon).
  * @param {function|null} [args.evaluateSwitch] - injectable evaluator (tests).
  * @returns {{model:string|null, action:'verbatim'|'upgrade'|'pin_hold', reason:string, warmPrefixTokens:number|null}}
  */
-function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel = null, tierMethod = null, tierPinned = null, cacheState = null, remainingTurns = null, evaluateSwitch = null } = {}) {
+function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel = null, tierMethod = null, tierPinned = null, cacheState = null, remainingTurns = null, sessionBurnPressure = null, evaluateSwitch = null } = {}) {
   try {
     if (!isRoutingEnabled()) {
       return { model: clientModel, action: 'verbatim', reason: 'routing_disabled', warmPrefixTokens: null };
@@ -209,14 +220,29 @@ function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel
       return { model: clientModel, action: 'verbatim', reason: 'unknown_client_model', warmPrefixTokens: null };
     }
     const tierRank = familyRank(tierModel);
+    const pinRank = familyRank(pinModel);
     if (tierRank !== null && tierRank > clientRank) {
+      // Rule 4a — the upgrade branch can also be a step DOWN from the pin
+      // (pin Opus, fresh verdict Sonnet, client Haiku). Consult the gate for
+      // the pin→tier move instead of destroying warmth unexamined.
+      if (pinRank !== null && pinRank > tierRank) {
+        const gate = shouldHoldForCache(pinModel, cacheState, {
+          downgradeModel: tierModel,
+          remainingTurns,
+          sessionBurnPressure,
+          ...(evaluateSwitch ? { evaluateSwitch } : {}),
+        });
+        if (gate && gate.hold) {
+          return { model: pinModel, action: 'pin_hold', reason: gate.reason, warmPrefixTokens: gate.warmPrefixTokens ?? null };
+        }
+      }
       return { model: tierModel, action: 'upgrade', reason: 'tier_outranks_client', warmPrefixTokens: null };
     }
-    const pinRank = familyRank(pinModel);
     if (pinRank !== null && pinRank > clientRank) {
       const gate = shouldHoldForCache(pinModel, cacheState, {
         downgradeModel: clientModel,
         remainingTurns,
+        sessionBurnPressure,
         ...(evaluateSwitch ? { evaluateSwitch } : {}),
       });
       if (gate && gate.hold) {
@@ -235,5 +261,26 @@ function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel
   }
 }
 
+/**
+ * Badge text for a passthrough turn (pure — unit-tested, used by router.js).
+ * Three marked variants plus the plain no-op:
+ *   upgrade  → +route  (model rewritten up)
+ *   pin_hold → +hold   (model rewritten to the held pin, with gate reason)
+ *   verbatim + downgrade_* reason → −stepdown (gate-approved descent)
+ *   otherwise → plain passthrough (true no-op: no_upgrade, side_request…)
+ */
+function buildPassthroughBadge({ action = null, reason = null, routeModel = null, clientModel = null, tierName = null, servedModel = null } = {}) {
+  if (action === 'upgrade' && routeModel) {
+    return `*[Lynkr] subscription-passthrough+route → ${routeModel} (client: ${clientModel || '—'}) · ${tierName || '—'}*`;
+  }
+  if (action === 'pin_hold' && routeModel) {
+    return `*[Lynkr] subscription-passthrough+hold → ${routeModel} (client: ${clientModel || '—'}) · ${tierName || '—'} (${reason || 'cache'})*`;
+  }
+  if (action === 'verbatim' && typeof reason === 'string' && reason.startsWith('downgrade_')) {
+    return `*[Lynkr] subscription-passthrough−stepdown → ${servedModel || '—'} (azure-anthropic) · ${tierName || '—'} (${reason})*`;
+  }
+  return `*[Lynkr] subscription-passthrough → ${servedModel || '—'} (azure-anthropic)*`;
+}
+
 module.exports = { familyRank, isRoutingEnabled, isSideTier,   decidePassthroughModel,
-  resolveTierModel, shouldHoldForCache, holdMinPrefixTokens };
+  resolveTierModel, shouldHoldForCache, holdMinPrefixTokens, buildPassthroughBadge };

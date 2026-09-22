@@ -231,6 +231,74 @@ describe("telemetry: cache_decision receipt + getCacheEconomics (Phase 6)", () =
   });
 });
 
+describe("cache-switch-cost: sessionBurnPressure enables the quota leg", () => {
+  const args = (extra = {}) => ({
+    cacheState: warmState(12500, "opus"),
+    current: { provider: "databricks", model: "opus" },
+    target: { provider: "databricks", model: "haiku" },
+    expectedRemainingTurns: 10,
+    deps,
+    ...extra,
+  });
+
+  it("pressure 0/null disables the quota leg (pure dollar behavior)", () => {
+    for (const p of [undefined, null, 0]) {
+      const r = evaluateSwitch(args(p === undefined ? {} : { sessionBurnPressure: p }));
+      assert.strictEqual(r.quotaBreakEvenTurns, null);
+      assert.strictEqual(r.burnPressureApplied, 0);
+      assert.strictEqual(r.reason, "break_even_cleared");
+    }
+  });
+
+  it("clamps out-of-range pressure", () => {
+    assert.strictEqual(evaluateSwitch(args({ sessionBurnPressure: 99 })).burnPressureApplied, 1);
+    assert.strictEqual(evaluateSwitch(args({ sessionBurnPressure: -3 })).burnPressureApplied, 0);
+    assert.strictEqual(evaluateSwitch(args({ sessionBurnPressure: NaN })).burnPressureApplied, 0);
+  });
+
+  it("high burn opens a descent the dollar leg holds (quota runway pays)", () => {
+    // Warm 60k Opus prefix, 1 turn left: dollar BE ~1.6 > 1 → hold…
+    const holdArgs = {
+      cacheState: warmState(60000, "opus"),
+      current: { provider: "databricks", model: "opus" },
+      target: { provider: "databricks", model: "haiku" },
+      expectedRemainingTurns: 1,
+      newTokensPerTurn: 2000,
+      outputTokensPerTurn: 800,
+      deps,
+    };
+    const held = evaluateSwitch(holdArgs);
+    assert.strictEqual(held.switchAllowed, false);
+    assert.strictEqual(held.reason, "break_even_blocked");
+    assert.strictEqual(held.quotaBreakEvenTurns, null);
+    // …but under burn the quota leg clears (rebuild ~62 units vs ~251/turn
+    // saved at 5:1 weights → BE ~0.25 turns).
+    const cleared = evaluateSwitch({ ...holdArgs, sessionBurnPressure: 1 });
+    assert.strictEqual(cleared.switchAllowed, true);
+    assert.strictEqual(cleared.reason, "quota_break_even_cleared");
+    assert.ok(cleared.quotaBreakEvenTurns !== null && cleared.quotaBreakEvenTurns <= 1);
+  });
+
+  it("pressure never blocks an already-clearing descent", () => {
+    const r = evaluateSwitch(args({ sessionBurnPressure: 1 }));
+    assert.strictEqual(r.switchAllowed, true);
+    assert.strictEqual(r.reason, "break_even_cleared");
+  });
+
+  it("quota leg stays shut when the target burns equal or more", () => {
+    const r = evaluateSwitch({
+      cacheState: warmState(12500, "haiku"),
+      current: { provider: "databricks", model: "haiku" },
+      target: { provider: "databricks", model: "opus" },
+      expectedRemainingTurns: 10,
+      sessionBurnPressure: 1,
+      deps,
+    });
+    assert.strictEqual(r.switchAllowed, false);
+    assert.strictEqual(r.reason, "never_profitable");
+  });
+});
+
 describe("telemetry: getExpectedRemainingTurns", () => {
   it("returns null on sparse data, conditional median with enough sessions", () => {
     assert.strictEqual(telemetry.getExpectedRemainingTurns(0), null);

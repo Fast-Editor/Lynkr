@@ -173,6 +173,91 @@ describe('downgrade gate (dollar break-even, normal-flow math)', () => {
   });
 });
 
+describe('decidePassthroughModel rule 4a (pin→tier step-down consults the gate)', () => {
+  const warmOpus = (tokens, extra = {}) => ({
+    warmPrefixTokens: tokens, provider: 'azure-anthropic', model: OPUS,
+    lastRequestAt: Date.now(), ttlMs: 300000, cold: false, ...extra,
+  });
+
+  it('holds Opus on a Sonnet verdict while break-even blocks', () => {
+    const r = route.decidePassthroughModel({
+      tierModel: SONNET, clientModel: HAIKU, pinModel: OPUS,
+      cacheState: warmOpus(12500), remainingTurns: 0.2,
+    });
+    assert.strictEqual(r.action, 'pin_hold');
+    assert.strictEqual(r.model, OPUS);
+    assert.strictEqual(r.reason, 'hold_break_even_blocked');
+  });
+
+  it('steps pin Opus down to Sonnet when the gate clears (no cliff to Haiku)', () => {
+    const r = route.decidePassthroughModel({
+      tierModel: SONNET, clientModel: HAIKU, pinModel: OPUS,
+      cacheState: warmOpus(12500),
+    });
+    assert.strictEqual(r.action, 'upgrade');
+    assert.strictEqual(r.model, SONNET);
+  });
+
+  it('genuine upgrades still skip the gate (no higher pin)', () => {
+    let called = false;
+    const r = route.decidePassthroughModel({
+      tierModel: SONNET, clientModel: HAIKU, pinModel: HAIKU,
+      cacheState: warmOpus(20000),
+      evaluateSwitch: (...a) => { called = true; return null; },
+    });
+    assert.strictEqual(r.action, 'upgrade');
+    assert.strictEqual(r.model, SONNET);
+    assert.strictEqual(called, false);
+  });
+
+  it('threads sessionBurnPressure into the gate', () => {
+    let seen = null;
+    const r = route.decidePassthroughModel({
+      tierModel: HAIKU, clientModel: HAIKU, pinModel: OPUS,
+      cacheState: warmOpus(9000), sessionBurnPressure: 0.8,
+      evaluateSwitch: (a) => { seen = a.sessionBurnPressure; return { switchAllowed: true, reason: 'break_even_cleared', breakEvenTurns: 1 }; },
+    });
+    assert.strictEqual(r.action, 'verbatim');
+    assert.strictEqual(seen, 0.8);
+  });
+});
+
+describe('buildPassthroughBadge', () => {
+  const { buildPassthroughBadge } = route;
+
+  it('marks upgrades +route', () => {
+    const b = buildPassthroughBadge({ action: 'upgrade', model: undefined, routeModel: OPUS, clientModel: HAIKU, tierName: 'REASONING' });
+    assert.ok(b.includes('+route'), b);
+    assert.ok(b.includes(OPUS), b);
+    assert.ok(b.includes('REASONING'), b);
+  });
+
+  it('marks holds +hold with the gate reason', () => {
+    const b = buildPassthroughBadge({ action: 'pin_hold', reason: 'hold_break_even_blocked', routeModel: OPUS, clientModel: HAIKU, tierName: 'SIMPLE' });
+    assert.ok(b.includes('+hold'), b);
+    assert.ok(b.includes('hold_break_even_blocked'), b);
+  });
+
+  it('marks descents −stepdown with the gate reason', () => {
+    const b = buildPassthroughBadge({ action: 'verbatim', reason: 'downgrade_break_even_cleared', servedModel: HAIKU, tierName: 'SIMPLE' });
+    assert.ok(b.includes('−stepdown'), b);
+    assert.ok(b.includes('downgrade_break_even_cleared'), b);
+  });
+
+  it('leaves true no-ops plain', () => {
+    for (const reason of ['no_upgrade', 'side_request', 'unknown_client_model', 'routing_disabled', 'not_evaluated']) {
+      const b = buildPassthroughBadge({ action: 'verbatim', reason, servedModel: HAIKU, tierName: 'SIMPLE' });
+      assert.ok(!b.includes('+route') && !b.includes('+hold') && !b.includes('stepdown'), `${reason}: ${b}`);
+      assert.ok(b.includes('subscription-passthrough →'), b);
+    }
+  });
+
+  it('fail-safes missing models to plain', () => {
+    const b = buildPassthroughBadge({ action: 'upgrade' });
+    assert.ok(b.includes('subscription-passthrough →'), b);
+  });
+});
+
 describe('resolveTierModel (label wins ties)', () => {
   const sel = (t) => ({ COMPLEX: { model: SONNET }, SIMPLE: { model: HAIKU } }[t] || null);
 

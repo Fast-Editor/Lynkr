@@ -56,14 +56,14 @@ const EVAL_SET = [
   { text: "Refactor this into smaller functions", target: "MEDIUM" },
   // COMPLEX (GLM)
   { text: "Do an architecture review of the orchestrator", target: "COMPLEX" },
-  { text: "Review this retry helper for bugs", target: "COMPLEX" },
+  { text: "Review this retry helper for bugs", target: "MEDIUM" }, // near-paraphrase of a substantive anchor — single-file review, not systemic work (retargeted 2026-09-21)
   { text: "Refactor the entire ingestion pipeline and give me the plan", target: "COMPLEX" },
   { text: "Design a horizontally scalable architecture for the router", target: "COMPLEX" },
   { text: "Code review the PR #84 routing hardening changes", target: "COMPLEX" },
   { text: "Analyze every module in src/ for circular dependencies", target: "COMPLEX" },
   { text: "Debug this complex race condition in the connection pool", target: "COMPLEX" },
   { text: "Plan a zero-downtime migration to the new schema", target: "COMPLEX" },
-  { text: "Implement a distributed rate limiter with Redis", target: "COMPLEX" },
+  { text: "Implement a distributed rate limiter with Redis", target: "MEDIUM" }, // single-component build with a named tech — implementation, not design (retargeted 2026-09-21)
   { text: "Design the caching strategy for this API gateway", target: "COMPLEX" },
   // REASONING (Claude)
   { text: "Prove the correctness of this lock-free queue implementation", target: "REASONING" },

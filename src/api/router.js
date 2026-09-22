@@ -411,6 +411,8 @@ async function handleOauthPassthrough(req, res, opts = {}) {
     if (contextWindow) res.set("X-Lynkr-Context-Window", String(contextWindow));
   }
   res.set("X-Lynkr-Routing-Method", "oauth-subscription-passthrough");
+  if (opts.routeDecision?.action) res.set("X-Lynkr-Route-Action", opts.routeDecision.action);
+  if (opts.routeDecision?.reason) res.set("X-Lynkr-Route-Reason", opts.routeDecision.reason);
 
   // Capture the response (buffered or streamed) so we can do observability hooks
   // on the way back without changing what the client sees.
@@ -435,10 +437,18 @@ async function handleOauthPassthrough(req, res, opts = {}) {
   // with the response stream before handing it to the client.
   const wantsBadge = config.routing?.visibleInteraction && upstreamResp.ok;
   const _routeDecision = opts.routeDecision;
-  const badgeText = wantsBadge
-    ? (_routeDecision && _routeDecision.action !== 'verbatim' && _routeDecision.model
-        ? `*[Lynkr] subscription-passthrough+route → ${_routeDecision.model} (client: ${opts.clientModel || '—'}) · ${opts.tier?.tier || '—'}*\n\n`
-        : `*[Lynkr] subscription-passthrough → ${req.body?.model || '—'} (azure-anthropic)*\n\n`)
+  // Badge variants per decider action (pure builder in passthrough-route.js,
+  // unit-tested). The reason suffix names the rule that fired.
+  const { buildPassthroughBadge } = require("../routing/passthrough-route");
+  let badgeText = wantsBadge
+    ? buildPassthroughBadge({
+        action: _routeDecision?.action ?? null,
+        reason: _routeDecision?.reason ?? null,
+        routeModel: _routeDecision?.model ?? null,
+        clientModel: opts.clientModel || null,
+        tierName: opts.tier?.tier || null,
+        servedModel: req.body?.model || null,
+      }) + '\n\n'
     : null;
 
   if (contentType.includes("text/event-stream") && upstreamResp.body) {
@@ -489,7 +499,7 @@ async function handleOauthPassthrough(req, res, opts = {}) {
     }
     res.end();
   } else {
-    const text = await upstreamResp.text();
+    let text = await upstreamResp.text();
     if (!upstreamResp.ok) {
       // Auth-shape diagnostics (prefix only, never the token): sk-ant-oat*
       // = subscription OAuth (fix: /login refresh), sk-ant-api* = an API KEY
@@ -504,6 +514,50 @@ async function handleOauthPassthrough(req, res, opts = {}) {
         authShape: authHdr ? authHdr.replace("Bearer ", "").slice(0, 12) + "…" : "(none)",
         xApiKeyShape: apiKeyHdr ? apiKeyHdr.slice(0, 12) + "…" : "(none)",
       }, "OAuth passthrough upstream returned non-2xx");
+    }
+    // Model-rejection fallback: a rewritten model id can go stale (snapshot
+    // rotation) while the client's own id keeps working — observed live as
+    // a 400 naming the model on an otherwise healthy subscription. Retry
+    // ONCE with the client's original model so a routing decision degrades
+    // to a Haiku answer instead of a failed turn. Strictly gated: rewritten
+    // request only, 400/404 only, error body must mention model. Telemetry
+    // and headers below report the SERVED model, not the attempted one.
+    let _routeFellBack = false;
+    if (!upstreamResp.ok && (upstreamResp.status === 400 || upstreamResp.status === 404)
+      && opts.routeDecision && opts.routeDecision.action !== 'verbatim' && opts.clientModel) {
+      let _errText = '';
+      try { _errText = JSON.stringify(JSON.parse(text)); } catch { _errText = text; }
+      if (/model/i.test(_errText)) {
+        logger.warn({
+          status: upstreamResp.status,
+          from: opts.routeDecision.model,
+          to: opts.clientModel,
+        }, 'OAuth passthrough model rejected — retrying once with client model');
+        try {
+          const _retryResp = await fetch(upstream, {
+            method: 'POST',
+            headers: outHeaders,
+            body: JSON.stringify({ ...JSON.parse(bodyText), model: opts.clientModel }),
+          });
+          const _retryText = await _retryResp.text();
+          if (_retryResp.ok) {
+            upstreamResp = _retryResp;
+            text = _retryText;
+            _routeFellBack = true;
+            req.body = { ...req.body, model: opts.clientModel };
+            res.set('X-Lynkr-Model', opts.clientModel);
+          } else {
+            logger.warn({ status: _retryResp.status }, 'OAuth passthrough client-model retry also failed');
+          }
+        } catch (err) {
+          logger.debug({ err: err.message }, '[Routing] Passthrough fallback retry failed (non-fatal)');
+        }
+      }
+    }
+    if (_routeFellBack) {
+      badgeText = wantsBadge
+        ? `*[Lynkr] subscription-passthrough (route to ${opts.routeDecision.model} rejected upstream — serving requested model)*\n\n`
+        : null;
     }
     responseTextForObservability = text;
 
@@ -580,6 +634,16 @@ async function handleOauthPassthrough(req, res, opts = {}) {
       mc.recordProviderSuccess("azure-anthropic-passthrough", latencyMs);
       if (outputTokens || inputTokensActual) mc.recordTokens(inputTokensActual, outputTokens || 0);
 
+      // Quota ledger: record the served turn so sustained expensive serving
+      // shortens future hold horizons (horizon pressure). Ledger never throws
+      // and never blocks observability.
+      try {
+        require("../routing/quota-ledger").record(
+          req.body?._sessionId || req.sessionId || null,
+          { model: req.body?.model || null, inputTokens: inputTokensActual || 0, outputTokens: outputTokens || 0 }
+        );
+      } catch { /* fail-soft */ }
+
       // Tier router telemetry (so it shows up in dashboards / routing stats)
       const tlm = require("../routing/telemetry");
       tlm.record({
@@ -608,6 +672,15 @@ async function handleOauthPassthrough(req, res, opts = {}) {
         switch_reason: tier.switch_reason ?? tier.reason ?? null,
         escalation_source: tier.escalation_source ?? null,
         was_fallback: false,
+        // Decider attribution: what the passthrough model router did with
+        // the tier (upgrade/hold/descent) and how much warmth was involved.
+        // switch_reason above already carries the decider reason (stamped at
+        // the fork site); this preserves the structured form for dashboards.
+        cache_decision: opts.routeDecision ? {
+          action: opts.routeDecision.action ?? null,
+          reason: opts.routeDecision.reason ?? null,
+          warmPrefixTokens: opts.routeDecision.warmPrefixTokens ?? null,
+        } : null,
       });
 
       // Audit log. NOTE: the interface returned by createAuditLogger exposes
@@ -1154,6 +1227,32 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       }
     }
     if (modelPinTier && !_pinBypassForce) {
+      // Upward-drift escape (WS1.5 for the ambient model pin). The pin is
+      // the client's session model, not a scored decision — without this,
+      // every non-force prompt rides the pin and tier routing is a no-op
+      // for Claude Code traffic (live: a two-file compare+design ask served
+      // Haiku with reason client_selected_model). A cheap per-message drift
+      // check against the pin tier lets genuinely harder asks fall through
+      // to the cascade; trivial turns keep the pin (and the WS1 cost win).
+      // One-directional by construction (checkPinScoreDrift never drifts
+      // down), and tool-result-only turns score nothing, so tool-loop
+      // economics are untouched.
+      try {
+        const _drift = await checkPinScoreDrift({ tier: modelPinTier }, req.body);
+        if (_drift?.drift) {
+          _pinBypassForce = 'pin_drift';
+          logger.debug({
+            model: req.body?.model,
+            pinnedTier: modelPinTier,
+            freshScore: _drift.freshScore,
+            forced: _drift.forced || null,
+          }, '[Routing] Upward drift outranks model-id pin — full cascade');
+        }
+      } catch (err) {
+        logger.debug({ err: err.message }, '[Routing] Pin drift check failed — pin stands');
+      }
+    }
+    if (modelPinTier && !_pinBypassForce) {
       const _sel = getModelTierSelector().selectModel(modelPinTier, null);
       tier = {
         tier: modelPinTier,
@@ -1440,6 +1539,12 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       }
     }
     } // end else — no explicit model-id pin, scored normally above
+    // Attribute model-pin drift escapes in telemetry: the cascade above may
+    // serve a session pin or side tier without stamping a reason, leaving
+    // the escape invisible. Never overwrite a reason the cascade did set.
+    if (_pinBypassForce === 'pin_drift' && tier && !tier.switch_reason) {
+      tier.switch_reason = 'model_pin_drift';
+    }
 
     // Subscription-only fork: byte-for-byte passthrough to api.anthropic.com
     // when the picked tier resolves to azure-anthropic — FIRST-PARTY
@@ -1517,6 +1622,14 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           tierMethod: tier?.method || null,
           tierPinned: tier?.pinned ?? null,
           cacheState: _pinCacheState,
+          // Quota pressure shortens the hold horizon inside the gate (high
+          // sustained burn → descents clear sooner). Zero when the ledger has
+          // no history — the gate behaves exactly as before.
+          sessionBurnPressure: (() => {
+            try {
+              return require("../routing/quota-ledger").pressure(pinCheck?.sessionId || req.body?._sessionId || req.sessionId || null);
+            } catch { return 0; }
+          })(),
           remainingTurns: (() => {
             try {
               const msgCount = Array.isArray(req.body?.messages) ? req.body.messages.length : 0;
@@ -1555,6 +1668,19 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           tier: tier?.tier,
         }, '[Routing] Passthrough model route');
         req.body = { ...req.body, model: _passthroughRoute.model };
+      }
+      // Attribution: surface the decider's verdict on the tier object so
+      // telemetry (switch_reason), headers and the badge report what the
+      // decider did, not just what the cascade scored. Upgrades keep the
+      // cascade's reason (force/drift — the *why*); holds and descents take
+      // the decider's reason (the *what*), which previously reached nowhere
+      // past server logs.
+      if (tier && _passthroughRoute) {
+        if (_passthroughRoute.action === 'upgrade') {
+          if (!tier.switch_reason) tier.switch_reason = 'tier_outranks_client';
+        } else if (_passthroughRoute.reason) {
+          tier.switch_reason = _passthroughRoute.reason;
+        }
       }
       return handleOauthPassthrough(req, res, { tier, routeDecision: _passthroughRoute, clientModel: _passthroughClientModel });
     }
