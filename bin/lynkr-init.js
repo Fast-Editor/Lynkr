@@ -595,6 +595,13 @@ async function runInteractive(opts) {
     const decay = parseFloat(decayRaw);
     if (!Number.isNaN(decay) && decay > 0 && decay <= 1) env.LYNKR_INTENT_DECAY = String(decay);
 
+    // Jev routing judge (TypeSafe System One): second opinion on intent
+    // difficulty + risk corroboration. Optional — anchor scoring carries
+    // routing alone when unset. Written under "# Provider credentials" by
+    // the _API_KEY grouping in buildEnvContent.
+    const tsKey = await askWithDefault(ask, 'TypeSafe API key for the Jev routing judge (optional — Enter to skip)', process.env.TYPESAFE_API_KEY || '');
+    if (tsKey) env.TYPESAFE_API_KEY = tsKey;
+
     close();
     console.log('');
     writeEnvFile(buildEnvContent(env, isWrap, tierConfig), opts);
