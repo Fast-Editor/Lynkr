@@ -96,53 +96,29 @@ function intentScoreMode() {
 /**
  * Extract the text the USER actually authored this turn: the latest user
  * message that has real text after stripping harness-injected content.
- * Returns null when there is nothing to score (e.g. tool-result-only turn).
+ * Returns {text:null, index:-1} when there is nothing to score (e.g.
+ * tool-result-only turn). Per-message cleaning delegates to jev-router's
+ * shared cleaner (wrapper/command tags, line-start unclosed-tag rule,
+ * whole-message harness content) so the anchor scorer, the judge and the
+ * task ledger all read the same user text.
  */
-function extractCleanUserText(payload) {
+function _latestUserAsk(payload) {
   const msgs = payload?.messages;
-  if (!Array.isArray(msgs)) return null;
+  if (!Array.isArray(msgs)) return { text: null, index: -1 };
+  const { cleanUserText } = require('./jev-router');
   for (let i = msgs.length - 1; i >= 0; i--) {
     const msg = msgs[i];
     if (msg?.role !== 'user') continue;
-    let text = null;
-    if (typeof msg.content === 'string') {
-      text = msg.content;
-    } else if (Array.isArray(msg.content)) {
-      text = msg.content
-        .filter((b) => b?.type === 'text' && typeof b.text === 'string')
-        .map((b) => b.text)
-        .join(' ');
-    }
-    if (text == null) continue;
-    text = text
-      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
-      // Harness task/background-agent notifications — not user-authored.
-      .replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '')
-      // Codex harness blocks (merged into the typed text upstream):
-      // sandbox/permission profile and AGENTS.md contents.
-      .replace(/<environment_context>[\s\S]*?<\/environment_context>/g, '')
-      .replace(/<user_instructions>[\s\S]*?<\/user_instructions>/g, '')
-      // Goose harness block wrapping every typed message (time, cwd, todo
-      // notes) — its "tasks"/"update"/"requirements" vocabulary scored a
-      // bare "Hi" as substantive/MEDIUM.
-      .replace(/<turn-context>[\s\S]*?<\/turn-context>/g, '')
-      // Lynkr's own injected notices (quota banners, badges) start with the
-      // [Lynkr] marker — the user didn't type those.
-      .replace(/^\s*\[Lynkr\][^\n]*$/gm, '')
-      .trim();
-    // Whole-message harness content: compaction/continuation summaries and
-    // system notifications arrive as user-role messages the user never
-    // typed. Treat as empty and keep walking back.
-    if (/^\s*(\[SYSTEM NOTIFICATION|<conversation[\s>]|<session[\s>]|\[Request interrupted|This session is being continued from a previous conversation)/i.test(text)) {
-      // Continuation summaries PARAPHRASE the prior session, so they carry
-      // force-phrase vocabulary the user typed hours ago.
-      text = '';
-    }
-    if (text) return text;
+    const text = cleanUserText(msg);
+    if (text) return { text, index: i };
     // A user message that was ALL injected content (or all tool_results)
     // doesn't end the search — keep walking back for the real user turn.
   }
-  return null;
+  return { text: null, index: -1 };
+}
+
+function extractCleanUserText(payload) {
+  return _latestUserAsk(payload).text;
 }
 
 function cosine(a, b) {
@@ -317,13 +293,21 @@ function _lexicalCleanScore(text) {
 // - Agreement → keep anchor score as-is.
 // - Classifier lower than anchor → trust classifier (catches embedding
 //   false-positives like "list exports" scoring REASONING). Position
-//   score at midpoint of classifier's target band.
-// - Classifier higher than anchor → safety-gate: require confidence≥0.8
+//   score at midpoint of classifier's target band. When the verdict was
+//   produced WITH conversation_context at confidence < 0.6, the drop is
+//   capped at one band below the anchor: background-thread context reads
+//   follow-ups as small asks, and a weak context-fed verdict must not
+//   collapse a heavyweight anchor to SIMPLE.
+// - Classifier higher than anchor → safety-gate: require confidence≥0.3
+//   (set 2026-09-22 — see JEV_PROMOTE_CONFIDENCE note)
 //   before trusting an escalation to a more expensive tier. Below that,
 //   keep the cheaper anchor decision.
-function _reconcile(anchorScore, anchorClass, classifierResult) {
+function _reconcile(anchorScore, anchorClass, classifierResult, hasContext = false) {
   if (!classifierResult) return { score: anchorScore, reconciled: false };
-  if (classifierResult.confidence < 0.6) return { score: anchorScore, reconciled: false };
+  // Single 0.3 cut (set 2026-09-22): below it the verdict is noise in both
+  // directions. Note this also lets 0.3+ verdicts pull DOWN a band —
+  // the price of trusting the judge symmetrically.
+  if (classifierResult.confidence < 0.3) return { score: anchorScore, reconciled: false };
 
   // Anchor class → implied tier (matches model-tiers.js band definitions).
   const anchorTier = anchorScore <= 19 ? 'SIMPLE'
@@ -343,6 +327,13 @@ function _reconcile(anchorScore, anchorClass, classifierResult) {
 
   if (classifierIdx < anchorIdx) {
     // Classifier says LOWER tier — trust it. Fixes over-routing.
+    if (hasContext && classifierResult.confidence < 0.6) {
+      const flooredIdx = Math.max(classifierIdx, anchorIdx - 1);
+      return {
+        score: TIER_MIDPOINT[TIER_ORDER[flooredIdx]],
+        reconciled: flooredIdx > classifierIdx ? 'down_capped' : 'down',
+      };
+    }
     return { score: TIER_MIDPOINT[classifierTier], reconciled: 'down' };
   }
   // Classifier says HIGHER tier — gate on confidence, and cap the jump at
@@ -354,7 +345,7 @@ function _reconcile(anchorScore, anchorClass, classifierResult) {
   // the adjacent band now takes consecutive turns that keep re-scoring
   // higher, which is exactly the persistence a genuinely hard conversation
   // exhibits.
-  if (classifierResult.confidence >= 0.8) {
+  if (classifierResult.confidence >= 0.3) {
     const cappedIdx = Math.min(classifierIdx, anchorIdx + 1);
     return {
       score: TIER_MIDPOINT[TIER_ORDER[cappedIdx]],
@@ -364,11 +355,14 @@ function _reconcile(anchorScore, anchorClass, classifierResult) {
   return { score: anchorScore, reconciled: 'up_gated' };
 }
 
-// Memoize the final reconciled score per cleaned text. The classifier leg is
-// live and can time out under load, sending identical text down different
-// fallback paths — which made the same turn score differently between the
-// router and the pin-drift checker (observed: 63 vs 77 for one prompt under
-// suite-wide Ollama contention). First resolution wins for the process life.
+// Memoize the final reconciled score per cleaned text + task identity. The
+// classifier leg is live and can time out under load, sending identical text
+// down different fallback paths — which made the same turn score differently
+// between the router and the pin-drift checker (observed: 63 vs 77 for one
+// prompt under suite-wide Ollama contention). First resolution wins for the
+// process life. The key carries the task anchor hash and continuation flag:
+// the judge's verdict depends on them, so identical text under a different
+// task must not share an entry — a text-only key served stale-context scores.
 const _scoreMemo = new Map();
 const _SCORE_MEMO_MAX = 500;
 
@@ -376,20 +370,36 @@ async function scoreIntent(payload, opts = {}) {
   const mode = opts.mode ?? intentScoreMode();
   if (mode === 'legacy') return null;
 
-  const text = extractCleanUserText(payload);
+  const { text, index: askIdx } = _latestUserAsk(payload);
   if (!text) return null;
 
   // Only memoize plain calls — opts that alter scoring (custom centroids,
-  // embedFn, risk/context inputs) must not share cache entries.
+  // embedFn, risk inputs) must not share cache entries.
   const memoizable = !opts.centroids && !opts.embedFn && !opts.forceMatched
     && !opts.riskLevel && !opts.skipClassifier && !opts.priorTurns;
-  if (memoizable && _scoreMemo.has(text)) return _scoreMemo.get(text);
+
+  // Prior-task ledger (messages BEFORE the current ask): names the task for
+  // the memo key and feeds the judge's context + flat signals. It never
+  // touches the anchor scorer's input — envelope invariance holds.
+  let ledger = null;
+  if (!opts.skipClassifier) {
+    try {
+      const { deriveTaskLedger } = require('./task-ledger');
+      const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
+      ledger = deriveTaskLedger(msgs.slice(0, Math.max(askIdx, 0)));
+    } catch { /* ledger unavailable — task-less key, context-free judge */ }
+  }
+
+  const memoKey = memoizable
+    ? `${text}\0${payload?._taskAnchorHash || ledger?.anchorHash || ''}\0${payload?._isContinuation ? '1' : '0'}`
+    : null;
+  if (memoizable && _scoreMemo.has(memoKey)) return _scoreMemo.get(memoKey);
   const _memoSet = (result) => {
     if (memoizable && result) {
       if (_scoreMemo.size >= _SCORE_MEMO_MAX) {
         _scoreMemo.delete(_scoreMemo.keys().next().value);
       }
-      _scoreMemo.set(text, result);
+      _scoreMemo.set(memoKey, result);
     }
     return result;
   };
@@ -423,27 +433,31 @@ async function scoreIntent(payload, opts = {}) {
         // on NODE_ENV — .env pins it to production in every context.
         let classifierResult = null;
         let jevResult = null;
+        // Task context (anchor + last ask of the prior-task ledger) so the
+        // judge resolves follow-ups. Explicit caller context wins;
+        // single-message payloads yield null (unchanged behavior). Tracked
+        // out here so _reconcile knows whether the verdict was context-fed.
+        let jevContext = typeof payload?._conversationContext === 'string'
+          ? payload._conversationContext
+          : null;
         if (!opts.skipClassifier) {
           try {
             const { classifyJev } = require('./jev-router');
-            const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
-            const toolDefs = Array.isArray(payload?.tools) ? payload.tools : [];
-            const toolResults = msgs.filter((m) =>
-              m?.role === 'user' && Array.isArray(m.content) && m.content.some((c) => c?.type === 'tool_result')
-            ).length;
-            const jevFetchFn = opts.jevFetchFn;
+            let signals = {};
+            try {
+              const { buildTaskContext, buildJevSignals } = require('./task-ledger');
+              if (jevContext === null) jevContext = buildTaskContext(ledger);
+              signals = buildJevSignals({
+                payload,
+                ledger,
+                isContinuation: payload?._isContinuation === true,
+                inheritedFloorIdx: payload?._inheritedFloorIdx ?? null,
+              });
+            } catch { /* ledger unavailable — judge runs on bare signals */ }
             jevResult = await classifyJev(text, {
-              context: typeof payload?._conversationContext === 'string'
-                ? payload._conversationContext
-                : null,
-              signals: {
-                message_count: msgs.length,
-                tools_attached: toolDefs.length,
-                effective_tools: toolDefs.length,
-                has_tool_history: toolResults > 0,
-                session_turn: Math.max(1, Math.ceil(msgs.length / 2)),
-              },
-              fetchFn: jevFetchFn,
+              context: jevContext,
+              signals,
+              fetchFn: opts.jevFetchFn,
             });
             if (jevResult) {
               classifierResult = { tier: jevResult.tier, confidence: jevResult.confidence };
@@ -453,7 +467,7 @@ async function scoreIntent(payload, opts = {}) {
           }
         }
 
-        const { score, reconciled } = _reconcile(anchorScore, cls, classifierResult);
+        const { score, reconciled } = _reconcile(anchorScore, cls, classifierResult, !!jevContext);
         if (reconciled) {
           logger.debug({
             text: text.slice(0, 80),

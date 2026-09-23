@@ -625,7 +625,16 @@ async function checkPinScoreDrift(pin, payload) {
     // ceiling+margin comparisons are meaningless.
     let freshScore = null;
     if (intentScoreMode() !== 'legacy') {
-      const intent = await scoreIntent({ messages: [{ role: 'user', content: text }] });
+      // TaskBand: same judge context + memo identity as the fresh-decision
+      // scoring of this ask (the router stamps these on the body) — drift
+      // must compare scores produced from identical inputs.
+      const intent = await scoreIntent({
+        messages: [{ role: 'user', content: text }],
+        _conversationContext: typeof payload?._conversationContext === 'string'
+          ? payload._conversationContext : null,
+        _taskAnchorHash: payload?._taskAnchorHash ?? null,
+        _isContinuation: !!payload?._isContinuation,
+      });
       if (intent && Number.isFinite(intent.score)) freshScore = intent.score;
     }
     if (freshScore === null) {
@@ -872,6 +881,18 @@ function writeSessionPin(sessionId, decision, payload) {
     }, '[Routing] Risk-forced decision — pin write skipped');
     return;
   }
+  // Continuation-floored tiers are inherited, not scored — pinning one would
+  // fossilize the floor past its decay window (same one-way ratchet as risk
+  // above; the floor re-derives on every turn that still earns it).
+  if (method.includes('+continuation_inherit')) {
+    logger.debug({
+      sessionId,
+      provider: decision.provider,
+      tier: decision.tier,
+      method,
+    }, '[Routing] Continuation-floored decision — pin write skipped');
+    return;
+  }
   const messageCount = Array.isArray(payload?.messages) ? payload.messages.length : 0;
   // Opener-only sessions (≤2 messages) never pin: a bare opener has nothing
   // to stabilize, and identical openers share a fingerprint for the 6h TTL,
@@ -1106,11 +1127,20 @@ async function _determineProviderSmartInner(payload, options = {}) {
       analysis.score = intent.score;
       analysis.scoreMode = intent.mode; // 'anchor' | 'lexical' (clean-text fallback)
       analysis.anchorClass = intent.class ?? null;
+      // Pure anchor score BEFORE classifier reconciliation — the Jev
+      // override cap derives its base tier from this, so the judge can
+      // never stack a second band on top of a reconcile lift.
+      analysis.anchorScore = Number.isFinite(intent.anchorScore) ? intent.anchorScore : null;
       // Jev verdict rides alongside the score so the shortfall floor,
       // risk corroboration and telemetry can consume it downstream.
       // Null unless the Jev leg ran (pinned serves, side frames and
       // classifier skips leave no verdict — same as classifierResult).
       if (intent.jev && typeof intent.jev === 'object') analysis.jev = intent.jev;
+      // How _reconcile disposed of the verdict ('down_capped' means a weak
+      // context-fed downward verdict was floored at one band below the
+      // anchor) — the override below must honor that gate, not re-apply
+      // the raw verdict.
+      analysis.reconciled = intent.reconciled ?? false;
       intentScored = true;
       logger.debug({
         score: intent.score,
@@ -1230,6 +1260,8 @@ async function _determineProviderSmartInner(payload, options = {}) {
   let baseTier = null;
   const escalations = [];
   let _jevOverrode = false;
+  let _jevCapChanged = false;
+  let _jevCapBaseTier = null;
   if (config.modelTiers?.enabled) {
     try {
       const selector = getModelTierSelector();
@@ -1244,11 +1276,32 @@ async function _determineProviderSmartInner(payload, options = {}) {
       // badges and telemetry stay coherent with the decided tier.
       try {
         const { jevTierOverride } = require('./jev-router');
-        const _ov = jevTierOverride({
-          baseTier,
+        // Cap base for upward verdicts: the stronger of the pure anchor
+        // tier and any inherited continuation floor the request carries.
+        // The judge may lift one band above THAT and no further (live bug:
+        // uncapped verdicts catapulted follow-ups straight to REASONING).
+        _jevCapBaseTier = Number.isFinite(analysis.anchorScore)
+          ? selector.getTier(analysis.anchorScore)
+          : baseTier;
+        const _inheritedFloor = payload?._inheritedFloorTier;
+        if (_inheritedFloor && (TIER_DEFINITIONS[_inheritedFloor]?.priority ?? -1)
+          > (TIER_DEFINITIONS[_jevCapBaseTier]?.priority ?? -1)) {
+          _jevCapBaseTier = _inheritedFloor;
+        }
+        const _jevArgs = {
           jevTier: analysis.jev?.tier,
           jevConfidence: analysis.jev?.confidence,
-        });
+        };
+        // 'down_capped' means _reconcile already floored this exact verdict
+        // at one band below the anchor (weak, context-fed); the verdict sits
+        // strictly below baseTier, so only the uncapped downward leg could
+        // fire here — landing the full drop the reconcile gate prevented.
+        const _downCapped = analysis.reconciled === 'down_capped';
+        const _ov = _downCapped ? null : jevTierOverride(_jevArgs, baseTier, _jevCapBaseTier);
+        // REASONING cap = the full range: the delta against it is exactly
+        // "did the cap change the outcome" for the method/ledger marker.
+        const _ovUncapped = _downCapped ? null : jevTierOverride(_jevArgs, baseTier, 'REASONING');
+        if ((_ovUncapped?.tier ?? null) !== (_ov?.tier ?? null)) _jevCapChanged = true;
         if (_ov) {
           escalations.push({
             source: 'jev_override',
@@ -1323,6 +1376,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // but Phase 1.2 lets the cost-optimizer pick a cheaper qualifying model when safe).
   let provider;
   let method = _jevOverrode ? 'tier_config+jev_override' : 'tier_config';
+  if (_jevCapChanged) method += '+jev_override_capped';
   let costOptimized = false;
 
   const selector = getModelTierSelector();
@@ -1426,14 +1480,24 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // any other decision.
   try {
     const { jevFloorTarget } = require('./jev-router');
-    const _floorTier = shortfallInfo && shortfallInfo.legacy
-      ? jevFloorTarget({
+    const _floorArgs = shortfallInfo && shortfallInfo.legacy
+      ? {
         selectedTier: tier,
         legacyTier: shortfallInfo.legacy.tier,
         jevTier: analysis.jev?.tier,
         jevConfidence: analysis.jev?.confidence,
-      })
+      }
       : null;
+    // Same cap as the override above: the judged floor can't hold a tier
+    // more than one band above the anchor/inherited-floor base.
+    const _floorTier = _floorArgs ? jevFloorTarget(_floorArgs, _jevCapBaseTier) : null;
+    if (_floorArgs) {
+      const _floorUncapped = jevFloorTarget(_floorArgs, null);
+      if ((_floorUncapped ?? null) !== (_floorTier ?? null)
+        && !method.includes('+jev_override_capped')) {
+        method = method + '+jev_override_capped';
+      }
+    }
     if (_floorTier) {
       const _floorSel = selector.selectModel(_floorTier, null);
       if (_floorSel && _floorSel.provider && _floorSel.model) {

@@ -173,14 +173,14 @@ describe("intent-score — _reconcile band cap (Phase A)", () => {
     assert.strictEqual(r.score, 10);
   });
 
-  it("gates low-confidence upward moves (unchanged)", () => {
-    const r = _reconcile(25, "substantive", { tier: "COMPLEX", confidence: 0.7 });
-    assert.strictEqual(r.reconciled, "up_gated");
+  it("ignores below-cut upward moves entirely (single 0.3 cut)", () => {
+    const r = _reconcile(25, "substantive", { tier: "COMPLEX", confidence: 0.25 });
+    assert.strictEqual(r.reconciled, false);
     assert.strictEqual(r.score, 25);
   });
 
-  it("ignores sub-0.6-confidence verdicts entirely (unchanged)", () => {
-    const r = _reconcile(25, "substantive", { tier: "REASONING", confidence: 0.5 });
+  it("ignores sub-0.3-confidence verdicts entirely", () => {
+    const r = _reconcile(25, "substantive", { tier: "REASONING", confidence: 0.29 });
     assert.strictEqual(r.reconciled, false);
     assert.strictEqual(r.score, 25);
   });

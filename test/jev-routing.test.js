@@ -54,7 +54,7 @@ describe('jevFloorTarget', () => {
 
   it('no floor when selected already covers, confidence low, or tiers unknown', () => {
     assert.strictEqual(jev.jevFloorTarget({ selectedTier: 'COMPLEX', legacyTier: 'MEDIUM', jevTier: 'COMPLEX', jevConfidence: 0.97 }), null);
-    assert.strictEqual(jev.jevFloorTarget({ selectedTier: 'SIMPLE', legacyTier: 'MEDIUM', jevTier: 'COMPLEX', jevConfidence: 0.5 }), null);
+    assert.strictEqual(jev.jevFloorTarget({ selectedTier: 'SIMPLE', legacyTier: 'MEDIUM', jevTier: 'COMPLEX', jevConfidence: 0.29 }), null);
     assert.strictEqual(jev.jevFloorTarget({ selectedTier: 'SIMPLE', legacyTier: 'MEDIUM', jevTier: 'GALAXY', jevConfidence: 0.99 }), null);
     assert.strictEqual(jev.jevFloorTarget({}), null);
   });
@@ -75,9 +75,15 @@ describe('jevRiskLift', () => {
 });
 
 describe('jevTierOverride', () => {
-  it('overrides either direction at confidence, with midpoint score', () => {
+  it('overrides either direction at confidence, upward capped one band above base', () => {
+    // Upward moves are capped at one band above capBaseTier (falls back to
+    // baseTier when absent) — a chatty verdict can't catapult SIMPLE→COMPLEX.
     assert.deepStrictEqual(
       jev.jevTierOverride({ baseTier: 'SIMPLE', jevTier: 'COMPLEX', jevConfidence: 0.97 }),
+      { tier: 'MEDIUM', score: 35 }
+    );
+    assert.deepStrictEqual(
+      jev.jevTierOverride({ jevTier: 'COMPLEX', jevConfidence: 0.97 }, 'SIMPLE', 'MEDIUM'),
       { tier: 'COMPLEX', score: 63 }
     );
     assert.deepStrictEqual(
@@ -88,7 +94,7 @@ describe('jevTierOverride', () => {
 
   it('abstains on agreement, low confidence, or unknown tiers', () => {
     assert.strictEqual(jev.jevTierOverride({ baseTier: 'MEDIUM', jevTier: 'MEDIUM', jevConfidence: 0.99 }), null);
-    assert.strictEqual(jev.jevTierOverride({ baseTier: 'SIMPLE', jevTier: 'COMPLEX', jevConfidence: 0.5 }), null);
+    assert.strictEqual(jev.jevTierOverride({ baseTier: 'SIMPLE', jevTier: 'COMPLEX', jevConfidence: 0.29 }), null);
     assert.strictEqual(jev.jevTierOverride({ baseTier: 'SIMPLE', jevTier: 'GALAXY', jevConfidence: 0.99 }), null);
     assert.strictEqual(jev.jevTierOverride({}), null);
   });

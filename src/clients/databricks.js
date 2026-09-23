@@ -3585,6 +3585,9 @@ async function invokeModel(body, options = {}) {
         escalation_source: body._escalationSource ?? null,
         pinned: body._pinnedRoute ? true : false,
         switch_reason: body._switchReason ?? null,
+        // TaskBand stamp for the continuation telemetry columns
+        // (telemetry.taskbandFields reads routingResult.taskband).
+        taskband: body._taskband ?? null,
         // WS4 — off-policy evaluation from telemetry alone requires
         // propensity + candidates on every row. Deterministic default is
         // 1.0 with a single-entry candidate list matching the served pair.
@@ -3802,6 +3805,7 @@ async function invokeModel(body, options = {}) {
       pinned: routingResult.pinned ? 1 : 0,
       switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.taskbandFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       cache_read_tokens: result.json?.usage?.cache_read_input_tokens ?? null,
       cache_creation_tokens: result.json?.usage?.cache_creation_input_tokens ?? null,
@@ -4038,6 +4042,7 @@ async function invokeModel(body, options = {}) {
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.taskbandFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       });
 
@@ -4152,6 +4157,7 @@ async function invokeModel(body, options = {}) {
           pinned: routingResult.pinned ? 1 : 0,
           switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.taskbandFields(routingResult),
           cache_decision: routingResult._cacheDecision ?? null,
         });
 
@@ -4250,6 +4256,7 @@ async function invokeModel(body, options = {}) {
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.taskbandFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       cache_read_tokens: fallbackResult.json?.usage?.cache_read_input_tokens ?? null,
       cache_creation_tokens: fallbackResult.json?.usage?.cache_creation_input_tokens ?? null,
@@ -4312,6 +4319,7 @@ async function invokeModel(body, options = {}) {
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.taskbandFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       });
 

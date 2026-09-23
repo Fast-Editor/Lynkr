@@ -189,6 +189,14 @@ function init() {
       ["jev_probabilities", "TEXT"],
       ["jev_model", "TEXT"],
       ["criteria_hash", "TEXT"],
+      // TaskBand — per-decision continuation stamp. NULL on rows recorded
+      // before the feature or where the ledger didn't run (side frames,
+      // pinned serves) — "not measured" is distinct from 0.
+      ["is_continuation", "INTEGER"],
+      ["inherited_floor", "TEXT"],
+      ["task_anchor_hash", "TEXT"],
+      ["jev_context", "TEXT"],
+      ["jev_cache_hit", "INTEGER"],
     ];
     for (const [col, type] of additiveCols) {
       if (!existingCols.has(col)) {
@@ -252,7 +260,8 @@ function record(data) {
           cost_efficiency, request_text, response_text,
           base_tier, escalation_source, propensity, candidates, pinned, switch_reason,
           cache_decision, cache_read_tokens, cache_creation_tokens, context,
-          jev_verdict, jev_confidence, jev_probabilities, jev_model, criteria_hash
+          jev_verdict, jev_confidence, jev_probabilities, jev_model, criteria_hash,
+          is_continuation, inherited_floor, task_anchor_hash, jev_context, jev_cache_hit
         ) VALUES (
           @request_id, @session_id, @timestamp, @complexity_score, @tier,
           @agentic_type, @tool_count, @input_tokens, @message_count, @request_type,
@@ -262,7 +271,8 @@ function record(data) {
           @cost_efficiency, @request_text, @response_text,
           @base_tier, @escalation_source, @propensity, @candidates, @pinned, @switch_reason,
           @cache_decision, @cache_read_tokens, @cache_creation_tokens, @context,
-          @jev_verdict, @jev_confidence, @jev_probabilities, @jev_model, @criteria_hash
+          @jev_verdict, @jev_confidence, @jev_probabilities, @jev_model, @criteria_hash,
+          @is_continuation, @inherited_floor, @task_anchor_hash, @jev_context, @jev_cache_hit
         )`
       );
       if (!insert) return;
@@ -325,6 +335,11 @@ function record(data) {
           : (typeof data.jev_probabilities === "string" ? data.jev_probabilities : JSON.stringify(data.jev_probabilities)),
         jev_model: data.jev_model ?? null,
         criteria_hash: data.criteria_hash ?? null,
+        is_continuation: data.is_continuation == null ? null : (data.is_continuation ? 1 : 0),
+        inherited_floor: data.inherited_floor ?? null,
+        task_anchor_hash: data.task_anchor_hash ?? null,
+        jev_context: data.jev_context ?? null,
+        jev_cache_hit: data.jev_cache_hit == null ? null : (data.jev_cache_hit ? 1 : 0),
       });
     } catch (err) {
       logger.debug({ err: err.message }, "Telemetry record failed");
@@ -1180,9 +1195,36 @@ function jevFields(src) {
   };
 }
 
+/**
+ * Map a routing decision's TaskBand stamp (routingResult.taskband =
+ * {isContinuation, inheritedFloor, anchorHash, jevContext, jevCacheHit})
+ * onto the continuation telemetry columns. Null-safe like jevFields: a
+ * missing stamp yields all-null fields so call sites spread this
+ * unconditionally.
+ */
+function taskbandFields(src) {
+  const t = (src && typeof src === 'object' && src.taskband && typeof src.taskband === 'object')
+    ? src.taskband
+    : null;
+  if (!t) {
+    return {
+      is_continuation: null, inherited_floor: null, task_anchor_hash: null,
+      jev_context: null, jev_cache_hit: null,
+    };
+  }
+  return {
+    is_continuation: t.isContinuation ?? null,
+    inherited_floor: t.inheritedFloor ?? null,
+    task_anchor_hash: t.anchorHash ?? null,
+    jev_context: t.jevContext ?? null,
+    jev_cache_hit: t.jevCacheHit ?? null,
+  };
+}
+
 module.exports = {
   record,
   jevFields,
+  taskbandFields,
   query,
   getStats: getStatsCached,
   getProviderStats: getProviderStatsCached,

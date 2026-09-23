@@ -44,6 +44,24 @@ const router = express.Router();
 
 const rateLimiter = createRateLimiter();
 
+// TaskBand holdout: a deterministic slice of sessions never receives the
+// continuation floor, so telemetry keeps a running baseline cohort proving
+// floored sessions aren't quietly doing worse. FNV-1a bucketing mirrors
+// deescalator.isHeldOut; the percentage is task-ledger's hardcoded
+// HOLDOUT_PCT (no env knob by design).
+function _taskbandHoldout(sessionKey, pct) {
+  if (!sessionKey) return false;
+  const cut = Math.round(Math.max(0, Math.min(1, Number(pct) || 0)) * 100);
+  if (cut === 0) return false;
+  let hash = 0x811c9dc5;
+  const s = String(sessionKey);
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return ((hash >>> 0) % 100) < cut;
+}
+
 /**
  * Decide which tier/provider/model handles an OAuth-subscription request.
  *
@@ -170,45 +188,25 @@ async function pickTierByIntent(body) {
     };
   }
 
-  // Condense a message's text for classifier context: text blocks only,
-  // reminders stripped, whitespace collapsed, hard-capped. Best-effort.
-  const _condenseText = (msg, max = 140) => {
-    if (!msg) return '';
-    let text = '';
-    if (typeof msg.content === 'string') text = msg.content;
-    else if (Array.isArray(msg.content)) {
-      text = msg.content
-        .filter((b) => b?.type === 'text' && typeof b.text === 'string')
-        .map((b) => b.text)
-        .join(' ');
-    }
-    return stripReminders(text).replace(/\s+/g, ' ').trim().slice(0, max);
-  };
-
-  // Conversation context for the difficulty classifier: the nearest prior
-  // assistant reply and the user turn before it. A bare follow-up ("Who
-  // kills him ?") is unclassifiable in isolation — the single-message
+  // Task-ledger context for the difficulty judge: a slim stable string
+  // (task anchor + last ask) folded from the PREFIX of the thread — the ask
+  // being scored never feeds its own context. A bare follow-up ("Who kills
+  // him ?") is unclassifiable in isolation — the single-message
   // intentPayload below is context-blind BY DESIGN (envelope invariance),
   // so the context travels as a separate condensed string, never as extra
-  // messages that would pollute the anchor score.
-  const _contextBefore = (msg) => {
+  // messages that would pollute the anchor score. The ledger's prefix memo
+  // keeps the per-index derivation O(1) per new ask.
+  let _taskLedgerMod = null;
+  try { _taskLedgerMod = require("../routing/task-ledger"); } catch { /* context degrades to null */ }
+  const _ledgerBefore = (msg) => {
+    if (!_taskLedgerMod) return null;
     const idx = messages.indexOf(msg);
     if (idx <= 0) return null;
-    let assistantText = '';
-    let priorUserText = '';
-    for (let j = idx - 1; j >= 0; j--) {
-      const m = messages[j];
-      if (!assistantText && m?.role === 'assistant') assistantText = _condenseText(m);
-      else if (assistantText && m?.role === 'user') {
-        priorUserText = _condenseText(m);
-        if (priorUserText) break;
-      }
+    try {
+      return _taskLedgerMod.deriveTaskLedger(messages.slice(0, idx));
+    } catch {
+      return null;
     }
-    if (!assistantText && !priorUserText) return null;
-    const parts = [];
-    if (priorUserText) parts.push(`user asked: """${priorUserText}"""`);
-    if (assistantText) parts.push(`assistant replied about: """${assistantText}"""`);
-    return parts.join(' → ');
   };
 
   // Per-message scoring intentionally omits _sessionId so session affinity
@@ -223,6 +221,11 @@ async function pickTierByIntent(body) {
   for (let i = 0; i < windowUserMsgs.length; i++) {
     const age = windowUserMsgs.length - 1 - i; // 0 = latest, length-1 = oldest in window
     const cleaned = cleanMsg(windowUserMsgs[i]);
+    const _msgLedger = _ledgerBefore(windowUserMsgs[i]);
+    let _msgContext = null;
+    try {
+      _msgContext = _msgLedger ? _taskLedgerMod.buildTaskContext(_msgLedger) : null;
+    } catch { /* context degrades to null */ }
     const intentPayload = {
       messages: cleaned ? [cleaned] : [],
       tools: intentTools,
@@ -230,10 +233,17 @@ async function pickTierByIntent(body) {
       // agentic detector inside determineProviderSmart can subtract the
       // harness's baseline tools during intent scoring too.
       _clientProfile: body?._clientProfile || null,
-      // Classifier context (see _contextBefore). Underscored — stripped at
-      // the outbound chokepoint like every internal field.
-      _conversationContext: _contextBefore(windowUserMsgs[i]),
+      // Classifier context + memo identity (see _ledgerBefore). Underscored
+      // — stripped at the outbound chokepoint like every internal field.
+      _conversationContext: _msgContext,
+      _taskAnchorHash: _msgLedger?.anchorHash || null,
     };
+    if (age === 0) {
+      // Continuation detection ran ONCE in the handler, on the latest typed
+      // ask only — windowed history messages must never carry these.
+      if (body?._isContinuation) intentPayload._isContinuation = true;
+      if (body?._inheritedFloorTier) intentPayload._inheritedFloorTier = body._inheritedFloorTier;
+    }
     try {
       const decision = await determineProviderSmart(intentPayload, {
         workspace: body?._workspace || null,
@@ -359,7 +369,9 @@ async function handleOauthPassthrough(req, res, opts = {}) {
   // Strip Lynkr's internal underscore-prefixed fields (_sessionId,
   // _forceProvider, _tierModel, _tierName, _forcedMethod, _baseTier,
   // _escalationSource, _pinnedRoute, _switchReason, _clientProfile,
-  // _workspace, _tenantPolicy, _deadlineMs, _suggestionModeModel). Anthropic
+  // _workspace, _tenantPolicy, _deadlineMs, _suggestionModeModel,
+  // _conversationContext, _taskAnchorHash, _isContinuation,
+  // _inheritedFloorTier, _taskband). Anthropic
   // rejects unknown top-level keys with "Extra inputs are not permitted".
   // The orchestrator's downstream paths whitelist their outbound bodies,
   // but the passthrough sends this body VERBATIM — so we must strip here.
@@ -664,6 +676,7 @@ async function handleOauthPassthrough(req, res, opts = {}) {
         message_count: req.body?.messages?.length || null,
         tool_count: Array.isArray(req.body?.tools) ? req.body.tools.length : 0,
         ...tlm.jevFields(tier),
+        ...tlm.taskbandFields(tier),
         // Inner-decision attribution: the tier label alone can't explain a
         // serve (a COMPLEX label once served Haiku with no trace because the
         // tier object carried a null model). Record the decision's own
@@ -1180,6 +1193,96 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       req.body._sessionId = req.sessionId;
     }
 
+    // TaskBand — fold the thread (minus the current ask) into a task ledger
+    // and run continuation detection ONCE, on the latest typed ask only.
+    // Stamped on the body so pin-drift checks, the per-message intent loop
+    // and the difficulty judge all score from identical inputs. Best-effort
+    // throughout: any failure leaves routing exactly as before TaskBand.
+    let _taskLedger = null;
+    let _taskCont = null;
+    let _taskFloorTier = null;      // would-be continuation floor (tier name)
+    let _taskFloorHeldOut = false;  // holdout cohort: floor logged, not applied
+    let _taskPreFloorTier = null;   // fresh tier before the floor raised it
+    let _continuationFloored = false;
+    let _taskSideRequest = false;
+    let _jevStatsBefore = null;
+    try { _jevStatsBefore = require("../routing/jev-router").getJevCacheStats(); } catch { /* stamp stays null */ }
+    try {
+      const taskLedgerMod = require("../routing/task-ledger");
+      const { cleanUserText } = require("../routing/jev-router");
+      const _msgs = Array.isArray(req.body?.messages) ? req.body.messages : [];
+      let _askIdx = -1;
+      let _askText = null;
+      for (let i = _msgs.length - 1; i >= 0; i--) {
+        if (_msgs[i]?.role !== 'user') continue;
+        const t = cleanUserText(_msgs[i]);
+        if (t) { _askIdx = i; _askText = t; break; }
+      }
+      if (_askIdx > 0) _taskLedger = taskLedgerMod.deriveTaskLedger(_msgs.slice(0, _askIdx));
+      if (_taskLedger) {
+        const _ctx = taskLedgerMod.buildTaskContext(_taskLedger);
+        if (_ctx) req.body._conversationContext = _ctx;
+        if (_taskLedger.anchorHash) req.body._taskAnchorHash = _taskLedger.anchorHash;
+        const _embedFn = async (t) => {
+          try {
+            return await require("../routing/knn-router").getKnnRouter().embed(t);
+          } catch { return null; }
+        };
+        _taskCont = await taskLedgerMod.detectContinuation(_askText, _taskLedger, _embedFn);
+        if (_taskCont?.isContinuation) req.body._isContinuation = true;
+      }
+      const {
+        FLOOR_ENABLED = true,
+        DECAY_TURNS = 2,
+        HOLDOUT_PCT = 0.10,
+      } = taskLedgerMod;
+      if (FLOOR_ENABLED && _taskCont?.isContinuation && _taskLedger?.anchorHash) {
+        const TIER_ORDER = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
+        let effIdx = null;
+        let coldFallback = false;
+        const _taskState = req.body._sessionId
+          ? require("../routing/affinity-store").getTaskState(req.body._sessionId)
+          : null;
+        if (_taskState && _taskState.anchorHash === _taskLedger.anchorHash
+          && Number.isInteger(_taskState.effectiveBand)) {
+          effIdx = Math.max(0, Math.min(3, _taskState.effectiveBand));
+        } else if (_taskLedger.anchorText) {
+          // COLD fallback: the task predates its state row (restart, TTL,
+          // anchor change). Anchor-only score of the task's first ask,
+          // capped at MEDIUM — an unproven inheritance must not re-derive
+          // an expensive band from a single string.
+          const { scoreIntent } = require("../routing/intent-score");
+          const anchorIntent = await scoreIntent(
+            { messages: [{ role: 'user', content: _taskLedger.anchorText }] },
+            { skipClassifier: true },
+          );
+          if (anchorIntent && Number.isFinite(anchorIntent.score)) {
+            const t = getModelTierSelector().getTier(anchorIntent.score);
+            effIdx = Math.min(TIER_ORDER.indexOf(t), TIER_ORDER.indexOf('MEDIUM'));
+            coldFallback = true;
+          }
+        }
+        let floorIdx = null;
+        if (effIdx != null && effIdx >= 0) {
+          if (_taskLedger.open) floorIdx = effIdx;
+          else if ((_taskLedger.turnsSinceClose ?? Infinity) <= DECAY_TURNS) floorIdx = effIdx - 1;
+        }
+        if (floorIdx != null && coldFallback) {
+          floorIdx = Math.min(floorIdx, TIER_ORDER.indexOf('COMPLEX'));
+        }
+        if (floorIdx != null && floorIdx >= 0) {
+          _taskFloorTier = TIER_ORDER[floorIdx];
+          _taskFloorHeldOut = _taskbandHoldout(req.body._sessionId, HOLDOUT_PCT);
+          // Held-out sessions must stay floor-free end to end — the judge's
+          // cap widening counts as an application, so the body stamp is
+          // withheld too, keeping the baseline cohort clean.
+          if (!_taskFloorHeldOut) req.body._inheritedFloorTier = _taskFloorTier;
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[TaskBand] ledger/continuation derivation failed');
+    }
+
     // WS1 — sticky-session reuse. If this session already has a valid pin
     // (guards pass, no compaction), skip pickTierByIntent entirely and reuse
     // the pinned decision. This is the biggest cost win of WS1: repeat turns
@@ -1358,6 +1461,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       || isBareRequest
       || isFingerprintDrift
       || ((!Array.isArray(req.body?.tools) || req.body.tools.length === 0) && isKnownHarness);
+    // Task state must never see side traffic (hoisted for the upkeep block
+    // at the final-decision site — the model-id-pin branch skips this scope).
+    _taskSideRequest = isSideRequest;
     // Side requests short-circuit to the static SIMPLE tier: no pin read
     // (a COMPLEX-pinned conversation would burn expensive tokens on
     // autocomplete), no pin write, no intent scoring of wrapper text.
@@ -1521,6 +1627,63 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           };
         }
       }
+      // TaskBand continuation floor — fresh decisions only, and only to
+      // RAISE. Placement is deliberate: after the compaction floor so the
+      // two floors compose (max wins), before the pin write so a floored
+      // tier can never fossilize into a session pin (writeSessionPin also
+      // refuses '+continuation_inherit', mirroring the risk skip).
+      if (!isSideRequest && _taskFloorTier && tier?.tier) {
+        try {
+          const { TIER_DEFINITIONS } = require("../routing/model-tiers");
+          const pri = (t) => TIER_DEFINITIONS[t]?.priority ?? -1;
+          const wouldRaise = pri(tier.tier) < pri(_taskFloorTier);
+          if (_taskFloorHeldOut && wouldRaise) {
+            tier.method = (tier.method || 'tier_config') + '+continuation_holdout';
+            logger.debug({
+              sessionId: pinCheck.sessionId,
+              freshTier: tier.tier,
+              wouldFloorTo: _taskFloorTier,
+              evidence: _taskCont?.evidence || [],
+            }, "OAuth intent — continuation floor held out (baseline cohort)");
+          } else if (wouldRaise) {
+            const flooredSel = getModelTierSelector().selectModel(_taskFloorTier, null);
+            if (flooredSel?.provider) {
+              const _fromTier = tier.tier;
+              const _fromModel = tier.model || null;
+              _taskPreFloorTier = _fromTier;
+              logger.info({
+                sessionId: pinCheck.sessionId,
+                freshTier: _fromTier,
+                flooredTo: _taskFloorTier,
+                evidence: _taskCont?.evidence || [],
+              }, "OAuth intent — continuation inherits task band");
+              tier = {
+                ...tier,
+                tier: _taskFloorTier,
+                provider: flooredSel.provider,
+                model: flooredSel.model || null,
+                method: (tier.method || 'tier_config') + '+continuation_inherit',
+                switch_reason: tier.switch_reason || 'continuation_inherit',
+                base_tier: tier.base_tier ?? _fromTier,
+                escalation_source: tier.escalation_source ?? 'continuation_inherit',
+                escalations: [
+                  ...(Array.isArray(tier.escalations) ? tier.escalations : []),
+                  {
+                    source: 'continuation_inherit',
+                    fromTier: _fromTier,
+                    toTier: _taskFloorTier,
+                    fromModel: _fromModel,
+                    toModel: flooredSel.model || null,
+                  },
+                ],
+              };
+              _continuationFloored = true;
+            }
+          }
+        } catch (err) {
+          logger.debug({ err: err.message }, '[TaskBand] continuation floor failed — fresh tier stands');
+        }
+      }
       // Persist the fresh decision so the next turn on this session can
       // reuse it. checkSessionPin returned serve=false (or WS1.5 drift fired),
       // so either there was no pin, the pin lost a guard (context/vision/
@@ -1544,6 +1707,104 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // the escape invisible. Never overwrite a reason the cascade did set.
     if (_pinBypassForce === 'pin_drift' && tier && !tier.switch_reason) {
       tier.switch_reason = 'model_pin_drift';
+    }
+
+    // TaskBand telemetry stamp — travels on the decision AND (underscored)
+    // on the body, so the forced-provider path can reconstitute it onto the
+    // routingResult that feeds routing_telemetry.
+    try {
+      let _jevCacheHit = null;
+      if (_jevStatsBefore) {
+        const _jevStatsAfter = require("../routing/jev-router").getJevCacheStats();
+        const _missDelta = _jevStatsAfter.misses - _jevStatsBefore.misses;
+        const _hitDelta = _jevStatsAfter.hits - _jevStatsBefore.hits;
+        // Null means the judge never consulted its cache this request
+        // (pin serve, side frame, classifier skip) — "not measured".
+        _jevCacheHit = _missDelta > 0 ? 0 : (_hitDelta > 0 ? 1 : null);
+      }
+      tier.taskband = {
+        isContinuation: _taskCont?.isContinuation ? 1 : 0,
+        inheritedFloor: _taskFloorTier || null,
+        anchorHash: _taskLedger?.anchorHash || null,
+        jevContext: typeof req.body._conversationContext === 'string'
+          ? req.body._conversationContext : null,
+        jevCacheHit: _jevCacheHit,
+      };
+      req.body._taskband = tier.taskband;
+    } catch (err) {
+      logger.debug({ err: err.message }, '[TaskBand] telemetry stamp failed');
+    }
+
+    // TaskBand task-state upkeep — once per request, at the final-decision
+    // site, never inside the per-message scoring loop. Side requests never
+    // touch task state. Pin replays never write: a pinned tier keeps no
+    // provenance of how it was chosen (a force-triggered tier pins like any
+    // scored one), so replaying it must not launder into earned band — the
+    // fresh serve that created the pin already merged. Model-id pins are
+    // explicit client choices, not earned difficulty — no writes either.
+    try {
+      const _sessForTask = req.body._sessionId || null;
+      if (_sessForTask && _taskLedger?.anchorHash && !_taskSideRequest) {
+        const store = require("../routing/affinity-store");
+        let AUTO_CLOSE_LOW_TURNS = 3;
+        try {
+          const _tl = require("../routing/task-ledger");
+          if (Number.isInteger(_tl.AUTO_CLOSE_LOW_TURNS)) AUTO_CLOSE_LOW_TURNS = _tl.AUTO_CLOSE_LOW_TURNS;
+        } catch { /* default stands */ }
+        const TIER_ORDER = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
+        const _method = tier?.method || '';
+        const _openNow = _taskLedger.open ? 1 : 0;
+        const _row = store.getTaskState(_sessForTask);
+        const _anchorMatches = !!(_row && _row.anchorHash === _taskLedger.anchorHash);
+        if (_method !== 'session_pin' && _method !== 'model_id_pin' && _method !== 'fallback') {
+          // Low-streak decay reads the FRESH-scored tier, not the floored
+          // one — otherwise an applied floor could never auto-close.
+          let _freshTier = _taskPreFloorTier || tier?.tier || null;
+          // A jev-override lift rides a cap the inherited floor may have
+          // widened; only the scored base tier is earned band. Merging the
+          // lifted tier would raise the next turn's floor, which widens the
+          // next cap — the ratchet the one-band-up cap exists to break.
+          if (/(^|\+)jev_override(\+|$)/.test(_method)) {
+            const _scoredIdx = TIER_ORDER.indexOf(tier?.base_tier);
+            if (_scoredIdx >= 0 && _scoredIdx < TIER_ORDER.indexOf(_freshTier)) {
+              _freshTier = tier.base_tier;
+            }
+          }
+          const _freshIdx = TIER_ORDER.indexOf(_freshTier);
+          const _forceOrRisk = /(^|\+)(force|risk)(\+|$)/.test(_method)
+            || tier?.escalation_source === 'risk';
+          if (_freshIdx >= 0) {
+            let _lowStreak = 0;
+            if (_anchorMatches && Number.isInteger(_row.effectiveBand)
+              && _freshIdx <= _row.effectiveBand - 2) {
+              _lowStreak = (_row.lowStreak ?? 0) + 1;
+            }
+            if (_lowStreak >= AUTO_CLOSE_LOW_TURNS) {
+              store.clearTaskState(_sessForTask);
+            } else if (!_continuationFloored && !_forceOrRisk) {
+              // MAX-merge on matching anchor, whole-row overwrite on an
+              // anchor change — both live inside setTaskState.
+              store.setTaskState(_sessForTask, {
+                anchorHash: _taskLedger.anchorHash,
+                effectiveBand: _freshIdx,
+                open: _openNow,
+                lowStreak: _lowStreak,
+              });
+            } else if (_anchorMatches) {
+              // Floored/force/risk serves never merge their band, but the
+              // marker-close and the low streak still have to land.
+              store.setTaskState(_sessForTask, {
+                anchorHash: _row.anchorHash,
+                effectiveBand: Number.isInteger(_row.effectiveBand) ? _row.effectiveBand : _freshIdx,
+                open: _row.open && _openNow ? 1 : 0,
+                lowStreak: _lowStreak,
+              });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.debug({ err: err.message }, '[TaskBand] task-state upkeep failed');
     }
 
     // Subscription-only fork: byte-for-byte passthrough to api.anthropic.com

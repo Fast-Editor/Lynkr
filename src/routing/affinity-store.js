@@ -77,6 +77,14 @@ function _db() {
           ttl_ms             INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_cache_state_ts ON session_cache_state(last_request_at);
+        CREATE TABLE IF NOT EXISTS session_task_state (
+          session_id     TEXT PRIMARY KEY,
+          anchor_hash    TEXT,
+          effective_band INTEGER,
+          open           INTEGER,
+          low_streak     INTEGER,
+          updated_at     INTEGER
+        );
       `);
       schemaEnsured = true;
     } catch (err) {
@@ -253,6 +261,122 @@ function loadCacheState(sessionId) {
   }
 }
 
+// TaskBand — per-session task difficulty state. Lives in its OWN table for
+// the same reason as session_cache_state: piggybacking non-pin rows onto
+// session_pins let tier-less rows be served as routing pins (see note above
+// saveCacheState). Falls back to this in-memory Map when the DB is
+// unavailable so continuation floors keep working without persistence.
+const taskStateMem = new Map();
+
+/**
+ * Load TaskBand state for a session. Returns null when absent or on any
+ * DB failure.
+ *
+ * @param {string} sessionId
+ * @returns {{anchorHash:string|null, effectiveBand:number, open:boolean, lowStreak:number}|null}
+ */
+function getTaskState(sessionId) {
+  if (!sessionId) return null;
+  const db = _db();
+  if (!db) {
+    const mem = taskStateMem.get(sessionId);
+    return mem ? { ...mem } : null;
+  }
+  try {
+    const row = _stmt(
+      db,
+      "task_state_load",
+      "SELECT anchor_hash, effective_band, open, low_streak FROM session_task_state WHERE session_id = ?"
+    ).get(sessionId);
+    if (!row) return null;
+    return {
+      anchorHash: row.anchor_hash ?? null,
+      effectiveBand: Number(row.effective_band) || 0,
+      open: !!row.open,
+      lowStreak: Number(row.low_streak) || 0,
+    };
+  } catch (err) {
+    degradation.record("feedback", err);
+    return null;
+  }
+}
+
+/**
+ * Upsert TaskBand state. effective_band is MAX-merged only while the stored
+ * anchor matches — a new anchor means a new task, whose band must not
+ * inherit the old peak, so the whole row is overwritten instead.
+ *
+ * @param {string} sessionId
+ * @param {{anchorHash:string|null, effectiveBand:number, open:boolean, lowStreak?:number}} state
+ */
+function setTaskState(sessionId, state) {
+  if (!sessionId || !state) return;
+  const next = {
+    anchorHash: state.anchorHash ?? null,
+    effectiveBand: Number.isFinite(state.effectiveBand) ? state.effectiveBand : 0,
+    open: state.open ? 1 : 0,
+    lowStreak: Number.isFinite(state.lowStreak) ? state.lowStreak : 0,
+  };
+  const db = _db();
+  if (!db) {
+    const prev = taskStateMem.get(sessionId);
+    if (prev && prev.anchorHash === next.anchorHash) {
+      next.effectiveBand = Math.max(prev.effectiveBand, next.effectiveBand);
+    }
+    taskStateMem.set(sessionId, {
+      anchorHash: next.anchorHash,
+      effectiveBand: next.effectiveBand,
+      open: !!next.open,
+      lowStreak: next.lowStreak,
+    });
+    return;
+  }
+  try {
+    _stmt(
+      db,
+      "task_state_upsert",
+      // IS (not =) so a null↔null anchor comparison still MAX-merges. All
+      // SET expressions see the pre-update row, so assignment order below
+      // doesn't affect the CASE.
+      `INSERT INTO session_task_state (session_id, anchor_hash, effective_band, open, low_streak, updated_at)
+       VALUES (@session_id, @anchor_hash, @effective_band, @open, @low_streak, @updated_at)
+       ON CONFLICT(session_id) DO UPDATE SET
+         effective_band = CASE WHEN anchor_hash IS excluded.anchor_hash
+           THEN MAX(effective_band, excluded.effective_band)
+           ELSE excluded.effective_band END,
+         anchor_hash = excluded.anchor_hash,
+         open = excluded.open,
+         low_streak = excluded.low_streak,
+         updated_at = excluded.updated_at`
+    ).run({
+      session_id: sessionId,
+      anchor_hash: next.anchorHash,
+      effective_band: next.effectiveBand,
+      open: next.open,
+      low_streak: next.lowStreak,
+      updated_at: Date.now(),
+    });
+  } catch (err) {
+    degradation.record("feedback", err);
+  }
+}
+
+/**
+ * Remove TaskBand state for a session.
+ * @param {string} sessionId
+ */
+function clearTaskState(sessionId) {
+  if (!sessionId) return;
+  taskStateMem.delete(sessionId);
+  const db = _db();
+  if (!db) return;
+  try {
+    _stmt(db, "task_state_delete", "DELETE FROM session_task_state WHERE session_id = ?").run(sessionId);
+  } catch (err) {
+    degradation.record("feedback", err);
+  }
+}
+
 /**
  * Remove a pin.
  * @param {string} sessionId
@@ -298,4 +422,15 @@ function _clear() {
   } catch { /* best-effort */ }
 }
 
-module.exports = { load, save, remove, cleanup, saveCacheState, loadCacheState, _clear };
+module.exports = {
+  load,
+  save,
+  remove,
+  cleanup,
+  saveCacheState,
+  loadCacheState,
+  getTaskState,
+  setTaskState,
+  clearTaskState,
+  _clear,
+};
