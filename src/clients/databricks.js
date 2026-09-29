@@ -3382,6 +3382,121 @@ async function invokeCodex(body, _incomingHeaders = {}) {
   };
 }
 
+async function invokeCursor(body, _incomingHeaders = {}) {
+  const cursorUtils = require("./cursor-utils");
+
+  if (config.cursor?.enabled === false) {
+    throw new Error("Cursor provider is disabled (set CURSOR_ENABLED=true to use cursor: tiers)");
+  }
+
+  const model = body._tierModel || config.cursor?.model || cursorUtils.DEFAULT_MODEL;
+  const { prompt, systemContext } = cursorUtils.convertAnthropicToCursorPrompt(body);
+
+  if (!prompt) {
+    throw new Error("Cursor: no prompt content to send");
+  }
+
+  const fullPrompt = systemContext ? `System context:\n${systemContext}\n\nUser request:\n${prompt}` : prompt;
+  const binaryPath = cursorUtils.getBinaryPath(config.cursor);
+  const baseTimeoutMs = config.cursor?.timeout || cursorUtils.DEFAULT_TIMEOUT_MS;
+  const workspace = body._workspace || null;
+
+  // Streaming (Phase 3, 2026-09-27): synthesize an OpenAI SSE stream from
+  // ACP session/update deltas. "cursor" is registered in
+  // DEFAULT_OPENAI_SSE_PROVIDERS, so the orchestrator either transforms this
+  // to Anthropic SSE (badge injection included) or passes it through to
+  // OpenAI-surface clients. The legacy spawn fallback emits no deltas — its
+  // full text arrives as one chunk at the end, which is still a valid
+  // stream. Errors after SSE has started cannot re-enter tier fallback (the
+  // 200 is already committed) — same semantics as every streaming provider.
+  if (body.stream === true) {
+    const { PassThrough } = require("node:stream");
+    const stream = new PassThrough();
+    const chunkId = `chatcmpl-cursor-${Date.now()}`;
+    let deltasSent = false;
+    const writeChunk = (delta, finishReason = null) => {
+      stream.write(`data: ${JSON.stringify({
+        id: chunkId,
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [{ index: 0, delta, finish_reason: finishReason }],
+      })}\n\n`);
+    };
+    writeChunk({ role: "assistant" });
+    // SSE comment keep-alive: harmless to parsers, keeps idle-timeout-prone
+    // clients on passthrough surfaces alive during silent gaps.
+    const keepAlive = setInterval(() => { try { stream.write(": ka\n\n"); } catch { /* stream gone */ } }, 15000);
+    keepAlive.unref?.();
+    cursorUtils.runCursorAgent({
+      prompt: fullPrompt,
+      resumePrompt: cursorUtils.latestUserTurnPrompt(body),
+      sessionKey: cursorUtils.deriveSessionKey(body),
+      model,
+      baseTimeoutMs,
+      binaryPath,
+      workspace,
+      onDelta: (text, kind) => {
+        deltasSent = true;
+        if (kind === "thought") {
+          writeChunk({ reasoning_content: text });
+        } else if (kind === "tool") {
+          // Visible in EVERY client (Cursor chat ignores reasoning_content),
+          // badge-styled so stripLynkrBadges removes it from resubmitted
+          // history — narration renders once and never re-enters context.
+          writeChunk({ content: `\n\n*[Lynkr] ${String(text).replace(/[*\n]+/g, " ").trim()}*\n\n` });
+        } else {
+          writeChunk({ content: text });
+        }
+      },
+    }).then((run) => {
+      clearInterval(keepAlive);
+      if (!deltasSent && run.text) writeChunk({ content: run.text });
+      writeChunk({}, "stop");
+      stream.write("data: [DONE]\n\n");
+      stream.end();
+    }).catch((err) => {
+      clearInterval(keepAlive);
+      logger.warn({ err: err.message }, "[Cursor] streaming serve failed mid-flight");
+      writeChunk({ content: `\n[cursor provider error: ${String(err.message || err).slice(0, 200)}]` }, "stop");
+      stream.write("data: [DONE]\n\n");
+      stream.end();
+    });
+    return { ok: true, status: 200, stream, contentType: "text/event-stream", headers: {} };
+  }
+
+  let run;
+  try {
+    run = await cursorUtils.runCursorAgent({
+      prompt: fullPrompt,
+      resumePrompt: cursorUtils.latestUserTurnPrompt(body),
+      sessionKey: cursorUtils.deriveSessionKey(body),
+      model,
+      baseTimeoutMs,
+      binaryPath,
+      workspace,
+    });
+  } catch (err) {
+    // classifyCursorError already attached the honest cause (timeout vs
+    // auth vs missing binary) — no blanket subscription hint here.
+    throw new Error(`Cursor CLI failed: ${err.message || err}`);
+  }
+
+  if (!run.text) {
+    throw new Error("Cursor: empty response from cursor-agent");
+  }
+
+  const anthropicJson = cursorUtils.convertCursorResponseToAnthropic(run.text, model, run.usage, run.thinking);
+
+  return {
+    ok: true,
+    status: 200,
+    json: anthropicJson,
+    text: JSON.stringify(anthropicJson),
+    contentType: "application/json",
+  };
+}
+
 /**
  * Compute request cost in USD from model pricing × token usage.
  * Registry returns per-1M-token prices ({ input, output }); returns null when
@@ -3457,6 +3572,13 @@ function captureResponseText(resultJson) {
 // non-greedy lazy match is unnecessary — match up to (and including) the
 // closing `*` plus trailing whitespace.
 const LYNKR_BADGE_PREFIX_RE = /^\*\[Lynkr\][^*\n]*\*\s*/;
+// Mid-message badge LINES (tool narration, 2026-09-27) — strip anywhere in
+// assistant content, swallowing surrounding blank lines so paragraphs reflow.
+const LYNKR_BADGE_LINE_RE = /\n{0,2}\*\[Lynkr\][^*\n]*\*[ \t]*(?=\n|$)/g;
+
+function _stripBadgeText(text) {
+  return text.replace(LYNKR_BADGE_PREFIX_RE, "").replace(LYNKR_BADGE_LINE_RE, "");
+}
 
 function stripLynkrBadges(messages) {
   if (!Array.isArray(messages)) return messages;
@@ -3468,8 +3590,8 @@ function stripLynkrBadges(messages) {
     // what the orchestrator's OpenAI-format response branch produces, and
     // it's where badges actually leak in the Ollama agent loop.
     if (typeof msg.content === 'string') {
-      if (!LYNKR_BADGE_PREFIX_RE.test(msg.content)) return msg;
-      const stripped = msg.content.replace(LYNKR_BADGE_PREFIX_RE, '');
+      const stripped = _stripBadgeText(msg.content);
+      if (stripped === msg.content) return msg;
       mutated = true;
       // Badge-only content must not become an empty string — Anthropic
       // rejects empty assistant content (this is the interrupted-response
@@ -3487,9 +3609,9 @@ function stripLynkrBadges(messages) {
       let changed = false;
       const rebuilt = [];
       for (const b of msg.content) {
-        if (b?.type === 'text' && typeof b.text === 'string' && LYNKR_BADGE_PREFIX_RE.test(b.text)) {
+        if (b?.type === 'text' && typeof b.text === 'string' && _stripBadgeText(b.text) !== b.text) {
           changed = true;
-          const strippedText = b.text.replace(LYNKR_BADGE_PREFIX_RE, '');
+          const strippedText = _stripBadgeText(b.text);
           if (strippedText.trim()) rebuilt.push({ ...b, text: strippedText });
           // badge-only block → drop
         } else {
@@ -3533,6 +3655,7 @@ const PROVIDER_INVOKERS = {
   vertex: invokeVertex,
   moonshot: invokeMoonshot,
   codex: invokeCodex,
+  cursor: invokeCursor,
   baidu: invokeBaidu,
   fireworks: invokeFireworks,
   orcarouter: invokeOrcaRouter,
@@ -4423,6 +4546,7 @@ module.exports = {
   invokeFireworks,
   invokeAtlas,
   invokeOrcaRouter,
+  invokeCursor,
   PROVIDER_INVOKERS,
   stripLynkrBadges,
   destroyHttpAgents,

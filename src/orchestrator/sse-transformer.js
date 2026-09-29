@@ -25,9 +25,9 @@ const logger = require("../logger");
 // invoke fn converts buffered responses to Anthropic, and its Anthropic-format
 // endpoint has the native passthrough path instead). moonshot joined the list
 // once invokeMoonshot learned to return the raw stream (its old forced
-// stream:false predated this transformer). Caveat: reasoning_content deltas
-// (kimi thinking) are not reshaped — thinking text is dropped from streamed
-// responses; the buffered path still lifts it into thinking blocks.
+// stream:false predated this transformer). reasoning_content deltas (kimi/
+// glm/gpt-oss/cursor thoughts) are reshaped into Anthropic thinking blocks
+// (2026-09-27) so the thinking phase streams live instead of dropping.
 // baidu (Qianfan's /v2/chat/completions) already returns the raw stream the
 // same way moonshot does (invokeBaidu's `if (response?.stream) return
 // response;`) and its endpoint is documented as OpenAI-compatible — but
@@ -38,6 +38,7 @@ const logger = require("../logger");
 // shared transformer for one provider's quirk.
 const DEFAULT_OPENAI_SSE_PROVIDERS = [
   "openai",
+  "cursor",
   "atlas",
   "azure-openai",
   "openrouter",
@@ -163,6 +164,7 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
   let model = fallbackModel;
   let nextIndex = 0;
   let textIndex = null; // open text block index, null when closed
+  let thinkingIndex = null; // open thinking block index, null when closed
   let finishReason = null;
   const toolAcc = new Map(); // openai tool index -> { id, name, args }
 
@@ -239,6 +241,12 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
     return out;
   };
 
+  const closeThinkingBlock = function* () {
+    if (thinkingIndex === null) return;
+    yield _sse("content_block_stop", { type: "content_block_stop", index: thinkingIndex });
+    thinkingIndex = null;
+  };
+
   const closeTextBlock = function* () {
     // Flush a held-back fragment that turned out not to be a tag.
     if (_tagTail && !_inThink && textIndex !== null) {
@@ -306,11 +314,34 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
 
       yield* startMessage();
 
+      // Reasoning deltas (kimi/glm/gpt-oss/cursor-ACP thoughts) become a
+      // proper Anthropic thinking block so clients show live activity during
+      // the thinking phase instead of dead air (2026-09-26 complaint: badge,
+      // then minutes of silence). Thinking and text are sequential blocks —
+      // close one before opening the other.
+      if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+        yield* closeTextBlock();
+        if (thinkingIndex === null) {
+          thinkingIndex = nextIndex++;
+          yield _sse("content_block_start", {
+            type: "content_block_start",
+            index: thinkingIndex,
+            content_block: { type: "thinking", thinking: "" },
+          });
+        }
+        yield _sse("content_block_delta", {
+          type: "content_block_delta",
+          index: thinkingIndex,
+          delta: { type: "thinking_delta", thinking: delta.reasoning_content },
+        });
+      }
+
       // Text deltas are straightforward: open a block on first text, then
       // emit a text_delta per chunk.
       if (typeof delta.content === "string" && delta.content.length > 0) {
         const visible = filterThink(delta.content);
         if (visible.length > 0) {
+          yield* closeThinkingBlock();
           if (textIndex === null) {
             textIndex = nextIndex++;
             yield _sse("content_block_start", {
@@ -331,6 +362,7 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
       // function.arguments are NOT parseable individually — only the full
       // concatenation is valid JSON, so blocks are emitted at stream end.
       if (Array.isArray(delta.tool_calls)) {
+        yield* closeThinkingBlock();
         yield* closeTextBlock();
         for (const tc of delta.tool_calls) {
           const idx = tc.index ?? 0;
@@ -345,6 +377,7 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
   } catch (err) {
     logger.warn({ err: err.message }, "[SSETransform] Upstream stream failed mid-flight");
     yield* startMessage();
+    yield* closeThinkingBlock();
     yield* closeTextBlock();
     yield _sse("error", {
       type: "error",
@@ -358,6 +391,7 @@ async function* _openaiToAnthropicEvents(upstream, opts = {}) {
 
   // Normal end of stream ([DONE] or upstream EOF).
   yield* startMessage();
+  yield* closeThinkingBlock();
   yield* closeTextBlock();
 
   // An EOF with no finish_reason is a dropped upstream, not a completed

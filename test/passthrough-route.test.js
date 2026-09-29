@@ -300,3 +300,75 @@ describe('resolveTierModel (label wins ties)', () => {
     );
   });
 });
+
+// --- tool-loop invariant + flat-rate gate (2026-09-24 mid-loop descent bug) --
+// Live failure: COMPLEX ask upgraded haiku→sonnet, then every tool_result
+// frame descended back to haiku (downgrade_break_even_cleared once, then
+// downgrade_cache_stale forever) because the gate ran mid tool-loop and its
+// break-even leg priced a flat-fee subscription at metered rates.
+describe('decidePassthroughModel tool-loop and flat-rate holds', () => {
+  const HAIKU2 = 'claude-haiku-4-5-20251001';
+  const SONNET2 = 'claude-sonnet-4-5';
+  const warmSonnet = (tokens) => ({
+    warmPrefixTokens: tokens, provider: 'azure-anthropic', model: SONNET2,
+    lastRequestAt: 1, ttlMs: 300000, cold: false,
+  });
+
+  it('tool-history frame holds the pin unconditionally, even over a stale cache', () => {
+    const r = route.decidePassthroughModel({
+      tierModel: HAIKU2, clientModel: HAIKU2, pinModel: SONNET2,
+      cacheState: { ...warmSonnet(50), model: HAIKU2 }, // stale — would descend
+      hasToolHistory: true, flatRate: true,
+    });
+    assert.strictEqual(r.action, 'pin_hold');
+    assert.strictEqual(r.model, SONNET2);
+    assert.strictEqual(r.reason, 'tool_loop_hold');
+  });
+
+  it('tool-history frame with pin === client stays verbatim (no rewrite churn)', () => {
+    const r = route.decidePassthroughModel({
+      tierModel: SONNET2, clientModel: HAIKU2, pinModel: HAIKU2, hasToolHistory: true,
+    });
+    assert.strictEqual(r.action, 'verbatim');
+    assert.strictEqual(r.reason, 'tool_loop_hold');
+    assert.strictEqual(r.model, HAIKU2);
+  });
+
+  it('tool-history frame with NO pin falls through to normal rules', () => {
+    const r = route.decidePassthroughModel({
+      tierModel: SONNET2, clientModel: HAIKU2, pinModel: null, hasToolHistory: true,
+    });
+    assert.strictEqual(r.action, 'upgrade');
+    assert.strictEqual(r.model, SONNET2);
+  });
+
+  it('flat rate + warm same-model prefix holds without consulting break-even', () => {
+    const r = route.decidePassthroughModel({
+      tierModel: HAIKU2, clientModel: HAIKU2, pinModel: SONNET2,
+      cacheState: warmSonnet(12500), flatRate: true,
+      evaluateSwitch: () => { throw new Error('break-even must not run on flat rate'); },
+    });
+    assert.strictEqual(r.action, 'pin_hold');
+    assert.strictEqual(r.reason, 'hold_flat_rate_warm');
+  });
+
+  it('flat rate still descends for honest cache reasons (cold)', () => {
+    const r = route.decidePassthroughModel({
+      tierModel: HAIKU2, clientModel: HAIKU2, pinModel: SONNET2,
+      cacheState: { ...warmSonnet(12500), cold: true }, flatRate: true,
+    });
+    assert.strictEqual(r.action, 'verbatim');
+    assert.strictEqual(r.reason, 'downgrade_cache_cold');
+    assert.strictEqual(r.model, HAIKU2);
+  });
+
+  it('metered path (flatRate absent) keeps legacy break-even behavior', () => {
+    const r = route.decidePassthroughModel({
+      tierModel: HAIKU2, clientModel: HAIKU2, pinModel: SONNET2,
+      cacheState: warmSonnet(12500),
+      evaluateSwitch: () => ({ switchAllowed: true, breakEvenTurns: 1, expectedRemainingTurns: 9 }),
+    });
+    assert.strictEqual(r.action, 'verbatim');
+    assert.strictEqual(r.reason, 'downgrade_break_even_cleared');
+  });
+});

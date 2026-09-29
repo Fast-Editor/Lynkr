@@ -134,11 +134,18 @@ function cosine(a, b) {
   return denom > 0 ? dot / denom : 0;
 }
 
+// Classes scoring cannot run without. Optional classes (frontier) may be
+// absent from an anchors file — classify()/blendScore() already handle a
+// missing frontier centroid (sim -1, excluded below FRONTIER_MIN_SIM), so
+// scoring degrades to the 3-class baseline instead of dying outright.
+const REQUIRED_ANCHOR_CLASSES = ['trivial', 'substantive', 'heavyweight'];
+
 /**
  * Embed every anchor text and mean them per class.
  * @param {Object<string,string[]>} anchorsByClass
  * @param {(text:string)=>Promise<number[]|null>} embedFn
- * @returns {Promise<Object<string,number[]>|null>} null if any class has no vectors
+ * @returns {Promise<Object<string,number[]>|null>} null when a required class
+ *   is missing from the file or produced no vectors (embedder down)
  */
 async function buildCentroids(anchorsByClass, embedFn) {
   const centroids = {};
@@ -151,13 +158,25 @@ async function buildCentroids(anchorsByClass, embedFn) {
         if (Array.isArray(v) && v.length > 0) vectors.push(v);
       } catch { /* embed never throws by contract, belt-and-braces */ }
     }
-    if (vectors.length === 0) return null; // a class with no anchors is unusable
+    if (vectors.length === 0) {
+      logger.warn({ cls, anchorCount: texts.length }, '[IntentScore] Anchor class produced no embeddings (embedder down or degraded?)');
+      return null;
+    }
     const dim = vectors[0].length;
     const mean = new Array(dim).fill(0);
     for (const v of vectors) for (let i = 0; i < dim; i++) mean[i] += v[i] / vectors.length;
     centroids[cls] = mean;
   }
-  return Object.keys(centroids).length === Object.keys(CLASS_VALUES).length ? centroids : null;
+  const missingRequired = REQUIRED_ANCHOR_CLASSES.filter((c) => !centroids[c]);
+  if (missingRequired.length > 0) {
+    logger.warn({ missing: missingRequired }, '[IntentScore] Anchors file missing required class(es) — anchor mode unusable');
+    return null;
+  }
+  const missingOptional = Object.keys(CLASS_VALUES).filter((c) => !centroids[c]);
+  if (missingOptional.length > 0) {
+    logger.warn({ missing: missingOptional }, '[IntentScore] Optional anchor class(es) missing — reduced-class blend (frontier absent: REASONING reachable via force triggers only)');
+  }
+  return centroids;
 }
 
 /**
@@ -242,7 +261,7 @@ async function _loadDefaultCentroids() {
   const router = getKnnRouter();
   const centroids = await buildCentroids(anchors, (t) => router.embed(t));
   if (!centroids) {
-    logger.warn('[IntentScore] Anchor embedding failed (Ollama down?) — lexical fallback until next attempt');
+    logger.warn('[IntentScore] Anchor centroids unavailable (cause logged above) — lexical fallback until next attempt');
     return null;
   }
   try {

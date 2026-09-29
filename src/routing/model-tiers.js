@@ -370,6 +370,8 @@ class ModelTierSelector {
         return config.orcarouter?.model || null;
       case 'codex':
         return config.codex?.model || null;
+      case 'cursor':
+        return config.cursor?.model || null;
       case 'vertex':
         return config.vertex?.model || null;
       case 'databricks':

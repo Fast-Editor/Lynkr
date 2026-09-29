@@ -146,6 +146,9 @@ function _cleanUserText(msg) {
   }
   for (const re of _PAIRED_TAG_RES) text = text.replace(re, '');
   for (const re of _UNCLOSED_TAG_RES) text = text.replace(re, '');
+  // GUI-harness envelopes (Cursor's <user_info>/<rules>/attached context)
+  // ride INSIDE user messages — strip them so the ledger anchors on asks.
+  text = require('./harness-envelope').stripHarnessEnvelope(text);
   text = text.replace(/^\s*\[Lynkr\][^\n]*$/gm, '').trim();
   if (!text) return null;
   if (/^\s*(\[SYSTEM NOTIFICATION|<conversation[\s>]|<session[\s>]|\[Request interrupted|This session is being continued from a previous conversation)/i.test(text)) return null;

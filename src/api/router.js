@@ -1409,7 +1409,11 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       }
       return '';
     })();
+    // Suggestion-mode detection reads the RAW text (the marker is itself
+    // wrapper text); the force/risk probes below get envelope-stripped text
+    // so Cursor's <user_info>/<rules> blocks can't fire triggers on "Hi".
     const isSuggestionMode = _lastUserText.includes('[SUGGESTION MODE:');
+    const _lastUserAskClean = require("../routing/harness-envelope").stripHarnessEnvelope(_lastUserText);
     // Tool-lessness alone is NOT harness evidence: generic API clients
     // (curl, benchmarks, SDKs) legitimately send bare messages and must get
     // full routing — live regression 2026-07-08: a benchmark's security-
@@ -1535,7 +1539,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       let _pinForceBypass = null;
       if (!sideTier && pinCheck.serve && pinCheck.reason === 'guards_passed' && !isSideRequest) {
         try {
-          const _probe = { messages: [{ role: 'user', content: _lastUserText || '' }] };
+          const _probe = { messages: [{ role: 'user', content: _lastUserAskClean || '' }] };
           const ca = require("../routing/complexity-analyzer");
           if (_lastUserText && ca.shouldForceReasoning(_probe)) _pinForceBypass = 'force_reasoning';
           else if (_lastUserText && ca.shouldForceCloud(_probe)) _pinForceBypass = 'force_cloud';
@@ -1883,6 +1887,15 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           tierMethod: tier?.method || null,
           tierPinned: tier?.pinned ?? null,
           cacheState: _pinCacheState,
+          // Mid tool-exchange frames must keep serving the in-flight model
+          // (same invariant as the orchestrator's tool_history pin serves).
+          hasToolHistory: (() => {
+            try { return require("../routing/session-affinity").payloadHasToolHistory(req.body); }
+            catch { return false; }
+          })(),
+          // This branch IS the flat-fee subscription: the gate's dollar
+          // break-even leg has no premium to amortize here.
+          flatRate: true,
           // Quota pressure shortens the hold horizon inside the gate (high
           // sustained burn → descents clear sooner). Zero when the ledger has
           // no history — the gate behaves exactly as before.
@@ -1917,6 +1930,36 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
           }, req.body);
         } catch (err) {
           logger.debug({ err: err.message }, '[Routing] Pin-hold restore failed (non-fatal)');
+        }
+      }
+      // Upgrades must persist the SERVED model into the pin, mirroring the
+      // pin_hold restore above — the write at the fresh-decision site stored
+      // the pre-rewrite tier model, and a pin that forgets the upgrade lets
+      // later frames descend below what actually served. Unlike pin_hold,
+      // an upgrade usually happens with no prior pin, so the payload comes
+      // from the fresh tier object. Floored (+continuation_inherit) and
+      // risk-lifted tiers stay unpinned (writeSessionPin re-checks, but the
+      // method is overridden to 'session_pin' here, so guard at the source).
+      if (
+        _passthroughRoute.action === 'upgrade'
+        && _passthroughRoute.model
+        && pinCheck?.sessionId
+        && tier?.provider
+        && !String(tier?.method || '').includes('+continuation_inherit')
+        && tier?.escalation_source !== 'risk'
+      ) {
+        try {
+          const { writeSessionPin } = require("../routing/index");
+          writeSessionPin(pinCheck.sessionId, {
+            provider: tier.provider,
+            model: _passthroughRoute.model,
+            tier: tier.tier,
+            score: tier.score ?? null,
+            method: 'session_pin',
+            reason: 'passthrough_upgrade',
+          }, req.body);
+        } catch (err) {
+          logger.debug({ err: err.message }, '[Routing] Upgrade pin persist failed (non-fatal)');
         }
       }
       if (_passthroughRoute.action !== 'verbatim' && _passthroughRoute.model) {

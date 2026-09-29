@@ -727,6 +727,12 @@ var config = {
     model: process.env.CODEX_MODEL?.trim() || "gpt-5.3-codex",
     timeout: Number.parseInt(process.env.CODEX_TIMEOUT || "120000", 10) || 120000,
   },
+  cursor: {
+    enabled: process.env.CURSOR_ENABLED === "true",
+    binaryPath: process.env.CURSOR_BINARY_PATH?.trim() || "cursor-agent",
+    model: process.env.CURSOR_MODEL?.trim() || "composer-2.5",
+    timeout: Number.parseInt(process.env.CURSOR_TIMEOUT || "120000", 10) || 120000,
+  },
   hotReload: {
     enabled: hotReloadEnabled,
     debounceMs: Number.isNaN(hotReloadDebounceMs) ? 1000 : hotReloadDebounceMs,
@@ -1197,6 +1203,10 @@ function reloadConfig() {
   config.orcarouter.authBaseUrl = orcaAuth;
   config.orcarouter.apiBaseUrl = orcaApi;
   config.orcarouter.endpoint = process.env.ORCAROUTER_ENDPOINT?.trim() || `${orcaApi}/v1/chat/completions`;
+  config.cursor.enabled = process.env.CURSOR_ENABLED === "true";
+  config.cursor.binaryPath = process.env.CURSOR_BINARY_PATH?.trim() || "cursor-agent";
+  config.cursor.model = process.env.CURSOR_MODEL?.trim() || "composer-2.5";
+  config.cursor.timeout = Number.parseInt(process.env.CURSOR_TIMEOUT || "120000", 10) || 120000;
 
   // Model provider settings
   const newProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();

@@ -47,11 +47,10 @@ const PRICING_FIXTURE = {
       models: {
         "5.2": {
           cost: { input: 1.75, output: 14, cache_read: 0.175 },
-          context: 128000,
-          output: 4096,
+          limit: { context: 128000, output: 4096 },
           tool_call: true,
           reasoning: true,
-          input: ["text"],
+          modalities: { input: ["text"], output: ["text"] },
         },
       },
     },

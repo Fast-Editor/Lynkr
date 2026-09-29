@@ -28,5 +28,17 @@
     "design a horizontally scalable architecture for this service with failure-mode analysis",
     "Compare how databricks.js and openai-format.js each handle non-2xx upstream responses, then propose a unified error-normalization helper both could share",
     "Code review the PR #84 routing hardening changes"
+  ],
+  "frontier": [
+    "Prove the correctness of this lock-free queue implementation and identify any ABA hazards",
+    "Design a novel conflict-free replicated data type for collaborative rich-text editing and argue its convergence from first principles",
+    "Derive the optimal cache eviction policy for this access distribution and prove its competitive ratio",
+    "Diagnose this heisenbug: a race that only reproduces under load across three services, given these interleaved logs",
+    "Design a Byzantine-fault-tolerant consensus protocol variant that tolerates f faults with 2f+1 replicas by weakening liveness, and analyze exactly which guarantees are lost",
+    "Formally verify that this state machine can never deadlock, or produce a counterexample trace",
+    "Given these profiler traces, determine whether the tail latency is queueing-theoretic or GC-driven, and prove which by constructing a discriminating experiment",
+    "Reason through the security of this key-rotation scheme under an adversary who can observe but not modify traffic, and find the weakest assumption it relies on",
+    "Work out the exact memory ordering constraints this concurrent hashmap needs on ARM, and justify each barrier from the C++ memory model",
+    "Given this failing distributed transaction trace, determine whether the anomaly is write skew or lost update, and design the minimal isolation-level change that eliminates it"
   ]
 }

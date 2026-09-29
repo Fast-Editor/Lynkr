@@ -14,7 +14,7 @@ const VISION_IMAGE_TOKEN_ESTIMATE = 1500;
 
 // Providers that can never transport image bytes (no vision path, even after
 // converter fixes). Everything else either forwards natively or converts.
-const TRANSPORTLESS_PROVIDERS = new Set(['llamacpp', 'lmstudio', 'codex']);
+const TRANSPORTLESS_PROVIDERS = new Set(['llamacpp', 'lmstudio', 'codex', 'cursor']);
 
 /**
  * Does a single content block carry image data?

@@ -98,6 +98,7 @@ function _enabledProviders() {
   if (config.ollama?.endpoint) out.push('ollama');
   if (config.llamacpp?.endpoint) out.push('llamacpp');
   if (config.lmstudio?.endpoint) out.push('lmstudio');
+  if (config.cursor?.enabled === true) out.push('cursor');
   return out;
 }
 
@@ -1431,11 +1432,29 @@ async function _determineProviderSmartInner(payload, options = {}) {
       });
       const result = sf.selectByShortfall(req, candidates);
       if (result) {
-        const agreed = result.selected.provider === provider && result.selected.model === selectedModel;
+        // Serve-path selection is bounded to ONE band above the legacy tier
+        // (same philosophy as the Jev one-band-up cap): capability estimates
+        // are soft evidence and must not buy multi-band jumps in one turn.
+        // The uncapped result above still shadow-logs what shortfall wanted.
+        const _tierLadder = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
+        const _legacyIdx = Math.max(0, _tierLadder.indexOf(tier));
+        const _capTier = _tierLadder[Math.min(_legacyIdx + 1, _tierLadder.length - 1)];
+        const serveResult = sf.selectByShortfall(req, candidates, { maxTier: _capTier }) || result;
+        // Humility gate: if the LEGACY pick's capabilities resolved to pure
+        // tier ignorance ('tier'/'tier-fallback' — we know nothing about the
+        // configured model), an "incapable" verdict is unfalsifiable; never
+        // serve an escalation from it (the composer-2.5 → grok incident).
+        const _legacyRow = (result.shortfalls || []).find(
+          (r) => r.provider === provider && r.model === selectedModel
+        );
+        const _legacyBlind = /^tier/.test(String(_legacyRow?.source || ''));
+        const _serveEscalates = (_tierLadder.indexOf(serveResult.selected.tier) > _legacyIdx);
+        const agreed = serveResult.selected.provider === provider && serveResult.selected.model === selectedModel;
         shortfallInfo = {
           req,
           tau: result.tau,
-          selected: result.selected,
+          selected: serveResult.selected,
+          wanted: result.selected,
           agreed,
           legacy: { provider, model: selectedModel, tier },
         };
@@ -1444,14 +1463,16 @@ async function _determineProviderSmartInner(payload, options = {}) {
           tau: result.tau,
           legacy: `${tier}:${provider}:${selectedModel}`,
           shortfall: `${result.selected.tier}:${result.selected.provider}:${result.selected.model}`,
+          served: `${serveResult.selected.tier}:${serveResult.selected.provider}:${serveResult.selected.model}`,
+          legacyCapSource: _legacyRow?.source || null,
           agreed,
         }, '[Routing] Shortfall shadow compare');
-        if (sf.isEnabled() && !agreed) {
+        if (sf.isEnabled() && !agreed && !(_legacyBlind && _serveEscalates)) {
           const fromTier = tier;
           const fromModel = selectedModel;
-          provider = result.selected.provider;
-          selectedModel = result.selected.model;
-          tier = result.selected.tier;
+          provider = serveResult.selected.provider;
+          selectedModel = serveResult.selected.model;
+          tier = serveResult.selected.tier;
           analysis.tier = tier;
           method = method + '+shortfall';
           if ((TIER_DEFINITIONS[tier]?.priority || 0) > (TIER_DEFINITIONS[fromTier]?.priority || 0)) {

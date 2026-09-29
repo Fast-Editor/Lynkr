@@ -298,3 +298,45 @@ describe("WS7.3 — rung containment (REASONING reachable via frontier class + f
     assert.strictEqual(r, null);
   });
 });
+
+// --- reduced-class anchors (global installs ship without frontier) ----------
+// A stock npm install loads config/difficulty-anchors.json; if that file
+// lacks an optional class, buildCentroids must degrade to the reduced blend,
+// not reject every centroid (the 9.14.15 bug: 3-class config + 4-class
+// CLASS_VALUES → null → permanent lexical fallback → everything SIMPLE).
+describe("buildCentroids reduced-class tolerance", () => {
+  const dim3 = {
+    trivial: ["hi"],
+    substantive: ["review this helper"],
+    heavyweight: ["architecture review of the orchestrator"],
+  };
+  const axes = { hi: [1, 0, 0], "review this helper": [0, 1, 0], "architecture review of the orchestrator": [0, 0, 1] };
+  const embed = async (t) => axes[t] || [0.3, 0.3, 0.3];
+
+  it("builds centroids when only the three required classes exist", async () => {
+    const c = await buildCentroids(dim3, embed);
+    assert.ok(c, "3-class anchors must not be rejected");
+    assert.deepStrictEqual(Object.keys(c).sort(), ["heavyweight", "substantive", "trivial"]);
+  });
+
+  it("missing a REQUIRED class → null (anchor mode unusable)", async () => {
+    const c = await buildCentroids({ trivial: ["hi"], substantive: ["review this helper"] }, embed);
+    assert.strictEqual(c, null);
+  });
+
+  it("a class whose embeds all fail → null (embedder down)", async () => {
+    const c = await buildCentroids(dim3, async () => null);
+    assert.strictEqual(c, null);
+  });
+
+  it("scoring with 3-class centroids: substantive text lands MEDIUM, REASONING unreachable", async () => {
+    const c = await buildCentroids(dim3, embed);
+    const { cls, sims } = classify([0, 1, 0], c);
+    assert.strictEqual(cls, "substantive");
+    const score = blendScore(sims);
+    assert.ok(score >= 26 && score <= 50, `expected MEDIUM band, got ${score}`);
+    // frontier centroid absent → sim -1 → below FRONTIER_MIN_SIM → excluded:
+    const heavy = blendScore(classify([0, 0, 1], c).sims);
+    assert.ok(heavy <= 75, `3-class blend must stay out of REASONING band, got ${heavy}`);
+  });
+});

@@ -69,7 +69,9 @@ test('virtual name without a pin falls to the conservative floor, never above', 
   assert.ok(['min-tier', 'default'].includes(b.source), `expected floor source, got ${b.source}`);
   assert.ok(b.modelContextWindow > 0);
   assert.equal(b.effectiveMax, Math.floor(b.modelContextWindow * 0.85));
-  assert.ok(b.effectiveMax <= 850000, 'floor must never exceed a big-model budget');
+  // The configured ladder is now all 1M-class models (glm-5.2 / muse-spark /
+  // gpt-5.6-sol), so the min-tier floor can legitimately reach 0.85 × 1048576.
+  assert.ok(b.effectiveMax <= Math.floor(1048576 * 0.85), 'floor must never exceed a 1M-class budget');
 });
 
 test('invalid explicit cap (0 / garbage) is ignored, auto budget applies', () => {

@@ -277,11 +277,14 @@ class ModelRegistry {
           output: info.cost?.output || 0,
           cacheRead: info.cost?.cache_read,
           cacheWrite: info.cost?.cache_write,
-          context: info.context || 128000,
-          maxOutput: info.output || 4096,
+          // models.dev nests limits under `limit` and modalities under
+          // `modalities` — reading them flat silently gave every entry the
+          // 128000/4096 defaults and vision:false.
+          context: info.limit?.context || 128000,
+          maxOutput: info.limit?.output || 4096,
           toolCall: info.tool_call ?? false,
           reasoning: info.reasoning ?? false,
-          vision: Array.isArray(info.input) && info.input.includes('image'),
+          vision: Array.isArray(info.modalities?.input) && info.modalities.input.includes('image'),
           source: 'models.dev',
         };
 

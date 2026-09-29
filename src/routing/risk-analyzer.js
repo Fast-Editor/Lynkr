@@ -153,6 +153,19 @@ function stripSystemReminders(text) {
     // carries AGENTS.md contents the user never typed this turn.
     .replace(/<environment_context>[\s\S]*?<\/environment_context>/g, ' ')
     .replace(/<user_instructions>[\s\S]*?<\/user_instructions>/g, ' ')
+    // Cursor harness wrapper (live 2026-09-26): every turn's user message is
+    // prefixed with <user_info> (OS/shell/store paths), <agent_transcripts>
+    // and <rules> (persistent memories + <always_applied_workspace_rules>).
+    // Workspace rules routinely mention migration/permission/security and
+    // paths like auth/schema/subscription — a bare "Hi" scored
+    // high_risk_forced_tier → REASONING 100 on all of them. Same rationale
+    // as the Codex strip above: memories are not this turn's instruction.
+    // Tool_use inputs are untouched (real activity still counts).
+    .replace(/<user_info>[\s\S]*?<\/user_info>/g, ' ')
+    .replace(/<agent_transcripts>[\s\S]*?<\/agent_transcripts>/g, ' ')
+    .replace(/<always_applied_workspace_rules?>[\s\S]*?<\/always_applied_workspace_rules?>/g, ' ')
+    .replace(/<always_applied_workspace_rule\b[^>]*>[\s\S]*?<\/always_applied_workspace_rule>/g, ' ')
+    .replace(/<rules>[\s\S]*?<\/rules>/g, ' ')
     .split('\n')
     .filter((line) => !HARNESS_BOILERPLATE_LINE.test(line))
     .join('\n');

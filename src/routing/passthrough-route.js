@@ -159,6 +159,13 @@ function shouldHoldForCache(pinModel, cacheState, opts = {}) {
   if (warm < holdMinPrefixTokens()) {
     return { hold: false, reason: 'downgrade_prefix_small', warmPrefixTokens: warm };
   }
+  // Flat-rate subscription: the per-token premium the break-even evaluator
+  // amortizes does not exist (marginal cost $0), so the dollar leg can never
+  // legitimately clear a descent. With the cold/stale/small outs already
+  // taken above, a warm prefix on flat rate always holds.
+  if (opts.flatRate) {
+    return { hold: true, reason: 'hold_flat_rate_warm', warmPrefixTokens: warm };
+  }
   try {
     const evaluate = opts.evaluateSwitch
       || require('./cache-switch-cost').evaluateSwitch;
@@ -207,7 +214,7 @@ function shouldHoldForCache(pinModel, cacheState, opts = {}) {
  * @param {function|null} [args.evaluateSwitch] - injectable evaluator (tests).
  * @returns {{model:string|null, action:'verbatim'|'upgrade'|'pin_hold', reason:string, warmPrefixTokens:number|null}}
  */
-function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel = null, tierMethod = null, tierPinned = null, cacheState = null, remainingTurns = null, sessionBurnPressure = null, evaluateSwitch = null } = {}) {
+function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel = null, tierMethod = null, tierPinned = null, cacheState = null, remainingTurns = null, sessionBurnPressure = null, evaluateSwitch = null, hasToolHistory = false, flatRate = false } = {}) {
   try {
     if (!isRoutingEnabled()) {
       return { model: clientModel, action: 'verbatim', reason: 'routing_disabled', warmPrefixTokens: null };
@@ -221,6 +228,16 @@ function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel
     }
     const tierRank = familyRank(tierModel);
     const pinRank = familyRank(pinModel);
+    // Tool-loop invariant (same contract the orchestrator enforces): a frame
+    // carrying tool history must keep serving whatever model is mid-exchange.
+    // The downgrade gate has no business re-litigating the pin between a
+    // tool_use and its tool_result — that is where mid-loop descents were
+    // demoting COMPLEX tasks to the client model frame-by-frame.
+    if (hasToolHistory && pinRank !== null) {
+      return pinModel === clientModel
+        ? { model: clientModel, action: 'verbatim', reason: 'tool_loop_hold', warmPrefixTokens: null }
+        : { model: pinModel, action: 'pin_hold', reason: 'tool_loop_hold', warmPrefixTokens: null };
+    }
     if (tierRank !== null && tierRank > clientRank) {
       // Rule 4a — the upgrade branch can also be a step DOWN from the pin
       // (pin Opus, fresh verdict Sonnet, client Haiku). Consult the gate for
@@ -230,6 +247,7 @@ function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel
           downgradeModel: tierModel,
           remainingTurns,
           sessionBurnPressure,
+          flatRate,
           ...(evaluateSwitch ? { evaluateSwitch } : {}),
         });
         if (gate && gate.hold) {
@@ -243,6 +261,7 @@ function decidePassthroughModel({ tierModel = null, clientModel = null, pinModel
         downgradeModel: clientModel,
         remainingTurns,
         sessionBurnPressure,
+        flatRate,
         ...(evaluateSwitch ? { evaluateSwitch } : {}),
       });
       if (gate && gate.hold) {
