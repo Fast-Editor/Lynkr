@@ -60,6 +60,16 @@ function _registerBuiltins() {
       : {};
     probes.set('lmstudio', () => _cheapGet(`${config.lmstudio.endpoint}/v1/models`, headers));
   }
+  if (config.cursor?.enabled === true) {
+    // Cheap local check: the CLI binary responds to --version. Auth status
+    // (subscription) is NOT probed here — a logged-out CLI still prints a
+    // version, and per-request failures surface via normal tier fallback.
+    probes.set('cursor', async () => {
+      const { execFileSync } = require('node:child_process');
+      const binary = config.cursor?.binaryPath?.trim() || process.env.CURSOR_BINARY_PATH?.trim() || 'cursor-agent';
+      execFileSync(binary, ['--version'], { timeout: PROBE_TIMEOUT_MS, stdio: 'ignore' });
+    });
+  }
 }
 
 /**

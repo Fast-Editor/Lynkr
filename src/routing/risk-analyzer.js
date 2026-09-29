@@ -9,6 +9,7 @@
  */
 
 const { extractContent } = require('./complexity-analyzer');
+const { stripHarnessEnvelope } = require('./harness-envelope');
 
 // Substring keywords found in file paths or instruction text.
 // Matched case-insensitively as raw substrings, so "auth" hits
@@ -143,7 +144,13 @@ function findHits(keywords, haystack) {
 const HARNESS_BOILERPLATE_LINE = /^\s*(authentication successful[.!]?(\s+connected to .+)?|connected to \S+ MCP\.?|(\d+\s+)?MCP servers? need authentication\b.*|run \/mcp\b.*)\s*$/i;
 function stripSystemReminders(text) {
   if (typeof text !== 'string' || !text) return '';
-  return text
+  // Cursor harness wrapper (live 2026-09-26): every turn's user message is
+  // prefixed with <user_info>, <agent_transcripts> and <rules> (persistent
+  // memories + <always_applied_workspace_rules>). Workspace rules routinely
+  // mention migration/permission/security and paths like auth/schema — a
+  // bare "Hi" scored high_risk_forced_tier → REASONING 100 on all of them.
+  // Shared with the other scorers so new harness tags land in one place.
+  return stripHarnessEnvelope(text)
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ')
     // Codex harness blocks arrive as user-role messages and get merged into
     // the typed text by the orchestrator's consecutive-role coalescing.

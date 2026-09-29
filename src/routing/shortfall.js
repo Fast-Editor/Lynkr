@@ -225,7 +225,8 @@ function _costValue(c) {
  * @param {object} req — requirement vector {reasoning, codegen, debugging, tool_use} in [0,1]
  * @param {Array<{provider, model, tier, cost?}>} candidates — catalog-constrained set
  *   (callers pass getAllConfiguredModels() + model-registry costs)
- * @param {object} [opts] — { tau, weights }
+ * @param {object} [opts] — { tau, weights, maxTier } — maxTier caps the pool at
+ *   that tier's priority (serve-path escalation bound; shadow calls omit it)
  * @returns {null | { selected, shortfalls: Array<{provider, model, tier, shortfall, cost, source}>, tau }}
  */
 function selectByShortfall(req, candidates, opts = {}) {
@@ -234,9 +235,11 @@ function selectByShortfall(req, candidates, opts = {}) {
     if (!Array.isArray(candidates) || candidates.length === 0) return null;
     const tau = opts.tau ?? getTau();
     const weights = opts.weights ?? getWeights();
+    const maxPri = opts.maxTier ? (TIER_PRIORITY[opts.maxTier] || 4) : null;
 
     const rows = candidates
       .filter((c) => c && c.provider && c.model)
+      .filter((c) => maxPri === null || (TIER_PRIORITY[c.tier] || 0) <= maxPri)
       .map((c) => {
         const { caps, source } = resolveCapabilitiesWithSource(c);
         return {
@@ -254,11 +257,14 @@ function selectByShortfall(req, candidates, opts = {}) {
     const pool = covering.length > 0 ? covering : rows;
     pool.sort((a, b) => {
       if (covering.length > 0) {
-        // Cheapest covering wins; cost tie (incl. all-unknown) breaks toward
-        // the LOWER tier — a covering lower tier is sufficient by definition,
-        // so prefer it over excess headroom (avoids over-provisioning).
-        if (a.cost !== b.cost) return a.cost - b.cost;
-        return (TIER_PRIORITY[a.tier] || 0) - (TIER_PRIORITY[b.tier] || 0);
+        // A covering lower tier is sufficient by definition, so tier wins
+        // BEFORE cost: unknown prices resolve to Infinity, and letting cost
+        // dominate let a seed-priced top-tier model beat the operator's own
+        // unpriced mid tiers (the "Hi → grok-4.7-high" incident). Cost only
+        // breaks ties within a tier.
+        const tp = (TIER_PRIORITY[a.tier] || 0) - (TIER_PRIORITY[b.tier] || 0);
+        if (tp !== 0) return tp;
+        return a.cost - b.cost;
       }
       // Nothing covers: minimal shortfall wins, tiebreak higher tier then cheaper.
       if (a.shortfall !== b.shortfall) return a.shortfall - b.shortfall;

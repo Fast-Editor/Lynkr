@@ -215,4 +215,33 @@ describe('analyzeRisk', () => {
       assert.strictEqual(r.level, 'high');
     });
   });
+
+  // Live incident (2026-09-26): Cursor prefixes every turn's user message
+  // with <user_info> (OS/shell/store paths), <agent_transcripts> and
+  // <rules> (persistent memories + <always_applied_workspace_rules>).
+  // Workspace rules mentioning migration/permission/security and paths
+  // like auth/schema/subscription forced a bare "Hi" to
+  // high_risk_forced_tier → REASONING 100 on every Cursor turn.
+  describe('cursor harness wrapper stripping', () => {
+    const WRAPPER =
+      '<user_info>\nOS Version: darwin\nShell: zsh\n</user_info>\n\n' +
+      '<agent_transcripts>\nAgent transcripts live in /Users/x/.cursor/projects/y.\n</agent_transcripts>\n\n' +
+      '<rules>\nHandle the security migration carefully.\n' +
+      '<always_applied_workspace_rules description="always follow">\n' +
+      '<always_applied_workspace_rule name="Home guidance">Check src/auth/schema.ts and the subscription permission flow.</always_applied_workspace_rule>\n' +
+      '</always_applied_workspace_rules>\n</rules>';
+
+    it('trivial message inside cursor wrapper stays low', () => {
+      const r = analyzeRisk(userPayload(`${WRAPPER}\nHi`));
+      assert.strictEqual(r.level, 'low', JSON.stringify(r));
+      assert.deepStrictEqual(r.instructionHits, []);
+      assert.deepStrictEqual(r.pathHits, []);
+    });
+
+    it('genuinely risky typed text still fires inside a wrapper', () => {
+      const r = analyzeRisk(userPayload(`${WRAPPER}\ndisable the authentication check`));
+      assert.strictEqual(r.level, 'high');
+      assert.ok(r.instructionHits.includes('authentication'));
+    });
+  });
 });

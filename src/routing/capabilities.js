@@ -71,6 +71,12 @@ function buildRequirementVector({ dimensions = {}, agenticResult = null } = {}) 
     // Agentic work always needs tool orchestration — floor only, never lower.
     if (agenticResult?.isAgentic) {
       toolUse = Math.max(toolUse, 0.6);
+    } else if (agenticResult && agenticResult.isAgentic === false) {
+      // The detector already scored this turn NON-agentic using EFFECTIVE
+      // tools (harness baseline subtracted, WS3.2). Attached-tool dims must
+      // not out-vote that verdict: a bare "Hi" from a harness with 9 default
+      // tools is not a tool-orchestration workload. Cap, never raise.
+      toolUse = Math.min(toolUse, 0.25);
     }
 
     const round3 = (v) => Math.round(_clamp01(v) * 1000) / 1000;

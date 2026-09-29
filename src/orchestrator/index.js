@@ -65,6 +65,8 @@ function getDestinationUrl(providerType) {
       return config.orcarouter?.endpoint ?? 'https://api.orcarouter.ai/v1/chat/completions';
     case 'codex':
       return 'codex://app-server (local process)';
+    case 'cursor':
+      return 'cursor://cursor-agent (local CLI)';
     default:
       return 'unknown';
   }
@@ -2779,6 +2781,12 @@ IMPORTANT TOOL USAGE RULES:
       }
     } else if (actualProvider === "codex") {
       // Codex responses are already in Anthropic format from invokeCodex
+      anthropicPayload = databricksResponse.json;
+      if (Array.isArray(anthropicPayload?.content)) {
+        anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
+      }
+    } else if (actualProvider === "cursor") {
+      // Cursor CLI responses are already in Anthropic format from invokeCursor
       anthropicPayload = databricksResponse.json;
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);

@@ -422,18 +422,22 @@ function extractContent(payload) {
     return '';
   }
 
-  // Get last user message
+  // Get last user message. Harness envelopes (Cursor's <user_info>/<rules>/
+  // attached context inside the user message) are stripped so force patterns,
+  // risk keywords (risk-analyzer imports this) and text dims score the ASK,
+  // not the harness boilerplate.
+  const { stripHarnessEnvelope } = require('./harness-envelope');
   for (let i = payload.messages.length - 1; i >= 0; i--) {
     const msg = payload.messages[i];
     if (msg?.role === 'user') {
       if (typeof msg.content === 'string') {
-        return msg.content;
+        return stripHarnessEnvelope(msg.content);
       }
       if (Array.isArray(msg.content)) {
-        return msg.content
+        return stripHarnessEnvelope(msg.content
           .filter(block => block?.type === 'text')
           .map(block => block.text || '')
-          .join(' ');
+          .join(' '));
       }
     }
   }

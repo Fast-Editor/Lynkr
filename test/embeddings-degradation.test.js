@@ -99,3 +99,12 @@ test('degradation is not a permanent latch: provider recovery is automatic after
   assert.equal(status.providerAvailable, true);
   assert.equal(status.degradedSince, null);
 });
+
+test('a transient blip is absorbed by the in-place retry — no degradation flip', async () => {
+  failMode = true;
+  setTimeout(() => { failMode = false; }, 100); // provider recovers before the 1.5s retry fires
+  const vec = await embeddings.generateEmbedding('boot-race probe');
+  assert.equal(vec.length, 768, 'retry must return the real embedding, not the hash fallback');
+  const status = embeddings.getEmbeddingStatus();
+  assert.equal(status.providerAvailable, true, 'a single blip must not trip 60s of degraded routing');
+});

@@ -145,6 +145,9 @@ const STRICT = process.env.LYNKR_EMBEDDINGS_STRICT === 'true';
 function _noteFallback(providerName, err) {
   fallbackCount += 1;
   lastProviderError = err?.message || String(err);
+  // Cooldown counts from the LAST failed dial, not the first attempt's start —
+  // the in-place retry delay must not eat into the cooldown window.
+  lastProviderAttempt = Date.now();
   if (embeddingProviderAvailable !== false) {
     embeddingProviderAvailable = false;
     degradedSince = Date.now();
@@ -168,6 +171,14 @@ function _noteRecovery(providerName) {
   degradedSince = null;
 }
 
+// One in-place retry before tripping degradation: a single transient failure
+// (Ollama cold-loading the model at boot, a blip mid-restart) was flipping
+// the WHOLE provider to hash embeddings for a full cooldown after every
+// server start (recurring live incident, last 2026-09-26). A short backoff
+// absorbs the blip; a provider that is actually down fails twice and
+// degrades exactly as before.
+const TRANSIENT_RETRY_DELAY_MS = 1500;
+
 function _wrapProvider(providerName, providerFn) {
   return async (text) => {
     // While degraded, only re-attempt the provider after the cooldown; serve
@@ -184,9 +195,25 @@ function _wrapProvider(providerName, providerFn) {
       const result = await providerFn(text);
       _noteRecovery(providerName);
       return result;
-    } catch (err) {
-      _noteFallback(providerName, err);
-      if (STRICT) throw err;
+    } catch (firstErr) {
+      // Already-degraded providers get no second chance (this attempt WAS the
+      // post-cooldown probe); healthy ones earn one retry before the flip.
+      if (embeddingProviderAvailable !== false) {
+        await new Promise((r) => setTimeout(r, TRANSIENT_RETRY_DELAY_MS));
+        try {
+          const result = await providerFn(text);
+          _noteRecovery(providerName);
+          logger.debug({ provider: providerName, error: firstErr?.message },
+            '[Embeddings] Transient provider failure absorbed by retry');
+          return result;
+        } catch (secondErr) {
+          _noteFallback(providerName, secondErr);
+          if (STRICT) throw secondErr;
+          return generateHashEmbedding(text);
+        }
+      }
+      _noteFallback(providerName, firstErr);
+      if (STRICT) throw firstErr;
       return generateHashEmbedding(text);
     }
   };
