@@ -21,6 +21,7 @@ const ENVELOPE_TAGS = [
   'git_status',
   'agent_transcripts',
   'rules',
+  'always_applied_workspace_rules',
   'uuid',
   'project_layout',
   'attached_files',

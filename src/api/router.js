@@ -10,6 +10,7 @@ const providersRouter = require("./providers-handler");
 const claudeDesktopGatewayRouter = require("./claude-desktop-gateway");
 const { getRoutingHeaders, getRoutingStats, analyzeComplexity, getModelTierSelector, analyzeRisk, checkSessionPin, writeSessionPin, checkPinScoreDrift } = require("../routing");
 const { resolveTierForModelId } = require("../routing/model-slots");
+const { stripHarnessEnvelope } = require("../routing/harness-envelope");
 
 // Upstream streams can die without a clean end (reader.read() never
 // resolves on a dropped socket), hanging the client forever. Every
@@ -1413,7 +1414,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // wrapper text); the force/risk probes below get envelope-stripped text
     // so Cursor's <user_info>/<rules> blocks can't fire triggers on "Hi".
     const isSuggestionMode = _lastUserText.includes('[SUGGESTION MODE:');
-    const _lastUserAskClean = require("../routing/harness-envelope").stripHarnessEnvelope(_lastUserText);
+    const _lastUserAskClean = stripHarnessEnvelope(_lastUserText);
     // Tool-lessness alone is NOT harness evidence: generic API clients
     // (curl, benchmarks, SDKs) legitimately send bare messages and must get
     // full routing — live regression 2026-07-08: a benchmark's security-

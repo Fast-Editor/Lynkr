@@ -53,9 +53,9 @@ const WARMUP_TIMEOUT_MS = 45_000;
 // Operator decision 2026-09-27 ("No blocking shell"): auto-approve ALL agent
 // permission requests — shell execution included — on both the ACP and
 // one-shot paths. NOTE: with shell allowed, the sandbox cwd is a default
-// directory, not a security boundary. Flip to false to restore the
+// directory, not a security boundary. CURSOR_AUTO_APPROVE=false restores the
 // deny-mutations policy (MCPs-only approval, no --force).
-const CURSOR_AUTO_APPROVE = true;
+const CURSOR_AUTO_APPROVE = process.env.CURSOR_AUTO_APPROVE?.trim().toLowerCase() !== "false";
 
 /**
  * Resolve the binary to spawn. Test-overridable via env only —
@@ -73,10 +73,10 @@ function getBinaryPath(configCursor) {
  * @param {Function} [whichFn] - injectable for tests.
  */
 function isAvailable(whichFn) {
-  const run = whichFn || require("node:child_process").execSync;
+  const run = whichFn || ((bin, opts) => require("node:child_process").execFileSync("which", [bin], opts));
   try {
     const binary = process.env.CURSOR_BINARY_PATH?.trim() || DEFAULT_BINARY;
-    run(`which ${binary}`, { stdio: "ignore" });
+    run(binary, { stdio: "ignore" });
     if (!whichFn) setImmediate(() => warmupCursorAgent().catch(() => {}));
     return true;
   } catch {
@@ -603,7 +603,7 @@ class AcpClient {
 // tier). Sandbox cwd is the default — same invariant as the one-shot path.
 const _acpClients = new Map();
 async function _getAcpClient(binaryPath, cwd) {
-  const key = `${binaryPath} ${cwd}`;
+  const key = `${binaryPath}\u0000${cwd}`;
   let client = _acpClients.get(key);
   if (client && !client.dead) return client;
   client = new AcpClient({ binaryPath, cwd });
@@ -679,7 +679,7 @@ async function warmupCursorAgent(binaryPath) {
     });
     logger.debug("[Cursor] warmup complete — worker hot");
   } catch (err) {
-    logger.debug({ err: err.message }, "[Cursor] warmup failed (non-fatal)");
+    logger.warn({ err: err.message }, "[Cursor] warmup failed (non-fatal) — first request will pay the cold start");
   }
 }
 
