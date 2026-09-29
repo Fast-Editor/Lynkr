@@ -2879,14 +2879,22 @@ function convertOpenAIToAnthropic(response) {
     model: response.model,
     stop_reason: stopReason,
     stop_sequence: null,
-    usage: {
-      input_tokens: response.usage?.prompt_tokens || 0,
-      output_tokens: response.usage?.completion_tokens || 0,
-      // Provider-side prompt-cache hits — telemetry reads this field name.
-      cache_read_input_tokens: response.usage?.cache_read_input_tokens
+    usage: (() => {
+      // Anthropic semantics: input_tokens EXCLUDES cache reads. OpenAI's
+      // prompt_tokens INCLUDES them, so subtract here — downstream rebuilders
+      // (openai-format.js finalUsage/convertUsage) add cache_read back when
+      // emitting OpenAI shape. Copying prompt_tokens verbatim double-counted
+      // cached tokens (2× reported prompt, cache % halved — exp2 2026-09-29).
+      const cacheRead = response.usage?.cache_read_input_tokens
         ?? response.usage?.prompt_tokens_details?.cached_tokens
-        ?? null,
-    }
+        ?? null;
+      return {
+        input_tokens: Math.max(0, (response.usage?.prompt_tokens || 0) - (cacheRead || 0)),
+        output_tokens: response.usage?.completion_tokens || 0,
+        // Provider-side prompt-cache hits — telemetry reads this field name.
+        cache_read_input_tokens: cacheRead,
+      };
+    })()
   };
 }
 
