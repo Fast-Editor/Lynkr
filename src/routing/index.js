@@ -937,13 +937,25 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // Ollama (~200ms). Both are best-effort and fall through as null.
   let queryText = null;
   let queryEmbedding = null;
-  if (config.routing?.knnEnabled !== false) {
+  // 2026-10-01 local patch: LYNKR_KNN_ENABLED=false skips the kNN query AND its
+  // embedding call (~2s/CPU per fresh route) — not just the override.
+  if (config.routing?.knnEnabled !== false && process.env.LYNKR_KNN_ENABLED !== 'false') {
     try {
       const msgs = payload?.messages;
-      const lastMsg = Array.isArray(msgs) ? msgs[msgs.length - 1]?.content : null;
-      queryText = typeof lastMsg === 'string' ? lastMsg
-        : Array.isArray(lastMsg) ? lastMsg.filter(b => b?.type === 'text').map(b => b.text || '').join(' ')
-        : null;
+      // 2026-10-01 local patch: instruction-schema harness (Terminus) — kNN
+      // neighbours should be "similar TASKS", so query by the task instruction
+      // (stable across turns → embedding-cache hits) rather than the latest
+      // terminal output (different every turn, often >2048 tokens → embedder
+      // overflow). Falls back to the last message for every other client.
+      const _harnessAsk = require('./harness-envelope').harnessAskFromPayload(payload);
+      if (_harnessAsk) {
+        queryText = _harnessAsk.text;
+      } else {
+        const lastMsg = Array.isArray(msgs) ? msgs[msgs.length - 1]?.content : null;
+        queryText = typeof lastMsg === 'string' ? lastMsg
+          : Array.isArray(lastMsg) ? lastMsg.filter(b => b?.type === 'text').map(b => b.text || '').join(' ')
+          : null;
+      }
       if (queryText) {
         queryEmbedding = await getKnnRouter().embed(queryText);
       }
@@ -967,7 +979,10 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // High-risk requests jump straight to COMPLEX and skip the rest of
   // the analysis. This is independent of complexity score — a one-line
   // edit to auth/middleware.ts should never go to a local model.
-  if (risk?.level === 'high' && isFallbackEnabled()) {
+  // 2026-09-30 local patch: RISK_TIER_ESCALATION=false disables this gate
+  // (benchmark tasks are ABOUT security/permissions as subject matter,
+  // which is not the same as being risky).
+  if (process.env.RISK_TIER_ESCALATION !== 'false' && risk?.level === 'high' && isFallbackEnabled()) {
     try {
       const selector = getModelTierSelector();
       // Config B (local → GLM → Claude): high-risk requests route to the
@@ -1742,6 +1757,29 @@ async function _determineProviderSmartInner(payload, options = {}) {
         // Confidence thresholds (env-configurable; defaults 0.7 high / 0.4 low):
         const KNN_HIGH = Number.parseFloat(process.env.LYNKR_KNN_CONFIDENCE_HIGH) || 0.7;
         const KNN_LOW  = Number.parseFloat(process.env.LYNKR_KNN_CONFIDENCE_LOW)  || 0.4;
+        // 2026-10-01 local patch: the kNN index remembers provider/model pairs
+        // from PAST runs and must never route to a model that is no longer in
+        // any TIER_* entry (live incident: 81 calls sent to a decommissioned
+        // Baidu glm-5.2 → 403s → 7 benchmark tasks killed). Also honour a
+        // kill switch (LYNKR_KNN_ENABLED=false).
+        if (knnResult && process.env.LYNKR_KNN_ENABLED === 'false') {
+          knnResult = null;
+        }
+        if (knnResult && knnResult.model) {
+          try {
+            const _sel = getModelTierSelector();
+            const _allowed = new Set();
+            for (const _t of TIER_ORDER) for (const _m of (_sel.getModelsForTier(_t) || [])) _allowed.add(`${_m.provider}:${_m.model}`);
+            const _pick = `${knnResult.provider}:${knnResult.model}`;
+            if (_allowed.size > 0 && !_allowed.has(_pick)) {
+              logger.info({ pick: _pick, confidence: knnResult.confidence?.toFixed?.(3) }, '[Routing] kNN pick not in configured tiers — ignored');
+              knnResult = { ...knnResult, model: null, provider: null };
+            }
+          } catch (err) {
+            logger.debug({ err: err?.message }, '[Routing] kNN tier validation failed — pick ignored');
+            knnResult = { ...knnResult, model: null, provider: null };
+          }
+        }
         if (knnResult && knnResult.confidence > KNN_HIGH && knnResult.model && knnResult.model !== selectedModel) {
           // High confidence — trust kNN's model recommendation directly.
           logger.debug({

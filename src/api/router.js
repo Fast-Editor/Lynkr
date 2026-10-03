@@ -131,8 +131,17 @@ async function pickTierByIntent(body) {
   const textBearingMsgs = allUserMsgs.filter(
     (m) => extractCleanUserText({ messages: [m] })
   );
-  const windowUserMsgs = (textBearingMsgs.length > 0 ? textBearingMsgs : allUserMsgs)
+  let windowUserMsgs = (textBearingMsgs.length > 0 ? textBearingMsgs : allUserMsgs)
     .slice(-N); // chronological, oldest-first
+  // 2026-10-02 local patch: instruction-schema harness sessions (Terminus) —
+  // the ask is the task instruction for every turn; later user turns are
+  // terminal output. Scoring the last N stdout turns demoted strong-start
+  // tasks mid-session (v12: 62 COMPLEX→MEDIUM demotions). Score the
+  // instruction once instead, so the tier is stable across the session.
+  try {
+    const _hAsk = require("../routing/harness-envelope").harnessAskFromPayload(body);
+    if (_hAsk?.text) windowUserMsgs = [{ role: 'user', content: _hAsk.text }];
+  } catch { /* fall back to the sliding window */ }
 
   // WS3 — we USED to slice tools to 3 here so Claude Code's 11 baseline
   // tools didn't inflate the agentic detector's tool-count signal. That
@@ -1422,7 +1431,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // reached the risk classifier. Require a detected client profile
     // (harness UA / tool fingerprint) before treating tool-less traffic as
     // side traffic; a suggestion-mode tag is harness evidence by itself.
-    const isKnownHarness = !!req.body?._clientProfile;
+    // 2026-10-01 local patch: profiles that are tool-less BY DESIGN (Terminus-
+    // style JSON-command harnesses) must not make bare traffic look like side
+    // requests — every one of their turns is tool-less and is the real ask.
+    const isKnownHarness = !!req.body?._clientProfile && req.body._clientProfile.toolless !== true;
     // Signal 1 — message-count regression. Real turns grow the transcript
     // monotonically; a harness replay (title-gen, recap, summary) truncates
     // the history down to the wrapper prompt. If this payload has fewer
@@ -1540,11 +1552,16 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       let _pinForceBypass = null;
       if (!sideTier && pinCheck.serve && pinCheck.reason === 'guards_passed' && !isSideRequest) {
         try {
-          const _probe = { messages: [{ role: 'user', content: _lastUserAskClean || '' }] };
+          // 2026-10-02 local patch: for instruction-schema harness sessions the
+          // ask is the task instruction, not the latest terminal output — probe
+          // that (stdout routinely contains "permission"/"security"/"verify"…).
+          // The risk bypass also honours RISK_TIER_ESCALATION like the main gate.
+          const _harnessAskForPin = require("../routing/harness-envelope").harnessAskFromPayload(req.body);
+          const _probe = { messages: [{ role: 'user', content: (_harnessAskForPin ? _harnessAskForPin.text : _lastUserAskClean) || '' }] };
           const ca = require("../routing/complexity-analyzer");
           if (_lastUserText && ca.shouldForceReasoning(_probe)) _pinForceBypass = 'force_reasoning';
           else if (_lastUserText && ca.shouldForceCloud(_probe)) _pinForceBypass = 'force_cloud';
-          else if (_lastUserText) {
+          else if (_lastUserText && process.env.RISK_TIER_ESCALATION !== 'false') {
             const _pinRisk = analyzeRisk(_probe);
             if (_pinRisk?.level === 'high') _pinForceBypass = 'risk_high';
           }

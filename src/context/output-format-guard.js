@@ -82,6 +82,10 @@ function appendToSystem(system, text) {
  */
 function injectFormatGuard(body, opts = {}) {
   if (!body) return body;
+  // 2026-10-02 local patch: FMT_GUARD_ENABLED=false disables the guard. Its
+  // "use fenced code blocks" instruction contradicts agent harnesses that
+  // demand raw JSON ("Don't include markdown formatting").
+  if (process.env.FMT_GUARD_ENABLED === "false") return body;
   const { provider, model } = opts;
   if (producesCleanMarkdown(provider, model)) return body;
 

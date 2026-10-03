@@ -48,6 +48,64 @@ const UNCLOSED_RES = ENVELOPE_TAGS.map(
 );
 const USER_QUERY_RE = /<user_query(?:\s[^>]*)?>([\s\S]*?)<\/user_query>/gi;
 
+// ---------------------------------------------------------------------------
+// 2026-10-01 local patch — instruction-schema agent harnesses (Terminus /
+// Terminal-Bench style). The harness wraps the task in a fixed preamble, a
+// JSON response schema and a terminal snapshot; the user's actual ask is the
+// `Instruction:` block. Later turns carry only terminal output. Scanners
+// must evaluate the INSTRUCTION, not the preamble ("solving command-line
+// tasks", "verify", "Docker") or stdout noise (pip logs, ls errors).
+// ---------------------------------------------------------------------------
+const HARNESS_PREAMBLE_RES = [
+  /You are an AI assistant tasked with solving command-line tasks/i,
+  /"title":\s*"CommandBatchResponse"/,
+];
+const HARNESS_INSTRUCTION_RE = /(?:^|\n)Instruction:\s*\n([\s\S]*?)\n\s*\n(?:Your response must be|Your response|Respond)/i;
+
+function isHarnessPrompt(text) {
+  return typeof text === 'string' && HARNESS_PREAMBLE_RES.some((re) => re.test(text));
+}
+
+/**
+ * @param {string} text - one user message's text
+ * @returns {string|null} the task instruction when `text` is a recognised
+ *   instruction-schema harness prompt; null otherwise (not a harness prompt,
+ *   or the instruction block could not be isolated).
+ */
+function extractHarnessInstruction(text) {
+  if (!isHarnessPrompt(text)) return null;
+  const m = HARNESS_INSTRUCTION_RE.exec(text);
+  const instr = m ? m[1].trim() : '';
+  return instr.length > 0 ? instr : null;
+}
+
+function _msgText(msg) {
+  if (!msg) return '';
+  if (typeof msg.content === 'string') return msg.content;
+  if (Array.isArray(msg.content)) {
+    return msg.content.filter((b) => b?.type === 'text' && typeof b.text === 'string').map((b) => b.text).join(' ');
+  }
+  return '';
+}
+
+/**
+ * Harness-aware ask for a whole payload: when the FIRST user message is a
+ * recognised instruction-schema harness prompt, the task instruction is the
+ * ask for every turn of the session (later user turns are terminal output).
+ * @param {object} payload - { messages }
+ * @returns {{ text: string, index: number }|null}
+ */
+function harnessAskFromPayload(payload) {
+  const msgs = payload?.messages;
+  if (!Array.isArray(msgs)) return null;
+  for (let i = 0; i < msgs.length; i++) {
+    if (msgs[i]?.role !== 'user') continue;
+    const instr = extractHarnessInstruction(_msgText(msgs[i]));
+    return instr ? { text: instr, index: i } : null;
+  }
+  return null;
+}
+
 /**
  * @param {string} text - one user message's text content
  * @returns {string} the user's ask with harness envelope blocks removed;
@@ -55,6 +113,9 @@ const USER_QUERY_RE = /<user_query(?:\s[^>]*)?>([\s\S]*?)<\/user_query>/gi;
  */
 function stripHarnessEnvelope(text) {
   if (typeof text !== 'string' || text.length === 0) return typeof text === 'string' ? text : '';
+  // Instruction-schema harness prompt → the ask IS the instruction block.
+  const harnessInstr = extractHarnessInstruction(text);
+  if (harnessInstr) return harnessInstr;
   try {
     if (!text.includes('<')) return text;
     const queries = [...text.matchAll(USER_QUERY_RE)].map((m) => m[1].trim()).filter(Boolean);
@@ -68,4 +129,4 @@ function stripHarnessEnvelope(text) {
   }
 }
 
-module.exports = { stripHarnessEnvelope, ENVELOPE_TAGS };
+module.exports = { stripHarnessEnvelope, ENVELOPE_TAGS, isHarnessPrompt, extractHarnessInstruction, harnessAskFromPayload };

@@ -34,6 +34,20 @@ const logger = require('../logger');
  * tool, add it here (or override via data/client-profiles.json).
  */
 const PROFILES = {
+  // 2026-10-01 local patch: Terminus / Terminal-Bench style harness. Tool-less
+  // (commands ride inside a JSON reply), identified by its fixed preamble
+  // instead of UA/tool fingerprints. The ask is the `Instruction:` block —
+  // see harness-envelope.extractHarnessInstruction / harnessAskFromPayload.
+  'terminus': {
+    name: 'terminus',
+    toolless: true,
+    baselineTools: new Set(),
+    detect: {
+      headerPatterns: [],
+      promptPatterns: [/You are an AI assistant tasked with solving command-line tasks/i],
+      minToolFingerprintMatch: 1,
+    },
+  },
   'claude-code': {
     name: 'claude-code',
     baselineTools: new Set([
@@ -257,6 +271,20 @@ function detectClient({ headers = {}, payload = {} } = {}) {
     }
   }
 
+  // 2026-10-01 local patch: prompt-pattern detection for tool-less harnesses —
+  // match the FIRST user message against profiles declaring promptPatterns.
+  const firstUser = Array.isArray(payload.messages) ? payload.messages.find((m) => m?.role === 'user') : null;
+  if (firstUser) {
+    const txt = typeof firstUser.content === 'string' ? firstUser.content
+      : Array.isArray(firstUser.content) ? firstUser.content.filter((b) => b?.type === 'text').map((b) => b.text || '').join(' ') : '';
+    if (txt) {
+      for (const profile of Object.values(PROFILES)) {
+        for (const pattern of (profile.detect.promptPatterns || [])) {
+          if (pattern.test(txt)) return profile;
+        }
+      }
+    }
+  }
   const tools = Array.isArray(payload.tools) ? payload.tools : [];
   if (tools.length === 0) return null;
 
