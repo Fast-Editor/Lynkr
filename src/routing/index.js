@@ -1414,7 +1414,12 @@ async function _determineProviderSmartInner(payload, options = {}) {
       && analysis?.mode === 'weighted' && analysis?.breakdown) {
       const { buildRequirementVector } = require('./capabilities');
       const sf = require('./shortfall');
-      const req = buildRequirementVector({ dimensions: analysis.breakdown, agenticResult });
+      // 2026-10-03: lift the structural vector with the semantic signals the
+      // main path already computed (anchor intent score, Jev tier
+      // probabilities) — see shortfall.liftRequirement for why.
+      const _structuralReq = buildRequirementVector({ dimensions: analysis.breakdown, agenticResult });
+      const _lifted = sf.liftRequirement(_structuralReq, { anchorScore: analysis.anchorScore, jev: analysis.jev });
+      const req = _lifted.req;
       // Candidates constrained to the user's TIER_* (same eligibility rule
       // as the bandit in decide.js) with tier labels attached for capability
       // resolution. Dedupe identical provider:model keeping the highest tier.
@@ -1467,6 +1472,8 @@ async function _determineProviderSmartInner(payload, options = {}) {
         const agreed = serveResult.selected.provider === provider && serveResult.selected.model === selectedModel;
         shortfallInfo = {
           req,
+          structuralReq: _structuralReq,
+          lift: _lifted.lift.applied,
           tau: result.tau,
           selected: serveResult.selected,
           wanted: result.selected,
@@ -1475,6 +1482,8 @@ async function _determineProviderSmartInner(payload, options = {}) {
         };
         logger.debug({
           req,
+          structuralReq: _structuralReq,
+          lift: _lifted.lift.applied,
           tau: result.tau,
           legacy: `${tier}:${provider}:${selectedModel}`,
           shortfall: `${result.selected.tier}:${result.selected.provider}:${result.selected.model}`,

@@ -1176,7 +1176,11 @@ function getAnalytics(opts = {}) {
 function jevFields(src) {
   const j = (src && typeof src === 'object')
     ? (src.jev && typeof src.jev === 'object' ? src.jev
-      : (src.analysis && typeof src.analysis === 'object' && src.analysis.jev ? src.analysis.jev : null))
+      // 2026-10-03: the window-scoring wrapper (api/router.js) carries the
+      // verdict as `_jev`; without this every `+window` row logged null Jev
+      // columns while the judge was in fact re-tiering ~36% of fresh routes.
+      : (src._jev && typeof src._jev === 'object' ? src._jev
+      : (src.analysis && typeof src.analysis === 'object' && src.analysis.jev ? src.analysis.jev : null)))
     : null;
   if (!j) {
     return {

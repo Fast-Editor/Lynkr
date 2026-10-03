@@ -2059,6 +2059,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // WS4 — propensity + candidates land on every telemetry row so downstream
     // off-policy evaluation can score any counterfactual policy from logs.
     if (tier.propensity != null) req.body._propensity = tier.propensity;
+    // 2026-10-03: carry the Jev verdict across the forced-provider hop so
+    // telemetry.jevFields(routingResult) can record it (it was dropped here,
+    // leaving jev_* columns null on every served row).
+    if (tier._jev && typeof tier._jev === 'object') req.body._jev = tier._jev;
     if (tier.candidates) req.body._candidates = tier.candidates;
     // WS5 — bandit context vector + query embedding for the feedback loop.
     // All three are underscored; `_stripInternalFields` scrubs them before

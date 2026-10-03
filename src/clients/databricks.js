@@ -3877,6 +3877,8 @@ async function invokeModel(body, options = {}) {
         // TaskBand stamp for the continuation telemetry columns
         // (telemetry.taskbandFields reads routingResult.taskband).
         taskband: body._taskband ?? null,
+        // Jev verdict (telemetry.jevFields reads routingResult.jev).
+        jev: body._jev ?? null,
         // WS4 — off-policy evaluation from telemetry alone requires
         // propensity + candidates on every row. Deterministic default is
         // 1.0 with a single-entry candidate list matching the served pair.
