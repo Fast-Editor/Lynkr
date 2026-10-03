@@ -41,12 +41,6 @@ function openaiResponseFormat(body, schemaSupported) {
   if (so.kind === "json_schema" && schemaSupported) return { type: "json_schema", json_schema: { name: String(so.name).slice(0, 64), schema: so.schema } };
   return { type: "json_object" };
 }
-/** Anthropic-style output_format (for Anthropic-compatible endpoints such as Z.AI). */
-function anthropicOutputFormat(body) {
-  const so = clientStructuredOutput(body);
-  if (!so) return null;
-  return so.kind === "json_schema" ? { type: "json_schema", schema: so.schema } : null;
-}
 const { convertAnthropicToolsToOpenRouter } = require("./openrouter-utils");
 
 /**
