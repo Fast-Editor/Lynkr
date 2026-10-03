@@ -29,7 +29,9 @@ async function generateOllamaEmbedding(text) {
   });
 
   if (!response.ok) {
-    throw new Error(`Ollama embedding failed: ${response.status} ${response.statusText}`);
+    let body = '';
+    try { body = (await response.text()).slice(0, 300); } catch { /* ignore */ }
+    throw new Error(`Ollama embedding failed: ${response.status} ${response.statusText}${body ? ' — ' + body : ''}`);
   }
 
   const data = await response.json();
@@ -178,6 +180,10 @@ function _noteRecovery(providerName) {
 // absorbs the blip; a provider that is actually down fails twice and
 // degrades exactly as before.
 const TRANSIENT_RETRY_DELAY_MS = 1500;
+const _INPUT_LENGTH_RE = /context length|input length|too long|exceeds? (the )?(maximum|context)|maximum context/i;
+function _isInputLengthError(err) {
+  return _INPUT_LENGTH_RE.test(String(err?.message || err || ''));
+}
 
 function _wrapProvider(providerName, providerFn) {
   return async (text) => {
@@ -196,6 +202,20 @@ function _wrapProvider(providerName, providerFn) {
       _noteRecovery(providerName);
       return result;
     } catch (firstErr) {
+      if (_isInputLengthError(firstErr)) {
+        try {
+          const result = await providerFn(text.slice(0, Math.max(256, Math.floor(text.length / 2))));
+          logger.debug({ provider: providerName, chars: text.length },
+            '[Embeddings] Input exceeded model context — embedded truncated half instead');
+          return result;
+        } catch (lenErr) {
+          logger.warn({ provider: providerName, error: lenErr?.message, chars: text.length },
+            '[Embeddings] Input-length rejection persisted after halving — hash fallback for this request only');
+          fallbackCount += 1;
+          if (STRICT) throw lenErr;
+          return generateHashEmbedding(text);
+        }
+      }
       // Already-degraded providers get no second chance (this attempt WAS the
       // post-cooldown probe); healthy ones earn one retry before the flip.
       if (embeddingProviderAvailable !== false) {
@@ -282,8 +302,7 @@ async function generateEmbedding(text) {
     throw new Error('Cannot generate embedding for empty text');
   }
 
-  // Truncate very long text (most embedding models have limits)
-  const maxLength = 8000;
+  const maxLength = Number.parseInt(process.env.LYNKR_EMBEDDINGS_MAX_CHARS, 10) || 5000;
   const truncated = text.length > maxLength ? text.substring(0, maxLength) : text;
 
   const embedFn = getEmbeddingFunction();

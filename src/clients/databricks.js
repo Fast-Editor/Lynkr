@@ -8,12 +8,33 @@ const { getMetricsCollector } = require("../observability/metrics");
 const { getHealthTracker } = require("../observability/health-tracker");
 const { createBulkhead } = require("./resilience");
 const logger = require("../logger");
-const { STANDARD_TOOLS, STANDARD_TOOL_NAMES } = require("./standard-tools");
+
+function clientStructuredOutput(body) {
+  if (process.env.LYNKR_FORWARD_RESPONSE_FORMAT === "false") return null;
+  const of = body?.output_format;
+  if (of && typeof of === "object") {
+    if (of.type === "json_schema" && of.schema) return { kind: "json_schema", schema: of.schema, name: of.name || of.schema?.title || "response" };
+    if (of.type === "json_object") return { kind: "json_object" };
+  }
+  const rf = body?.response_format;
+  if (rf && typeof rf === "object") {
+    if (rf.type === "json_schema" && rf.json_schema?.schema) return { kind: "json_schema", schema: rf.json_schema.schema, name: rf.json_schema.name || "response" };
+    if (rf.type === "json_object") return { kind: "json_object" };
+  }
+  return null;
+}
+/** OpenAI-style response_format for a provider; schemaSupported=false → json_object. */
+function openaiResponseFormat(body, schemaSupported) {
+  const so = clientStructuredOutput(body);
+  if (!so) return null;
+  if (so.kind === "json_schema" && schemaSupported) return { type: "json_schema", json_schema: { name: String(so.name).slice(0, 64), schema: so.schema } };
+  return { type: "json_object" };
+}
 const { convertAnthropicToolsToOpenRouter } = require("./openrouter-utils");
 
 /**
  * Capability-boundary guard (issue #114): a caller that sets
- * tool_choice "none" grants no tools. Substituting STANDARD_TOOLS widens
+ * tool_choice "none" grants no tools. Substituting server-side tools would widen
  * the grant to shell execution with zero caller-visible signal, so every
  * injection site below must consult this first. Matches the convention
  * already used by the OpenRouter ingress path.
@@ -214,17 +235,7 @@ async function invokeDatabricks(body, _incomingHeaders = {}) {
   // Create a copy of body to avoid mutating the original
   const databricksBody = { ...body };
 
-  // Inject standard tools if client didn't send any (passthrough mode).
-  // Never when the caller declined tools (issue #114).
-  if (!toolsDeclined(body) && (!Array.isArray(databricksBody.tools) || databricksBody.tools.length === 0)) {
-    databricksBody.tools = STANDARD_TOOLS;
-    logger.debug({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOL_NAMES,
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (Databricks) ===");
-  }
-
+  
   // Convert Anthropic format tools to OpenAI format (Databricks uses OpenAI format)
   if (Array.isArray(databricksBody.tools) && databricksBody.tools.length > 0) {
     // Check if tools are already in OpenAI format (have type: "function")
@@ -560,9 +571,6 @@ async function invokeOllama(body, _incomingHeaders = {}) {
 
   if (!supportsTools) {
     toolsToSend = null;
-  } else if (!toolsDeclined(body) && injectToolsOllama && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
   }
 
   // Consolidated tool injection log
@@ -841,6 +849,61 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
     stream: body.stream ?? false
   };
 
+  {
+    // Per-model pin: OPENROUTER_PROVIDER_ORDER_MAP="deepseek-v4.1-flash=DeepSeek;glm-5.3-flash=Novita,DeepInfra"
+    // (';' between models, ',' between providers; substring match on model id). Global knob is the default.
+    let _orderSrc = process.env.OPENROUTER_PROVIDER_ORDER || "";
+    for (const entry of (process.env.OPENROUTER_PROVIDER_ORDER_MAP || "").split(";")) {
+      const eq = entry.indexOf("=");
+      if (eq < 0) continue;
+      const k = entry.slice(0, eq).trim(), v = entry.slice(eq + 1).trim();
+      if (k && v && String(openRouterBody.model).includes(k)) { _orderSrc = v; break; }
+    }
+    const _order = _orderSrc.split(",").map((x) => x.trim()).filter(Boolean);
+    if (_order.length) {
+      openRouterBody.provider = { order: _order, allow_fallbacks: process.env.OPENROUTER_ALLOW_FALLBACKS === "true" };
+    }
+    openRouterBody._pinnedProviders = _order;
+    let _effort = process.env.OPENROUTER_REASONING_EFFORT || null;
+    const _map = process.env.OPENROUTER_REASONING_EFFORT_MAP || "";
+    for (const pair of _map.split(",")) {
+      const [k, v] = pair.split("=").map((x) => (x || "").trim());
+      if (k && v && String(openRouterBody.model).includes(k)) { _effort = v; break; }
+    }
+    if (body.thinking?.type === "enabled" && body.thinking.budget_tokens) {
+      openRouterBody.reasoning = { max_tokens: body.thinking.budget_tokens };
+    } else if (_effort) {
+      openRouterBody.reasoning = { effort: _effort };
+    }
+    // Per-model map lookup helper: "k1=v1,k2=v2" (substring match on model id).
+    const _mapLookup = (envName) => {
+      for (const pair of (process.env[envName] || "").split(",")) {
+        const [k, v] = pair.split("=").map((x) => (x || "").trim());
+        if (k && v && String(openRouterBody.model).includes(k)) return v;
+      }
+      return null;
+    };
+    const _cap = parseInt(_mapLookup("OPENROUTER_MAX_TOKENS_MAP") || "", 10);
+    if (_cap > 0 && openRouterBody.max_tokens > _cap) openRouterBody.max_tokens = _cap;
+    // Schema enforcement only where the host supports it (Novita / DeepSeek
+    // official reject json_schema; Friendli, Parasail, Together, Xiaomi honour it).
+    //   OPENROUTER_SCHEMA_PROVIDERS="Friendli,Parasail,Together,Xiaomi"
+    const _schemaProviders = (process.env.OPENROUTER_SCHEMA_PROVIDERS || "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const _schemaOk = (prov) => !!prov && _schemaProviders.includes(String(prov).toLowerCase());
+    const _globalSchema = process.env.OPENROUTER_RESPONSE_FORMAT_SCHEMA === "true";
+    const _rf = openaiResponseFormat(body, _globalSchema || _schemaOk(_order[0]));
+    if (_rf) {
+      if (_rf.type === "json_schema") { _rf.json_schema.strict = true; if (openRouterBody.provider) openRouterBody.provider.require_parameters = true; }
+      openRouterBody.response_format = _rf;
+    }
+    openRouterBody._schemaOk = _schemaOk;
+    // Upstream timeout (Lynkr had none → waited 846s on a stalled host).
+    //   OPENROUTER_TIMEOUT_MS=150000  OPENROUTER_TIMEOUT_MS_MAP="glm-5.3-flash=90000"
+    openRouterBody._timeoutMs = parseInt(_mapLookup("OPENROUTER_TIMEOUT_MS_MAP") || process.env.OPENROUTER_TIMEOUT_MS || "150000", 10);
+    // Ask for provider-side usage (cached prompt tokens, reasoning tokens, cost).
+    openRouterBody.usage = { include: true };
+  }
+
   // Issue #95: forward the Lynkr session id so OpenRouter's meta-routers
   // (auto/pareto) can apply session stickiness — without it every call in a
   // pinned session re-ranks fresh and one agentic task can span 6+ models.
@@ -852,16 +915,7 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
-    logger.debug({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOL_NAMES,
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (OpenRouter) ===");
-  }
-
+  
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     openRouterBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     logger.debug({
@@ -877,16 +931,85 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
 
   // Same pre-return 429 check as invokeMoonshot/invokeBaidu — see the comment
   // on invokeOpenAI's equivalent check for why this matters for streaming.
-  const response = await performJsonRequest(endpoint, {
-    headers,
-    body: openRouterBody,
-    retryableStatusesOverride: [500, 502, 503, 504],
-  }, "OpenRouter");
+  const _pinnedProviders = openRouterBody._pinnedProviders; delete openRouterBody._pinnedProviders;
+  const _schemaOkFn = openRouterBody._schemaOk; delete openRouterBody._schemaOk;
+  const _timeoutMs = openRouterBody._timeoutMs; delete openRouterBody._timeoutMs;
+  const _isTimeout = (e) => e && (e.name === "TimeoutError" || e.name === "AbortError" || e.cause?.name === "TimeoutError" || e.code === "UND_ERR_HEADERS_TIMEOUT");
+  let response, _lastErr = null;
+  const _orders = _pinnedProviders && _pinnedProviders.length > 1
+    ? _pinnedProviders.map((_, i) => _pinnedProviders.slice(i))
+    : [_pinnedProviders || []];
+  for (let ai = 0; ai < _orders.length; ai++) {
+    const ord = _orders[ai];
+    if (ord.length) {
+      openRouterBody.provider = { ...(openRouterBody.provider || {}), order: ord, allow_fallbacks: process.env.OPENROUTER_ALLOW_FALLBACKS === "true" };
+      const wantSchema = !!(_schemaOkFn && _schemaOkFn(ord[0])) || process.env.OPENROUTER_RESPONSE_FORMAT_SCHEMA === "true";
+      const rf = openaiResponseFormat(body, wantSchema);
+      if (rf) { if (rf.type === "json_schema") rf.json_schema.strict = true; openRouterBody.response_format = rf; }
+      openRouterBody.provider.require_parameters = !!(rf && rf.type === "json_schema");
+    }
+    const t0 = Date.now();
+    try {
+      response = await performJsonRequest(endpoint, {
+        headers,
+        body: openRouterBody,
+        retryableStatusesOverride: [500, 502, 503, 504],
+        timeoutMs: _timeoutMs,
+      }, "OpenRouter");
+      _lastErr = null;
+    } catch (e) {
+      _lastErr = e; response = null;
+    }
+    const failedSoft = response && !response.ok && (response.status >= 500 || response.status === 404 || response.status === 429);
+    if ((_lastErr || failedSoft) && ai < _orders.length - 1) {
+      logger.warn({
+        model: openRouterBody.model, failedProvider: ord[0], nextProviders: _orders[ai + 1],
+        reason: _lastErr ? (_isTimeout(_lastErr) ? `timeout after ${Date.now() - t0}ms (limit ${_timeoutMs})` : _lastErr.message) : `HTTP ${response.status} ${String(response.json?.error?.message || "").slice(0, 100)}`,
+      }, "[Failover] OpenRouter provider failed — trying next pinned provider");
+      continue;
+    }
+    break;
+  }
+  if (_lastErr) {
+    if (_isTimeout(_lastErr)) { const err = new Error(`OpenRouter upstream timeout (${_timeoutMs}ms) on ${openRouterBody.model} via ${(_pinnedProviders || []).join(",") || "auto"}`); err.status = 504; err.code = "UPSTREAM_TIMEOUT"; throw err; }
+    throw _lastErr;
+  }
+  openRouterBody._pinnedProviders = _pinnedProviders;
 
   if (!response.ok && response.status === 429) {
     const err = new Error(`OpenRouter rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
     err.status = 429;
     throw err;
+  }
+
+  // Streaming: hand the raw SSE stream to the orchestrator's stream branch.
+  if (response?.stream) {
+    return response;
+  }
+
+  if (response?.ok && response?.json?.choices) {
+    const raw = response.json;
+    const anthropicJson = convertOpenAIToAnthropic(raw);
+    if (raw.model) anthropicJson._providerModel = raw.model;
+    if (raw.provider) anthropicJson._providerName = raw.provider;
+    const _pinned = (openRouterBody._pinnedProviders || []).map((x) => String(x).toLowerCase());
+    if (_pinned.length && raw.provider && !_pinned.includes(String(raw.provider).toLowerCase())) {
+      logger.warn({ pinned: _pinned, served: raw.provider, model: raw.model }, "[ProviderCheck] OpenRouter served a provider outside OPENROUTER_PROVIDER_ORDER");
+    }
+    logger.info({
+      model: raw.model, provider: raw.provider,
+      prompt_tokens: raw.usage?.prompt_tokens, cached_tokens: raw.usage?.prompt_tokens_details?.cached_tokens,
+      completion_tokens: raw.usage?.completion_tokens, reasoning_tokens: raw.usage?.completion_tokens_details?.reasoning_tokens,
+      cost_usd: raw.usage?.cost,
+    }, "=== OpenRouter USAGE ===");
+    return {
+      ok: response.ok,
+      status: response.status,
+      json: anthropicJson,
+      text: JSON.stringify(anthropicJson),
+      contentType: "application/json",
+      headers: response.headers,
+    };
   }
 
   return response;
@@ -933,16 +1056,7 @@ async function invokeEdenAI(body, _incomingHeaders = {}) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
-    logger.debug({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOL_NAMES,
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (Eden AI) ===");
-  }
-
+  
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     edenAIBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     logger.debug({
@@ -1042,16 +1156,7 @@ async function invokeAzureOpenAI(body, _incomingHeaders = {}) {
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
-    logger.debug({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOL_NAMES,
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS ===");
-  }
-
+  
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     azureBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     azureBody.parallel_tool_calls = true;
@@ -1485,21 +1590,19 @@ async function invokeOpenAI(body, _incomingHeaders = {}) {
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
+  if (process.env.OPENAI_REASONING_EFFORT && (!body.thinking || body.thinking?.type === "disabled")) {
+    openAIBody.reasoning_effort = process.env.OPENAI_REASONING_EFFORT;
+  }
+  {
+    const _rf = openaiResponseFormat(body, process.env.OPENAI_RESPONSE_FORMAT_SCHEMA !== "false");
+    if (_rf) openAIBody.response_format = _rf;
+  }
 
   // Add tools - inject standard tools if client didn't send any (passthrough mode)
   let toolsToSend = body.tools;
   let toolsInjected = false;
 
-  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
-    logger.debug({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOL_NAMES,
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (OpenAI) ===");
-  }
-
+  
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     openAIBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     openAIBody.parallel_tool_calls = false;  // Disable parallel tool calls - GPT often makes duplicate calls
@@ -1571,11 +1674,7 @@ async function invokeAtlas(body) {
 
   let toolsToSend = body.tools;
   let toolsInjected = false;
-  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
-  }
-
+  
   if (toolsToSend.length > 0) {
     atlasBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     atlasBody.parallel_tool_calls = false;
@@ -1709,22 +1808,9 @@ async function invokeLlamaCpp(body, _incomingHeaders = {}) {
     stream: body.stream ?? false
   };
 
-  // Inject standard tools if client didn't send any
   let toolsToSend = body.tools;
-  let toolsInjected = false;
+  const toolsInjected = false;
 
-  const injectToolsLlamacpp = process.env.INJECT_TOOLS_LLAMACPP !== "false";
-  if (!toolsDeclined(body) && injectToolsLlamacpp && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
-    logger.debug({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOL_NAMES,
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (llama.cpp) ===");
-  } else if (!injectToolsLlamacpp) {
-    logger.debug({}, "Tool injection disabled for llama.cpp (INJECT_TOOLS_LLAMACPP=false)");
-  }
 
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     llamacppBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
@@ -1808,20 +1894,10 @@ async function invokeLMStudio(body, _incomingHeaders = {}) {
     stream: body.stream ?? false
   };
 
-  // Inject standard tools if client didn't send any
   let toolsToSend = body.tools;
-  let toolsInjected = false;
+  const toolsInjected = false;
 
-  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    toolsInjected = true;
-    logger.debug({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOL_NAMES,
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (LM Studio) ===");
-  }
-
+  
   if (Array.isArray(toolsToSend) && toolsToSend.length > 0) {
     lmstudioBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
     lmstudioBody.tool_choice = forwardToolChoice(body);
@@ -1971,15 +2047,7 @@ async function invokeBedrock(body, _incomingHeaders = {}) {
   // Inject standard tools if needed
   let toolsToSend = body.tools;
 
-  if (!toolsDeclined(body) && (!Array.isArray(toolsToSend) || toolsToSend.length === 0)) {
-    toolsToSend = STANDARD_TOOLS;
-    logger.debug({
-      injectedToolCount: STANDARD_TOOLS.length,
-      injectedToolNames: STANDARD_TOOL_NAMES,
-      reason: "Client did not send tools (passthrough mode)"
-    }, "=== INJECTING STANDARD TOOLS (Bedrock) ===");
-  }
-
+  
   // Normalize away cache_control / array shapes that prompt-cache injection
   // may have applied: the Converse API expects plain-string system and
   // message content, not Anthropic cache_control blocks.
@@ -2162,7 +2230,7 @@ async function invokeZai(body, _incomingHeaders = {}) {
   };
 
   const requestedModel = body._tierModel || body.model || config.zai.model;
-  let mappedModel = modelMap[requestedModel] || config.zai.model || "glm-4.7";
+  let mappedModel = modelMap[requestedModel] || (body._tierModel ? requestedModel : null) || config.zai.model || "glm-4.7";
   mappedModel = mappedModel.toLowerCase();
 
   let zaiBody;
@@ -2227,6 +2295,11 @@ async function invokeZai(body, _incomingHeaders = {}) {
       temperature: body.temperature ?? 0.7,
       stream: body.stream,
     };
+    {
+      // OpenAI-compat branch → response_format (Z.AI accepts json_schema here).
+      const _rf = openaiResponseFormat(body, true);
+      if (_rf) zaiBody.response_format = _rf;
+    }
 
     if (tools && tools.length > 0) {
       zaiBody.tools = tools;
@@ -2263,17 +2336,7 @@ async function invokeZai(body, _incomingHeaders = {}) {
     // that's a different bug — add zai to DEFAULT_OPENAI_SSE_PROVIDERS then,
     // don't reintroduce this override.
 
-    // Inject standard tools if client didn't send any (passthrough mode).
-    // Never when the caller declined tools (issue #114).
-    if (!toolsDeclined(body) && (!Array.isArray(zaiBody.tools) || zaiBody.tools.length === 0)) {
-      zaiBody.tools = STANDARD_TOOLS;
-      logger.debug({
-        injectedToolCount: STANDARD_TOOLS.length,
-        injectedToolNames: STANDARD_TOOL_NAMES,
-        reason: "Client did not send tools (passthrough mode)"
-      }, "=== INJECTING STANDARD TOOLS (Z.AI Anthropic) ===");
-    }
-
+    
     // Normalize to Anthropic tool shape — the /anthropic/v1/messages endpoint
     // rejects OpenAI-nested tools ({type:"function", function:{name,...}}) with
     // 422 missing body.tools[0].name. Callers that stayed OpenAI-format upstream
@@ -2576,7 +2639,7 @@ async function invokeBaidu(body, _incomingHeaders = {}) {
   const baiduBody = {
     model: mappedModel,
     messages,
-    max_tokens: body.max_tokens || 16384,
+    max_tokens: Math.min(body.max_tokens || 12288, 12288),
     temperature: body.temperature ?? 0.7,
     top_p: body.top_p ?? 1.0,
     // glm-5.2 emits verbose reasoning_content by default, sharing the same
@@ -2727,6 +2790,26 @@ async function invokeFireworks(body, _incomingHeaders = {}) {
     // path below regardless.
     stream: body.stream ?? false,
   };
+  const _keepThinkingRe = new RegExp(process.env.FIREWORKS_THINKING_MODELS || "glm-5p3|glm-5\\.3|deepseek-v4p1-flash", "i");
+  if (_keepThinkingRe.test(String(fireworksBody.model)) && fireworksBody.thinking?.type === "disabled") {
+    delete fireworksBody.thinking;
+  }
+  {
+    let _effort = process.env.FIREWORKS_REASONING_EFFORT || null;
+    const _map = process.env.FIREWORKS_REASONING_EFFORT_MAP || "";
+    for (const pair of _map.split(",")) {
+      const [k, v] = pair.split("=").map((x) => (x || "").trim());
+      if (k && v && String(fireworksBody.model).includes(k)) { _effort = v; break; }
+    }
+    if (_effort && (!body.thinking || body.thinking?.type === "disabled") && !fireworksBody.reasoning_effort) {
+      fireworksBody.reasoning_effort = _effort;
+    }
+  }
+  {
+    // Fireworks 400s on json_schema with $ref; json_object is universally accepted.
+    const _rf = openaiResponseFormat(body, process.env.FIREWORKS_RESPONSE_FORMAT_SCHEMA === "true");
+    if (_rf) fireworksBody.response_format = _rf;
+  }
 
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     fireworksBody.tools = convertAnthropicToolsToOpenRouter(body.tools);
@@ -2771,6 +2854,7 @@ async function invokeFireworks(body, _incomingHeaders = {}) {
 
   if (response?.ok && response?.json) {
     const anthropicJson = convertOpenAIToAnthropic(response.json);
+    if (response.json?.model) anthropicJson._providerModel = response.json.model;
     return {
       ok: response.ok,
       status: response.status,
@@ -2797,7 +2881,9 @@ function convertOpenAIToAnthropic(response) {
   const content = [];
 
   // Extract tool calls embedded as XML/text in content (Minimax, Qwen, GLM, etc.)
-  if (!message.tool_calls?.length && typeof message.content === "string" && message.content.trim()) {
+  const _mc = typeof message.content === "string" ? message.content.trim() : "";
+  const _isJsonObject = _mc.startsWith("{") && _mc.endsWith("}");
+  if (!_isJsonObject && !message.tool_calls?.length && typeof message.content === "string" && message.content.trim()) {
     const { extractToolCallsFromText } = require("./xml-tool-extractor");
     const extracted = extractToolCallsFromText(message.content);
     if (extracted.toolCalls.length > 0) {
@@ -3669,7 +3755,7 @@ const PROVIDER_INVOKERS = {
   orcarouter: invokeOrcaRouter,
 };
 
-function invokeProvider(provider, body, incomingHeaders) {
+async function invokeProvider(provider, body, incomingHeaders) {
   const invoke = PROVIDER_INVOKERS[provider];
   if (!invoke) {
     // databricks itself, or an unknown name. Loud, not silent: under tier
@@ -3679,8 +3765,18 @@ function invokeProvider(provider, body, incomingHeaders) {
     }
     return invokeDatabricks(body, incomingHeaders);
   }
-  return invoke(body, incomingHeaders);
+  const res = await invoke(body, incomingHeaders);
+  try {
+    const wanted = body?._tierModel ? String(body._tierModel).split("/").pop().toLowerCase() : null;
+    const _rawServed = res?.json?._providerModel || res?.json?.model;
+    const served = _rawServed ? String(_rawServed).split("/").pop().toLowerCase() : null;
+    if (wanted && served && served !== wanted && !served.startsWith(wanted) && !wanted.startsWith(served)) {
+      logger.warn({ provider, requested: body._tierModel, served: _rawServed }, "[ModelCheck] provider served a DIFFERENT model than requested");
+    }
+  } catch { /* never block */ }
+  return res;
 }
+
 
 async function invokeModel(body, options = {}) {
   const { determineProviderSmart, isFallbackEnabled, getFallbackProvider } = require("./routing");
@@ -3719,6 +3815,8 @@ async function invokeModel(body, options = {}) {
         // TaskBand stamp for the continuation telemetry columns
         // (telemetry.taskbandFields reads routingResult.taskband).
         taskband: body._taskband ?? null,
+        // Jev verdict (telemetry.jevFields reads routingResult.jev).
+        jev: body._jev ?? null,
         // WS4 — off-policy evaluation from telemetry alone requires
         // propensity + candidates on every row. Deterministic default is
         // 1.0 with a single-entry candidate list matching the served pair.

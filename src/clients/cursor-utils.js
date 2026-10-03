@@ -31,7 +31,7 @@
  * @module clients/cursor-utils
  */
 
-const { execFile, execSync } = require("node:child_process");
+const { execFile } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");

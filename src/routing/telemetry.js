@@ -1176,7 +1176,8 @@ function getAnalytics(opts = {}) {
 function jevFields(src) {
   const j = (src && typeof src === 'object')
     ? (src.jev && typeof src.jev === 'object' ? src.jev
-      : (src.analysis && typeof src.analysis === 'object' && src.analysis.jev ? src.analysis.jev : null))
+      : (src._jev && typeof src._jev === 'object' ? src._jev
+      : (src.analysis && typeof src.analysis === 'object' && src.analysis.jev ? src.analysis.jev : null)))
     : null;
   if (!j) {
     return {

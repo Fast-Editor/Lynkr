@@ -937,13 +937,18 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // Ollama (~200ms). Both are best-effort and fall through as null.
   let queryText = null;
   let queryEmbedding = null;
-  if (config.routing?.knnEnabled !== false) {
+  if (config.routing?.knnEnabled !== false && process.env.LYNKR_KNN_ENABLED !== 'false') {
     try {
       const msgs = payload?.messages;
-      const lastMsg = Array.isArray(msgs) ? msgs[msgs.length - 1]?.content : null;
-      queryText = typeof lastMsg === 'string' ? lastMsg
-        : Array.isArray(lastMsg) ? lastMsg.filter(b => b?.type === 'text').map(b => b.text || '').join(' ')
-        : null;
+      const _harnessAsk = require('./harness-envelope').harnessAskFromPayload(payload);
+      if (_harnessAsk) {
+        queryText = _harnessAsk.text;
+      } else {
+        const lastMsg = Array.isArray(msgs) ? msgs[msgs.length - 1]?.content : null;
+        queryText = typeof lastMsg === 'string' ? lastMsg
+          : Array.isArray(lastMsg) ? lastMsg.filter(b => b?.type === 'text').map(b => b.text || '').join(' ')
+          : null;
+      }
       if (queryText) {
         queryEmbedding = await getKnnRouter().embed(queryText);
       }
@@ -967,7 +972,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
   // High-risk requests jump straight to COMPLEX and skip the rest of
   // the analysis. This is independent of complexity score — a one-line
   // edit to auth/middleware.ts should never go to a local model.
-  if (risk?.level === 'high' && isFallbackEnabled()) {
+  if (process.env.RISK_TIER_ESCALATION !== 'false' && risk?.level === 'high' && isFallbackEnabled()) {
     try {
       const selector = getModelTierSelector();
       // Config B (local → GLM → Claude): high-risk requests route to the
@@ -1399,7 +1404,9 @@ async function _determineProviderSmartInner(payload, options = {}) {
       && analysis?.mode === 'weighted' && analysis?.breakdown) {
       const { buildRequirementVector } = require('./capabilities');
       const sf = require('./shortfall');
-      const req = buildRequirementVector({ dimensions: analysis.breakdown, agenticResult });
+      const _structuralReq = buildRequirementVector({ dimensions: analysis.breakdown, agenticResult });
+      const _lifted = sf.liftRequirement(_structuralReq, { anchorScore: analysis.anchorScore, jev: analysis.jev });
+      const req = _lifted.req;
       // Candidates constrained to the user's TIER_* (same eligibility rule
       // as the bandit in decide.js) with tier labels attached for capability
       // resolution. Dedupe identical provider:model keeping the highest tier.
@@ -1452,6 +1459,8 @@ async function _determineProviderSmartInner(payload, options = {}) {
         const agreed = serveResult.selected.provider === provider && serveResult.selected.model === selectedModel;
         shortfallInfo = {
           req,
+          structuralReq: _structuralReq,
+          lift: _lifted.lift.applied,
           tau: result.tau,
           selected: serveResult.selected,
           wanted: result.selected,
@@ -1460,6 +1469,8 @@ async function _determineProviderSmartInner(payload, options = {}) {
         };
         logger.debug({
           req,
+          structuralReq: _structuralReq,
+          lift: _lifted.lift.applied,
           tau: result.tau,
           legacy: `${tier}:${provider}:${selectedModel}`,
           shortfall: `${result.selected.tier}:${result.selected.provider}:${result.selected.model}`,
@@ -1742,6 +1753,24 @@ async function _determineProviderSmartInner(payload, options = {}) {
         // Confidence thresholds (env-configurable; defaults 0.7 high / 0.4 low):
         const KNN_HIGH = Number.parseFloat(process.env.LYNKR_KNN_CONFIDENCE_HIGH) || 0.7;
         const KNN_LOW  = Number.parseFloat(process.env.LYNKR_KNN_CONFIDENCE_LOW)  || 0.4;
+        if (knnResult && process.env.LYNKR_KNN_ENABLED === 'false') {
+          knnResult = null;
+        }
+        if (knnResult && knnResult.model) {
+          try {
+            const _sel = getModelTierSelector();
+            const _allowed = new Set();
+            for (const _t of TIER_ORDER) for (const _m of (_sel.getModelsForTier(_t) || [])) _allowed.add(`${_m.provider}:${_m.model}`);
+            const _pick = `${knnResult.provider}:${knnResult.model}`;
+            if (_allowed.size > 0 && !_allowed.has(_pick)) {
+              logger.info({ pick: _pick, confidence: knnResult.confidence?.toFixed?.(3) }, '[Routing] kNN pick not in configured tiers — ignored');
+              knnResult = { ...knnResult, model: null, provider: null };
+            }
+          } catch (err) {
+            logger.debug({ err: err?.message }, '[Routing] kNN tier validation failed — pick ignored');
+            knnResult = { ...knnResult, model: null, provider: null };
+          }
+        }
         if (knnResult && knnResult.confidence > KNN_HIGH && knnResult.model && knnResult.model !== selectedModel) {
           // High confidence — trust kNN's model recommendation directly.
           logger.debug({

@@ -131,8 +131,12 @@ async function pickTierByIntent(body) {
   const textBearingMsgs = allUserMsgs.filter(
     (m) => extractCleanUserText({ messages: [m] })
   );
-  const windowUserMsgs = (textBearingMsgs.length > 0 ? textBearingMsgs : allUserMsgs)
+  let windowUserMsgs = (textBearingMsgs.length > 0 ? textBearingMsgs : allUserMsgs)
     .slice(-N); // chronological, oldest-first
+  try {
+    const _hAsk = require("../routing/harness-envelope").harnessAskFromPayload(body);
+    if (_hAsk?.text) windowUserMsgs = [{ role: 'user', content: _hAsk.text }];
+  } catch { /* fall back to the sliding window */ }
 
   // WS3 — we USED to slice tools to 3 here so Claude Code's 11 baseline
   // tools didn't inflate the agentic detector's tool-count signal. That
@@ -1422,7 +1426,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // reached the risk classifier. Require a detected client profile
     // (harness UA / tool fingerprint) before treating tool-less traffic as
     // side traffic; a suggestion-mode tag is harness evidence by itself.
-    const isKnownHarness = !!req.body?._clientProfile;
+    const isKnownHarness = !!req.body?._clientProfile && req.body._clientProfile.toolless !== true;
     // Signal 1 — message-count regression. Real turns grow the transcript
     // monotonically; a harness replay (title-gen, recap, summary) truncates
     // the history down to the wrapper prompt. If this payload has fewer
@@ -1540,11 +1544,12 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       let _pinForceBypass = null;
       if (!sideTier && pinCheck.serve && pinCheck.reason === 'guards_passed' && !isSideRequest) {
         try {
-          const _probe = { messages: [{ role: 'user', content: _lastUserAskClean || '' }] };
+          const _harnessAskForPin = require("../routing/harness-envelope").harnessAskFromPayload(req.body);
+          const _probe = { messages: [{ role: 'user', content: (_harnessAskForPin ? _harnessAskForPin.text : _lastUserAskClean) || '' }] };
           const ca = require("../routing/complexity-analyzer");
           if (_lastUserText && ca.shouldForceReasoning(_probe)) _pinForceBypass = 'force_reasoning';
           else if (_lastUserText && ca.shouldForceCloud(_probe)) _pinForceBypass = 'force_cloud';
-          else if (_lastUserText) {
+          else if (_lastUserText && process.env.RISK_TIER_ESCALATION !== 'false') {
             const _pinRisk = analyzeRisk(_probe);
             if (_pinRisk?.level === 'high') _pinForceBypass = 'risk_high';
           }
@@ -2042,6 +2047,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // WS4 — propensity + candidates land on every telemetry row so downstream
     // off-policy evaluation can score any counterfactual policy from logs.
     if (tier.propensity != null) req.body._propensity = tier.propensity;
+    if (tier._jev && typeof tier._jev === 'object') req.body._jev = tier._jev;
     if (tier.candidates) req.body._candidates = tier.candidates;
     // WS5 — bandit context vector + query embedding for the feedback loop.
     // All three are underscored; `_stripInternalFields` scrubs them before
