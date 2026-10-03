@@ -421,9 +421,6 @@ function extractContent(payload) {
   if (!payload?.messages || !Array.isArray(payload.messages)) {
     return '';
   }
-  // 2026-10-01 local patch: instruction-schema harness (Terminus) → the ask
-  // is the first message's Instruction block for EVERY turn; later user
-  // turns are terminal output and must not drive force/risk/text scoring.
   {
     const { harnessAskFromPayload } = require('./harness-envelope');
     const ask = harnessAskFromPayload(payload);
@@ -991,9 +988,6 @@ function shouldForceLocal(payload) {
  * Quick check if request should be forced to cloud
  */
 function shouldForceCloud(payload) {
-  // 2026-09-30 local patch: FORCE_TIER_PATTERNS=false disables keyword-based
-  // force escalation (benchmark tasks mention "verify"/"code review" etc.
-  // as subject matter, pinning everything to expensive tiers).
   if (process.env.FORCE_TIER_PATTERNS === "false") return false;
   const content = extractContent(payload);
   const matched = FORCE_CLOUD_PATTERNS.find(pattern => pattern.test(content));
@@ -1009,7 +1003,6 @@ function shouldForceCloud(payload) {
  * from first principles, security audit.
  */
 function shouldForceReasoning(payload) {
-  // 2026-09-30 local patch: see shouldForceCloud.
   if (process.env.FORCE_TIER_PATTERNS === "false") return false;
   const content = extractContent(payload);
   const matched = FORCE_REASONING_PATTERNS.find(pattern => pattern.test(content));

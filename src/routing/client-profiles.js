@@ -34,10 +34,6 @@ const logger = require('../logger');
  * tool, add it here (or override via data/client-profiles.json).
  */
 const PROFILES = {
-  // 2026-10-01 local patch: Terminus / Terminal-Bench style harness. Tool-less
-  // (commands ride inside a JSON reply), identified by its fixed preamble
-  // instead of UA/tool fingerprints. The ask is the `Instruction:` block —
-  // see harness-envelope.extractHarnessInstruction / harnessAskFromPayload.
   'terminus': {
     name: 'terminus',
     toolless: true,
@@ -271,8 +267,6 @@ function detectClient({ headers = {}, payload = {} } = {}) {
     }
   }
 
-  // 2026-10-01 local patch: prompt-pattern detection for tool-less harnesses —
-  // match the FIRST user message against profiles declaring promptPatterns.
   const firstUser = Array.isArray(payload.messages) ? payload.messages.find((m) => m?.role === 'user') : null;
   if (firstUser) {
     const txt = typeof firstUser.content === 'string' ? firstUser.content

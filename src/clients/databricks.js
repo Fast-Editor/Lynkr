@@ -8,18 +8,7 @@ const { getMetricsCollector } = require("../observability/metrics");
 const { getHealthTracker } = require("../observability/health-tracker");
 const { createBulkhead } = require("./resilience");
 const logger = require("../logger");
-// 2026-10-03 local patch: server-side "standard tools" injection removed.
-// Lynkr no longer adds Claude Code tool definitions to requests that arrive
-// without tools — a tool-less request stays tool-less (structured-output and
-// chat clients were being turned into tool-calling agents, +~2.5k tokens/call,
-// with write access to the host workspace).
 
-// 2026-10-02 local patch: forward the client's structured-output request.
-// Anthropic clients send `output_format:{type:"json_schema",schema}`; OpenAI
-// clients send `response_format`. Lynkr historically dropped both — the
-// Terminus benchmark's schema never reached any provider while the direct
-// (auto) arm had it enforced (1,293/1,293 pure-JSON replies vs 83 non-JSON).
-// LYNKR_FORWARD_RESPONSE_FORMAT=false disables.
 function clientStructuredOutput(body) {
   if (process.env.LYNKR_FORWARD_RESPONSE_FORMAT === "false") return null;
   const of = body?.output_format;
@@ -860,13 +849,6 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
     stream: body.stream ?? false
   };
 
-  // 2026-10-02 local patch (benchmark): provider pin, bounded reasoning,
-  // structured output and usage accounting for OpenRouter.
-  //   OPENROUTER_PROVIDER_ORDER="DeepSeek"            pin provider(s); comma list
-  //   OPENROUTER_ALLOW_FALLBACKS=false|true           default false when pinned
-  //   OPENROUTER_REASONING_EFFORT=low|medium|high     default effort
-  //   OPENROUTER_REASONING_EFFORT_MAP="deepseek-v4.1-flash=medium,..." per-model
-  //   OPENROUTER_RESPONSE_FORMAT_SCHEMA=true          send json_schema (else json_object)
   {
     // Per-model pin: OPENROUTER_PROVIDER_ORDER_MAP="deepseek-v4.1-flash=DeepSeek;glm-5.3-flash=Novita,DeepInfra"
     // (';' between models, ',' between providers; substring match on model id). Global knob is the default.
@@ -901,9 +883,6 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
       }
       return null;
     };
-    // 2026-10-02 patch #2 (v13 audit): cap output per model — a cheap-tier
-    // runaway hit LiteLLM's max_tokens=64000 three times (596–846s calls).
-    //   OPENROUTER_MAX_TOKENS_MAP="glm-5.3-flash=16384"
     const _cap = parseInt(_mapLookup("OPENROUTER_MAX_TOKENS_MAP") || "", 10);
     if (_cap > 0 && openRouterBody.max_tokens > _cap) openRouterBody.max_tokens = _cap;
     // Schema enforcement only where the host supports it (Novita / DeepSeek
@@ -955,10 +934,6 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
   const _pinnedProviders = openRouterBody._pinnedProviders; delete openRouterBody._pinnedProviders;
   const _schemaOkFn = openRouterBody._schemaOk; delete openRouterBody._schemaOk;
   const _timeoutMs = openRouterBody._timeoutMs; delete openRouterBody._timeoutMs;
-  // 2026-10-02 patch #2: bounded upstream wait + failover down the pinned
-  // provider list. A timeout / no-endpoint / 5xx on provider N retries once
-  // on providers N+1.. (schema mode re-evaluated for the new head). When the
-  // list is exhausted the error propagates so tier-fallback can climb.
   const _isTimeout = (e) => e && (e.name === "TimeoutError" || e.name === "AbortError" || e.cause?.name === "TimeoutError" || e.code === "UND_ERR_HEADERS_TIMEOUT");
   let response, _lastErr = null;
   const _orders = _pinnedProviders && _pinnedProviders.length > 1
@@ -1012,10 +987,6 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
     return response;
   }
 
-  // 2026-10-02 local patch: convert here (like invokeFireworks) with the
-  // hardened converter — it skips the XML tool extractor for JSON-object
-  // replies and maps prompt_tokens_details.cached_tokens → cache_read so
-  // cost accounting is right. The orchestrator passes type:"message" through.
   if (response?.ok && response?.json?.choices) {
     const raw = response.json;
     const anthropicJson = convertOpenAIToAnthropic(raw);
@@ -1619,10 +1590,6 @@ async function invokeOpenAI(body, _incomingHeaders = {}) {
     top_p: body.top_p ?? 1.0,
     stream: body.stream ?? false
   };
-  // 2026-10-01 local patch: OPENAI_REASONING_EFFORT=none|low|medium|high sets
-  // the reasoning budget on OpenAI-compatible endpoints (OpenAI o-series/gpt-5,
-  // Fireworks DeepSeek/GLM). 'none' runs a reasoning model in fast answer-only
-  // mode — used to run DeepSeek V4.1 Flash as a cheap tier.
   if (process.env.OPENAI_REASONING_EFFORT && (!body.thinking || body.thinking?.type === "disabled")) {
     openAIBody.reasoning_effort = process.env.OPENAI_REASONING_EFFORT;
   }
@@ -2263,10 +2230,6 @@ async function invokeZai(body, _incomingHeaders = {}) {
   };
 
   const requestedModel = body._tierModel || body.model || config.zai.model;
-  // 2026-10-02 local patch: an unknown tier model id must PASS THROUGH, not
-  // fall back to the configured default. Live incident: TIER_*=zai:glm-5.3-flash
-  // was silently served by ZAI_MODEL=glm-5.2 for two full benchmark runs
-  // (response body "model":"glm-5.2" while Lynkr reported glm-5.3-flash).
   let mappedModel = modelMap[requestedModel] || (body._tierModel ? requestedModel : null) || config.zai.model || "glm-4.7";
   mappedModel = mappedModel.toLowerCase();
 
@@ -2676,7 +2639,6 @@ async function invokeBaidu(body, _incomingHeaders = {}) {
   const baiduBody = {
     model: mappedModel,
     messages,
-    // 2026-09-30 local patch: Qianfan rejects max_completion_tokens > 12288.
     max_tokens: Math.min(body.max_tokens || 12288, 12288),
     temperature: body.temperature ?? 0.7,
     top_p: body.top_p ?? 1.0,
@@ -2828,21 +2790,10 @@ async function invokeFireworks(body, _incomingHeaders = {}) {
     // path below regardless.
     stream: body.stream ?? false,
   };
-  // 2026-10-01 local patch: GLM-5.3 on Fireworks is thinking-only — sending
-  // thinking:{type:"disabled"} (→ reasoning_effort='none') is a hard 400.
-  // Omit the param for those models and let the endpoint default.
-  // Models whose reasoning must stay ON (thinking-only GLM-5.3, and reasoning
-  // models we deliberately run in thinking mode, e.g. DeepSeek V4.1 Flash as
-  // the strong tier). Override list: FIREWORKS_THINKING_MODELS (regex).
   const _keepThinkingRe = new RegExp(process.env.FIREWORKS_THINKING_MODELS || "glm-5p3|glm-5\\.3|deepseek-v4p1-flash", "i");
   if (_keepThinkingRe.test(String(fireworksBody.model)) && fireworksBody.thinking?.type === "disabled") {
     delete fireworksBody.thinking;
   }
-  // 2026-10-01 local patch: FIREWORKS_REASONING_EFFORT=low|medium|high caps the
-  // thinking budget on Fireworks reasoning models (GLM-5.3 default effort ran
-  // ~21s/call under load → agent timeouts; 'low' measured 3.8s vs 8.5s).
-  // Per-model override: FIREWORKS_REASONING_EFFORT_MAP="glm-5p3-flash=low,deepseek-v4p1-flash=medium"
-  // (substring match on the model id); FIREWORKS_REASONING_EFFORT is the default.
   {
     let _effort = process.env.FIREWORKS_REASONING_EFFORT || null;
     const _map = process.env.FIREWORKS_REASONING_EFFORT_MAP || "";
@@ -2930,9 +2881,6 @@ function convertOpenAIToAnthropic(response) {
   const content = [];
 
   // Extract tool calls embedded as XML/text in content (Minimax, Qwen, GLM, etc.)
-  // 2026-10-02 local patch: never run the XML tool extractor on a reply that IS a
-  // JSON object (structured output) — it mangled benchmark replies with
-  // <arg_value>-like text and rewrote finish_reason to "tool_calls".
   const _mc = typeof message.content === "string" ? message.content.trim() : "";
   const _isJsonObject = _mc.startsWith("{") && _mc.endsWith("}");
   if (!_isJsonObject && !message.tool_calls?.length && typeof message.content === "string" && message.content.trim()) {
@@ -3818,10 +3766,6 @@ async function invokeProvider(provider, body, incomingHeaders) {
     return invokeDatabricks(body, incomingHeaders);
   }
   const res = await invoke(body, incomingHeaders);
-  // 2026-10-02 local patch: loud warning when the provider served a different
-  // model than the tier requested (live incident: TIER zai:glm-5.3-flash was
-  // silently served by ZAI_MODEL=glm-5.2 for two full benchmark runs while
-  // telemetry recorded the requested name).
   try {
     const wanted = body?._tierModel ? String(body._tierModel).split("/").pop().toLowerCase() : null;
     const _rawServed = res?.json?._providerModel || res?.json?.model;

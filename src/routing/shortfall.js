@@ -280,25 +280,6 @@ function selectByShortfall(req, candidates, opts = {}) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Semantic requirement lift (2026-10-03).
-//
-// capabilities.buildRequirementVector is STRUCTURAL: message length, tool
-// count, code blocks, turn count. On task-description prompts it is nearly
-// constant — measured 0.11–0.34 (median 0.15) across 77 Terminal-Bench
-// tasks, preamble or not — so cheapest-covering always chose the cheapest
-// model and the Jev floor vetoed it every time. The main routing path
-// already computes two SEMANTIC difficulty signals that shortfall never
-// saw: the anchor-embedding intent score (0–100) and the Jev judge's tier
-// probabilities. Lift each head to the tier-profile level those imply and
-// take the max with the structural head. Never lowers a head.
-//
-//   anchor : score → linear interpolation between adjacent tier profiles
-//            (band midpoints SIMPLE 10, MEDIUM 35, COMPLEX 63, REASONING 88,
-//            mirroring the legacy scalar bands documented in the config).
-//   jev    : Σ_t P(t) · tierProfile[t][head] — probability-weighted, so a
-//            low-confidence verdict lifts less than a confident one.
-// ---------------------------------------------------------------------------
 const TIER_MIDPOINTS = [['SIMPLE', 10], ['MEDIUM', 35], ['COMPLEX', 63], ['REASONING', 88]];
 
 function _tierVec(tierProfiles, tier) {

@@ -2312,9 +2312,6 @@ IMPORTANT TOOL USAGE RULES:
         const { extractToolCallsFromText } = require("../clients/xml-tool-extractor");
         for (const block of contentArray) {
           if (block?.type === "text" && block?.text) {
-            // 2026-10-02 local patch: a reply that IS a JSON object (structured
-            // output) must never be fed to the XML tool extractor — it mangled
-            // benchmark replies containing <arg_value>-like text.
             const _bt = block.text.trim();
             if (_bt.startsWith("{") && _bt.endsWith("}")) continue;
             const extracted = extractToolCallsFromText(block.text);
@@ -2345,7 +2342,6 @@ IMPORTANT TOOL USAGE RULES:
       // Extract tool calls embedded as XML/text in content (Minimax, Qwen, GLM, Llama, etc.)
       if (toolCalls.length === 0 && typeof message.content === "string" && message.content.trim()
           && !(message.content.trim().startsWith("{") && message.content.trim().endsWith("}"))) {
-        // 2026-10-02 local patch: skip XML tool extraction for JSON-object replies (see above).
         const { extractToolCallsFromText } = require("../clients/xml-tool-extractor");
         const extracted = extractToolCallsFromText(message.content);
         if (extracted.toolCalls.length > 0) {
@@ -2548,8 +2544,6 @@ IMPORTANT TOOL USAGE RULES:
       }
     } else if ((actualProvider === "openrouter" || actualProvider === "edenai")
                && databricksResponse.json?.type === "message" && Array.isArray(databricksResponse.json?.content)) {
-      // 2026-10-02 local patch: invokeOpenRouter now converts to Anthropic
-      // format itself (same as invokeFireworks) — pass through.
       anthropicPayload = databricksResponse.json;
       anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     } else if (actualProvider === "openrouter" || actualProvider === "edenai") {
@@ -3139,10 +3133,6 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   let cacheKey = null;
   let cachedResponse = null;
-  // 2026-10-02 local patch: structured-output agent requests (output_format /
-  // response_format present) bypass Lynkr's response cache. Agent harnesses
-  // retry a failed parse by re-sending the IDENTICAL conversation; a cache
-  // hit would hand every retry the same bad reply. LYNKR_CACHE_BYPASS_STRUCTURED=false re-enables.
   const _structuredAgentRequest = !!(cleanPayload?.output_format || cleanPayload?.response_format)
     && process.env.LYNKR_CACHE_BYPASS_STRUCTURED !== "false";
   if (promptCache.isEnabled() && !_structuredAgentRequest) {

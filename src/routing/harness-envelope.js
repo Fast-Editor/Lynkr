@@ -48,14 +48,6 @@ const UNCLOSED_RES = ENVELOPE_TAGS.map(
 );
 const USER_QUERY_RE = /<user_query(?:\s[^>]*)?>([\s\S]*?)<\/user_query>/gi;
 
-// ---------------------------------------------------------------------------
-// 2026-10-01 local patch — instruction-schema agent harnesses (Terminus /
-// Terminal-Bench style). The harness wraps the task in a fixed preamble, a
-// JSON response schema and a terminal snapshot; the user's actual ask is the
-// `Instruction:` block. Later turns carry only terminal output. Scanners
-// must evaluate the INSTRUCTION, not the preamble ("solving command-line
-// tasks", "verify", "Docker") or stdout noise (pip logs, ls errors).
-// ---------------------------------------------------------------------------
 const HARNESS_PREAMBLE_RES = [
   /You are an AI assistant tasked with solving command-line tasks/i,
   /"title":\s*"CommandBatchResponse"/,

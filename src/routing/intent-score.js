@@ -105,8 +105,6 @@ function intentScoreMode() {
 function _latestUserAsk(payload) {
   const msgs = payload?.messages;
   if (!Array.isArray(msgs)) return { text: null, index: -1 };
-  // 2026-10-01 local patch: instruction-schema harness (Terminus) — score the
-  // task instruction on every turn, not the latest terminal output.
   {
     const { harnessAskFromPayload } = require('./harness-envelope');
     const ask = harnessAskFromPayload(payload);

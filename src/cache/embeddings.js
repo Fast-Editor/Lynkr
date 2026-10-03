@@ -29,8 +29,6 @@ async function generateOllamaEmbedding(text) {
   });
 
   if (!response.ok) {
-    // 2026-10-01 local patch: include Ollama's error body so the provider
-    // wrapper can tell an input-too-long rejection from a real outage.
     let body = '';
     try { body = (await response.text()).slice(0, 300); } catch { /* ignore */ }
     throw new Error(`Ollama embedding failed: ${response.status} ${response.statusText}${body ? ' — ' + body : ''}`);
@@ -204,9 +202,6 @@ function _wrapProvider(providerName, providerFn) {
       _noteRecovery(providerName);
       return result;
     } catch (firstErr) {
-      // 2026-10-01 local patch: an input-too-long rejection is a property of
-      // THIS text, not provider health. Retry once with the text halved so the
-      // request still gets a semantic vector; never flip the provider state.
       if (_isInputLengthError(firstErr)) {
         try {
           const result = await providerFn(text.slice(0, Math.max(256, Math.floor(text.length / 2))));
@@ -307,11 +302,6 @@ async function generateEmbedding(text) {
     throw new Error('Cannot generate embedding for empty text');
   }
 
-  // Truncate very long text (most embedding models have limits).
-  // 2026-10-01 local patch: 8000 chars overflowed nomic-embed-text's 2048-token
-  // context on dense prompts (Ollama 500 "input length exceeds the context
-  // length"), which then degraded the whole provider for 60s. 6000 chars
-  // (~1500-1900 tokens) fits with margin. Override: LYNKR_EMBEDDINGS_MAX_CHARS.
   const maxLength = Number.parseInt(process.env.LYNKR_EMBEDDINGS_MAX_CHARS, 10) || 5000;
   const truncated = text.length > maxLength ? text.substring(0, maxLength) : text;
 

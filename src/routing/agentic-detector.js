@@ -45,8 +45,6 @@ const PATTERNS = {
   // Autonomous work indicators. Must include the literal "autonomous(ly)":
   // under client profiles the tool-count score sits below the 60 gate, so
   // the phrase gate is the only path to AUTONOMOUS.
-  // 2026-09-30 local patch: removed "solve|" — harness boilerplate ("solving
-  // command-line tasks") pinned every benchmark request to REASONING.
   autonomous: /\b(figure\s+out|complete\s+the\s+task|do\s+whatever|make\s+it\s+work|find\s+a\s+way|whatever\s+it\s+takes|autonomous(ly)?|on\s+your\s+own|without\s+(asking|supervision)|keep\s+(going|iterating|working)\s+until)\b/i,
 
   // Multi-file work
@@ -295,8 +293,6 @@ class AgenticDetector {
   _extractContent(messages) {
     const userMsgs = messages.filter(m => m?.role === 'user');
     if (userMsgs.length === 0) return '';
-    // 2026-10-01 local patch: instruction-schema harness (Terminus) — pattern
-    // signals evaluate the task instruction, not the harness preamble.
     {
       const { harnessAskFromPayload } = require('./harness-envelope');
       const ask = harnessAskFromPayload({ messages });

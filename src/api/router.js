@@ -133,11 +133,6 @@ async function pickTierByIntent(body) {
   );
   let windowUserMsgs = (textBearingMsgs.length > 0 ? textBearingMsgs : allUserMsgs)
     .slice(-N); // chronological, oldest-first
-  // 2026-10-02 local patch: instruction-schema harness sessions (Terminus) —
-  // the ask is the task instruction for every turn; later user turns are
-  // terminal output. Scoring the last N stdout turns demoted strong-start
-  // tasks mid-session (v12: 62 COMPLEX→MEDIUM demotions). Score the
-  // instruction once instead, so the tier is stable across the session.
   try {
     const _hAsk = require("../routing/harness-envelope").harnessAskFromPayload(body);
     if (_hAsk?.text) windowUserMsgs = [{ role: 'user', content: _hAsk.text }];
@@ -1431,9 +1426,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // reached the risk classifier. Require a detected client profile
     // (harness UA / tool fingerprint) before treating tool-less traffic as
     // side traffic; a suggestion-mode tag is harness evidence by itself.
-    // 2026-10-01 local patch: profiles that are tool-less BY DESIGN (Terminus-
-    // style JSON-command harnesses) must not make bare traffic look like side
-    // requests — every one of their turns is tool-less and is the real ask.
     const isKnownHarness = !!req.body?._clientProfile && req.body._clientProfile.toolless !== true;
     // Signal 1 — message-count regression. Real turns grow the transcript
     // monotonically; a harness replay (title-gen, recap, summary) truncates
@@ -1552,10 +1544,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       let _pinForceBypass = null;
       if (!sideTier && pinCheck.serve && pinCheck.reason === 'guards_passed' && !isSideRequest) {
         try {
-          // 2026-10-02 local patch: for instruction-schema harness sessions the
-          // ask is the task instruction, not the latest terminal output — probe
-          // that (stdout routinely contains "permission"/"security"/"verify"…).
-          // The risk bypass also honours RISK_TIER_ESCALATION like the main gate.
           const _harnessAskForPin = require("../routing/harness-envelope").harnessAskFromPayload(req.body);
           const _probe = { messages: [{ role: 'user', content: (_harnessAskForPin ? _harnessAskForPin.text : _lastUserAskClean) || '' }] };
           const ca = require("../routing/complexity-analyzer");
@@ -2059,9 +2047,6 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // WS4 — propensity + candidates land on every telemetry row so downstream
     // off-policy evaluation can score any counterfactual policy from logs.
     if (tier.propensity != null) req.body._propensity = tier.propensity;
-    // 2026-10-03: carry the Jev verdict across the forced-provider hop so
-    // telemetry.jevFields(routingResult) can record it (it was dropped here,
-    // leaving jev_* columns null on every served row).
     if (tier._jev && typeof tier._jev === 'object') req.body._jev = tier._jev;
     if (tier.candidates) req.body._candidates = tier.candidates;
     // WS5 — bandit context vector + query embedding for the feedback loop.
