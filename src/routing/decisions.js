@@ -57,6 +57,20 @@ function decideFromSignals(signals, ctx, config) {
     if (ok) { matched = d; break; }
   }
   const tier = matched ? _resolveTier(matched.tier, ctx, signals) : (ctx.legacy?.tier || null);
+  // Cascade-on-ambiguity trigger: when the judge's top-two tier probabilities
+  // are within `trigger_margin`, the request is ambiguous. Observe mode only
+  // records the trigger (telemetry: cascade_trigger); enforce is wired later.
+  let cascade = null;
+  const cc = matched?.cascade && typeof matched.cascade === 'object' ? matched.cascade : (cfg.cascade || null);
+  if (cc) {
+    const probs = signals.judge?.probabilities || null;
+    if (probs) {
+      const sorted = Object.values(probs).map(Number).filter(Number.isFinite).sort((a, b) => b - a);
+      const margin = sorted.length >= 2 ? sorted[0] - sorted[1] : 1;
+      const thr = Number.isFinite(cc.trigger_margin) ? cc.trigger_margin : 0.15;
+      cascade = { triggered: margin < thr, margin: Math.round(margin * 1000) / 1000, mode: cc.mode || 'observe', escalate_to: cc.escalate_to || null };
+    }
+  }
   return {
     decision: matched ? matched.name : null,
     tier,
@@ -64,6 +78,7 @@ function decideFromSignals(signals, ctx, config) {
     hosts: Array.isArray(matched?.hosts) ? matched.hosts : null,
     plugins: matched?.plugins && typeof matched.plugins === 'object' ? matched.plugins : null,
     mode: cfg.mode === 'enforce' ? 'enforce' : 'observe',
+    cascade,
     agreesWithLegacy: !ctx.legacy?.tier || tier === ctx.legacy.tier,
     signals: Object.fromEntries(Object.entries(signals).map(([k, v]) => [k, { matched: v.matched, value: v.value, confidence: v.confidence, band: v.band, tier: v.tier }])),
     trace: { considered, legacy: ctx.legacy || null },

@@ -680,6 +680,33 @@ async function checkPinScoreDrift(pin, payload) {
  * @returns {{serve:boolean, pin?:object, reason:string, sessionId:string|null}}
  */
 function checkSessionPin(payload, options = {}) {
+  const result = _checkSessionPinInner(payload, options);
+  // Switch gate (switch-gate.js): hysteresis over the session's attributable
+  // turn outcomes. Observe mode annotates; enforce mode drops the pin and
+  // sets a floor so the fresh route that follows lands on the target tier.
+  try {
+    if (result && result.serve && result.pin && result.sessionId) {
+      const gate = require('./switch-gate');
+      const ring = require('./outcomes').ring(result.sessionId);
+      const turns = Array.isArray(payload?.messages) ? payload.messages.filter((m) => m?.role === 'assistant').length : null;
+      const g = gate.evaluate({ sessionId: result.sessionId, currentTier: result.pin.tier, ring, turn: turns, baseTier: result.pin.baseTier || result.pin.tier });
+      result.gate = g;
+      if (g.action !== 'stay') {
+        logger.info({ sessionId: result.sessionId, action: g.action, target: g.target, reason: g.reason, enforced: g.enforced, pinnedTier: result.pin.tier }, g.enforced ? '[SwitchGate] switch enforced — pin dropped' : '[SwitchGate] would switch (observe)');
+        if (g.enforced) {
+          gate.commit(result.sessionId, g, turns);
+          sessionAffinity.removePin(result.sessionId);
+          return { serve: false, pin: result.pin, sessionId: result.sessionId, reason: `switch_gate_${g.action}`, gate: g };
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug({ err: err.message }, '[SwitchGate] evaluation failed (ignored)');
+  }
+  return result;
+}
+
+function _checkSessionPinInner(payload, options = {}) {
   const sessionId = payload?._sessionId || null;
   const stickyEnabled = process.env.LYNKR_STICKY_SESSIONS !== 'false';
   if (!stickyEnabled || !sessionId || options.forceProvider) {
@@ -1927,6 +1954,21 @@ async function _determineProviderSmartInner(payload, options = {}) {
     }
   }
 
+  // Switch-gate floor: an enforced escalation set a per-session floor; the
+  // fresh route must not land below it.
+  try {
+    const _sid = payload?._sessionId || options?._sessionId || null;
+    const _floor = _sid ? require('./switch-gate').floor(_sid) : null;
+    if (_floor && (TIER_DEFINITIONS[_floor]?.priority ?? -1) > (TIER_DEFINITIONS[tier]?.priority ?? -1)) {
+      const _fsel = selector.selectModel(_floor, null);
+      if (_fsel && _fsel.provider && _fsel.model) {
+        escalations.push({ source: 'switch_gate_floor', fromTier: tier, toTier: _floor, fromModel: selectedModel, toModel: _fsel.model });
+        tier = _floor; provider = _fsel.provider; selectedModel = _fsel.model; analysis.tier = tier; method = method + '+gate_floor';
+      }
+    }
+  } catch (err) {
+    degradation.record('switch_gate', err);
+  }
   // Declarative decision engine (config/routing.json). Observe mode records
   // what it would do; enforce mode adopts its tier when it differs.
   let engineInfo = null;

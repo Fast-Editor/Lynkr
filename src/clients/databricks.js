@@ -3821,6 +3821,7 @@ async function invokeModel(body, options = {}) {
         jev: body._jev ?? null,
         engine: body._engine ?? null,
         prev_outcome: body._prevOutcome ?? null,
+        gate: body._gate ?? null,
         // WS4 — off-policy evaluation from telemetry alone requires
         // propensity + candidates on every row. Deterministic default is
         // 1.0 with a single-entry candidate list matching the served pair.
@@ -3945,6 +3946,24 @@ async function invokeModel(body, options = {}) {
     const result = await breaker.execute(async () => {
       return await invokeProvider(initialProvider, body, incomingHeaders);
     });
+
+    // Grounding check on completion claims (observe mode: telemetry + log).
+    // Only runs when the reply claims the task is done; ~25 ms/claim on CPU.
+    if (process.env.LYNKR_GROUNDING && process.env.LYNKR_GROUNDING !== 'off' && result?.ok !== false && Array.isArray(result?.json?.content)) {
+      try {
+        const grounding = require('../routing/grounding');
+        const replyText = result.json.content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n');
+        if (grounding.extractClaims(replyText).claimsDone) {
+          const g = await grounding.check({ replyText, messages: body.messages });
+          routingResult.grounding = { verdict: g.verdict, maxContradiction: g.maxContradiction ?? null, reason: g.reason ?? null };
+          if (g.verdict === 'contradicted' || g.verdict === 'unverified') {
+            logger.info({ provider: initialProvider, model: routingResult.model, verdict: g.verdict, contradiction: g.maxContradiction, pairs: (g.pairs || []).length }, '[Grounding] completion claim not supported by evidence');
+          }
+        }
+      } catch (err) {
+        logger.debug({ err: err.message }, '[Grounding] check failed (ignored)');
+      }
+    }
 
     const latency = Date.now() - startTime;
     metricsCollector.recordProviderSuccess(initialProvider, latency);

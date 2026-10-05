@@ -91,6 +91,44 @@ const EVALUATORS = {
     const thr = Number.isFinite(opt.min_hits) ? opt.min_hits : 1;
     return { matched: hits.length >= thr, value: hits, confidence: terms.length ? hits.length / terms.length : 0 };
   },
+  async complexity(ctx, opt) {
+    // Exemplar contrast: sim(hard centroid) − sim(easy centroid), per head,
+    // using the embedder already configured. Exemplars from
+    // config/complexity-exemplars.json (scripts/build-complexity-exemplars.js).
+    const emb = require('../cache/embeddings');
+    const fs = require('fs'), path = require('path');
+    const file = opt.exemplars ? path.resolve(opt.exemplars) : path.join(__dirname, '..', '..', 'config', 'complexity-exemplars.json');
+    if (!fs.existsSync(file)) return { matched: false, value: null, confidence: null, error: 'no exemplars file' };
+    const st = fs.statSync(file);
+    if (!EVALUATORS._cx || EVALUATORS._cx.file !== file || EVALUATORS._cx.mtime !== st.mtimeMs) {
+      const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const centroid = async (texts) => {
+        const vs = []; for (const t of (texts || []).slice(0, 60)) { const v = await emb.generateEmbedding(t); if (Array.isArray(v) && v.length) vs.push(v); }
+        if (!vs.length) return null;
+        const c = new Array(vs[0].length).fill(0); for (const v of vs) for (let i = 0; i < c.length; i++) c[i] += v[i] / vs.length; return c;
+      };
+      const heads = {};
+      for (const [h, sets] of Object.entries(doc.heads || {})) heads[h] = { hard: await centroid(sets.hard), easy: await centroid(sets.easy) };
+      EVALUATORS._cx = { file, mtime: st.mtimeMs, heads };
+    }
+    const { harnessAskFromPayload } = require('./harness-envelope');
+    const ask = harnessAskFromPayload(ctx.payload);
+    const text = ask ? ask.text : _text(_lastOfRole(ctx.payload?.messages || [], 'user'));
+    if (!text) return { matched: false, value: null, confidence: null };
+    const q = await emb.generateEmbedding(text.slice(0, 4000));
+    if (!Array.isArray(q)) return { matched: false, value: null, confidence: null };
+    const perHead = {}; let sum = 0, n = 0;
+    for (const [h, c] of Object.entries(EVALUATORS._cx.heads)) {
+      if (!c.hard || !c.easy) continue;
+      const d = emb.cosineSimilarity(q, c.hard) - emb.cosineSimilarity(q, c.easy); // typically within ±0.3
+      const v = Math.max(0, Math.min(1, 0.5 + d / (2 * (Number(opt.scale) || 0.15))));
+      perHead[h] = Math.round(v * 1000) / 1000; sum += v; n++;
+    }
+    if (!n) return { matched: false, value: null, confidence: null };
+    const value = Math.round((sum / n) * 1000) / 1000;
+    const thr = Number.isFinite(opt.threshold) ? opt.threshold : 0.6;
+    return { matched: value >= thr, value, confidence: Math.abs(value - 0.5) * 2, heads: perHead, band: value >= 0.75 ? 'REASONING' : value >= 0.6 ? 'COMPLEX' : value >= 0.4 ? 'MEDIUM' : 'SIMPLE' };
+  },
   legacy_tier(ctx) {
     const t = ctx.legacy?.tier || null;
     return { matched: !!t, value: t, confidence: 1 };

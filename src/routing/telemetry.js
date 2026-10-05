@@ -203,6 +203,12 @@ function init() {
       ["effort", "TEXT"],
       ["prev_turn_outcome", "TEXT"],
       ["prev_turn_attributable", "INTEGER"],
+      ["gate_action", "TEXT"],
+      ["gate_reason", "TEXT"],
+      ["cascade_trigger", "INTEGER"],
+      ["cascade_margin", "REAL"],
+      ["grounding_verdict", "TEXT"],
+      ["grounding_contradiction", "REAL"],
     ];
     for (const [col, type] of additiveCols) {
       if (!existingCols.has(col)) {
@@ -268,7 +274,8 @@ function record(data) {
           cache_decision, cache_read_tokens, cache_creation_tokens, context,
           jev_verdict, jev_confidence, jev_probabilities, jev_model, criteria_hash,
           is_continuation, inherited_floor, task_anchor_hash, jev_context, jev_cache_hit,
-          decision_name, engine_tier, engine_mode, effort, prev_turn_outcome, prev_turn_attributable
+          decision_name, engine_tier, engine_mode, effort, prev_turn_outcome, prev_turn_attributable,
+          gate_action, gate_reason, cascade_trigger, cascade_margin, grounding_verdict, grounding_contradiction
         ) VALUES (
           @request_id, @session_id, @timestamp, @complexity_score, @tier,
           @agentic_type, @tool_count, @input_tokens, @message_count, @request_type,
@@ -280,7 +287,8 @@ function record(data) {
           @cache_decision, @cache_read_tokens, @cache_creation_tokens, @context,
           @jev_verdict, @jev_confidence, @jev_probabilities, @jev_model, @criteria_hash,
           @is_continuation, @inherited_floor, @task_anchor_hash, @jev_context, @jev_cache_hit,
-          @decision_name, @engine_tier, @engine_mode, @effort, @prev_turn_outcome, @prev_turn_attributable
+          @decision_name, @engine_tier, @engine_mode, @effort, @prev_turn_outcome, @prev_turn_attributable,
+          @gate_action, @gate_reason, @cascade_trigger, @cascade_margin, @grounding_verdict, @grounding_contradiction
         )`
       );
       if (!insert) return;
@@ -342,6 +350,12 @@ function record(data) {
         effort: data.effort ?? null,
         prev_turn_outcome: data.prev_turn_outcome ?? null,
         prev_turn_attributable: data.prev_turn_attributable == null ? null : (data.prev_turn_attributable ? 1 : 0),
+        gate_action: data.gate_action ?? null,
+        gate_reason: data.gate_reason ?? null,
+        cascade_trigger: data.cascade_trigger == null ? null : (data.cascade_trigger ? 1 : 0),
+        cascade_margin: data.cascade_margin ?? null,
+        grounding_verdict: data.grounding_verdict ?? null,
+        grounding_contradiction: data.grounding_contradiction ?? null,
         jev_verdict: data.jev_verdict ?? null,
         jev_confidence: data.jev_confidence ?? null,
         jev_probabilities: data.jev_probabilities === null || data.jev_probabilities === undefined
@@ -1191,6 +1205,8 @@ function getAnalytics(opts = {}) {
 function engineFields(src) {
   const e = src && typeof src === 'object' ? (src.engine || src._engine || null) : null;
   const po = src && typeof src === 'object' ? (src.prev_outcome || src._prevOutcome || null) : null;
+  const g = src && typeof src === 'object' ? (src.gate || src._gate || null) : null;
+  const gr = src && typeof src === 'object' ? (src.grounding || src._grounding || null) : null;
   return {
     decision_name: e?.decision ?? null,
     engine_tier: e?.tier ?? null,
@@ -1198,6 +1214,12 @@ function engineFields(src) {
     effort: e?.effort ?? null,
     prev_turn_outcome: po?.outcome ?? null,
     prev_turn_attributable: po ? (po.attributable ? 1 : 0) : null,
+    gate_action: g?.action ?? null,
+    gate_reason: g?.reason ?? null,
+    cascade_trigger: e?.cascade ? (e.cascade.triggered ? 1 : 0) : null,
+    cascade_margin: e?.cascade?.margin ?? null,
+    grounding_verdict: gr?.verdict ?? null,
+    grounding_contradiction: gr?.maxContradiction ?? null,
   };
 }
 

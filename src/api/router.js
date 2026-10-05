@@ -2067,9 +2067,10 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // Declarative decision engine result + per-decision effort travel with the body.
     const _eng = tier._engine || tier.engine || null;
     if (_eng) {
-      req.body._engine = { decision: _eng.decision, tier: _eng.tier, mode: _eng.mode, effort: _eng.effort, hosts: _eng.hosts, agreesWithLegacy: _eng.agreesWithLegacy };
+      req.body._engine = { decision: _eng.decision, tier: _eng.tier, mode: _eng.mode, effort: _eng.effort, hosts: _eng.hosts, agreesWithLegacy: _eng.agreesWithLegacy, cascade: _eng.cascade || null };
       if (_eng.effort) req.body._effort = _eng.effort;
     }
+    if (pinCheck && pinCheck.gate) req.body._gate = { action: pinCheck.gate.action, reason: pinCheck.gate.reason, target: pinCheck.gate.target, enforced: pinCheck.gate.enforced, streak: pinCheck.gate.streak };
     if (tier.candidates) req.body._candidates = tier.candidates;
     // WS5 — bandit context vector + query embedding for the feedback loop.
     // All three are underscored; `_stripInternalFields` scrubs them before

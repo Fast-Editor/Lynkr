@@ -1,7 +1,24 @@
 {
   "version": 1,
   "mode": "observe",
-  "anchor_bands": { "SIMPLE": [0, 20], "MEDIUM": [20, 51], "COMPLEX": [51, 76], "REASONING": [76, 101] },
+  "anchor_bands": {
+    "SIMPLE": [
+      0,
+      20
+    ],
+    "MEDIUM": [
+      20,
+      51
+    ],
+    "COMPLEX": [
+      51,
+      76
+    ],
+    "REASONING": [
+      76,
+      101
+    ]
+  },
   "harness": {
     "patterns": [
       {
@@ -12,17 +29,65 @@
     ]
   },
   "signals": {
-    "anchor":     { "type": "anchor_score" },
-    "judge":      { "type": "jev" },
-    "harness":    { "type": "harness" },
-    "structured": { "type": "request_field", "any_of": ["output_format", "response_format"] },
-    "tool_count": { "type": "tool_count" },
-    "turn":       { "type": "session_turn" },
-    "phase":      { "type": "session_phase" },
-    "risk":       { "type": "risk" },
-    "prev":       { "type": "prev_outcome" }
+    "anchor": {
+      "type": "anchor_score"
+    },
+    "judge": {
+      "type": "jev"
+    },
+    "harness": {
+      "type": "harness"
+    },
+    "structured": {
+      "type": "request_field",
+      "any_of": [
+        "output_format",
+        "response_format"
+      ]
+    },
+    "tool_count": {
+      "type": "tool_count"
+    },
+    "turn": {
+      "type": "session_turn"
+    },
+    "phase": {
+      "type": "session_phase"
+    },
+    "risk": {
+      "type": "risk"
+    },
+    "prev": {
+      "type": "prev_outcome"
+    },
+    "complexity": {
+      "type": "complexity",
+      "threshold": 0.6,
+      "scale": 0.15
+    }
   },
   "decisions": [
-    { "name": "legacy", "priority": 0, "rules": { "operator": "AND", "conditions": [] }, "tier": "from:legacy" }
-  ]
+    {
+      "name": "legacy",
+      "priority": 0,
+      "rules": {
+        "operator": "AND",
+        "conditions": []
+      },
+      "tier": "from:legacy"
+    }
+  ],
+  "switch_gate": {
+    "mode": "observe",
+    "escalate_after_regressions": 2,
+    "downgrade_after_recoveries": 3,
+    "min_turns_before_switch": 2,
+    "max_switches_per_session": 2,
+    "cooldown_turns": 2
+  },
+  "cascade": {
+    "mode": "observe",
+    "trigger_margin": 0.15,
+    "escalate_to": "COMPLEX"
+  }
 }
