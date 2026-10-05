@@ -288,6 +288,21 @@ async function pickTierByIntent(body) {
     perMsg: perMsgScores,
   }, "[OAuthIntent] window scoring decision");
 
+  // Decision engine must see the ORIGINAL request (harness preamble, tools,
+  // session context), not the cleaned single message the window loop scored —
+  // the per-message pass strips the envelope the harness signal keys on.
+  let _engineOnBody = d.engine || null;
+  try {
+    const _dec = require("../routing/decisions");
+    const _sid = body?._sessionId || null;
+    _engineOnBody = await _dec.evaluate({
+      payload: body, analysis: d.analysis || {}, risk: d.risk || null, agenticResult: d.agenticResult || null,
+      legacy: { tier: d.tier || null, provider: d.provider, model: d.model || null },
+      sessionId: _sid, prevTurns: _sid ? require("../routing/outcomes").ring(_sid) : [],
+    });
+  } catch (err) {
+    logger.debug({ err: err.message }, "[OAuthIntent] decision engine on body failed — keeping per-message result");
+  }
   return {
     tier: d.tier || null,
     provider: d.provider,
@@ -311,7 +326,7 @@ async function pickTierByIntent(body) {
     // Underscored: stripped at the outbound chokepoint with every other
     // internal field, never leaks upstream or to headers.
     _jev: (d.analysis && d.analysis.jev) || d.jev || null,
-    _engine: d.engine || null,
+    _engine: _engineOnBody,
     // WS5: feedback path needs the bandit context vector (to call
     // bandit.update with the same features the arm was scored on) and the
     // query embedding (to add conclusive-quality outcomes to kNN). Both
