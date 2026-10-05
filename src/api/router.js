@@ -2083,7 +2083,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     const _eng = tier._engine || tier.engine || null;
     if (_eng) {
       req.body._engine = { decision: _eng.decision, tier: _eng.tier, mode: _eng.mode, effort: _eng.effort, hosts: _eng.hosts, agreesWithLegacy: _eng.agreesWithLegacy, cascade: _eng.cascade || null };
-      if (_eng.effort) req.body._effort = _eng.effort;
+      // Effort is a SERVING change: apply it only when the engine is allowed
+      // to serve (enforce mode) or when its tier is the one actually served.
+      if (_eng.effort && (_eng.mode === 'enforce' || _eng.tier === tier.tier)) req.body._effort = _eng.effort;
     }
     if (pinCheck && pinCheck.gate) req.body._gate = { action: pinCheck.gate.action, reason: pinCheck.gate.reason, target: pinCheck.gate.target, enforced: pinCheck.gate.enforced, streak: pinCheck.gate.streak };
     if (tier.candidates) req.body._candidates = tier.candidates;
