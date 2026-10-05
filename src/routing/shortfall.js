@@ -78,6 +78,7 @@ function loadProfiles() {
     const weights = _normalizeWeights(raw?.weights);
     _profilesCache = {
       tierProfiles,
+      evaluation: Array.isArray(raw?.evaluation?.records) ? raw.evaluation.records : [],
       modelOverrides,
       enabled: raw?.enabled === true,
       tau: Number.isFinite(tau) && tau >= 0 ? tau : DEFAULT_TAU,
@@ -85,7 +86,7 @@ function loadProfiles() {
     };
   } catch (err) {
     logger.debug({ err: err.message }, '[Shortfall] profiles load failed — disabled with tier fallbacks');
-    _profilesCache = { tierProfiles: {}, modelOverrides: {}, enabled: false, tau: DEFAULT_TAU, weights: _defaultWeights() };
+    _profilesCache = { tierProfiles: {}, modelOverrides: {}, evaluation: [], enabled: false, tau: DEFAULT_TAU, weights: _defaultWeights() };
   }
   return _profilesCache;
 }
@@ -99,6 +100,7 @@ function _setProfilesForTests(profiles) {
   const base = loadProfiles();
   _profilesCache = {
     tierProfiles: profiles?.tierProfiles ?? base.tierProfiles,
+    evaluation: profiles?.evaluation ?? base.evaluation ?? [],
     modelOverrides: profiles?.modelOverrides ?? base.modelOverrides,
     enabled: profiles?.enabled ?? base.enabled,
     tau: profiles?.tau ?? base.tau,
@@ -153,6 +155,14 @@ function isEnabled() {
  *   seed:shipped|family|tier|tier-fallback (telemetry provenance).
  */
 function resolveCapabilitiesWithSource({ provider, model, tier }) {
+  {
+    // Measured evaluation records (written by scripts/calibrate-capabilities.js
+    // --apply) outrank operator overrides and shipped seeds.
+    const _ev = loadProfiles().evaluation;
+    const _key = `${provider}:${model}`.toLowerCase();
+    const _rec = Array.isArray(_ev) ? _ev.find((r) => String(r.model || '').toLowerCase() === _key && r.heads) : null;
+    if (_rec) return { caps: _sanitizeCaps(_rec.heads), source: `evaluation:${_rec.benchmark || 'measured'}` };
+  }
   const { tierProfiles, modelOverrides } = loadProfiles();
   const key = `${String(provider || '').toLowerCase()}:${String(model || '').toLowerCase()}`;
   const wild = `${String(provider || '').toLowerCase()}:*`;

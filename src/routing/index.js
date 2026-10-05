@@ -1927,6 +1927,31 @@ async function _determineProviderSmartInner(payload, options = {}) {
     }
   }
 
+  // Declarative decision engine (config/routing.json). Observe mode records
+  // what it would do; enforce mode adopts its tier when it differs.
+  let engineInfo = null;
+  try {
+    const engine = require('./decisions');
+    engineInfo = await engine.evaluate({
+      payload, analysis, risk, agenticResult,
+      legacy: { tier, provider, model: selectedModel },
+      sessionId: payload?._sessionId || options?._sessionId || null,
+      prevTurns: payload?._sessionId ? require('./outcomes').ring(payload._sessionId) : [],
+    });
+    if (engineInfo && engineInfo.mode === 'enforce' && engineInfo.tier && engineInfo.tier !== tier) {
+      const _esel = selector.selectModel(engineInfo.tier, null);
+      if (_esel && _esel.provider && _esel.model) {
+        escalations.push({ source: `decision:${engineInfo.decision}`, fromTier: tier, toTier: engineInfo.tier, fromModel: selectedModel, toModel: _esel.model });
+        logger.info({ decision: engineInfo.decision, from: `${tier}:${selectedModel}`, to: `${engineInfo.tier}:${_esel.model}` }, '[Routing] Decision engine override');
+        tier = engineInfo.tier; provider = _esel.provider; selectedModel = _esel.model;
+        analysis.tier = tier; method = method + '+decision';
+      }
+    } else if (engineInfo && !engineInfo.agreesWithLegacy) {
+      logger.info({ decision: engineInfo.decision, engineTier: engineInfo.tier, legacyTier: tier }, '[Routing] Decision engine disagrees (observe mode)');
+    }
+  } catch (err) {
+    degradation.record('decisions', err);
+  }
   const decision = buildDecision({
     provider,
     model: selectedModel,
@@ -1953,6 +1978,7 @@ async function _determineProviderSmartInner(payload, options = {}) {
     demoted_from: demotedFrom,
   });
 
+  if (engineInfo) decision.engine = engineInfo;
   // WS4.2 — propensity/candidates for off-policy evaluation from telemetry.
   // Collapse rule lives in decide.js (stampPropensity): if a deterministic
   // downstream override (deadline / tenant) swapped the served model out of

@@ -54,8 +54,22 @@ const HARNESS_PREAMBLE_RES = [
 ];
 const HARNESS_INSTRUCTION_RE = /(?:^|\n)Instruction:\s*\n([\s\S]*?)\n\s*\n(?:Your response must be|Your response|Respond)/i;
 
+function _patterns() {
+  try {
+    const pats = require('./routing-config').harnessPatterns();
+    if (pats.length) return pats;
+  } catch { /* fall back to built-ins */ }
+  return [{ name: 'harness', preamble: HARNESS_PREAMBLE_RES[0], instruction: HARNESS_INSTRUCTION_RE }];
+}
+
+function matchHarness(text) {
+  if (typeof text !== 'string') return null;
+  for (const p of _patterns()) if (p.preamble.test(text)) return p;
+  return HARNESS_PREAMBLE_RES.some((re) => re.test(text)) ? { name: 'harness', preamble: null, instruction: HARNESS_INSTRUCTION_RE } : null;
+}
+
 function isHarnessPrompt(text) {
-  return typeof text === 'string' && HARNESS_PREAMBLE_RES.some((re) => re.test(text));
+  return matchHarness(text) !== null;
 }
 
 /**
@@ -65,8 +79,10 @@ function isHarnessPrompt(text) {
  *   or the instruction block could not be isolated).
  */
 function extractHarnessInstruction(text) {
-  if (!isHarnessPrompt(text)) return null;
-  const m = HARNESS_INSTRUCTION_RE.exec(text);
+  const p = matchHarness(text);
+  if (!p) return null;
+  const re = p.instruction || HARNESS_INSTRUCTION_RE;
+  const m = re.exec(text);
   const instr = m ? m[1].trim() : '';
   return instr.length > 0 ? instr : null;
 }
@@ -92,8 +108,9 @@ function harnessAskFromPayload(payload) {
   if (!Array.isArray(msgs)) return null;
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i]?.role !== 'user') continue;
-    const instr = extractHarnessInstruction(_msgText(msgs[i]));
-    return instr ? { text: instr, index: i } : null;
+    const txt = _msgText(msgs[i]);
+    const instr = extractHarnessInstruction(txt);
+    return instr ? { text: instr, index: i, name: (matchHarness(txt) || {}).name || 'harness' } : null;
   }
   return null;
 }
@@ -121,4 +138,4 @@ function stripHarnessEnvelope(text) {
   }
 }
 
-module.exports = { stripHarnessEnvelope, ENVELOPE_TAGS, isHarnessPrompt, extractHarnessInstruction, harnessAskFromPayload };
+module.exports = { stripHarnessEnvelope, ENVELOPE_TAGS, isHarnessPrompt, matchHarness, extractHarnessInstruction, harnessAskFromPayload };

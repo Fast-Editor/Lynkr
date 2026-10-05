@@ -355,7 +355,7 @@ function simulateShortfall(req, candidates, overrides, tau) {
   const prompts = {};
   for (const m of opts.models) for (const [t, e] of Object.entries(m.tasks)) if (e.promptPath && !prompts[t]) prompts[t] = e.promptPath;
   const reqs = await replayRequirements(prompts, path.join(opts.out, 'requirements.json'));
-  const scored = Object.entries(reqs).filter(([, r]) => r.req).map(([t, r]) => t);
+  const scored = Object.entries(reqs).filter(([, r]) => r.req).map(([t]) => t);
   log(`${scored.length} tasks have requirement vectors`);
 
   // Phase 3
@@ -415,6 +415,15 @@ function simulateShortfall(req, candidates, overrides, tau) {
     fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + `.bak-${Date.now()}`);
     cfg.modelOverrides = { ...(cfg.modelOverrides || {}), ...overrides };
     cfg.tau = tau;
+    // Measured records: shortfall prefers these over overrides and seeds.
+    const existing = Array.isArray(cfg.evaluation?.records) ? cfg.evaluation.records : [];
+    const fresh = opts.models.map((m) => ({
+      model: m.key, host: null, effort: null,
+      benchmark: `${opts.dataset}`, date: new Date().toISOString().slice(0, 10),
+      n_tasks: rowsets[m.key].length, pass_rate: rowsets[m.key].length ? Math.round(1000 * rowsets[m.key].filter((r) => r.pass).length / rowsets[m.key].length) / 1000 : null,
+      heads: fits[m.key].caps, run_dir: m.runRoot,
+    }));
+    cfg.evaluation = { records: [...existing.filter((r) => !fresh.some((f) => f.model === r.model && f.benchmark === r.benchmark)), ...fresh] };
     cfg.notes = (cfg.notes || '') + ` | calibrate-capabilities ${new Date().toISOString().slice(0, 10)}: modelOverrides/tau fitted from measured runs (see ${path.join(opts.out, 'report.md')}).`;
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n');
     log(`applied to ${CONFIG_PATH} (backup written). Restart Lynkr; shortfall "enabled" is left as-is.`);

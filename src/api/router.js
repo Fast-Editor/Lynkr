@@ -311,6 +311,7 @@ async function pickTierByIntent(body) {
     // Underscored: stripped at the outbound chokepoint with every other
     // internal field, never leaks upstream or to headers.
     _jev: (d.analysis && d.analysis.jev) || d.jev || null,
+    _engine: d.engine || null,
     // WS5: feedback path needs the bandit context vector (to call
     // bandit.update with the same features the arm was scored on) and the
     // query embedding (to add conclusive-quality outcomes to kNN). Both
@@ -1196,6 +1197,21 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // assignment is a no-op when the value already matches.
     if (req.sessionId && !req.body._sessionId) {
       req.body._sessionId = req.sessionId;
+      // Turn-outcome attribution: classify what happened after the previous
+      // turn of this session from the evidence this request carries.
+      try {
+        const _outcomes = require("../routing/outcomes");
+        const _tlm = require("../routing/telemetry");
+        const _prevRow = typeof _tlm.lastForSession === 'function' ? _tlm.lastForSession(req.sessionId) : null;
+        const _prevRecord = _prevRow ? {
+          statusCode: _prevRow.status_code, errorType: _prevRow.error_type, tier: _prevRow.tier, servedModel: _prevRow.model,
+          failover: /fallback/i.test(String(_prevRow.routing_method || '')) || !!_prevRow.was_fallback, tierFallback: !!_prevRow.was_fallback,
+        } : null;
+        const _po = _outcomes.classifyPrevious({ sessionId: req.sessionId, payload: req.body, prevRecord: _prevRecord });
+        if (_po) req.body._prevOutcome = _po;
+      } catch (err) {
+        logger.debug({ err: err.message }, '[Outcomes] classification failed (ignored)');
+      }
     }
 
     // TaskBand — fold the thread (minus the current ask) into a task ledger
@@ -2048,6 +2064,12 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // off-policy evaluation can score any counterfactual policy from logs.
     if (tier.propensity != null) req.body._propensity = tier.propensity;
     if (tier._jev && typeof tier._jev === 'object') req.body._jev = tier._jev;
+    // Declarative decision engine result + per-decision effort travel with the body.
+    const _eng = tier._engine || tier.engine || null;
+    if (_eng) {
+      req.body._engine = { decision: _eng.decision, tier: _eng.tier, mode: _eng.mode, effort: _eng.effort, hosts: _eng.hosts, agreesWithLegacy: _eng.agreesWithLegacy };
+      if (_eng.effort) req.body._effort = _eng.effort;
+    }
     if (tier.candidates) req.body._candidates = tier.candidates;
     // WS5 — bandit context vector + query embedding for the feedback loop.
     // All three are underscored; `_stripInternalFields` scrubs them before
@@ -2191,6 +2213,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     };
 
     const routingHeaders = getRoutingHeaders(preRouteDecision);
+    if (process.env.LYNKR_DECISION_HEADERS === 'true' && req._intentTier?._engine) {
+      try { Object.assign(routingHeaders, require("../routing/decisions").headerSummary(req._intentTier._engine)); } catch { /* headers are best-effort */ }
+    }
 
     // Build the interaction block once. It travels in headers always
     // (X-Lynkr-Interaction-* derived fields) and optionally into the

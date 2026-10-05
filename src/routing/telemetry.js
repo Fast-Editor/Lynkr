@@ -197,6 +197,12 @@ function init() {
       ["task_anchor_hash", "TEXT"],
       ["jev_context", "TEXT"],
       ["jev_cache_hit", "INTEGER"],
+      ["decision_name", "TEXT"],
+      ["engine_tier", "TEXT"],
+      ["engine_mode", "TEXT"],
+      ["effort", "TEXT"],
+      ["prev_turn_outcome", "TEXT"],
+      ["prev_turn_attributable", "INTEGER"],
     ];
     for (const [col, type] of additiveCols) {
       if (!existingCols.has(col)) {
@@ -261,7 +267,8 @@ function record(data) {
           base_tier, escalation_source, propensity, candidates, pinned, switch_reason,
           cache_decision, cache_read_tokens, cache_creation_tokens, context,
           jev_verdict, jev_confidence, jev_probabilities, jev_model, criteria_hash,
-          is_continuation, inherited_floor, task_anchor_hash, jev_context, jev_cache_hit
+          is_continuation, inherited_floor, task_anchor_hash, jev_context, jev_cache_hit,
+          decision_name, engine_tier, engine_mode, effort, prev_turn_outcome, prev_turn_attributable
         ) VALUES (
           @request_id, @session_id, @timestamp, @complexity_score, @tier,
           @agentic_type, @tool_count, @input_tokens, @message_count, @request_type,
@@ -272,7 +279,8 @@ function record(data) {
           @base_tier, @escalation_source, @propensity, @candidates, @pinned, @switch_reason,
           @cache_decision, @cache_read_tokens, @cache_creation_tokens, @context,
           @jev_verdict, @jev_confidence, @jev_probabilities, @jev_model, @criteria_hash,
-          @is_continuation, @inherited_floor, @task_anchor_hash, @jev_context, @jev_cache_hit
+          @is_continuation, @inherited_floor, @task_anchor_hash, @jev_context, @jev_cache_hit,
+          @decision_name, @engine_tier, @engine_mode, @effort, @prev_turn_outcome, @prev_turn_attributable
         )`
       );
       if (!insert) return;
@@ -328,6 +336,12 @@ function record(data) {
         context: data.context == null
           ? null
           : (typeof data.context === "string" ? data.context : JSON.stringify(data.context)),
+        decision_name: data.decision_name ?? null,
+        engine_tier: data.engine_tier ?? null,
+        engine_mode: data.engine_mode ?? null,
+        effort: data.effort ?? null,
+        prev_turn_outcome: data.prev_turn_outcome ?? null,
+        prev_turn_attributable: data.prev_turn_attributable == null ? null : (data.prev_turn_attributable ? 1 : 0),
         jev_verdict: data.jev_verdict ?? null,
         jev_confidence: data.jev_confidence ?? null,
         jev_probabilities: data.jev_probabilities === null || data.jev_probabilities === undefined
@@ -1173,6 +1187,30 @@ function getAnalytics(opts = {}) {
  * jev_* telemetry columns. Null-safe: anything missing yields all-null
  * fields so call sites spread this unconditionally.
  */
+/** Decision-engine + outcome columns from a routingResult (null-safe). */
+function engineFields(src) {
+  const e = src && typeof src === 'object' ? (src.engine || src._engine || null) : null;
+  const po = src && typeof src === 'object' ? (src.prev_outcome || src._prevOutcome || null) : null;
+  return {
+    decision_name: e?.decision ?? null,
+    engine_tier: e?.tier ?? null,
+    engine_mode: e?.mode ?? null,
+    effort: e?.effort ?? null,
+    prev_turn_outcome: po?.outcome ?? null,
+    prev_turn_attributable: po ? (po.attributable ? 1 : 0) : null,
+  };
+}
+
+/** Most recent telemetry row for a session (for turn-outcome attribution). */
+function lastForSession(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const _h = db || (typeof getDb === 'function' ? getDb() : null);
+    if (!_h) return null;
+    return _h.prepare("SELECT id, timestamp, tier, model, provider, routing_method, was_fallback, status_code, error_type FROM routing_telemetry WHERE session_id = ? ORDER BY id DESC LIMIT 1").get(sessionId) || null;
+  } catch { return null; }
+}
+
 function jevFields(src) {
   const j = (src && typeof src === 'object')
     ? (src.jev && typeof src.jev === 'object' ? src.jev
@@ -1225,6 +1263,8 @@ function taskbandFields(src) {
 module.exports = {
   record,
   jevFields,
+  engineFields,
+  lastForSession,
   taskbandFields,
   query,
   getStats: getStatsCached,

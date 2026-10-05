@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "mode": "observe",
+  "anchor_bands": { "SIMPLE": [0, 20], "MEDIUM": [20, 51], "COMPLEX": [51, 76], "REASONING": [76, 101] },
+  "harness": {
+    "patterns": [
+      {
+        "name": "terminus",
+        "preamble": "You are an AI assistant tasked with solving command-line tasks",
+        "instruction": "(?:^|\\n)Instruction:\\s*\\n([\\s\\S]*?)\\n\\s*\\n(?:Your response must be|Your response|Respond)"
+      }
+    ]
+  },
+  "signals": {
+    "anchor":     { "type": "anchor_score" },
+    "judge":      { "type": "jev" },
+    "harness":    { "type": "harness" },
+    "structured": { "type": "request_field", "any_of": ["output_format", "response_format"] },
+    "tool_count": { "type": "tool_count" },
+    "turn":       { "type": "session_turn" },
+    "phase":      { "type": "session_phase" },
+    "risk":       { "type": "risk" },
+    "prev":       { "type": "prev_outcome" }
+  },
+  "decisions": [
+    { "name": "legacy", "priority": 0, "rules": { "operator": "AND", "conditions": [] }, "tier": "from:legacy" }
+  ]
+}

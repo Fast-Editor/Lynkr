@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "mode": "observe",
+  "signals": {
+    "anchor":     { "type": "anchor_score" },
+    "judge":      { "type": "jev", "min_confidence": 0.5 },
+    "harness":    { "type": "harness" },
+    "structured": { "type": "request_field", "any_of": ["output_format", "response_format"] },
+    "phase":      { "type": "session_phase" },
+    "prev":       { "type": "prev_outcome" },
+    "forensics":  { "type": "keyword", "terms": ["recover", "deleted", "disk image", "forensic", "carve"], "min_hits": 1 }
+  },
+  "decisions": [
+    {
+      "name": "harness_regressing_escalate",
+      "priority": 300,
+      "rules": { "operator": "AND", "conditions": [ { "signal": "harness" }, { "signal": "prev", "in": ["regression", "no_progress"] }, { "signal": "prev", "min": 0 } ] },
+      "tier": "COMPLEX", "effort": "medium"
+    },
+    {
+      "name": "harness_hard_task",
+      "priority": 200,
+      "rules": { "operator": "AND", "conditions": [
+        { "signal": "harness" },
+        { "operator": "OR", "conditions": [ { "signal": "judge", "tier_in": ["COMPLEX", "REASONING"] }, { "signal": "anchor", "band_in": ["COMPLEX", "REASONING"] }, { "signal": "forensics" } ] }
+      ] },
+      "tier": "COMPLEX", "effort": "medium", "hosts": ["DeepSeek"]
+    },
+    {
+      "name": "harness_easy_task",
+      "priority": 100,
+      "rules": { "operator": "AND", "conditions": [ { "signal": "harness" } ] },
+      "tier": "MEDIUM", "effort": "low", "hosts": ["Friendli", "Parasail"],
+      "plugins": { "response_cache": false, "format_guard": false }
+    },
+    {
+      "name": "structured_output_no_mutation",
+      "priority": 50,
+      "rules": { "operator": "AND", "conditions": [ { "signal": "structured" } ] },
+      "tier": "from:legacy",
+      "plugins": { "response_cache": false, "format_guard": false }
+    },
+    { "name": "legacy", "priority": 0, "rules": { "operator": "AND", "conditions": [] }, "tier": "from:legacy" }
+  ]
+}

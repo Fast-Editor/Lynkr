@@ -864,16 +864,18 @@ async function invokeOpenRouter(body, _incomingHeaders = {}) {
       openRouterBody.provider = { order: _order, allow_fallbacks: process.env.OPENROUTER_ALLOW_FALLBACKS === "true" };
     }
     openRouterBody._pinnedProviders = _order;
-    let _effort = process.env.OPENROUTER_REASONING_EFFORT || null;
-    const _map = process.env.OPENROUTER_REASONING_EFFORT_MAP || "";
+    let _effort = body._effort || process.env.OPENROUTER_REASONING_EFFORT || null;
+    const _map = body._effort ? "" : (process.env.OPENROUTER_REASONING_EFFORT_MAP || "");
     for (const pair of _map.split(",")) {
       const [k, v] = pair.split("=").map((x) => (x || "").trim());
       if (k && v && String(openRouterBody.model).includes(k)) { _effort = v; break; }
     }
     if (body.thinking?.type === "enabled" && body.thinking.budget_tokens) {
       openRouterBody.reasoning = { max_tokens: body.thinking.budget_tokens };
-    } else if (_effort) {
+    } else if (_effort && _effort !== "none") {
       openRouterBody.reasoning = { effort: _effort };
+    } else if (_effort === "none") {
+      openRouterBody.reasoning = { enabled: false };
     }
     // Per-model map lookup helper: "k1=v1,k2=v2" (substring match on model id).
     const _mapLookup = (envName) => {
@@ -2795,8 +2797,8 @@ async function invokeFireworks(body, _incomingHeaders = {}) {
     delete fireworksBody.thinking;
   }
   {
-    let _effort = process.env.FIREWORKS_REASONING_EFFORT || null;
-    const _map = process.env.FIREWORKS_REASONING_EFFORT_MAP || "";
+    let _effort = body._effort || process.env.FIREWORKS_REASONING_EFFORT || null;
+    const _map = body._effort ? "" : (process.env.FIREWORKS_REASONING_EFFORT_MAP || "");
     for (const pair of _map.split(",")) {
       const [k, v] = pair.split("=").map((x) => (x || "").trim());
       if (k && v && String(fireworksBody.model).includes(k)) { _effort = v; break; }
@@ -3817,6 +3819,8 @@ async function invokeModel(body, options = {}) {
         taskband: body._taskband ?? null,
         // Jev verdict (telemetry.jevFields reads routingResult.jev).
         jev: body._jev ?? null,
+        engine: body._engine ?? null,
+        prev_outcome: body._prevOutcome ?? null,
         // WS4 — off-policy evaluation from telemetry alone requires
         // propensity + candidates on every row. Deterministic default is
         // 1.0 with a single-entry candidate list matching the served pair.
@@ -4034,6 +4038,7 @@ async function invokeModel(body, options = {}) {
       pinned: routingResult.pinned ? 1 : 0,
       switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.engineFields(routingResult),
       ...telemetry.taskbandFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       cache_read_tokens: result.json?.usage?.cache_read_input_tokens ?? null,
@@ -4271,6 +4276,7 @@ async function invokeModel(body, options = {}) {
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.engineFields(routingResult),
       ...telemetry.taskbandFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       });
@@ -4386,6 +4392,7 @@ async function invokeModel(body, options = {}) {
           pinned: routingResult.pinned ? 1 : 0,
           switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.engineFields(routingResult),
       ...telemetry.taskbandFields(routingResult),
           cache_decision: routingResult._cacheDecision ?? null,
         });
@@ -4485,6 +4492,7 @@ async function invokeModel(body, options = {}) {
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.engineFields(routingResult),
       ...telemetry.taskbandFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       cache_read_tokens: fallbackResult.json?.usage?.cache_read_input_tokens ?? null,
@@ -4548,6 +4556,7 @@ async function invokeModel(body, options = {}) {
         pinned: routingResult.pinned ? 1 : 0,
         switch_reason: routingResult.switch_reason ?? null,
       ...telemetry.jevFields(routingResult),
+      ...telemetry.engineFields(routingResult),
       ...telemetry.taskbandFields(routingResult),
       cache_decision: routingResult._cacheDecision ?? null,
       });
