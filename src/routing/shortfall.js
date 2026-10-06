@@ -78,6 +78,7 @@ function loadProfiles() {
     const weights = _normalizeWeights(raw?.weights);
     _profilesCache = {
       tierProfiles,
+      evaluation: Array.isArray(raw?.evaluation?.records) ? raw.evaluation.records : [],
       modelOverrides,
       enabled: raw?.enabled === true,
       tau: Number.isFinite(tau) && tau >= 0 ? tau : DEFAULT_TAU,
@@ -85,7 +86,7 @@ function loadProfiles() {
     };
   } catch (err) {
     logger.debug({ err: err.message }, '[Shortfall] profiles load failed — disabled with tier fallbacks');
-    _profilesCache = { tierProfiles: {}, modelOverrides: {}, enabled: false, tau: DEFAULT_TAU, weights: _defaultWeights() };
+    _profilesCache = { tierProfiles: {}, modelOverrides: {}, evaluation: [], enabled: false, tau: DEFAULT_TAU, weights: _defaultWeights() };
   }
   return _profilesCache;
 }
@@ -99,6 +100,7 @@ function _setProfilesForTests(profiles) {
   const base = loadProfiles();
   _profilesCache = {
     tierProfiles: profiles?.tierProfiles ?? base.tierProfiles,
+    evaluation: profiles?.evaluation ?? base.evaluation ?? [],
     modelOverrides: profiles?.modelOverrides ?? base.modelOverrides,
     enabled: profiles?.enabled ?? base.enabled,
     tau: profiles?.tau ?? base.tau,
@@ -153,6 +155,14 @@ function isEnabled() {
  *   seed:shipped|family|tier|tier-fallback (telemetry provenance).
  */
 function resolveCapabilitiesWithSource({ provider, model, tier }) {
+  {
+    // Measured evaluation records (written by scripts/calibrate-capabilities.js
+    // --apply) outrank operator overrides and shipped seeds.
+    const _ev = loadProfiles().evaluation;
+    const _key = `${provider}:${model}`.toLowerCase();
+    const _rec = Array.isArray(_ev) ? _ev.find((r) => String(r.model || '').toLowerCase() === _key && r.heads) : null;
+    if (_rec) return { caps: _sanitizeCaps(_rec.heads), source: `evaluation:${_rec.benchmark || 'measured'}` };
+  }
   const { tierProfiles, modelOverrides } = loadProfiles();
   const key = `${String(provider || '').toLowerCase()}:${String(model || '').toLowerCase()}`;
   const wild = `${String(provider || '').toLowerCase()}:*`;
@@ -280,8 +290,87 @@ function selectByShortfall(req, candidates, opts = {}) {
   }
 }
 
+const TIER_MIDPOINTS = [['SIMPLE', 10], ['MEDIUM', 35], ['COMPLEX', 63], ['REASONING', 88]];
+
+function _tierVec(tierProfiles, tier) {
+  const tp = tierProfiles?.[tier];
+  if (!tp) return null;
+  const v = {};
+  for (const h of HEADS) v[h] = Number.isFinite(tp[h]) ? Math.max(0, Math.min(1, tp[h])) : 0;
+  return v;
+}
+
+/** Anchor score (0–100) → head vector interpolated between tier profiles. */
+const _r3 = (v) => Math.round(Math.max(0, Math.min(1, v)) * 1000) / 1000;
+
+function anchorRequirement(anchorScore, tierProfiles = null) {
+  if (anchorScore === null || anchorScore === undefined || anchorScore === '') return null;
+  const s = Number(anchorScore);
+  if (!Number.isFinite(s)) return null;
+  const tps = tierProfiles || loadProfiles().tierProfiles;
+  const pts = TIER_MIDPOINTS.map(([t, mid]) => [mid, _tierVec(tps, t)]).filter(([, v]) => v);
+  if (pts.length === 0) return null;
+  if (s <= pts[0][0]) return pts[0][1];
+  if (s >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [a, va] = pts[i], [b, vb] = pts[i + 1];
+    if (s >= a && s <= b) {
+      const f = (s - a) / (b - a);
+      const v = {};
+      for (const h of HEADS) v[h] = _r3(va[h] + (vb[h] - va[h]) * f);
+      return v;
+    }
+  }
+  return null;
+}
+
+/** Jev verdict { probabilities:{TIER:p} } (or { tier, confidence }) → head vector. */
+function jevRequirement(jev, tierProfiles = null) {
+  if (!jev || typeof jev !== 'object') return null;
+  const tps = tierProfiles || loadProfiles().tierProfiles;
+  let probs = jev.probabilities && typeof jev.probabilities === 'object' ? jev.probabilities : null;
+  if (!probs && jev.tier) probs = { [jev.tier]: Number.isFinite(jev.confidence) ? jev.confidence : 1 };
+  if (!probs) return null;
+  const v = {}; for (const h of HEADS) v[h] = 0;
+  let total = 0;
+  for (const [tier, p] of Object.entries(probs)) {
+    const tv = _tierVec(tps, tier); const w = Number(p);
+    if (!tv || !Number.isFinite(w) || w <= 0) continue;
+    total += w;
+    for (const h of HEADS) v[h] += tv[h] * w;
+  }
+  if (total <= 0) return null;
+  for (const h of HEADS) v[h] = _r3(v[h] / total);
+  return v;
+}
+
+/**
+ * Lift a structural requirement vector with the semantic signals.
+ * @returns {{ req: object, lift: { anchor: object|null, jev: object|null, applied: string[] } }}
+ */
+function liftRequirement(req, { anchorScore = null, jev = null } = {}, tierProfiles = null) {
+  try {
+    const base = {}; for (const h of HEADS) base[h] = Number.isFinite(req?.[h]) ? req[h] : 0;
+    const a = anchorRequirement(anchorScore, tierProfiles);
+    const j = jevRequirement(jev, tierProfiles);
+    const out = { ...base }; const applied = [];
+    for (const h of HEADS) {
+      if (a && a[h] > out[h]) { out[h] = a[h]; if (!applied.includes('anchor')) applied.push('anchor'); }
+      if (j && j[h] > out[h]) { out[h] = j[h]; if (!applied.includes('jev')) applied.push('jev'); }
+      out[h] = Math.round(Math.max(0, Math.min(1, out[h])) * 1000) / 1000;
+    }
+    return { req: out, lift: { anchor: a, jev: j, applied } };
+  } catch (err) {
+    logger.debug({ err: err.message }, '[Shortfall] semantic lift failed — structural vector kept');
+    return { req, lift: { anchor: null, jev: null, applied: [] } };
+  }
+}
+
 module.exports = {
   HEADS,
+  anchorRequirement,
+  jevRequirement,
+  liftRequirement,
   DEFAULT_TAU,
   loadProfiles,
   _resetProfilesCache,

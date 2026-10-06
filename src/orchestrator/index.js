@@ -2312,6 +2312,8 @@ IMPORTANT TOOL USAGE RULES:
         const { extractToolCallsFromText } = require("../clients/xml-tool-extractor");
         for (const block of contentArray) {
           if (block?.type === "text" && block?.text) {
+            const _bt = block.text.trim();
+            if (_bt.startsWith("{") && _bt.endsWith("}")) continue;
             const extracted = extractToolCallsFromText(block.text);
             if (extracted.toolCalls.length > 0) {
               toolCalls = extracted.toolCalls;
@@ -2338,7 +2340,8 @@ IMPORTANT TOOL USAGE RULES:
       toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
 
       // Extract tool calls embedded as XML/text in content (Minimax, Qwen, GLM, Llama, etc.)
-      if (toolCalls.length === 0 && typeof message.content === "string" && message.content.trim()) {
+      if (toolCalls.length === 0 && typeof message.content === "string" && message.content.trim()
+          && !(message.content.trim().startsWith("{") && message.content.trim().endsWith("}"))) {
         const { extractToolCallsFromText } = require("../clients/xml-tool-extractor");
         const extracted = extractToolCallsFromText(message.content);
         if (extracted.toolCalls.length > 0) {
@@ -2539,6 +2542,10 @@ IMPORTANT TOOL USAGE RULES:
       if (Array.isArray(anthropicPayload?.content)) {
         anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
       }
+    } else if ((actualProvider === "openrouter" || actualProvider === "edenai")
+               && databricksResponse.json?.type === "message" && Array.isArray(databricksResponse.json?.content)) {
+      anthropicPayload = databricksResponse.json;
+      anthropicPayload.content = policy.sanitiseContent(anthropicPayload.content);
     } else if (actualProvider === "openrouter" || actualProvider === "edenai") {
       const { convertOpenRouterResponseToAnthropic } = require("../clients/openrouter-utils");
 
@@ -3126,7 +3133,9 @@ async function processMessage({ payload, headers, session, cwd, options = {} }) 
 
   let cacheKey = null;
   let cachedResponse = null;
-  if (promptCache.isEnabled()) {
+  const _structuredAgentRequest = !!(cleanPayload?.output_format || cleanPayload?.response_format)
+    && process.env.LYNKR_CACHE_BYPASS_STRUCTURED !== "false";
+  if (promptCache.isEnabled() && !_structuredAgentRequest) {
     // cleanPayload is already a deep clone from sanitizePayload, no need to clone again
     const { key, entry } = promptCache.lookup(cleanPayload);
     pTimer.mark("cacheCheck");

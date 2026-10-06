@@ -131,8 +131,12 @@ async function pickTierByIntent(body) {
   const textBearingMsgs = allUserMsgs.filter(
     (m) => extractCleanUserText({ messages: [m] })
   );
-  const windowUserMsgs = (textBearingMsgs.length > 0 ? textBearingMsgs : allUserMsgs)
+  let windowUserMsgs = (textBearingMsgs.length > 0 ? textBearingMsgs : allUserMsgs)
     .slice(-N); // chronological, oldest-first
+  try {
+    const _hAsk = require("../routing/harness-envelope").harnessAskFromPayload(body);
+    if (_hAsk?.text) windowUserMsgs = [{ role: 'user', content: _hAsk.text }];
+  } catch { /* fall back to the sliding window */ }
 
   // WS3 — we USED to slice tools to 3 here so Claude Code's 11 baseline
   // tools didn't inflate the agentic detector's tool-count signal. That
@@ -284,6 +288,21 @@ async function pickTierByIntent(body) {
     perMsg: perMsgScores,
   }, "[OAuthIntent] window scoring decision");
 
+  // Decision engine must see the ORIGINAL request (harness preamble, tools,
+  // session context), not the cleaned single message the window loop scored —
+  // the per-message pass strips the envelope the harness signal keys on.
+  let _engineOnBody = d.engine || null;
+  try {
+    const _dec = require("../routing/decisions");
+    const _sid = body?._sessionId || null;
+    _engineOnBody = await _dec.evaluate({
+      payload: body, analysis: d.analysis || {}, risk: d.risk || null, agenticResult: d.agenticResult || null,
+      legacy: { tier: d.tier || null, provider: d.provider, model: d.model || null },
+      sessionId: _sid, prevTurns: _sid ? require("../routing/outcomes").ring(_sid) : [],
+    });
+  } catch (err) {
+    logger.debug({ err: err.message }, "[OAuthIntent] decision engine on body failed — keeping per-message result");
+  }
   return {
     tier: d.tier || null,
     provider: d.provider,
@@ -307,6 +326,7 @@ async function pickTierByIntent(body) {
     // Underscored: stripped at the outbound chokepoint with every other
     // internal field, never leaks upstream or to headers.
     _jev: (d.analysis && d.analysis.jev) || d.jev || null,
+    _engine: _engineOnBody,
     // WS5: feedback path needs the bandit context vector (to call
     // bandit.update with the same features the arm was scored on) and the
     // query embedding (to add conclusive-quality outcomes to kNN). Both
@@ -1192,6 +1212,21 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // assignment is a no-op when the value already matches.
     if (req.sessionId && !req.body._sessionId) {
       req.body._sessionId = req.sessionId;
+      // Turn-outcome attribution: classify what happened after the previous
+      // turn of this session from the evidence this request carries.
+      try {
+        const _outcomes = require("../routing/outcomes");
+        const _tlm = require("../routing/telemetry");
+        const _prevRow = typeof _tlm.lastForSession === 'function' ? _tlm.lastForSession(req.sessionId) : null;
+        const _prevRecord = _prevRow ? {
+          statusCode: _prevRow.status_code, errorType: _prevRow.error_type, tier: _prevRow.tier, servedModel: _prevRow.model,
+          failover: /fallback/i.test(String(_prevRow.routing_method || '')) || !!_prevRow.was_fallback, tierFallback: !!_prevRow.was_fallback,
+        } : null;
+        const _po = _outcomes.classifyPrevious({ sessionId: req.sessionId, payload: req.body, prevRecord: _prevRecord });
+        if (_po) req.body._prevOutcome = _po;
+      } catch (err) {
+        logger.debug({ err: err.message }, '[Outcomes] classification failed (ignored)');
+      }
     }
 
     // TaskBand — fold the thread (minus the current ask) into a task ledger
@@ -1422,7 +1457,7 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // reached the risk classifier. Require a detected client profile
     // (harness UA / tool fingerprint) before treating tool-less traffic as
     // side traffic; a suggestion-mode tag is harness evidence by itself.
-    const isKnownHarness = !!req.body?._clientProfile;
+    const isKnownHarness = !!req.body?._clientProfile && req.body._clientProfile.toolless !== true;
     // Signal 1 — message-count regression. Real turns grow the transcript
     // monotonically; a harness replay (title-gen, recap, summary) truncates
     // the history down to the wrapper prompt. If this payload has fewer
@@ -1540,11 +1575,12 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
       let _pinForceBypass = null;
       if (!sideTier && pinCheck.serve && pinCheck.reason === 'guards_passed' && !isSideRequest) {
         try {
-          const _probe = { messages: [{ role: 'user', content: _lastUserAskClean || '' }] };
+          const _harnessAskForPin = require("../routing/harness-envelope").harnessAskFromPayload(req.body);
+          const _probe = { messages: [{ role: 'user', content: (_harnessAskForPin ? _harnessAskForPin.text : _lastUserAskClean) || '' }] };
           const ca = require("../routing/complexity-analyzer");
           if (_lastUserText && ca.shouldForceReasoning(_probe)) _pinForceBypass = 'force_reasoning';
           else if (_lastUserText && ca.shouldForceCloud(_probe)) _pinForceBypass = 'force_cloud';
-          else if (_lastUserText) {
+          else if (_lastUserText && process.env.RISK_TIER_ESCALATION !== 'false') {
             const _pinRisk = analyzeRisk(_probe);
             if (_pinRisk?.level === 'high') _pinForceBypass = 'risk_high';
           }
@@ -2042,6 +2078,16 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     // WS4 — propensity + candidates land on every telemetry row so downstream
     // off-policy evaluation can score any counterfactual policy from logs.
     if (tier.propensity != null) req.body._propensity = tier.propensity;
+    if (tier._jev && typeof tier._jev === 'object') req.body._jev = tier._jev;
+    // Declarative decision engine result + per-decision effort travel with the body.
+    const _eng = tier._engine || tier.engine || null;
+    if (_eng) {
+      req.body._engine = { decision: _eng.decision, tier: _eng.tier, mode: _eng.mode, effort: _eng.effort, hosts: _eng.hosts, agreesWithLegacy: _eng.agreesWithLegacy, cascade: _eng.cascade || null };
+      // Effort is a SERVING change: apply it only when the engine is allowed
+      // to serve (enforce mode) or when its tier is the one actually served.
+      if (_eng.effort && (_eng.mode === 'enforce' || _eng.tier === tier.tier)) req.body._effort = _eng.effort;
+    }
+    if (pinCheck && pinCheck.gate) req.body._gate = { action: pinCheck.gate.action, reason: pinCheck.gate.reason, target: pinCheck.gate.target, enforced: pinCheck.gate.enforced, streak: pinCheck.gate.streak };
     if (tier.candidates) req.body._candidates = tier.candidates;
     // WS5 — bandit context vector + query embedding for the feedback loop.
     // All three are underscored; `_stripInternalFields` scrubs them before
@@ -2185,6 +2231,9 @@ router.post("/v1/messages", rateLimiter, async (req, res, next) => {
     };
 
     const routingHeaders = getRoutingHeaders(preRouteDecision);
+    if (process.env.LYNKR_DECISION_HEADERS === 'true' && req._intentTier?._engine) {
+      try { Object.assign(routingHeaders, require("../routing/decisions").headerSummary(req._intentTier._engine)); } catch { /* headers are best-effort */ }
+    }
 
     // Build the interaction block once. It travels in headers always
     // (X-Lynkr-Interaction-* derived fields) and optionally into the
