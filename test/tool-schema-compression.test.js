@@ -79,3 +79,60 @@ describe('compressToolDescriptions preserves schema shape (issue #116)', () => {
     assert.strictEqual(t.strict, false);
   });
 });
+
+// Regression tests: compressSchemaDescriptions is invoked as
+// compressSchemaDescriptions(schema, null) for the schema ROOT, where there is
+// no property name to judge. Passing that null into isObviousFromName threw
+// "TypeError: Cannot read properties of null (reading 'toLowerCase')", which
+// the orchestrator catches and logs as
+//   "System prompt optimization failed, continuing with original"
+// (src/orchestrator/index.js). Net effect: for every tool whose input schema
+// carries a root-level `description`, minimal-mode compression silently did
+// nothing — and the sibling optimizeSystemPrompt() call in the same try block
+// was skipped too.
+describe('compressToolDescriptions tolerates a root-level schema description', () => {
+  const rootDescriptionTool = () => ({
+    type: 'function',
+    function: {
+      name: 'tool_root',
+      parameters: {
+        type: 'object',
+        description: 'A deliberately long root-level schema description that exceeds thirty chars',
+        properties: {
+          command: { type: 'string', description: 'The command to run' },
+          custom: { type: 'string', description: 'A very long custom description that definitely needs trimming down' },
+        },
+        required: ['command'],
+      },
+    },
+  });
+
+  it('does not throw (was: TypeError on null.toLowerCase)', () => {
+    assert.doesNotThrow(() => compressToolDescriptions([rootDescriptionTool()], 'minimal'));
+  });
+
+  it('compresses the root description while preserving schema shape', () => {
+    const [t] = compressToolDescriptions([rootDescriptionTool()], 'minimal');
+    assert.strictEqual(t.input_schema.type, 'object');
+    assert.deepStrictEqual(t.input_schema.required, ['command']);
+    assert.strictEqual(typeof t.input_schema.description, 'string');
+    assert.ok(t.input_schema.description.length <= 30, t.input_schema.description);
+    // Nested behaviour is unchanged.
+    assert.ok(!('description' in t.input_schema.properties.command));
+    assert.ok(t.input_schema.properties.custom.description.length <= 30);
+  });
+
+  it('handles a root-level schema with no properties without throwing', () => {
+    assert.doesNotThrow(() => compressToolDescriptions([{
+      name: 'bare',
+      input_schema: { type: 'object', description: 'x'.repeat(80) },
+    }], 'minimal'));
+  });
+
+  it('handles a root-level schema array without throwing', () => {
+    assert.doesNotThrow(() => compressToolDescriptions([{
+      name: 'listy',
+      input_schema: [{ type: 'object', description: 'x'.repeat(80) }],
+    }], 'minimal'));
+  });
+});

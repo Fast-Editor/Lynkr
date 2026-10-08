@@ -147,10 +147,15 @@ function compressText(text, maxLength) {
 
 /**
  * Check if property name is self-explanatory
- * @param {string} name - Property name
+ * @param {string|null} name - Property name, or null for a schema root
  * @returns {boolean} True if name is obvious
  */
 function isObviousFromName(name) {
+  // The schema ROOT is compressed with key=null (see
+  // compressSchemaDescriptions(out.input_schema, null)): there is no property
+  // name to judge. Treat any non-string key as "not obvious" instead of
+  // crashing on name.toLowerCase() — that throw aborted the whole pass.
+  if (typeof name !== 'string') return false;
   const obvious = [
     'id', 'name', 'type', 'value', 'data', 'text', 'content',
     'message', 'query', 'command', 'url', 'path', 'file', 'filename',
