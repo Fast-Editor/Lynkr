@@ -45,6 +45,7 @@ WORKDIR /app
 COPY --from=build --chown=node:node /app/index.js /app/package.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/src ./src
+COPY --from=build --chown=node:node /app/public ./public
 COPY --from=build --chown=node:node /app/config ./config
 COPY --from=build --chown=node:node /app/bin ./bin
 COPY --from=build --chown=node:node /app/scripts/setup.js ./scripts/setup.js
