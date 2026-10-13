@@ -105,6 +105,11 @@ function intentScoreMode() {
 function _latestUserAsk(payload) {
   const msgs = payload?.messages;
   if (!Array.isArray(msgs)) return { text: null, index: -1 };
+  {
+    const { harnessAskFromPayload } = require('./harness-envelope');
+    const ask = harnessAskFromPayload(payload);
+    if (ask) return ask;
+  }
   const { cleanUserText } = require('./jev-router');
   for (let i = msgs.length - 1; i >= 0; i--) {
     const msg = msgs[i];

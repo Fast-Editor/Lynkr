@@ -22,6 +22,8 @@
 
 > Numbers from the bundled benchmark against LiteLLM on identical free local backends — run it yourself: `node benchmark-tier-routing.js`. It doubles as a 19-scenario routing regression harness (currently 12/12 correctness checks), and `MODE=routing` runs a routing-only head-to-head that judges **both** proxies on the same acceptable-tier sets — including LiteLLM's Auto Router v2. [How it works →](docs/benchmarking.md)
 
+> **Agentic benchmark (Terminal-Bench core, 80 tasks, Oct 2026):** Lynkr **42/80 for $1.54** vs openrouter/auto **44/80 for $4.72** on the same VM and evening — tied on accuracy within single-run noise (Lynkr's three runs: 39, 39, 42) at ~30% of the cost; vLLM Semantic Router on the same models/hosts: 25/80 (34 agent timeouts from unbounded upstream stalls and per-turn CPU classification). [Full comparison, fairness notes and what it changed in Lynkr →](docs/terminal-bench-router-comparison.md)
+
 > **Third-party benchmark:** on [RouterArena](https://github.com/RouteWorks/RouterArena) (ICLR 2026, 8,400 queries) Lynkr's routing scores **67.65 arena / 68.41% accuracy at $0.29 per 1K queries with 92.38 robustness** — above GPT-5's built-in router and NotDiamond at a fraction of their cost. [Methodology & caveats →](docs/routerarena-benchmark.md)
 
 ---

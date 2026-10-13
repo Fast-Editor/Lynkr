@@ -421,6 +421,11 @@ function extractContent(payload) {
   if (!payload?.messages || !Array.isArray(payload.messages)) {
     return '';
   }
+  {
+    const { harnessAskFromPayload } = require('./harness-envelope');
+    const ask = harnessAskFromPayload(payload);
+    if (ask) return ask.text;
+  }
 
   // Get last user message. Harness envelopes (Cursor's <user_info>/<rules>/
   // attached context inside the user message) are stripped so force patterns,
@@ -983,6 +988,7 @@ function shouldForceLocal(payload) {
  * Quick check if request should be forced to cloud
  */
 function shouldForceCloud(payload) {
+  if (process.env.FORCE_TIER_PATTERNS === "false") return false;
   const content = extractContent(payload);
   const matched = FORCE_CLOUD_PATTERNS.find(pattern => pattern.test(content));
   if (matched) {
@@ -997,6 +1003,7 @@ function shouldForceCloud(payload) {
  * from first principles, security audit.
  */
 function shouldForceReasoning(payload) {
+  if (process.env.FORCE_TIER_PATTERNS === "false") return false;
   const content = extractContent(payload);
   const matched = FORCE_REASONING_PATTERNS.find(pattern => pattern.test(content));
   if (matched) {

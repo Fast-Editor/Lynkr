@@ -82,6 +82,7 @@ function appendToSystem(system, text) {
  */
 function injectFormatGuard(body, opts = {}) {
   if (!body) return body;
+  if (process.env.FMT_GUARD_ENABLED === "false") return body;
   const { provider, model } = opts;
   if (producesCleanMarkdown(provider, model)) return body;
 

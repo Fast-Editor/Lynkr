@@ -16,6 +16,8 @@ const SUBCOMMANDS = {
   restart:       path.join(__dirname, "lynkr-restart.js"),
   run:           path.join(__dirname, "run.js"),
   connect:       path.join(__dirname, "lynkr-connect-orcarouter.js"),
+  route:         path.join(__dirname, "lynkr-route.js"),
+  audit:         path.join(__dirname, "lynkr-audit.js"),
 };
 
 const sub = process.argv[2];

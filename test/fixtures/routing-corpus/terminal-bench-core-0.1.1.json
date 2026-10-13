@@ -1,0 +1,4857 @@
+{
+ "generated": "2026-10-05T22:04:03.142Z",
+ "config": "config/routing.example.json",
+ "fixtures": [
+  {
+   "task": "blind-maze-explorer-5x5",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.66,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "blind-maze-explorer-algorithm",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.8,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "blind-maze-explorer-algorithm.easy",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.78,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "blind-maze-explorer-algorithm.hard",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": false,
+     "value": "COMPLEX",
+     "confidence": 0.45,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "build-initramfs-qemu",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 47,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.57,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "build-linux-kernel-qemu",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 49,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.81,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "build-tcc-qemu",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 49,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.6,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "cartpole-rl-training",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.52,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "chess-best-move",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": false,
+     "value": "REASONING",
+     "confidence": 0.38,
+     "tier": "REASONING"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "conda-env-conflict-resolution",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.65,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "configure-git-webserver",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 47,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": false,
+     "value": "MEDIUM",
+     "confidence": 0.45,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "count-dataset-tokens",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.93,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "crack-7z-hash",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.84,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "crack-7z-hash.easy",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.73,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "crack-7z-hash.hard",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 38,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.97,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "create-bucket",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.82,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "cron-broken-network",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.9,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "csv-to-parquet",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 40,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.95,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "decommissioning-service-with-sensitive-data",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.84,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "download-youtube",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 41,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.94,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "eval-mteb",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.95,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "eval-mteb.hard",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.91,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "extract-moves-from-video",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 49,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.91,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "extract-safely",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 49,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.93,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "fibonacci-server",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.92,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "fix-git",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 25,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.87,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "fix-pandas-version",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.94,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "fix-permissions",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 47,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.96,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "get-bitcoin-nodes",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.52,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "git-multibranch",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.76,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "git-workflow-hack",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 48,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.69,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "gpt2-codegolf",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.79,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "grid-pattern-transform",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.81,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "hello-world",
+   "legacyTier": "SIMPLE",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 33,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": false,
+     "value": "SIMPLE",
+     "confidence": 0.41,
+     "tier": "SIMPLE"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "heterogeneous-dates",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 46,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.91,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "hf-model-inference",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.7,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "incompatible-python-fasttext",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 47,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.71,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "incompatible-python-fasttext.base_with_hint",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.52,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "jupyter-notebook-server",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.8,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "modernize-fortran-build",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 53,
+     "confidence": null,
+     "band": "COMPLEX"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.91,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "new-encrypt-command",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.97,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "nginx-request-logging",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.89,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "oom",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.92,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "openssl-selfsigned-cert",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.92,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "organization-json-generator",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 58,
+     "confidence": null,
+     "band": "COMPLEX"
+    },
+    "judge": {
+     "matched": false,
+     "value": "COMPLEX",
+     "confidence": 0.43,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "password-recovery",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.58,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "medium",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": true,
+     "value": null,
+     "confidence": 0.6
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "path-tracing",
+   "legacyTier": "REASONING",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": false,
+     "value": "COMPLEX",
+     "confidence": 0.2,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "path-tracing-reverse",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": false,
+     "value": "COMPLEX",
+     "confidence": 0.45,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "play-zork",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 49,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.62,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "polyglot-c-py",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.62,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "polyglot-rust-c",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": false,
+     "value": "COMPLEX",
+     "confidence": 0.29,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "processing-pipeline",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.97,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "prove-plus-comm",
+   "legacyTier": "REASONING",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "REASONING",
+     "confidence": 0.96,
+     "tier": "REASONING"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "pytorch-model-cli",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.87,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "pytorch-model-cli.easy",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.65,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "pytorch-model-cli.hard",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": false,
+     "value": "MEDIUM",
+     "confidence": 0.38,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "raman-fitting",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.96,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "raman-fitting.easy",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.96,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "reshard-c4-data",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.72,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "run-pdp11-code",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 41,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.64,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "sanitize-git-repo",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": false,
+     "value": "MEDIUM",
+     "confidence": 0.37,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "sanitize-git-repo.hard",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": false,
+     "value": "COMPLEX",
+     "confidence": 0.3,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "security-vulhub-minio",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.96,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "simple-sheets-put",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 44,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.95,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "simple-web-scraper",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.96,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": true,
+     "value": "high",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "solana-data",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "COMPLEX",
+     "confidence": 0.7,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "sqlite-db-truncate",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.72,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": true,
+     "value": null,
+     "confidence": 0.2
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "sqlite-with-gcov",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 49,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.8,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "super-benchmark-upet",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.53,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "swe-bench-astropy-1",
+   "legacyTier": "COMPLEX",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": false,
+     "value": "COMPLEX",
+     "confidence": 0.39,
+     "tier": "COMPLEX"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "swe-bench-astropy-2",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 47,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.7,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "swe-bench-fsspec",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.93,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "swe-bench-langcodes",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.92,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "tmux-advanced-workflow",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.67,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "train-fasttext",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 76,
+     "confidence": null,
+     "band": "REASONING"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.65,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_hard_task",
+    "tier": "COMPLEX",
+    "effort": "medium"
+   }
+  },
+  {
+   "task": "vim-terminal-task",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.96,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  },
+  {
+   "task": "write-compressor",
+   "legacyTier": "MEDIUM",
+   "signals": {
+    "anchor": {
+     "matched": true,
+     "value": 50,
+     "confidence": null,
+     "band": "MEDIUM"
+    },
+    "judge": {
+     "matched": true,
+     "value": "MEDIUM",
+     "confidence": 0.54,
+     "tier": "MEDIUM"
+    },
+    "harness": {
+     "matched": true,
+     "value": "terminus",
+     "confidence": 1
+    },
+    "structured": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "tool_count": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "turn": {
+     "matched": false,
+     "value": 0,
+     "confidence": 1
+    },
+    "phase": {
+     "matched": true,
+     "value": "planning",
+     "confidence": 0.9
+    },
+    "risk": {
+     "matched": false,
+     "value": "low",
+     "confidence": null
+    },
+    "prev": {
+     "matched": false,
+     "value": null,
+     "confidence": null
+    },
+    "forensics": {
+     "matched": false,
+     "value": null,
+     "confidence": 0
+    }
+   },
+   "expected": {
+    "decision": "harness_easy_task",
+    "tier": "MEDIUM",
+    "effort": "low"
+   }
+  }
+ ]
+}
