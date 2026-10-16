@@ -9,6 +9,7 @@ const {
   shouldForceReasoning,
   shouldForceCloud,
   shouldForceLocal,
+  scoreTaskType,
 } = require('../src/routing/complexity-analyzer');
 
 const msg = (content) => ({ messages: [{ role: 'user', content }] });
@@ -27,6 +28,11 @@ describe('force_reasoning patterns', () => {
     'Propose a rollout strategy for the new pipeline',
     'I need a refactoring plan for the 4300-line client',
     'Plan the redesign of the retry system',
+    // Frontier planning across lines — the removed (?=.*A)(?=.*B) lookahead
+    // could only fire when both words sat on ONE line (`.` never crosses a
+    // newline). The documented intent is co-occurrence anywhere in the ask.
+    'I need a plan\nto refactor the whole codebase',
+    'Give me a roadmap\ncovering the migration\nof the billing system',
   ];
   for (const text of fires) {
     it(`fires: ${text.slice(0, 52)}`, () => {
@@ -74,5 +80,42 @@ describe('force_local patterns', () => {
   });
   it('stays quiet on real asks', () => {
     assert.strictEqual(shouldForceLocal(msg('How to refactor databricks.js give me a plan')), false);
+  });
+});
+
+// Regression (live incident 2026-10-15): the frontier-planning trigger used
+// to be a single (?=.*A)(?=.*B) lookahead regex. On long lines every start
+// position rescanned `.*` to end-of-line — O(n²). A 200KB single-line
+// payload spent 61s per shouldForceReasoning call, ×2 calls per request
+// via determineProviderSmart → 150s+ end-to-end on /v1/messages. The
+// two-regex implementation must stay linear even on pathological inputs.
+describe('force_reasoning long-line performance guard', () => {
+  it('200KB single-line content completes in < 1s', () => {
+    const chunk = 'The quick zebra vaulted over the lazy turnstile while countingquills diligently. ';
+    const content = chunk.repeat(4000).slice(0, 200_000) + '\n\nFINAL QUESTION';
+    const payload = { messages: [{ role: 'user', content }] };
+    const t0 = process.hrtime.bigint();
+    const fired = shouldForceReasoning(payload);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.strictEqual(fired, false);
+    assert.ok(ms < 1000, `shouldForceReasoning took ${ms.toFixed(1)}ms on 200KB single-line (regression: quadratic lookahead is back?)`);
+  });
+});
+
+// The scoreTaskType hook added with the fix must keep its contract: a
+// frontier-planning ask (plan word + technical scope, any line) short-circuits
+// scoring with the two-sided pattern marker, matching the shouldForceReasoning
+// fallback above.
+describe('frontier planning two-sided scoring', () => {
+  it('scoreTaskType short-circuits with frontier_planning_two_sided on a cross-line ask', () => {
+    const r = scoreTaskType('I need a plan\nto refactor the whole codebase');
+    assert.strictEqual(r.reason, 'force_reasoning');
+    assert.strictEqual(r.pattern, 'frontier_planning_two_sided');
+    assert.strictEqual(r.score, 100);
+  });
+
+  it('scoreTaskType does NOT short-circuit when only the plan word is present', () => {
+    const r = scoreTaskType('I need a plan\nfor my vacation next month');
+    assert.notStrictEqual(r.pattern, 'frontier_planning_two_sided');
   });
 });

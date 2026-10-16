@@ -113,8 +113,29 @@ const FORCE_REASONING_PATTERNS = [
   // and generic nouns (module/api/database) that misfire on non-technical
   // asks. Known overlap: "explain the deployment plan" fires — accepted,
   // deployment planning benefits from the strong model anyway.
-  /(?=.*\b(plans?|roadmaps?|strateg(y|ies)|blueprints?|proposals?|rfcs?|design\s+docs?)\b)(?=.*\b(refactor\w*|implement\w*|migrat\w+|architect\w+|redesign\w*|restructur\w+|rewrit\w+|overhaul\w*|codebases?|infrastructure|pipelines?|deploy\w*|systems?)\b)/i,
+  // NOTE: the frontier-planning trigger lives below as two independent
+  // regexes (PLANNING_ASK_RE / TECHNICAL_SCOPE_RE), not in this array.
 ];
+
+// Frontier planning (the removed array entry above): asking FOR a
+// plan/strategy/design of technical work — a plan word AND a technical
+// scope word must both be present, so "plan my vacation", "lesson plan"
+// and "business plan" stay quiet while "give me a plan to refactor X"
+// escalates. Implemented as two independent whole-content tests instead of
+// a single (?=.*A)(?=.*B) lookahead regex: `.` never crosses a newline, so
+// on long lines every start position rescans `.*` to end-of-line — O(n²).
+// A single 200KB line measured 61s per call, ×2 calls per request via
+// determineProviderSmart → 150s+ end-to-end (live incident 2026-10-15:
+// /v1/messages 50k-token single-line probe). Two linear passes preserve
+// the documented intent: co-occurrence anywhere in the ask, either order.
+const PLANNING_ASK_RE =
+  /\b(plans?|roadmaps?|strateg(y|ies)|blueprints?|proposals?|rfcs?|design\s+docs?)\b/i;
+const TECHNICAL_SCOPE_RE =
+  /\b(refactor\w*|implement\w*|migrat\w+|architect\w+|redesign\w*|restructur\w+|rewrit\w+|overhaul\w*|codebases?|infrastructure|pipelines?|deploy\w*|systems?)\b/i;
+
+function isFrontierPlanningAsk(content) {
+  return PLANNING_ASK_RE.test(content) && TECHNICAL_SCOPE_RE.test(content);
+}
 
 // Force COMPLEX patterns - route to COMPLEX (GLM in config B) regardless of
 // score. Architecture/refactor/code-review are substantial but not
@@ -504,6 +525,10 @@ function scoreTaskType(content) {
     if (pattern.test(content)) {
       return { score: 100, reason: 'force_reasoning', pattern: pattern.source.slice(0, 40) };
     }
+  }
+
+  if (isFrontierPlanningAsk(content)) {
+    return { score: 100, reason: 'force_reasoning', pattern: 'frontier_planning_two_sided' };
   }
 
   for (const pattern of FORCE_LOCAL_PATTERNS) {
@@ -1005,7 +1030,8 @@ function shouldForceCloud(payload) {
 function shouldForceReasoning(payload) {
   if (process.env.FORCE_TIER_PATTERNS === "false") return false;
   const content = extractContent(payload);
-  const matched = FORCE_REASONING_PATTERNS.find(pattern => pattern.test(content));
+  let matched = FORCE_REASONING_PATTERNS.find((pattern) => pattern.test(content));
+  if (!matched && isFrontierPlanningAsk(content)) matched = PLANNING_ASK_RE;
   if (matched) {
     logger.debug({ pattern: matched.source.slice(0, 50), text: content.slice(0, 100) }, '[Force] force_reasoning matched');
   }
@@ -1159,6 +1185,9 @@ module.exports = {
   FORCE_REASONING_PATTERNS,
   FORCE_CLOUD_PATTERNS,
   FORCE_LOCAL_PATTERNS,
+  PLANNING_ASK_RE,
+  TECHNICAL_SCOPE_RE,
+  isFrontierPlanningAsk,
   DIMENSION_WEIGHTS,
   TOOL_COMPLEXITY_WEIGHTS,
   DOMAIN_KEYWORDS,
