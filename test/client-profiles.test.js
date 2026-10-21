@@ -348,3 +348,214 @@ test('unknown harness guard requires >=10 tools', () => {
   // scoringNote should not be 'unknown_harness_guard' since tools.length < 10.
   assert.notEqual(result.scoringNote, 'unknown_harness_guard');
 });
+
+// ---------------------------------------------------------------------------
+// OpenMausBot — an app harness on the OpenAI-compat surface that executes
+// only the tools it sent. Its profile both names the baseline (so the
+// agentic detector does not score the app's own loadout as intent) and
+// vetoes IDE_SAFE_TOOLS injection (`injectTools: false`).
+// ---------------------------------------------------------------------------
+
+const { vetoesToolInjection, _resetForTests } = require('../src/routing/client-profiles');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// OpenMausBot 0.1.110 — ask_user + the built-in "agents" MCP server mounted as
+// `agents_<tool>` (chat-mcp-tools.ts), as the openai-compat driver sends them.
+const OPENMAUSBOT_TOOLS = [
+  'ask_user',
+  'agents_tool_result_read', 'agents_list_room_targets', 'agents_coordinate_bots',
+  'agents_assignment_status', 'agents_list_bots', 'agents_list_rooms',
+  'agents_select_computer', 'agents_list_threads', 'agents_close_thread',
+  'agents_start_thread', 'agents_attach_file', 'agents_post_to_room',
+  'agents_request_credential', 'agents_request_sign_in', 'agents_fill_login',
+  'agents_memory_update', 'agents_memory_log', 'agents_session_search',
+  'agents_session_read', 'agents_list_routines', 'agents_propose_routine',
+  'agents_propose_routine_action', 'agents_propose_profile', 'agents_propose_model',
+  'agents_propose_team_memory', 'agents_add_mcp_server',
+].map((name) => ({ name, input_schema: { type: 'object', properties: {} } }));
+
+test('detectClient — openmausbot user-agent matches', () => {
+  const profile = detectClient({
+    headers: { 'user-agent': 'openmausbot/0.1.110' },
+    payload: {},
+  });
+  assert.ok(profile);
+  assert.equal(profile.name, 'openmausbot');
+});
+
+test('detectClient — x-client header names the profile when there is no user-agent', () => {
+  // OpenMausBot sends neither header today; an operator fronting it (or a
+  // future release) can set x-client and skip the fingerprint entirely.
+  const profile = detectClient({ headers: { 'x-client': 'openmausbot' }, payload: {} });
+  assert.ok(profile);
+  assert.equal(profile.name, 'openmausbot');
+  const viaName = detectClient({ headers: { 'x-client-name': 'OpenMausBot desktop' }, payload: {} });
+  assert.equal(viaName?.name, 'openmausbot');
+});
+
+test('detectClient — x-client header does not shadow a user-agent match', () => {
+  const profile = detectClient({
+    headers: { 'user-agent': 'claude-cli/2.1.201 (darwin)', 'x-client': 'openmausbot' },
+    payload: {},
+  });
+  assert.equal(profile?.name, 'claude-code');
+});
+
+test('detectClient — openmausbot tool fingerprint matches with no headers at all', () => {
+  const profile = detectClient({ headers: {}, payload: { tools: OPENMAUSBOT_TOOLS } });
+  assert.ok(profile);
+  assert.equal(profile.name, 'openmausbot');
+});
+
+test('detectClient — openmausbot fingerprint works on OpenAI-shaped tool objects', () => {
+  const openaiShaped = OPENMAUSBOT_TOOLS.map((t) => ({
+    type: 'function',
+    function: { name: t.name, parameters: t.input_schema },
+  }));
+  const profile = detectClient({ headers: {}, payload: { tools: openaiShaped } });
+  assert.equal(profile?.name, 'openmausbot');
+});
+
+test('detectClient — openmausbot fingerprint survives memory being switched off', () => {
+  const noMemory = OPENMAUSBOT_TOOLS.filter((t) => !t.name.startsWith('agents_memory_'));
+  const profile = detectClient({ headers: {}, payload: { tools: noMemory } });
+  assert.equal(profile?.name, 'openmausbot');
+});
+
+test('detectClient — a bot with only ask_user + connector tools is NOT fingerprinted as openmausbot', () => {
+  // The agents server is not mounted for every bot. ask_user + three Composio
+  // tools is 1/27 of the baseline — well under 0.5 — so no profile matches,
+  // and with tools present there is nothing to veto anyway.
+  const tools = ['ask_user', 'composio_composio_search_tools', 'composio_composio_get_tool_schemas',
+    'composio_composio_multi_execute_tool'].map((name) => ({ name }));
+  const profile = detectClient({ headers: {}, payload: { tools } });
+  assert.equal(profile, null);
+});
+
+test('detectClient — the OpenMausBot context-note marker in the user turn matches', () => {
+  const profile = detectClient({
+    headers: {},
+    payload: {
+      messages: [{
+        role: 'user',
+        content: 'Context from OpenMausBot updated since this conversation started; it replaces any earlier copy:\n…\n\nhi',
+      }],
+    },
+  });
+  assert.equal(profile?.name, 'openmausbot');
+});
+
+test('openmausbot profile vetoes tool injection; every other seed profile does not', () => {
+  assert.equal(PROFILES['openmausbot'].injectTools, false);
+  assert.equal(vetoesToolInjection(PROFILES['openmausbot']), true);
+  for (const [name, profile] of Object.entries(PROFILES)) {
+    if (name === 'openmausbot') continue;
+    assert.equal(vetoesToolInjection(profile), false, `${name} must not veto injection`);
+  }
+  assert.equal(vetoesToolInjection(null), false);
+  assert.equal(vetoesToolInjection(undefined), false);
+});
+
+test('effectiveTools — subtracts the openmausbot baseline, keeps the bot\'s connectors', () => {
+  const extra = [
+    { name: 'composio_gmail_send_email' },
+    { name: 'mymcp_search_docs' },
+  ];
+  const profile = PROFILES['openmausbot'];
+  const result = effectiveTools({ tools: [...OPENMAUSBOT_TOOLS, ...extra] }, profile);
+  assert.deepEqual(result.map((t) => t.name), ['composio_gmail_send_email', 'mymcp_search_docs']);
+});
+
+test('trivial "hi" + openmausbot baseline tools + profile → NOT agentic', () => {
+  const detector = new AgenticDetector();
+  const payload = {
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: OPENMAUSBOT_TOOLS,
+  };
+  const result = detector.detect(payload, { clientProfile: PROFILES['openmausbot'] });
+  assert.equal(result.isAgentic, false);
+  assert.equal(result.agentType, 'SINGLE_SHOT');
+  const toolSignals = result.signals.filter((s) =>
+    s.signal.includes('tool_count') || s.signal.includes('agentic_tool')
+  );
+  assert.equal(toolSignals.length, 0);
+});
+
+test('data/client-profiles.json override keeps seed flags and adds new vetoing profiles', () => {
+  // Runs last: _loadUserProfiles mutates PROFILES in place for this process.
+  const prevCwd = process.cwd();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lynkr-client-profiles-'));
+  fs.mkdirSync(path.join(dir, 'data'));
+  fs.writeFileSync(path.join(dir, 'data', 'client-profiles.json'), JSON.stringify({
+    // Only a newer baseline for openmausbot — the veto and the 0.5 threshold must survive.
+    openmausbot: { baselineTools: ['ask_user', 'agents_memory_update', 'agents_new_tool'] },
+    // A brand-new app harness that also runs only its own tools.
+    myapp: { headerPatterns: ['myapp/'], injectTools: false },
+    // A new profile that says nothing about injection → default (no veto).
+    other: { headerPatterns: ['other-cli/'] },
+  }));
+  try {
+    process.chdir(dir);
+    _resetForTests();
+    const omb = detectClient({ headers: { 'user-agent': 'openmausbot/9.9.9' }, payload: {} });
+    assert.equal(omb?.name, 'openmausbot');
+    assert.equal(omb.injectTools, false, 'override must keep the seed injectTools veto');
+    assert.equal(omb.detect.minToolFingerprintMatch, 0.5, 'override must keep the seed threshold');
+    assert.ok(omb.baselineTools.has('agents_new_tool'));
+    assert.equal(omb.detect.promptPatterns.length, 2, 'override must keep the seed prompt patterns');
+
+    const myapp = detectClient({ headers: { 'user-agent': 'myapp/1.0' }, payload: {} });
+    assert.equal(myapp?.name, 'myapp');
+    assert.equal(vetoesToolInjection(myapp), true);
+
+    const other = detectClient({ headers: { 'user-agent': 'other-cli/1.0' }, payload: {} });
+    assert.equal(other?.name, 'other');
+    assert.equal(vetoesToolInjection(other), false);
+  } finally {
+    process.chdir(prevCwd);
+    _resetForTests();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// compressToolResults: false — app harnesses whose tool results are data.
+// ---------------------------------------------------------------------------
+
+const { vetoesToolResultCompression } = require('../src/routing/client-profiles');
+
+test('openmausbot profile vetoes tool-result compression; every other seed profile does not', () => {
+  assert.equal(PROFILES['openmausbot'].compressToolResults, false);
+  assert.equal(vetoesToolResultCompression(PROFILES['openmausbot']), true);
+  for (const [name, profile] of Object.entries(PROFILES)) {
+    if (name === 'openmausbot') continue;
+    assert.equal(vetoesToolResultCompression(profile), false, `${name} must keep compression on`);
+  }
+  assert.equal(vetoesToolResultCompression(null), false);
+  assert.equal(vetoesToolResultCompression(undefined), false);
+});
+
+test('data/client-profiles.json override keeps the seed compressToolResults veto and accepts it on new profiles', () => {
+  const prevCwd = process.cwd();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lynkr-client-profiles-compress-'));
+  fs.mkdirSync(path.join(dir, 'data'));
+  fs.writeFileSync(path.join(dir, 'data', 'client-profiles.json'), JSON.stringify({
+    openmausbot: { baselineTools: ['ask_user'] },               // only a new baseline
+    myapp: { headerPatterns: ['myapp/'], compressToolResults: false },
+    other: { headerPatterns: ['other-cli/'] },
+  }));
+  try {
+    process.chdir(dir);
+    _resetForTests();
+    const omb = detectClient({ headers: { 'user-agent': 'openmausbot/9.9.9' }, payload: {} });
+    assert.equal(omb.compressToolResults, false, 'override must keep the seed compressToolResults veto');
+    assert.equal(vetoesToolResultCompression(detectClient({ headers: { 'user-agent': 'myapp/1.0' }, payload: {} })), true);
+    assert.equal(vetoesToolResultCompression(detectClient({ headers: { 'user-agent': 'other-cli/1.0' }, payload: {} })), false);
+  } finally {
+    process.chdir(prevCwd);
+    _resetForTests();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

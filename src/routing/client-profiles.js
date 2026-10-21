@@ -11,10 +11,28 @@
  * specific spot for one specific client — but it also discarded real MCP
  * tools the user had configured, and did nothing for Cursor / Codex.
  *
- * This module fixes the root cause. Given a request's `user-agent` header
- * and its tools list, `detectClient` returns the matching profile (or null),
- * and `effectiveTools` subtracts the baseline so the agentic detector scores
- * only tools the user actually added beyond the harness default.
+ * This module fixes the root cause. Given a request's `user-agent` (or
+ * `x-client`) header and its tools list, `detectClient` returns the matching
+ * profile (or null), and `effectiveTools` subtracts the baseline so the
+ * agentic detector scores only tools the user actually added beyond the
+ * harness default.
+ *
+ * A profile may also carry behaviour flags the ingress routers read:
+ *   - `toolless: true`     — the client never sends tools; src/api/router.js
+ *                            uses it to tell harness side-traffic from plain
+ *                            API clients.
+ *   - `injectTools: false` — the OpenAI-compat routers must NOT inject
+ *                            IDE_SAFE_TOOLS for this client. App harnesses
+ *                            such as OpenMausBot execute only the tools they
+ *                            sent; an injected tool_call comes back to them
+ *                            as a failed turn. See `vetoesToolInjection`.
+ *   - `compressToolResults: false` — the orchestrator must NOT run the
+ *                            RTK-style tool-result compressor on this
+ *                            client's history. It was built for shell output
+ *                            a coding agent can re-run; an app harness's tool
+ *                            results are the data itself, and the harness may
+ *                            append its own paging notice that the compressor
+ *                            would delete. See `vetoesToolResultCompression`.
  *
  * @module routing/client-profiles
  */
@@ -80,14 +98,16 @@ const PROFILES = {
   'lynkr-injected': {
     name: 'lynkr-injected',
     baselineTools: new Set([
-      // Lynkr's own IDE_SAFE_TOOLS loadout (src/clients/standard-tools.js),
-      // injected by the OpenAI-compat routers when a client sends no tools.
-      // These are Lynkr plumbing, not user intent: without this profile the
-      // agentic detector counts its own injected tools and floors every
-      // tool-less client (e.g. goose's summarizer side-requests) at
-      // ITERATIVE/COMPLEX. Matches claude-code's names plus the four
-      // (MultiEdit, LS, NotebookRead, WebAgent) that keep it from
-      // fingerprinting as claude-code.
+      // Lynkr's own IDE_SAFE_TOOLS loadout (src/clients/standard-tools.js).
+      // Until 2026-10 the OpenAI-compat routers injected it into every
+      // tool-less request from an unrecognized client; they now inject only
+      // for clients with a CLIENT_TOOL_MAPPINGS entry (codex, cline, kilo,
+      // continue), filtered to the mapped names. The profile stays so a
+      // request that does carry this loadout — a mapped client, or a caller
+      // replaying one — is still read as Lynkr plumbing, not user intent:
+      // otherwise the agentic detector floors it at ITERATIVE/COMPLEX.
+      // Matches claude-code's names plus the four (MultiEdit, LS,
+      // NotebookRead, WebAgent) that keep it from fingerprinting as claude-code.
       'Write', 'Read', 'Edit', 'Bash', 'Glob', 'Grep', 'MultiEdit', 'LS',
       'NotebookRead', 'TodoWrite', 'Task', 'WebSearch', 'WebFetch',
       'WebAgent', 'NotebookEdit',
@@ -187,6 +207,69 @@ const PROFILES = {
       minToolFingerprintMatch: 0.5,
     },
   },
+  'openmausbot': {
+    name: 'openmausbot',
+    // OpenMausBot (github.com/milind-soni/OpenMausBot) is a messaging app
+    // whose bots run as `openai-compat` engines against /v1/chat/completions
+    // (server/drivers/openai-chat.ts). It executes ONLY the tools it sent —
+    // its own harness (ask_user + whichever MCP servers the bot mounted) —
+    // and omits the `tools` key entirely when a bot has none. Without this
+    // profile a tool-less bot got the full IDE_SAFE_TOOLS loadout injected
+    // (the router only treats an *array* as an opt-out), fingerprinted as
+    // lynkr-injected, and the first Read/Bash call came back as "provider
+    // returned tool calls, but no tools are available for this turn".
+    injectTools: false,
+    // OpenMausBot truncates oversized tool results itself and appends a
+    // notice carrying a saved result id + offset for agents_tool_result_read.
+    // Lynkr's compressJSON rewrote a 15 KB Composio result to a 111-char key
+    // skeleton (2026-10-14), deleting that notice; the model then paged with
+    // a bad id and OpenMausBot failed the turn. Its tool results are data,
+    // not re-runnable command output — leave them intact.
+    compressToolResults: false,
+    baselineTools: new Set([
+      // Attached whenever the bot may ask the user a question
+      // (shared/ask-question.ts, pushed in openai-chat.ts).
+      'ask_user',
+      // The built-in "agents" MCP server (server/drivers/agents-catalog.ts),
+      // mounted by chat-mcp-tools.ts as `agents_<tool>`. Bot-scoped core
+      // loadout as of OpenMausBot 0.1.110; the feature-gated names (skills_*,
+      // shared computers, send_voice_note, chief-only, vm_exec on cloud
+      // homes) are left out — subtraction only removes names present.
+      'agents_tool_result_read', 'agents_list_room_targets',
+      'agents_coordinate_bots', 'agents_assignment_status',
+      'agents_list_bots', 'agents_list_rooms', 'agents_select_computer',
+      'agents_list_threads', 'agents_close_thread', 'agents_start_thread',
+      'agents_attach_file', 'agents_post_to_room',
+      'agents_request_credential', 'agents_request_sign_in',
+      'agents_fill_login', 'agents_memory_update', 'agents_memory_log',
+      'agents_session_search', 'agents_session_read',
+      'agents_list_routines', 'agents_propose_routine',
+      'agents_propose_routine_action', 'agents_propose_profile',
+      'agents_propose_model', 'agents_propose_team_memory',
+      'agents_add_mcp_server',
+    ]),
+    detect: {
+      // OpenMausBot 0.1.x sends NO user-agent and no x-client header (its
+      // fetch sets only authorization + content-type), so today detection
+      // rests on the tool fingerprint and the prompt marker below. The
+      // header pattern is for a release that identifies itself, or an
+      // operator fronting the app with an `x-client: openmausbot` header.
+      headerPatterns: [/openmausbot/i],
+      // The app prepends a context note to the user turn whenever its
+      // volatile prompt sections changed (server/drivers/prompt-split.ts).
+      // Not on every turn, but the only stable "OpenMausBot" text a
+      // tool-less bot ever sends — best-effort, never a false positive.
+      promptPatterns: [
+        /Context from OpenMausBot updated since this conversation started/i,
+        /OpenMausBot context notes from earlier in this conversation/i,
+      ],
+      // 0.5: memory can be off (-2 names), a non-chief bot sees the same
+      // propose_* names, and a bot whose agents server is unmounted sends
+      // just ask_user and will not match — correct: with tools present there
+      // is no injection to veto and nothing of ours to subtract.
+      minToolFingerprintMatch: 0.5,
+    },
+  },
 };
 
 // Union of every baseline tool across all known profiles — used for the
@@ -203,7 +286,14 @@ function _knownBaselineTools() {
 }
 
 // User overrides / additions from data/client-profiles.json — loaded once
-// at first use. Shape: { profileName: { baselineTools: [...], detect: {...} } }
+// at first use. Shape:
+//   { profileName: { baselineTools: [...], headerPatterns: [...],
+//                    promptPatterns: [...], minToolFingerprintMatch: 0.8,
+//                    toolless: false, injectTools: true,
+//                    compressToolResults: true } }
+// Every key is optional. An omitted key keeps the seed profile's value (or
+// the default for a brand-new name), so overriding one field — say, a newer
+// baseline for openmausbot — never silently drops its injectTools veto.
 let _userProfilesLoaded = false;
 function _loadUserProfiles() {
   if (_userProfilesLoaded) return;
@@ -214,20 +304,32 @@ function _loadUserProfiles() {
     const raw = JSON.parse(fs.readFileSync(overridePath, 'utf8'));
     for (const [name, def] of Object.entries(raw || {})) {
       if (!def || typeof def !== 'object') continue;
+      const seed = PROFILES[name];
       const baseline = Array.isArray(def.baselineTools)
         ? new Set(def.baselineTools)
-        : PROFILES[name]?.baselineTools ?? new Set();
+        : seed?.baselineTools ?? new Set();
       const patterns = Array.isArray(def.headerPatterns)
         ? def.headerPatterns.map((p) => new RegExp(p, 'i'))
-        : PROFILES[name]?.detect?.headerPatterns ?? [];
+        : seed?.detect?.headerPatterns ?? [];
+      const promptPatterns = Array.isArray(def.promptPatterns)
+        ? def.promptPatterns.map((p) => new RegExp(p, 'i'))
+        : seed?.detect?.promptPatterns ?? [];
+      const flag = (key) => (typeof def[key] === 'boolean' ? def[key] : seed?.[key]);
+      const toolless = flag('toolless');
+      const injectTools = flag('injectTools');
+      const compressToolResults = flag('compressToolResults');
       PROFILES[name] = {
         name,
+        ...(toolless === undefined ? {} : { toolless }),
+        ...(injectTools === undefined ? {} : { injectTools }),
+        ...(compressToolResults === undefined ? {} : { compressToolResults }),
         baselineTools: baseline,
         detect: {
           headerPatterns: patterns,
+          promptPatterns,
           minToolFingerprintMatch: Number.isFinite(def.minToolFingerprintMatch)
             ? def.minToolFingerprintMatch
-            : 0.8,
+            : seed?.detect?.minToolFingerprintMatch ?? 0.8,
         },
       };
     }
@@ -247,7 +349,10 @@ function _toolName(t) {
  *
  * Match order:
  *   1. user-agent header regex — strongest signal, cheap.
- *   2. Tool-set fingerprint — ≥ minToolFingerprintMatch (default 80%) of the
+ *   2. x-client / x-client-name header regex — same patterns; lets a client
+ *      (or an operator fronting one) name itself when it cannot set a UA.
+ *   3. First user message vs. the profile's promptPatterns.
+ *   4. Tool-set fingerprint — ≥ minToolFingerprintMatch (default 80%) of the
  *      profile's baseline tool names must be present in payload.tools.
  *
  * @param {Object} args
@@ -259,10 +364,19 @@ function detectClient({ headers = {}, payload = {} } = {}) {
   _loadUserProfiles();
 
   const ua = String(headers['user-agent'] || headers['User-Agent'] || '');
-  if (ua) {
+  const xClient = String(
+    headers['x-client'] || headers['X-Client']
+    || headers['x-client-name'] || headers['X-Client-Name'] || ''
+  );
+  for (const header of [ua, xClient]) {
+    if (!header) continue;
     for (const profile of Object.values(PROFILES)) {
-      for (const pattern of profile.detect.headerPatterns) {
-        if (pattern.test(ua)) return profile;
+      for (const pattern of (profile.detect?.headerPatterns || [])) {
+        try {
+          if (pattern.test(header)) return profile;
+        } catch (err) {
+          logger.warn({ profile: profile.name, pattern: String(pattern), err: err.message }, 'Client profile header pattern failed');
+        }
       }
     }
   }
@@ -344,6 +458,31 @@ function allToolsAreBaseline(payload) {
   return true;
 }
 
+/**
+ * True when the detected profile says the client executes only the tools it
+ * sent, so the OpenAI-compat routers must not inject IDE_SAFE_TOOLS for it.
+ * A null / unrecognized profile never vetoes — injection for unrecognized
+ * tool-less clients is unchanged.
+ *
+ * @param {Object|null} profile
+ * @returns {boolean}
+ */
+function vetoesToolInjection(profile) {
+  return !!profile && profile.injectTools === false;
+}
+
+/**
+ * True when the detected profile says this client's tool results must reach
+ * the model unmodified, so the orchestrator skips the tool-result compressor
+ * for the request. A null / unrecognized profile never vetoes.
+ *
+ * @param {Object|null} profile
+ * @returns {boolean}
+ */
+function vetoesToolResultCompression(profile) {
+  return !!profile && profile.compressToolResults === false;
+}
+
 /** Test helper — clear cached override state (unit tests reload from disk). */
 function _resetForTests() {
   _userProfilesLoaded = false;
@@ -355,5 +494,7 @@ module.exports = {
   detectClient,
   effectiveTools,
   allToolsAreBaseline,
+  vetoesToolInjection,
+  vetoesToolResultCompression,
   _resetForTests,
 };

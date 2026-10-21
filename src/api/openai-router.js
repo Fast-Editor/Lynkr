@@ -29,6 +29,23 @@ const clientProfiles = require("../routing/client-profiles");
 const router = express.Router();
 
 /**
+ * WS3 — client-profile detection for the OpenAI-compat ingress. Wraps
+ * src/routing/client-profiles.js so a detector bug can never fail a request.
+ *
+ * @param {object} headers - incoming request headers
+ * @param {object} payload - the Anthropic-shaped request (tools as sent, or as injected)
+ * @returns {object|null} matched profile or null
+ */
+function detectClientProfile(headers, payload) {
+  try {
+    return clientProfiles.detectClient({ headers, payload }) || null;
+  } catch (err) {
+    logger.debug({ err: err.message }, "[OpenAI Router] client profile detection failed");
+    return null;
+  }
+}
+
+/**
  * Served-model decision headers for the OpenAI-compat ingress.
  *
  * The Anthropic ingress has carried X-Lynkr-* decision headers for a long
@@ -551,48 +568,66 @@ router.post("/chat/completions", async (req, res) => {
 
     const anthropicRequest = convertOpenAIToAnthropic(req.body);
 
-    // Inject tools if client didn't send any.
-    // Two-layer filtering:
-    //   1. IDE_SAFE_TOOLS = STANDARD_TOOLS minus AskUserQuestion (can't work through proxy)
-    //   2. For known clients (codex, cline, etc.), further filter to only tools
-    //      that have a mapping in CLIENT_TOOL_MAPPINGS — this ensures clients like
-    //      Codex don't see tools they can't handle (Task, WebFetch, NotebookEdit)
-    //      while Claude Code (unknown client) gets the full IDE_SAFE_TOOLS set.
-    // Skip injection if client explicitly opted out (tool_choice: "none" or empty tools array).
+    // WS3 — detect the client harness BEFORE tool injection, on the request
+    // as the client sent it (user-agent / x-client header, prompt marker, or
+    // the tools it actually attached). A profile found here may veto
+    // injection (`injectTools: false`): app harnesses such as OpenMausBot
+    // execute only the tools they sent, so an injected IDE_SAFE_TOOLS
+    // tool_call would come back to them as a failed turn. For every other
+    // client this pass matches exactly what the post-injection pass below
+    // used to — a harness that identifies itself or fingerprints on its own
+    // loadout matches the same profile either way.
+    let clientProfile = detectClientProfile(req.headers, anthropicRequest);
+
+    // Tool injection — ONLY for the coding harnesses Lynkr has a tool mapping
+    // for (CLIENT_TOOL_MAPPINGS: codex, cline, kilo, continue). They expect
+    // Lynkr's IDE_SAFE_TOOLS under their own names, filtered to the tools
+    // they can execute (no Task / WebFetch / NotebookEdit for Codex).
+    //
+    // Everyone else gets their request upstream exactly as sent. Until
+    // 2026-10 an unrecognized tool-less request received the full
+    // IDE_SAFE_TOOLS set; that turned every tool-less chat — Cursor's chat
+    // mode, goose's summarizer side-requests, Terminus, OpenMausBot bots,
+    // plain curl — into a tool-calling turn the caller could not execute,
+    // the same failure #120 removed on the provider side. A client profile
+    // with `injectTools: false` additionally vetoes injection outright.
+    //
+    // An explicit opt-out (tool_choice: "none" or any tools array, even
+    // empty) is honoured for every client, mapped or not.
     const clientType = detectClient(req.headers);
+    const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
     const clientExplicitlyDisabledTools = req.body.tool_choice === "none" || Array.isArray(req.body.tools);
-    if (!clientExplicitlyDisabledTools && (!anthropicRequest.tools || anthropicRequest.tools.length === 0)) {
-      const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
-      let clientTools = clientMappings
-        ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
-        : IDE_SAFE_TOOLS;
+    const requestHasNoTools = !anthropicRequest.tools || anthropicRequest.tools.length === 0;
+    if (clientProfiles.vetoesToolInjection(clientProfile)) {
+      logger.debug({
+        clientType,
+        clientProfile: clientProfile?.name ?? null,
+        reqToolsPresent: Array.isArray(req.body.tools),
+      }, "=== TOOLS NOT INJECTED — client profile executes only the tools it sent ===");
+    } else if (requestHasNoTools && !clientExplicitlyDisabledTools && !clientMappings) {
+      logger.debug({
+        clientType,
+        clientProfile: clientProfile?.name ?? null,
+      }, "=== TOOLS NOT INJECTED — no tool mapping for this client; request forwarded tool-less ===");
+    } else if (requestHasNoTools && !clientExplicitlyDisabledTools) {
+      const clientTools = IDE_SAFE_TOOLS.filter(t => clientMappings[t.name]);
       anthropicRequest.tools = clientTools;
       logger.debug({
         clientType,
         injectedToolCount: clientTools.length,
         injectedToolNames: clientTools.map(t => t.name),
-        reason: clientMappings
-          ? `Known client '${clientType}' — filtered to mapped tools only`
-          : "Unknown client — injecting full IDE_SAFE_TOOLS"
+        reason: `Known client '${clientType}' — filtered to mapped tools only`,
       }, "=== INJECTING TOOLS ===");
     }
 
-    // WS3 — detect the client harness on the OpenAI-compat paths too (the
-    // /v1/messages router already does this). Runs after tool injection so
-    // the fingerprint sees the final tools array either way: goose/Cursor
-    // send their own loadout, tool-less clients get IDE_SAFE_TOOLS injected
-    // and fingerprint as claude-code. Without this the agentic detector
-    // counts the harness baseline as intent and floors every request —
-    // including "hi" — at the ITERATIVE minTier (COMPLEX).
-    try {
-      const profile = clientProfiles.detectClient({
-        headers: req.headers,
-        payload: anthropicRequest,
-      });
-      if (profile) anthropicRequest._clientProfile = profile;
-    } catch (err) {
-      logger.debug({ err: err.message }, "[OpenAI Router] client profile detection failed");
+    // WS3 — second detection pass, only when the first found nothing and
+    // tools were just injected: the mapped loadout may now fingerprint a
+    // profile (see lynkr-injected in client-profiles.js) so the agentic
+    // detector does not count Lynkr's own tools as user intent.
+    if (!clientProfile && anthropicRequest.tools?.length) {
+      clientProfile = detectClientProfile(req.headers, anthropicRequest);
     }
+    if (clientProfile) anthropicRequest._clientProfile = clientProfile;
 
     // Explicit model/effort pin: Codex's model picker (or any OpenAI-format
     // caller) can name a real OpenAI model + reasoning.effort combo that
@@ -1861,46 +1896,47 @@ router.post("/responses", async (req, res) => {
       }))
     }, "After Chat→Anthropic conversion");
 
-    // Inject tools if the Anthropic request has none.
+    // Tool injection — ONLY for clients with a CLIENT_TOOL_MAPPINGS entry
+    // (Codex is the one that actually uses this route). See the matching
+    // block in /v1/chat/completions for the full rationale; unrecognized
+    // tool-less callers are forwarded tool-less, and an `injectTools: false`
+    // client profile vetoes injection outright.
     // The client may have sent tools in Responses API format (top-level name)
     // which convertOpenAIToAnthropic silently drops because it expects Chat
     // Completions format ({function: {name}}).  Always check the CONVERTED
     // result, not the raw request.
+    let clientProfile = detectClientProfile(req.headers, anthropicRequest);
     const clientDisabledToolChoice = req.body.tool_choice === "none";
-    if (!clientDisabledToolChoice && (!anthropicRequest.tools || anthropicRequest.tools.length === 0)) {
+    const requestHasNoTools = !anthropicRequest.tools || anthropicRequest.tools.length === 0;
+    if (clientProfiles.vetoesToolInjection(clientProfile)) {
+      logger.info({
+        clientType,
+        clientProfile: clientProfile?.name ?? null,
+        toolCount: anthropicRequest.tools?.length || 0,
+      }, "=== TOOLS NOT INJECTED (responses) — client profile executes only the tools it sent ===");
+    } else if (requestHasNoTools && !clientDisabledToolChoice && !clientMappings) {
+      logger.info({
+        clientType,
+        clientProfile: clientProfile?.name ?? null,
+      }, "=== TOOLS NOT INJECTED (responses) — no tool mapping for this client; request forwarded tool-less ===");
+    } else if (requestHasNoTools && !clientDisabledToolChoice) {
       // Exclude server-side-only tools (Task, web_search, etc.) from the
       // Responses endpoint — they can't be executed by external clients like
       // Codex and would be converted to broken shell echo commands.
       const RESPONSES_EXCLUDED_TOOLS = new Set(["Task", "AskUserQuestion", "TodoWrite", "WebSearch", "WebFetch", "WebAgent"]);
-      const clientMappings = CLIENT_TOOL_MAPPINGS[clientType];
-      let clientTools = (clientMappings
-        ? IDE_SAFE_TOOLS.filter(t => clientMappings[t.name])
-        : IDE_SAFE_TOOLS
-      ).filter(t => !RESPONSES_EXCLUDED_TOOLS.has(t.name));
-
       // Rename tools to client-expected names so the model uses the right names
       // e.g., for Codex: "Read" → "read_file", "Bash" → "shell"
       // The lynkrToClient map above normalizes any stale Lynkr names in history
-      if (clientMappings) {
-        clientTools = clientTools.map(t => {
-          const mapping = clientMappings[t.name];
-          if (!mapping) return t;
-          return {
-            ...t,
-            name: mapping.name,
-            description: t.description || '',
-          };
-        });
-      }
+      const clientTools = IDE_SAFE_TOOLS
+        .filter(t => clientMappings[t.name] && !RESPONSES_EXCLUDED_TOOLS.has(t.name))
+        .map(t => ({ ...t, name: clientMappings[t.name].name, description: t.description || '' }));
 
       anthropicRequest.tools = clientTools;
       logger.info({
         clientType,
         injectedToolCount: clientTools.length,
         injectedToolNames: clientTools.map(t => t.name),
-        reason: clientMappings
-          ? `Known client '${clientType}' — tools renamed to client conventions`
-          : "Unknown client — injecting full IDE_SAFE_TOOLS"
+        reason: `Known client '${clientType}' — tools renamed to client conventions`,
       }, "=== INJECTING TOOLS (responses) ===");
     } else {
       logger.info({
@@ -1923,22 +1959,14 @@ router.post("/responses", async (req, res) => {
       anthropicRequest.tools = anthropicRequest.tools.filter(t => !RESPONSES_EXCLUDED.has(t.name));
     }
 
-    // WS3 — detect the client harness on the OpenAI-compat paths too (the
-    // /v1/messages router already does this). Runs after tool injection so
-    // the fingerprint sees the final tools array either way: goose/Cursor
-    // send their own loadout, tool-less clients get IDE_SAFE_TOOLS injected
-    // and fingerprint as claude-code. Without this the agentic detector
-    // counts the harness baseline as intent and floors every request —
-    // including "hi" — at the ITERATIVE minTier (COMPLEX).
-    try {
-      const profile = clientProfiles.detectClient({
-        headers: req.headers,
-        payload: anthropicRequest,
-      });
-      if (profile) anthropicRequest._clientProfile = profile;
-    } catch (err) {
-      logger.debug({ err: err.message }, "[OpenAI Router] client profile detection failed");
+    // WS3 — second detection pass, only when the pre-injection pass found
+    // nothing and tools were just injected, so the mapped loadout can
+    // fingerprint a profile and the agentic detector does not count Lynkr's
+    // own tools as user intent.
+    if (!clientProfile && anthropicRequest.tools?.length) {
+      clientProfile = detectClientProfile(req.headers, anthropicRequest);
     }
+    if (clientProfile) anthropicRequest._clientProfile = clientProfile;
 
     // Explicit model/effort pin — see the identical block in /chat/completions
     // above for the full rationale. This is the route Codex Desktop actually
