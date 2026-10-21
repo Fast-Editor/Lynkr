@@ -3,6 +3,7 @@ const { invokeModel, toolsDeclined } = require("../clients/databricks");
 const { appendTurnToSession } = require("../sessions/record");
 const { upsertSession } = require("../sessions/store");
 const policy = require("../policy");
+const { vetoesToolResultCompression } = require("../routing/client-profiles");
 const logger = require("../logger");
 const promptCache = require("../cache/prompt");
 const tokens = require("../utils/tokens");
@@ -3318,7 +3319,6 @@ function trimLoopMessages(messages, max) {
  */
 function toolResultCompressionAllowed(payload) {
   if (config.toolResultCompression?.enabled === false) return false;
-  const { vetoesToolResultCompression } = require("../routing/client-profiles");
   if (vetoesToolResultCompression(payload?._clientProfile)) {
     logger.debug({
       clientProfile: payload._clientProfile?.name,
