@@ -1955,8 +1955,10 @@ IMPORTANT TOOL USAGE RULES:
   }
 
   // RTK-inspired tool result compression: compress large tool_results
-  // before they reach the model (saves 60-90% on test/git/lint output)
-  if (config.toolResultCompression?.enabled !== false) {
+  // before they reach the model (saves 60-90% on test/git/lint output).
+  // Skipped for clients whose profile says their tool results are data,
+  // not re-runnable command output (see toolResultCompressionAllowed).
+  if (toolResultCompressionAllowed(cleanPayload)) {
     const { compressToolResults } = require("../context/tool-result-compressor");
     // Fixed threshold: compression must be deterministic per message — the
     // routed tier flaps between turns, and re-compressing history differently
@@ -3299,8 +3301,37 @@ function trimLoopMessages(messages, max) {
   return trimmed;
 }
 
+/**
+ * Whether the tool-result compressor may run on this request's history.
+ *
+ * Off globally via TOOL_RESULT_COMPRESSION_ENABLED=false. Otherwise on,
+ * unless the request's detected client profile (src/routing/client-profiles.js,
+ * attached by the ingress routers as `payload._clientProfile`) carries
+ * `compressToolResults: false`. The compressor was built for shell output a
+ * coding agent can re-run; an app harness such as OpenMausBot sends tool
+ * results that ARE the data, and may append its own paging notice (saved
+ * result id + offset) that compressJSON would delete — the model then pages
+ * with a bad id and the harness fails the turn (2026-10-14).
+ *
+ * @param {object} payload - sanitized request payload
+ * @returns {boolean}
+ */
+function toolResultCompressionAllowed(payload) {
+  if (config.toolResultCompression?.enabled === false) return false;
+  const { vetoesToolResultCompression } = require("../routing/client-profiles");
+  if (vetoesToolResultCompression(payload?._clientProfile)) {
+    logger.debug({
+      clientProfile: payload._clientProfile.name,
+    }, "Tool result compression skipped — client profile keeps tool results intact");
+    return false;
+  }
+  return true;
+}
+
 module.exports = {
   processMessage,
+  // Exported for unit testing of the client-profile gate on tool-result compression.
+  toolResultCompressionAllowed,
   // Exported for unit testing of sanitizePayload tool handling.
   sanitizePayload,
   // Exported for unit testing of response-metadata conversion.

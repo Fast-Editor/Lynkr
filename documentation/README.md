@@ -22,6 +22,7 @@ Connect Lynkr to your development tools:
 - **[Claude Desktop Setup](claude-desktop.md)** - Route the Claude Desktop app through Lynkr (macOS gateway profile, model picker as tier selector)
 - **[Tier Pinning](tier-pinning.md)** - Use any desktop client's model picker as a routing tier selector (the generalized technique behind the Claude Desktop and Codex integrations)
 - **[opencode Integration](opencode.md)** - Per-tier context windows via `lynkr run opencode` (picker doubles as tier pin; compaction always matches the serving model)
+- **[OpenMausBot Integration](openmausbot.md)** - Run OpenMausBot bots through Lynkr's OpenAI-compatible endpoint (engine config, client profile, no tool injection)
 - **[Context Window Header](context-window-header.md)** - `X-Lynkr-Context-Window`: the served model's real context window on every response, so clients can compact against the model actually serving them
 - **[Codex CLI Setup](codex-cli.md)** - Configure OpenAI Codex CLI with Lynkr (config.toml, wire_api, troubleshooting)
 - **[OpenClaw Integration](openclaw-integration.md)** - Use OpenClaw with Lynkr as its AI backend
@@ -76,7 +77,7 @@ Get help and contribute:
 ## Quick Navigation by Topic
 
 ### Setup & Configuration
-- [Installation](installation.md) | [Providers](providers.md) | [Claude Code](claude-code-cli.md) | [Claude Desktop](claude-desktop.md) | [Codex CLI](codex-cli.md) | [OpenClaw](openclaw-integration.md) | [Cursor](cursor-integration.md) | [Embeddings](embeddings.md)
+- [Installation](installation.md) | [Providers](providers.md) | [Claude Code](claude-code-cli.md) | [Claude Desktop](claude-desktop.md) | [Codex CLI](codex-cli.md) | [OpenClaw](openclaw-integration.md) | [Cursor](cursor-integration.md) | [OpenMausBot](openmausbot.md) | [Embeddings](embeddings.md)
 
 ### Features & Optimization
 - [Features](features.md) | [Routing](routing.md) | [Memory System](memory-system.md) | [Token Optimization](token-optimization.md) | [Headroom](headroom.md) | [Tools](tools.md)
