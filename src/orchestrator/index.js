@@ -3321,7 +3321,7 @@ function toolResultCompressionAllowed(payload) {
   const { vetoesToolResultCompression } = require("../routing/client-profiles");
   if (vetoesToolResultCompression(payload?._clientProfile)) {
     logger.debug({
-      clientProfile: payload._clientProfile.name,
+      clientProfile: payload._clientProfile?.name,
     }, "Tool result compression skipped — client profile keeps tool results intact");
     return false;
   }

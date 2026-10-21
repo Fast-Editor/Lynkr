@@ -601,7 +601,7 @@ router.post("/chat/completions", async (req, res) => {
     if (clientProfiles.vetoesToolInjection(clientProfile)) {
       logger.debug({
         clientType,
-        clientProfile: clientProfile.name,
+        clientProfile: clientProfile?.name ?? null,
         reqToolsPresent: Array.isArray(req.body.tools),
       }, "=== TOOLS NOT INJECTED — client profile executes only the tools it sent ===");
     } else if (requestHasNoTools && !clientExplicitlyDisabledTools && !clientMappings) {
@@ -1911,7 +1911,7 @@ router.post("/responses", async (req, res) => {
     if (clientProfiles.vetoesToolInjection(clientProfile)) {
       logger.info({
         clientType,
-        clientProfile: clientProfile.name,
+        clientProfile: clientProfile?.name ?? null,
         toolCount: anthropicRequest.tools?.length || 0,
       }, "=== TOOLS NOT INJECTED (responses) — client profile executes only the tools it sent ===");
     } else if (requestHasNoTools && !clientDisabledToolChoice && !clientMappings) {

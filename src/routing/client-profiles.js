@@ -371,8 +371,12 @@ function detectClient({ headers = {}, payload = {} } = {}) {
   for (const header of [ua, xClient]) {
     if (!header) continue;
     for (const profile of Object.values(PROFILES)) {
-      for (const pattern of profile.detect.headerPatterns) {
-        if (pattern.test(header)) return profile;
+      for (const pattern of (profile.detect?.headerPatterns || [])) {
+        try {
+          if (pattern.test(header)) return profile;
+        } catch (err) {
+          logger.warn({ profile: profile.name, pattern: String(pattern), err: err.message }, 'Client profile header pattern failed');
+        }
       }
     }
   }
