@@ -346,6 +346,8 @@ class ModelTierSelector {
         return config.openai?.model || null;
       case 'atlas':
         return config.atlas?.model || null;
+      case 'cheaperinference':
+        return config.cheaperinference?.model || null;
       case 'ollama':
         return config.ollama?.model || null;
       case 'openrouter':

@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "cheaperinference", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -119,6 +119,11 @@ const openAIOrganization = process.env.OPENAI_ORGANIZATION?.trim() || null;
 const atlasCloudApiKey = process.env.ATLASCLOUD_API_KEY?.trim() || null;
 const atlasCloudModel = process.env.ATLASCLOUD_MODEL?.trim() || "qwen/qwen3.8-max";
 const atlasCloudEndpoint = process.env.ATLASCLOUD_ENDPOINT?.trim() || "https://api.atlascloud.ai/v1/chat/completions";
+
+// Cheaper Inference configuration (OpenAI-compatible Chat Completions)
+const cheaperInferenceApiKey = process.env.CHEAPER_INFERENCE_API_KEY?.trim() || null;
+const cheaperInferenceModel = process.env.CHEAPER_INFERENCE_MODEL?.trim() || "gpt-5.4-mini";
+const cheaperInferenceEndpoint = process.env.CHEAPER_INFERENCE_ENDPOINT?.trim() || "https://api.cheaperinference.com/v1/chat/completions";
 
 // llama.cpp configuration
 const llamacppEndpoint = process.env.LLAMACPP_ENDPOINT?.trim() || "http://localhost:8080";
@@ -346,6 +351,12 @@ if (modelProvider === "atlas" && !atlasCloudApiKey) {
   );
 }
 
+if (modelProvider === "cheaperinference" && !cheaperInferenceApiKey) {
+  throw new Error(
+    "Set CHEAPER_INFERENCE_API_KEY before starting the proxy.",
+  );
+}
+
 if (modelProvider === "orcarouter" && !orcaRouterApiKey) {
   throw new Error(
     "Set ORCAROUTER_API_KEY before starting the proxy.",
@@ -400,7 +411,7 @@ const tiersConfigured = !!(
 if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, bedrock, orcarouter`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, cheaperinference, bedrock, orcarouter`);
   }
   let fallbackMisconfigured = false;
   if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
@@ -416,6 +427,9 @@ if (fallbackEnabled && tiersConfigured) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "atlas" && !atlasCloudApiKey) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "cheaperinference" && !cheaperInferenceApiKey) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "orcarouter" && !orcaRouterApiKey) {
@@ -671,6 +685,11 @@ var config = {
     apiKey: atlasCloudApiKey,
     model: atlasCloudModel,
     endpoint: atlasCloudEndpoint,
+  },
+  cheaperinference: {
+    apiKey: cheaperInferenceApiKey,
+    model: cheaperInferenceModel,
+    endpoint: cheaperInferenceEndpoint,
   },
   llamacpp: {
     endpoint: llamacppEndpoint,
@@ -1181,6 +1200,9 @@ function reloadConfig() {
   config.atlas.apiKey = process.env.ATLASCLOUD_API_KEY?.trim() || null;
   config.atlas.model = process.env.ATLASCLOUD_MODEL?.trim() || "qwen/qwen3.8-max";
   config.atlas.endpoint = process.env.ATLASCLOUD_ENDPOINT?.trim() || "https://api.atlascloud.ai/v1/chat/completions";
+  config.cheaperinference.apiKey = process.env.CHEAPER_INFERENCE_API_KEY?.trim() || null;
+  config.cheaperinference.model = process.env.CHEAPER_INFERENCE_MODEL?.trim() || "gpt-5.4-mini";
+  config.cheaperinference.endpoint = process.env.CHEAPER_INFERENCE_ENDPOINT?.trim() || "https://api.cheaperinference.com/v1/chat/completions";
   config.bedrock.apiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null;
   config.zai.apiKey = process.env.ZAI_API_KEY?.trim() || null;
   config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";

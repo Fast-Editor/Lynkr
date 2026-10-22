@@ -93,6 +93,7 @@ function _enabledProviders() {
   if (config.edenai?.apiKey) out.push('edenai');
   if (config.openai?.apiKey) out.push('openai');
   if (config.atlas?.apiKey) out.push('atlas');
+  if (config.cheaperinference?.apiKey) out.push('cheaperinference');
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) out.push('azure-openai');
   if (config.orcarouter?.apiKey) out.push('orcarouter');
   if (config.ollama?.endpoint) out.push('ollama');
@@ -138,6 +139,7 @@ function getBestCloudProvider() {
   if (config.edenai?.apiKey) return 'edenai';
   if (config.openai?.apiKey) return 'openai';
   if (config.atlas?.apiKey) return 'atlas';
+  if (config.cheaperinference?.apiKey) return 'cheaperinference';
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) return 'azure-openai';
   if (config.orcarouter?.apiKey) return 'orcarouter';
 
