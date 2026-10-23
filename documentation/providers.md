@@ -829,6 +829,41 @@ TIER_REASONING=atlas:qwen/qwen3.8-max
 
 ---
 
+### 8b. Cheaper Inference (OpenAI-Compatible)
+
+**Best for:** Accessing Cheaper Inference models through Lynkr's static or tier-based routing
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=cheaperinference
+CHEAPER_INFERENCE_API_KEY=your-cheaper-inference-api-key
+CHEAPER_INFERENCE_MODEL=gpt-5.4-mini
+CHEAPER_INFERENCE_ENDPOINT=https://api.cheaperinference.com/v1/chat/completions
+```
+
+Get an API key from the [Cheaper Inference sign-up page](https://cheaperinference.com/signup). The endpoint is OpenAI-compatible, so Lynkr converts Anthropic messages and tools to Chat Completions requests and transforms streamed OpenAI SSE events back to Anthropic events.
+
+Cheaper Inference can also be selected per tier:
+
+```env
+TIER_SIMPLE=ollama:qwen2.5-coder:latest
+TIER_MEDIUM=cheaperinference:gpt-5.4-mini
+TIER_COMPLEX=cheaperinference:claude-sonnet-5
+TIER_REASONING=cheaperinference:deepseek-v4-flash
+```
+
+`CHEAPER_INFERENCE_MODEL` is the static-routing default. A model named in `TIER_*` takes precedence for that tier. Check the [live Cheaper Inference model catalog](https://cheaperinference.com/markets) before selecting a different model; availability and pricing depend on that model.
+
+#### Behavior
+
+- Supports non-streaming and streaming Chat Completions
+- Supports Anthropic-format tools through Lynkr's existing OpenAI conversion path
+- Uses Bearer authentication and accepts a custom `CHEAPER_INFERENCE_ENDPOINT`
+- Does not automatically replay billable Chat Completions POST requests
+
+---
+
 ### 9. LM Studio (Local with GUI)
 
 **Best for:** Local models with graphical interface
