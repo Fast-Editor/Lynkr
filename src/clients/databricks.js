@@ -1717,6 +1717,79 @@ async function invokeAtlas(body) {
   return response;
 }
 
+async function invokeCheaperInference(body) {
+  if (!config.cheaperinference?.apiKey) {
+    throw new Error("Cheaper Inference API key is not configured.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.cheaperinference.endpoint || "https://api.cheaperinference.com/v1/chat/completions";
+  const headers = {
+    "Authorization": `Bearer ${config.cheaperinference.apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+  if (body.system) {
+    messages.unshift({ role: "system", content: body.system });
+  }
+
+  const cheaperInferenceBody = {
+    model: body._suggestionModeModel || body._tierModel || config.cheaperinference.model || "gpt-5.4-mini",
+    messages,
+    temperature: body.temperature ?? 0.7,
+    max_tokens: body.max_tokens ?? 16384,
+    top_p: body.top_p ?? 1.0,
+    stream: body.stream ?? false,
+  };
+
+  let toolsToSend = body.tools;
+  let toolsInjected = false;
+
+  if (toolsToSend.length > 0) {
+    cheaperInferenceBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
+    cheaperInferenceBody.parallel_tool_calls = false;
+    cheaperInferenceBody.tool_choice = forwardToolChoice(body);
+  }
+
+  logger.debug({
+    endpoint,
+    model: cheaperInferenceBody.model,
+    hasTools: !!cheaperInferenceBody.tools,
+    toolCount: cheaperInferenceBody.tools?.length || 0,
+    toolsInjected,
+    temperature: cheaperInferenceBody.temperature,
+    max_tokens: cheaperInferenceBody.max_tokens,
+  }, "=== CHEAPER INFERENCE REQUEST ===");
+
+  // Chat completions are billable POSTs, so Cheaper Inference requests are never
+  // replayed automatically. Callers can retry explicitly with their own
+  // idempotency policy. maxRetriesOverride/retryableStatusesOverride stay at
+  // 0/[] — this does NOT retry the request itself, it only decides whether
+  // invokeModel's caller escalates to a DIFFERENT provider/tier on 429, same as
+  // invokeAtlas/invokeMoonshot/invokeOpenAI already do. Without this, a 429 here
+  // was silently handed back as a "successful" response and tier-fallback never
+  // got a chance to climb.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: cheaperInferenceBody,
+    maxRetriesOverride: 0,
+    retryableStatusesOverride: [],
+  }, "Cheaper Inference");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`Cheaper Inference rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  return response;
+}
+
 async function invokeLlamaCpp(body, _incomingHeaders = {}) {
   if (!config.llamacpp?.endpoint) {
     throw new Error("llama.cpp endpoint is not configured.");
@@ -3744,6 +3817,7 @@ const PROVIDER_INVOKERS = {
   edenai: invokeEdenAI,
   openai: invokeOpenAI,
   atlas: invokeAtlas,
+  cheaperinference: invokeCheaperInference,
   llamacpp: invokeLlamaCpp,
   lmstudio: invokeLMStudio,
   bedrock: invokeBedrock,
@@ -4679,6 +4753,7 @@ module.exports = {
   invokeBaidu,
   invokeFireworks,
   invokeAtlas,
+  invokeCheaperInference,
   invokeOrcaRouter,
   invokeCursor,
   PROVIDER_INVOKERS,

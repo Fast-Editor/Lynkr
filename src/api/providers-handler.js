@@ -121,6 +121,19 @@ async function getConfiguredProviders() {
     });
   }
 
+  // Check Cheaper Inference (OpenAI-compatible Chat Completions)
+  if (config.cheaperinference?.apiKey) {
+    providers.push({
+      name: "cheaperinference",
+      type: "cheaper-inference",
+      baseUrl: config.cheaperinference.endpoint || "https://api.cheaperinference.com/v1/chat/completions",
+      enabled: true,
+      models: [
+        { id: config.cheaperinference.model || "gpt-5.4-mini", name: "Configured Model" },
+      ]
+    });
+  }
+
   // Check OpenRouter
   if (config.openrouter?.apiKey) {
     providers.push({
