@@ -1790,6 +1790,77 @@ async function invokeCheaperInference(body) {
   return response;
 }
 
+async function invokeAtmoRouter(body) {
+  if (!config.atmorouter?.apiKey) {
+    throw new Error("AtmoRouter API key is not configured.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.atmorouter.endpoint || "https://atmorouter.dev/v1/chat/completions";
+  const headers = {
+    "Authorization": `Bearer ${config.atmorouter.apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+  if (body.system) {
+    messages.unshift({ role: "system", content: body.system });
+  }
+
+  const atmoRouterBody = {
+    model: body._suggestionModeModel || body._tierModel || config.atmorouter.model || "cbcn/glm-5.3",
+    messages,
+    temperature: body.temperature ?? 0.7,
+    max_tokens: body.max_tokens ?? 16384,
+    top_p: body.top_p ?? 1.0,
+    stream: body.stream ?? false,
+  };
+
+  const toolsToSend = Array.isArray(body.tools) ? body.tools : [];
+
+  if (toolsToSend.length > 0) {
+    atmoRouterBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
+    atmoRouterBody.parallel_tool_calls = false;
+    atmoRouterBody.tool_choice = forwardToolChoice(body);
+  }
+
+  logger.debug({
+    endpoint,
+    model: atmoRouterBody.model,
+    hasTools: !!atmoRouterBody.tools,
+    toolCount: atmoRouterBody.tools?.length || 0,
+    temperature: atmoRouterBody.temperature,
+    max_tokens: atmoRouterBody.max_tokens,
+  }, "=== ATMOROUTER REQUEST ===");
+
+  // Chat completions are billable POSTs, so AtmoRouter requests are never
+  // replayed automatically. Callers can retry explicitly with their own
+  // idempotency policy. maxRetriesOverride/retryableStatusesOverride stay at
+  // 0/[] — this does NOT retry the request itself, it only decides whether
+  // invokeModel's caller escalates to a DIFFERENT provider/tier on 429, same as
+  // invokeAtlas/invokeMoonshot/invokeOpenAI already do. Without this, a 429 here
+  // was silently handed back as a "successful" response and tier-fallback never
+  // got a chance to climb.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: atmoRouterBody,
+    maxRetriesOverride: 0,
+    retryableStatusesOverride: [],
+  }, "AtmoRouter");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`AtmoRouter rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  return response;
+}
+
 async function invokeLlamaCpp(body, _incomingHeaders = {}) {
   if (!config.llamacpp?.endpoint) {
     throw new Error("llama.cpp endpoint is not configured.");
@@ -3818,6 +3889,7 @@ const PROVIDER_INVOKERS = {
   openai: invokeOpenAI,
   atlas: invokeAtlas,
   cheaperinference: invokeCheaperInference,
+  atmorouter: invokeAtmoRouter,
   llamacpp: invokeLlamaCpp,
   lmstudio: invokeLMStudio,
   bedrock: invokeBedrock,
@@ -4754,6 +4826,7 @@ module.exports = {
   invokeFireworks,
   invokeAtlas,
   invokeCheaperInference,
+  invokeAtmoRouter,
   invokeOrcaRouter,
   invokeCursor,
   PROVIDER_INVOKERS,

@@ -348,6 +348,8 @@ class ModelTierSelector {
         return config.atlas?.model || null;
       case 'cheaperinference':
         return config.cheaperinference?.model || null;
+      case 'atmorouter':
+        return config.atmorouter?.model || null;
       case 'ollama':
         return config.ollama?.model || null;
       case 'openrouter':

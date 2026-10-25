@@ -134,6 +134,19 @@ async function getConfiguredProviders() {
     });
   }
 
+  // Check AtmoRouter (OpenAI-compatible Chat Completions)
+  if (config.atmorouter?.apiKey) {
+    providers.push({
+      name: "atmorouter",
+      type: "atmorouter",
+      baseUrl: config.atmorouter.endpoint || "https://atmorouter.dev/v1/chat/completions",
+      enabled: true,
+      models: [
+        { id: config.atmorouter.model || "cbcn/glm-5.3", name: "Configured Model" },
+      ]
+    });
+  }
+
   // Check OpenRouter
   if (config.openrouter?.apiKey) {
     providers.push({

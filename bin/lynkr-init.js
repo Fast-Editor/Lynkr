@@ -111,6 +111,17 @@ const PROVIDERS = {
     ],
     defaultModel: 'gpt-5.4-mini',
   },
+  atmorouter: {
+    label: 'AtmoRouter (OpenAI-compatible)',
+    local: false,
+    creds: [
+      { key: 'ATMOROUTER_API_KEY', label: 'AtmoRouter API key', secret: true },
+    ],
+    extras: [
+      { key: 'ATMOROUTER_ENDPOINT', label: 'Chat Completions endpoint', default: 'https://atmorouter.dev/v1/chat/completions' },
+    ],
+    defaultModel: 'cbcn/glm-5.3',
+  },
   openrouter: {
     label: 'OpenRouter (100+ models, one key)',
     local: false,
@@ -214,7 +225,7 @@ const PROVIDERS = {
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
-  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'cheaperinference', 'openrouter', 'edenai',
+  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'cheaperinference', 'atmorouter', 'openrouter', 'edenai',
   'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu', 'fireworks', 'orcarouter',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];

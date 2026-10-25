@@ -864,6 +864,41 @@ TIER_REASONING=cheaperinference:deepseek-v4-flash
 
 ---
 
+### 8c. AtmoRouter (OpenAI-Compatible)
+
+**Best for:** Using one AtmoRouter key for Claude, GPT, Gemini, GLM, Kimi, Qwen and DeepSeek models through Lynkr's static or tier-based routing
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=atmorouter
+ATMOROUTER_API_KEY=ar-your-atmorouter-api-key
+ATMOROUTER_MODEL=cbcn/glm-5.3
+ATMOROUTER_ENDPOINT=https://atmorouter.dev/v1/chat/completions
+```
+
+Create a key under Dashboard → API Keys at [atmorouter.dev](https://atmorouter.dev) (keys start with `ar-`). The endpoint is OpenAI-compatible, so Lynkr converts Anthropic messages and tools to Chat Completions requests and transforms streamed OpenAI SSE events back to Anthropic events.
+
+AtmoRouter can also be selected per tier:
+
+```env
+TIER_SIMPLE=ollama:qwen2.5-coder:latest
+TIER_MEDIUM=atmorouter:cbcn/glm-5.3
+TIER_COMPLEX=atmorouter:cc/claude-sonnet-4-6
+TIER_REASONING=atmorouter:ali/deepseek-v4.1-flash
+```
+
+`ATMOROUTER_MODEL` is the static-routing default. A model named in `TIER_*` takes precedence for that tier. Model IDs carry a family prefix (`cc/`, `cx/`, `cb/`, `ali/`, …); the full list is public at `GET https://atmorouter.dev/v1/models` and on the [model catalog](https://atmorouter.dev/models), where per-model prices are listed.
+
+#### Behavior
+
+- Supports non-streaming and streaming Chat Completions
+- Supports Anthropic-format tools through Lynkr's existing OpenAI conversion path
+- Uses Bearer authentication and accepts a custom `ATMOROUTER_ENDPOINT`
+- Does not automatically replay billable Chat Completions POST requests
+
+---
+
 ### 9. LM Studio (Local with GUI)
 
 **Best for:** Local models with graphical interface
