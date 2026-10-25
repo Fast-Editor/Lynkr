@@ -271,25 +271,12 @@ async function start() {
     })();
   }
 
-  // Classifier bootstrap check — non-blocking, log-only.
-  // Detects ollama + confirms the classifier model is pulled. Never auto-
-  // installs (that's `lynkr init`'s job); warns and lets scoring fall back
-  // to anchor-only if either is missing.
-  (async () => {
-    try {
-      const { ensureClassifierReady } = require('./routing/classifier-setup');
-      const result = await ensureClassifierReady({
-        mode: 'boot',
-        log: (m) => logger.info(m),
-        warn: (m) => logger.warn(m),
-      });
-      if (result.ready) {
-        logger.info({ classifier: 'ready', warmed: result.warmed }, '[classifier-setup] Difficulty classifier ready');
-      }
-    } catch (err) {
-      logger.debug({ err: err.message }, '[classifier-setup] bootstrap check failed (classifier will fall back)');
-    }
-  })();
+  // The qwen/Ollama difficulty-classifier bootstrap that used to run here is
+  // gone: that classifier has been off the routing path since the Jev routing
+  // judge replaced it (#117), and the check shelled out to a local `ollama`
+  // binary — spurious "Ollama not installed" warnings for llama.cpp, LM Studio
+  // and remote-Ollama deployments (GitHub #129). Provider reachability is the
+  // health prober's job (started above).
 
   // Start session cleanup manager. It also drives routing-side maintenance
   // (telemetry retention + session-pin TTL) via its runCleanup tick — see

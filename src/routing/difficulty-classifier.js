@@ -6,6 +6,13 @@
  * the exports from this file" (LOW difficulty, technical vocabulary) with
  * hard problems. An LLM reading the actual sentence knows better.
  *
+ * STATUS (since #117, 2026-09-21): NOT on the routing path. intent-score.js
+ * takes its second opinion from the Jev routing judge (jev-router.js);
+ * nothing under src/ calls classifyDifficulty. Kept dark for the eval
+ * script (scripts/validate-difficulty-classifier.js) and as the harness for
+ * a future fine-tuned local classifier. Its Ollama dependency must not leak
+ * into `lynkr init` or server boot — see GitHub #129.
+ *
  * DESIGN:
  *  - Dedicated classifier model (CLASSIFIER_MODEL below), deliberately
  *    decoupled from tier serving — swapping TIER_* env vars does not change

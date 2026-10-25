@@ -7,6 +7,9 @@
  *   2. Per-tier model selection across all supported providers.
  *   3. Routing-intelligence knobs (visible badge, intent window, decay).
  *   4. Credential collection (re-uses values across tiers, never asks twice).
+ *   5. Reachability check of the local inference endpoints picked above
+ *      (Ollama / llama.cpp / LM Studio, wherever they run). Nothing is
+ *      installed or pulled — see LOCAL_PROBES.
  *
  * Usage:
  *   lynkr init                        # interactive
@@ -208,11 +211,124 @@ const PROVIDER_ORDER = [
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
 
-// Always-emitted baseline. Mirrors the production-grade config the maintainer
-// runs locally: caching/compression on, generous policy budgets, sandboxed
-// agents, MCP/web defaults, etc. Users can edit any of these post-generation;
-// the wizard prompts only for tier picks, credentials, and a handful of
-// intelligence knobs. Everything else is opinionated default.
+// ──────────────────────────────────────────────────────────────────────────────
+// Local inference endpoint check
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// Replaces the old "difficulty classifier" bootstrap, which shelled out to
+// `ollama --version` / `ollama list` / `ollama pull qwen2.5:3b` on THIS host
+// and told llama.cpp, LM Studio and remote-Ollama users that Ollama was
+// "required" (GitHub #129). The qwen classifier it provisioned has been off
+// the routing path since the Jev routing judge replaced it (#117); routing
+// needs only the tier endpoints the user just configured plus, for semantic
+// scoring, that same provider's embeddings route (src/cache/embeddings.js).
+//
+// So: for each local provider the user picked, make one HTTP request to its
+// cheap model-list endpoint — wherever it lives — and report what we see.
+// Never installs, never pulls, never blocks; unreachable is a warning.
+
+const LOCAL_PROBES = {
+  ollama: {
+    endpointKey: 'OLLAMA_ENDPOINT',
+    path: '/api/tags',
+    models: (json) => (Array.isArray(json?.models) ? json.models.map((m) => m.name || m.model).filter(Boolean) : []),
+  },
+  llamacpp: {
+    endpointKey: 'LLAMACPP_ENDPOINT',
+    path: '/v1/models',
+    models: (json) => (Array.isArray(json?.data) ? json.data.map((m) => m.id).filter(Boolean) : []),
+  },
+  lmstudio: {
+    endpointKey: 'LMSTUDIO_ENDPOINT',
+    path: '/v1/models',
+    models: (json) => (Array.isArray(json?.data) ? json.data.map((m) => m.id).filter(Boolean) : []),
+  },
+};
+
+// Baseline env families that only make sense when a tier uses the provider.
+const LOCAL_BASELINE_PREFIXES = [
+  { prefix: 'OLLAMA_', provider: 'ollama' },
+  { prefix: 'LLAMACPP_', provider: 'llamacpp' },
+  { prefix: 'LMSTUDIO_', provider: 'lmstudio' },
+];
+
+/**
+ * Probe one local provider's model-list endpoint.
+ * @param {string} provider  key of LOCAL_PROBES
+ * @param {Object} env       the env the wizard is about to write
+ * @param {Object} [opts]    { timeoutMs, fetchFn } — fetchFn injectable for tests
+ * @returns {Promise<{provider:string,url:string,reachable:boolean,models:string[],error?:string}>}
+ */
+async function probeLocalProvider(provider, env, { timeoutMs = 5000, fetchFn = globalThis.fetch } = {}) {
+  const spec = LOCAL_PROBES[provider];
+  const base = String(env[spec.endpointKey] || PROVIDERS[provider].extras[0].default).replace(/\/+$/, '');
+  const url = `${base}${spec.path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers = {};
+    const apiKey = env[`${provider.toUpperCase()}_API_KEY`];
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const res = await fetchFn(url, { headers, signal: controller.signal });
+    if (!res.ok) return { provider, url, reachable: false, models: [], error: `HTTP ${res.status}` };
+    let json = null;
+    try { json = await res.json(); } catch { /* non-JSON body still means something answered */ }
+    return { provider, url, reachable: true, models: spec.models(json) };
+  } catch (err) {
+    const error = err?.name === 'AbortError'
+      ? `timed out after ${timeoutMs}ms`
+      : (err?.cause?.code || err?.code || err?.message || String(err));
+    return { provider, url, reachable: false, models: [], error };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Probe every distinct local provider referenced by the tier picks.
+ * Cloud providers are skipped. Resolves to [] when no local provider is used.
+ * @param {Object} tierConfig {TIER: {provider, model}}
+ * @param {Object} env
+ */
+async function probeLocalProviders(tierConfig, env, opts = {}) {
+  const providers = [...new Set(
+    Object.values(tierConfig || {}).map((t) => t?.provider).filter((p) => p && LOCAL_PROBES[p]),
+  )];
+  return Promise.all(providers.map((p) => probeLocalProvider(p, env, opts)));
+}
+
+// Ollama lists pulled models with a tag ("qwen2.5-coder:latest"); users often
+// type the bare name. Treat those as the same model.
+const _sameModel = (a, b) => a === b || a === `${b}:latest` || b === `${a}:latest`;
+
+/** Print probe results. Reachable + model mismatch is a hint, not an error. */
+function reportLocalProbes(results, tierConfig, log = console.log, warn = console.warn) {
+  for (const r of results) {
+    const label = PROVIDERS[r.provider].label;
+    if (!r.reachable) {
+      warn(`⚠ ${label} not reachable at ${r.url} (${r.error}).`);
+      warn('  Lynkr will still start; requests routed to this tier fail until the server is up. If it lives elsewhere, fix the endpoint in .env.');
+      continue;
+    }
+    const sample = r.models.slice(0, 5).join(', ') + (r.models.length > 5 ? `, … (${r.models.length} total)` : '');
+    log(`✓ ${label} reachable at ${r.url}${r.models.length ? ` — models: ${sample}` : ''}`);
+    if (r.models.length) {
+      const wanted = [...new Set(Object.values(tierConfig || {}).filter((t) => t?.provider === r.provider).map((t) => t.model))];
+      const missing = wanted.filter((m) => !r.models.some((have) => _sameModel(have, m)));
+      if (missing.length) {
+        warn(`  ⚠ Not in that list: ${missing.join(', ')}. llama-swap / Ollama may load it on first request — otherwise double-check the model name.`);
+      }
+    }
+  }
+}
+
+// Baseline written into every .env. Mirrors the production-grade config the
+// maintainer runs locally: caching/compression on, generous policy budgets,
+// sandboxed agents, MCP/web defaults, etc. Users can edit any of these
+// post-generation; the wizard prompts only for tier picks, credentials, and a
+// handful of intelligence knobs. Everything else is opinionated default.
+// Local-provider families (OLLAMA_*, LLAMACPP_*, LMSTUDIO_*) are emitted only
+// for providers a tier actually uses — see buildEnvContent.
 //
 // Categorised inline so future contributors know which group a key lives in.
 const BASELINE_ENV = {
@@ -606,33 +722,20 @@ async function runInteractive(opts) {
     console.log('');
     writeEnvFile(buildEnvContent(env, isWrap, tierConfig), opts);
 
-    // ── Classifier bootstrap: detect ollama, pull model, warm-up ──
-    // Runs AFTER .env is written so the classifier can read tier config
-    // (currently uses hardcoded qwen2.5:3b, but leaves room for the future
-    // fine-tuned model to plug in via SIMPLE tier or an env override).
+    // ── Local endpoint check: is each local provider you picked reachable? ──
+    // Plain HTTP against the configured endpoints (remote hosts included);
+    // nothing is installed or pulled. See LOCAL_PROBES above and GitHub #129.
     if (!opts.dryRun) {
-      console.log('');
-      console.log('Setting up the difficulty classifier…');
-      try {
-        const { ensureClassifierReady } = require('../src/routing/classifier-setup');
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const prompt = (q) => new Promise((res) => rl.question(q, (a) => res(a)));
-        const result = await ensureClassifierReady({
-          mode: 'interactive',
-          log: (m) => console.log(m),
-          warn: (m) => console.warn(m),
-          prompt,
-        });
-        rl.close();
-        if (result.ready) {
-          console.log('✓ Classifier ready.');
-        } else if (result.reason === 'ollama_missing') {
-          console.log('(Install Ollama and re-run `lynkr init` to enable the classifier — Lynkr will still start without it, using anchor-only scoring.)');
-        } else {
-          console.log(`(Classifier disabled: ${result.reason}. Lynkr will fall back to anchor-only scoring.)`);
+      const hasLocal = Object.values(tierConfig).some((t) => LOCAL_PROBES[t.provider]);
+      if (hasLocal) {
+        console.log('');
+        console.log('Checking local inference endpoints…');
+        try {
+          const results = await probeLocalProviders(tierConfig, env);
+          reportLocalProbes(results, tierConfig);
+        } catch (err) {
+          console.warn(`⚠ Endpoint check skipped: ${err.message}`);
         }
-      } catch (err) {
-        console.warn(`⚠ Classifier setup skipped: ${err.message}`);
       }
     }
   } catch (err) {
@@ -648,7 +751,17 @@ async function runInteractive(opts) {
 function buildEnvContent(env, isWrap, tierConfig) {
   // Baseline first, user choices on top — so user input always wins for keys
   // they explicitly answered (e.g. LOG_LEVEL if the wizard ever asks for it).
-  const merged = { ...BASELINE_ENV, ...env };
+  // Local-provider baselines are emitted only for providers a tier uses: an
+  // unconditional OLLAMA_EMBEDDINGS_ENDPOINT=http://localhost:11434/... in
+  // every .env is how llama.cpp-only deployments ended up pointed at a
+  // non-existent local Ollama (GitHub #129). Keys the user supplied directly
+  // are always kept.
+  const chosen = new Set(Object.values(tierConfig || {}).map((t) => t?.provider).filter(Boolean));
+  const baseline = Object.fromEntries(Object.entries(BASELINE_ENV).filter(([k]) => {
+    const fam = LOCAL_BASELINE_PREFIXES.find((f) => k.startsWith(f.prefix));
+    return !fam || chosen.has(fam.provider);
+  }));
+  const merged = { ...baseline, ...env };
 
   const lines = [
     '# Lynkr configuration',
@@ -778,6 +891,10 @@ module.exports = {
   PROVIDERS,
   PROVIDER_ORDER,
   TIERS,
+  LOCAL_PROBES,
   parseArgs,
   buildEnvContent,
+  probeLocalProvider,
+  probeLocalProviders,
+  reportLocalProbes,
 };

@@ -191,6 +191,8 @@ The primary scorer since WS7 (2026-07). Solves the "envelope inflation" problem 
 
 ## LLM Difficulty Classifier (Phase 6)
 
+> **Status: dark since 2026-09-21 (#117).** `classifyDifficulty` is no longer on the routing path — `intent-score.js` takes its second opinion from the Jev routing judge (`src/routing/jev-router.js`; fail-soft null when `TYPESAFE_API_KEY` is unset, in which case anchor scoring carries routing alone). The module, its eval script and tests remain as the harness for a future local classifier. Nothing in this section is required to run Lynkr — in particular **Ollama is not required for routing** (GitHub #129). The thresholds in the table below are the Phase-6 values; the live `_reconcile` gate is 0.3 with a one-band cap on upward moves.
+
 Added 2026-07-19. A second-opinion classifier that catches anchor-embedding false positives. The core problem it solves: embeddings measure *topical similarity*, not difficulty — `list the exports from this file` embedded near frontier examples because it shares technical vocabulary, and got score 76 (REASONING) even though the underlying task is trivially easy for a small model.
 
 **Mechanism** (`src/routing/difficulty-classifier.js`):
@@ -234,14 +236,15 @@ The eval set (`data/difficulty-eval.jsonl`, gitignored) is built from RouterAren
 
 **Running validation**: `node scripts/validate-difficulty-classifier.js` — persists per-row results to `data/difficulty-eval-results.jsonl` for manual review.
 
-### Auto-provisioning (`lynkr init` + server boot)
+### `lynkr init` endpoint check (replaced the Ollama bootstrap — #129)
 
-`src/routing/classifier-setup.js` handles ollama + model detection so users don't have to know the plumbing.
+`src/routing/classifier-setup.js` used to run at `lynkr init` and server boot: it shelled out to `ollama --version` / `ollama list` / `ollama pull qwen2.5:3b` on the Lynkr host and told anyone running llama.cpp, LM Studio, or Ollama on another machine that "Ollama is required" — for a classifier that was already off the routing path. That bootstrap is gone from both places; the module is kept only for running the dark classifier by hand.
 
-- **`lynkr init`** — interactive: detects `ollama` on PATH; if missing, prints the platform-specific install command (brew on macOS, curl on Linux, direct download on Windows) and exits cleanly. Never auto-runs `curl | sh` — that's a supply-chain footgun. If ollama is present, prompts the user to `ollama pull qwen2.5:3b`, then warms it up.
-- **Server boot** — non-blocking: runs the same detect-and-check after `app.listen()`, but never blocks startup. If ollama or the model is missing, logs a warning and lets the classifier fall through to null (anchor-only scoring). Users see one line telling them exactly which command to run.
+`lynkr init` now ends with a provider-agnostic reachability check (`LOCAL_PROBES` in `bin/lynkr-init.js`): for each local provider you picked it makes one HTTP request to the endpoint you configured — Ollama `/api/tags`, llama.cpp and LM Studio `/v1/models`; remote hosts and llama-swap included — and prints the models it sees, warning if a tier's model isn't among them. Nothing is installed or pulled; an unreachable endpoint is a warning, not a failure. At runtime, provider reachability is the health prober's job (`src/clients/health-probe.js`). The wizard also stops writing `OLLAMA_*` baseline keys into `.env` unless a tier actually uses Ollama.
 
-**Deferred to a follow-up (per user directive):**
+**Embeddings for anchor scoring follow the same provider.** The semantic cache, kNN router and anchor-embedding scorer all embed through `src/cache/embeddings.js`, which picks the local embeddings server in this order: `EMBEDDINGS_PROVIDER` (explicit), `MODEL_PROVIDER` if local, the providers named in `TIER_*`, an explicit `LLAMACPP_EMBEDDINGS_ENDPOINT`, then the legacy Ollama default. Before #129 the Ollama branch always won (config always derives `OLLAMA_EMBEDDINGS_ENDPOINT` from `OLLAMA_ENDPOINT`), so llama.cpp deployments dialed `localhost:11434`, degraded to 384-dim hash vectors, the 768-dim kNN embedder rejected them, and intent scoring fell through to lexical mode. For llama.cpp, start the server with `--embeddings` and point `LLAMACPP_EMBEDDINGS_ENDPOINT` at it (default `LLAMACPP_ENDPOINT` + `/embeddings`).
+
+**Deferred (per user directive):**
 
 - Fine-tuning `qwen2.5:3b` on labeled classification data (LoRA infra, GPU, curated training set)
 - Canary verification on every startup (assert known-good classifications succeed before accepting traffic)
@@ -682,13 +685,14 @@ Result: COMPLEX → anthropic:claude-opus-4-7
    └─ Softmax-blend → continuous 0-100 score
    └─ frontier requires similarity ≥ FRONTIER_MIN_SIM (0.50) to participate
 
-6. LLM difficulty classifier (Phase 6):
-   └─ Call qwen2.5:3b via Ollama, get {tier, confidence}
+6. Jev routing judge (second opinion; replaced the Phase-6 qwen/Ollama classifier in #117):
+   └─ Typed Choice over the four tiers via TypeSafe System One → {tier, confidence}
+   └─ null (anchor-only) when TYPESAFE_API_KEY is unset, on timeout, or on any error
    └─ Reconcile with anchor score:
-        agree → keep anchor score
-        classifier lower + conf ≥ 0.6 → trust classifier (fix over-routing)
-        classifier higher + conf ≥ 0.8 → trust classifier (gated escalation)
-   └─ Skipped if: text<15 chars, force-matched, risk=high, cache hit
+        agree, or conf < 0.3 → keep anchor score
+        judge lower → trust judge (fix over-routing; capped to one band when context-fed and conf < 0.6)
+        judge higher → trust judge, capped at one band above the anchor
+   └─ Skipped if: force-matched, risk=high, cache hit
 
 7. Fallback path if anchor scorer failed:
    └─ Lexical clean-text score (envelope-invariant, clamped ≤75)
@@ -790,7 +794,8 @@ Per-provider latency is tracked in a 200-sample circular buffer. Statistics expo
 |------|-------------|
 | `src/routing/index.js` | Main routing orchestrator (`determineProviderSmart()`) |
 | `src/routing/intent-score.js` | WS7 anchor-embedding intent scorer + reconcile logic with classifier |
-| `src/routing/difficulty-classifier.js` | Phase 6 LLM difficulty classifier (qwen2.5:3b via Ollama) |
+| `src/routing/difficulty-classifier.js` | Phase 6 LLM difficulty classifier (qwen2.5:3b via Ollama) — dark since #117, not required at runtime |
+| `src/routing/jev-router.js` | Jev routing judge — the live second opinion in intent scoring (optional, `TYPESAFE_API_KEY`) |
 | `src/routing/complexity-analyzer.js` | Legacy 5-phase complexity analysis (fallback path when anchor fails); `FORCE_*_PATTERNS` including `FORCE_REASONING_PATTERNS` |
 | `src/routing/agentic-detector.js` | Agentic workflow detection and classification |
 | `src/routing/model-tiers.js` | Tier definitions, model selection from `TIER_*` env vars |
