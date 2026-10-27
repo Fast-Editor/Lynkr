@@ -103,6 +103,17 @@ const PROVIDERS = {
     ],
     defaultModel: 'qwen/qwen3.8-max',
   },
+  cheaperinference: {
+    label: 'Cheaper Inference (OpenAI-compatible)',
+    local: false,
+    creds: [
+      { key: 'CHEAPER_INFERENCE_API_KEY', label: 'Cheaper Inference API key', secret: true },
+    ],
+    extras: [
+      { key: 'CHEAPER_INFERENCE_ENDPOINT', label: 'Chat Completions endpoint', default: 'https://api.cheaperinference.com/v1/chat/completions' },
+    ],
+    defaultModel: 'gpt-5.4-mini',
+  },
   openrouter: {
     label: 'OpenRouter (100+ models, one key)',
     local: false,
@@ -206,7 +217,7 @@ const PROVIDERS = {
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
-  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'openrouter', 'edenai',
+  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'cheaperinference', 'openrouter', 'edenai',
   'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu', 'fireworks', 'orcarouter',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
