@@ -108,4 +108,138 @@ describe("lynkr init", () => {
       assert.match(out, /Mode: wrap \(Claude Pro\/Max subscription\)/);
     });
   });
+
+  // GitHub #129 — a llama.cpp-only wizard run used to write
+  // OLLAMA_EMBEDDINGS_ENDPOINT=http://localhost:11434/... into .env and then
+  // demand a local `ollama` binary for a classifier that no longer runs.
+  describe("buildEnvContent — local provider baselines (#129)", () => {
+    const allLlamaCpp = {
+      SIMPLE: { provider: "llamacpp", model: "qwen2.5-coder" },
+      MEDIUM: { provider: "llamacpp", model: "qwen2.5-coder" },
+      COMPLEX: { provider: "llamacpp", model: "qwen3-32b" },
+      REASONING: { provider: "llamacpp", model: "qwen3-32b" },
+    };
+
+    it("omits OLLAMA_* baseline keys when no tier uses ollama", () => {
+      const out = init.buildEnvContent(
+        { MODEL_PROVIDER: "llamacpp", TIER_SIMPLE: "llamacpp:qwen2.5-coder", LLAMACPP_ENDPOINT: "http://10.0.0.5:8080" },
+        false,
+        allLlamaCpp,
+      );
+      assert.doesNotMatch(out, /^OLLAMA_EMBEDDINGS_ENDPOINT=/m);
+      assert.doesNotMatch(out, /^OLLAMA_MODEL=/m);
+      assert.doesNotMatch(out, /^LMSTUDIO_ENDPOINT=/m);
+      assert.match(out, /^LLAMACPP_ENDPOINT=http:\/\/10\.0\.0\.5:8080$/m);
+      assert.match(out, /^LLAMACPP_EMBEDDINGS_ENDPOINT=/m);
+    });
+
+    it("keeps OLLAMA_* baseline keys when a tier uses ollama", () => {
+      const out = init.buildEnvContent(
+        { MODEL_PROVIDER: "ollama", TIER_SIMPLE: "ollama:qwen2.5-coder:latest" },
+        false,
+        { SIMPLE: { provider: "ollama", model: "qwen2.5-coder:latest" } },
+      );
+      assert.match(out, /^OLLAMA_EMBEDDINGS_ENDPOINT=http:\/\/localhost:11434\/api\/embeddings$/m);
+      assert.match(out, /^OLLAMA_EMBEDDINGS_MODEL=nomic-embed-text$/m);
+    });
+
+    it("always keeps keys the user supplied, even for a provider no tier uses", () => {
+      const out = init.buildEnvContent(
+        { MODEL_PROVIDER: "llamacpp", OLLAMA_ENDPOINT: "http://gpu-box:11434" },
+        false,
+        allLlamaCpp,
+      );
+      assert.match(out, /^OLLAMA_ENDPOINT=http:\/\/gpu-box:11434$/m);
+      assert.doesNotMatch(out, /^OLLAMA_EMBEDDINGS_ENDPOINT=/m);
+    });
+  });
+
+  describe("probeLocalProviders (#129)", () => {
+    const http = require("http");
+
+    it("reports a reachable llama.cpp /v1/models endpoint with its model ids", async () => {
+      const server = http.createServer((req, res) => {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ object: "list", data: [{ id: "qwen2.5-coder" }, { id: "qwen3-32b" }] }));
+      });
+      await new Promise((r) => server.listen(0, "127.0.0.1", r));
+      try {
+        const base = `http://127.0.0.1:${server.address().port}`;
+        const results = await init.probeLocalProviders(
+          { SIMPLE: { provider: "llamacpp", model: "qwen2.5-coder" } },
+          { LLAMACPP_ENDPOINT: `${base}/` },
+        );
+        assert.equal(results.length, 1);
+        assert.equal(results[0].provider, "llamacpp");
+        assert.equal(results[0].reachable, true);
+        assert.equal(results[0].url, `${base}/v1/models`, "trailing slash collapsed, /v1/models appended");
+        assert.deepEqual(results[0].models, ["qwen2.5-coder", "qwen3-32b"]);
+      } finally {
+        server.close();
+      }
+    });
+
+    it("reports an unreachable endpoint without throwing", async () => {
+      const results = await init.probeLocalProviders(
+        { SIMPLE: { provider: "llamacpp", model: "x" } },
+        { LLAMACPP_ENDPOINT: "http://127.0.0.1:1" },
+        { timeoutMs: 2000 },
+      );
+      assert.equal(results[0].reachable, false);
+      assert.equal(typeof results[0].error, "string");
+      assert.ok(results[0].error.length > 0);
+    });
+
+    it("probes each distinct local provider once and skips cloud providers", async () => {
+      const urls = [];
+      const fetchFn = async (url) => { urls.push(url); return { ok: true, status: 200, json: async () => ({ data: [] }) }; };
+      const results = await init.probeLocalProviders(
+        {
+          SIMPLE: { provider: "llamacpp", model: "a" },
+          MEDIUM: { provider: "llamacpp", model: "b" },
+          COMPLEX: { provider: "openrouter", model: "c" },
+          REASONING: { provider: "ollama", model: "d" },
+        },
+        { LLAMACPP_ENDPOINT: "http://llama:8080", OLLAMA_ENDPOINT: "http://gpu:11434" },
+        { fetchFn },
+      );
+      assert.deepEqual(results.map((r) => r.provider).sort(), ["llamacpp", "ollama"]);
+      assert.deepEqual(urls.sort(), ["http://gpu:11434/api/tags", "http://llama:8080/v1/models"]);
+    });
+
+    it("resolves to [] when every tier is a cloud provider", async () => {
+      const results = await init.probeLocalProviders(
+        { SIMPLE: { provider: "openrouter", model: "x" } },
+        {},
+        { fetchFn: async () => { throw new Error("must not be called"); } },
+      );
+      assert.deepEqual(results, []);
+    });
+
+    it("reads Ollama's /api/tags model names and treats :latest as the same model", () => {
+      const logs = []; const warns = [];
+      init.reportLocalProbes(
+        [{ provider: "ollama", url: "http://gpu:11434/api/tags", reachable: true, models: ["qwen2.5-coder:latest"] }],
+        { SIMPLE: { provider: "ollama", model: "qwen2.5-coder" }, MEDIUM: { provider: "ollama", model: "qwen3-32b" } },
+        (m) => logs.push(m), (m) => warns.push(m),
+      );
+      assert.equal(logs.length, 1);
+      assert.match(logs[0], /reachable at http:\/\/gpu:11434\/api\/tags/);
+      assert.equal(warns.length, 1);
+      assert.match(warns[0], /qwen3-32b/);
+      assert.doesNotMatch(warns[0], /qwen2\.5-coder/);
+    });
+
+    it("never mentions installing Ollama for an unreachable llama.cpp endpoint", () => {
+      const warns = [];
+      init.reportLocalProbes(
+        [{ provider: "llamacpp", url: "http://10.0.0.5:8080/v1/models", reachable: false, models: [], error: "ECONNREFUSED" }],
+        { SIMPLE: { provider: "llamacpp", model: "x" } },
+        () => {}, (m) => warns.push(m),
+      );
+      assert.ok(warns.length >= 1);
+      assert.match(warns[0], /llama\.cpp .* not reachable at http:\/\/10\.0\.0\.5:8080\/v1\/models/);
+      assert.doesNotMatch(warns.join("\n"), /ollama/i);
+    });
+  });
 });
