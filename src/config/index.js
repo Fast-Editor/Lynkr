@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "cheaperinference", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "cheaperinference", "atmorouter", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -124,6 +124,11 @@ const atlasCloudEndpoint = process.env.ATLASCLOUD_ENDPOINT?.trim() || "https://a
 const cheaperInferenceApiKey = process.env.CHEAPER_INFERENCE_API_KEY?.trim() || null;
 const cheaperInferenceModel = process.env.CHEAPER_INFERENCE_MODEL?.trim() || "gpt-5.4-mini";
 const cheaperInferenceEndpoint = process.env.CHEAPER_INFERENCE_ENDPOINT?.trim() || "https://api.cheaperinference.com/v1/chat/completions";
+
+// AtmoRouter configuration (OpenAI-compatible Chat Completions)
+const atmoRouterApiKey = process.env.ATMOROUTER_API_KEY?.trim() || null;
+const atmoRouterModel = process.env.ATMOROUTER_MODEL?.trim() || "cbcn/glm-5.3";
+const atmoRouterEndpoint = process.env.ATMOROUTER_ENDPOINT?.trim() || "https://atmorouter.dev/v1/chat/completions";
 
 // llama.cpp configuration
 const llamacppEndpoint = process.env.LLAMACPP_ENDPOINT?.trim() || "http://localhost:8080";
@@ -357,6 +362,12 @@ if (modelProvider === "cheaperinference" && !cheaperInferenceApiKey) {
   );
 }
 
+if (modelProvider === "atmorouter" && !atmoRouterApiKey) {
+  throw new Error(
+    "Set ATMOROUTER_API_KEY before starting the proxy.",
+  );
+}
+
 if (modelProvider === "orcarouter" && !orcaRouterApiKey) {
   throw new Error(
     "Set ORCAROUTER_API_KEY before starting the proxy.",
@@ -411,7 +422,7 @@ const tiersConfigured = !!(
 if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, cheaperinference, bedrock, orcarouter`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, cheaperinference, atmorouter, bedrock, orcarouter`);
   }
   let fallbackMisconfigured = false;
   if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
@@ -430,6 +441,9 @@ if (fallbackEnabled && tiersConfigured) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "cheaperinference" && !cheaperInferenceApiKey) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "atmorouter" && !atmoRouterApiKey) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "orcarouter" && !orcaRouterApiKey) {
@@ -690,6 +704,11 @@ var config = {
     apiKey: cheaperInferenceApiKey,
     model: cheaperInferenceModel,
     endpoint: cheaperInferenceEndpoint,
+  },
+  atmorouter: {
+    apiKey: atmoRouterApiKey,
+    model: atmoRouterModel,
+    endpoint: atmoRouterEndpoint,
   },
   llamacpp: {
     endpoint: llamacppEndpoint,
@@ -1203,6 +1222,9 @@ function reloadConfig() {
   config.cheaperinference.apiKey = process.env.CHEAPER_INFERENCE_API_KEY?.trim() || null;
   config.cheaperinference.model = process.env.CHEAPER_INFERENCE_MODEL?.trim() || "gpt-5.4-mini";
   config.cheaperinference.endpoint = process.env.CHEAPER_INFERENCE_ENDPOINT?.trim() || "https://api.cheaperinference.com/v1/chat/completions";
+  config.atmorouter.apiKey = process.env.ATMOROUTER_API_KEY?.trim() || null;
+  config.atmorouter.model = process.env.ATMOROUTER_MODEL?.trim() || "cbcn/glm-5.3";
+  config.atmorouter.endpoint = process.env.ATMOROUTER_ENDPOINT?.trim() || "https://atmorouter.dev/v1/chat/completions";
   config.bedrock.apiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null;
   config.zai.apiKey = process.env.ZAI_API_KEY?.trim() || null;
   config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";
