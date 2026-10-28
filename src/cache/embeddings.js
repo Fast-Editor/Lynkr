@@ -239,13 +239,80 @@ function _wrapProvider(providerName, providerFn) {
   };
 }
 
+// --- Local embedding provider resolution -----------------------------------
+//
+// Which local server embeds text for the semantic cache, the kNN router and
+// anchor-based intent scoring. This used to test
+// `config.ollama?.embeddingsEndpoint` first — but config ALWAYS derives that
+// from OLLAMA_ENDPOINT (default localhost:11434), so the llama.cpp branch was
+// unreachable: every llama.cpp / remote deployment dialed a non-existent
+// local Ollama, failed, degraded to 384-dim hash vectors, the 768-dim kNN
+// embedder rejected those, and intent scoring fell through to lexical mode
+// (GitHub #129).
+//
+// Resolution order, first match wins:
+//   1. EMBEDDINGS_PROVIDER — explicit operator override. Documented in
+//      .env.example; previously honoured only by the /v1/embeddings ingress.
+//   2. MODEL_PROVIDER, when it is a local provider with an embeddings path.
+//   3. The providers named in TIER_*: tiers on llama.cpp and never Ollama →
+//      llama.cpp; any tier on Ollama → Ollama.
+//   4. An explicit LLAMACPP_EMBEDDINGS_ENDPOINT with no explicit
+//      OLLAMA_EMBEDDINGS_ENDPOINT beside it.
+//   5. Legacy default: Ollama, exactly as before.
+// LM Studio has no embeddings adapter here yet, so lmstudio deployments fall
+// through to the legacy default (set EMBEDDINGS_PROVIDER to steer them).
+const LOCAL_EMBEDDING_PROVIDERS = new Set(['ollama', 'llamacpp']);
+const TIER_NAMES = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
+
+function _tierProviders() {
+  const tiers = config.modelTiers || {};
+  const out = new Set();
+  for (const tier of TIER_NAMES) {
+    const spec = tiers[tier];
+    if (typeof spec !== 'string') continue;
+    const sep = spec.indexOf(':');
+    if (sep > 0) out.add(spec.slice(0, sep).trim().toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * Pick the local embeddings provider for routing/semantic-cache embeddings.
+ * @returns {'ollama'|'llamacpp'|null}
+ */
+function resolveLocalEmbeddingProvider() {
+  const explicit = (process.env.EMBEDDINGS_PROVIDER || '').trim().toLowerCase();
+  if (LOCAL_EMBEDDING_PROVIDERS.has(explicit)) return explicit;
+
+  const primary = (config.modelProvider?.type || '').toLowerCase();
+  if (LOCAL_EMBEDDING_PROVIDERS.has(primary)) return primary;
+
+  const tierProviders = _tierProviders();
+  if (tierProviders.has('llamacpp') && !tierProviders.has('ollama')) return 'llamacpp';
+  if (tierProviders.has('ollama')) return 'ollama';
+
+  if ((process.env.LLAMACPP_EMBEDDINGS_ENDPOINT || '').trim()
+      && !(process.env.OLLAMA_EMBEDDINGS_ENDPOINT || '').trim()) {
+    return 'llamacpp';
+  }
+
+  if (config.ollama?.embeddingsEndpoint) return 'ollama';
+  if (config.llamacpp?.embeddingsEndpoint) return 'llamacpp';
+  return null;
+}
+
+let _loggedProvider = null;
+function _logProviderOnce(providerName, endpoint) {
+  if (_loggedProvider === providerName) return;
+  _loggedProvider = providerName;
+  logger.info({ provider: providerName, endpoint }, '[Embeddings] Local embedding provider selected for routing/semantic-cache embeddings');
+}
+
 /**
  * Get the appropriate embedding function based on config
  * @returns {Function} - Embedding generation function
  */
 function getEmbeddingFunction() {
-  const provider = config.modelProvider?.type || 'databricks';
-
   // In-process ONNX embedder (opt-in): no external embedding server on the
   // hot path at all. Same underlying model as the Ollama default
   // (nomic-embed-text, 768-dim), so existing kNN/cache vectors stay valid.
@@ -259,12 +326,16 @@ function getEmbeddingFunction() {
     logger.warn('[Embeddings] LYNKR_EMBEDDINGS_PROVIDER=onnx but @huggingface/transformers is not installed (optionalDependency) — falling through to the configured network provider');
   }
 
-  // Check if we have a local embedding provider configured
-  if (config.ollama?.embeddingsEndpoint || provider === 'ollama') {
+  // Local embedding server — resolved from the operator's provider choices
+  // (see resolveLocalEmbeddingProvider above), not from whichever endpoint
+  // happens to have a default.
+  const local = resolveLocalEmbeddingProvider();
+  if (local === 'ollama') {
+    _logProviderOnce('ollama', config.ollama?.embeddingsEndpoint);
     return _wrapProvider('ollama', generateOllamaEmbedding);
   }
-
-  if (config.llamacpp?.embeddingsEndpoint || provider === 'llamacpp') {
+  if (local === 'llamacpp') {
+    _logProviderOnce('llamacpp', config.llamacpp?.embeddingsEndpoint);
     return _wrapProvider('llamacpp', generateLlamaCppEmbedding);
   }
 
@@ -328,6 +399,7 @@ function resetEmbeddingProvider() {
   lastProviderAttempt = 0;
   fallbackCount = 0;
   lastProviderError = null;
+  _loggedProvider = null;
 }
 
 /**
@@ -368,4 +440,5 @@ module.exports = {
   getEmbeddingFunction,
   getEmbeddingStatus,
   resetEmbeddingProvider,
+  resolveLocalEmbeddingProvider,
 };

@@ -1,8 +1,17 @@
 /**
- * Classifier bootstrap — verifies ollama is installed and the classifier
- * model is pulled + warm. Called from:
- *  - `lynkr init` (interactive, prompts user for install, blocks on completion)
- *  - server boot (non-blocking, logs warnings, never errors out)
+ * Classifier bootstrap — verifies ollama is installed and the legacy
+ * qwen2.5:3b classifier model is pulled + warm.
+ *
+ * NOT CALLED AT RUNTIME. It used to run from `lynkr init` and server boot,
+ * but the classifier it provisions (difficulty-classifier.js) has been off
+ * the routing path since the Jev routing judge replaced it (#117), and this
+ * module's checks shell out to a local `ollama` binary — so llama.cpp,
+ * LM Studio and remote-Ollama users were told Ollama was "required" for a
+ * classifier that never ran (GitHub #129). `lynkr init` now probes the
+ * configured local endpoints over HTTP instead (bin/lynkr-init.js
+ * LOCAL_PROBES). Kept for operators who run the dark classifier by hand
+ * (scripts/validate-difficulty-classifier.js) and as the hook for a future
+ * local classifier.
  *
  * Ollama install is intentionally NOT auto-executed. Silent `curl | sh`
  * during npm install is a supply-chain footgun; we detect and instruct
@@ -106,7 +115,7 @@ async function warmModel(model, endpoint = 'http://localhost:11434') {
 /** Instructions to print when ollama is missing. */
 function installInstructions() {
   const plat = os.platform();
-  const lines = ['Ollama is required for the difficulty classifier and SIMPLE-tier serving.'];
+  const lines = ['Ollama is required only to run the legacy qwen2.5:3b difficulty classifier locally (tiers can be served by llama.cpp, LM Studio or a remote Ollama).'];
   if (plat === 'darwin') {
     lines.push('Install on macOS:');
     lines.push('  brew install ollama');

@@ -267,7 +267,7 @@ POLICY_MAX_STEPS=50
 POLICY_MAX_TOOL_CALLS=100
 ```
 
-Lynkr analyzes each request and routes it to the appropriate tier. Simple questions use fast models. Complex refactoring uses powerful models. The scorer combines anchor-embedding classification (WS7, payload-invariant) with an LLM difficulty classifier (Phase 6, added 2026-07-19) that catches topic-vs-difficulty confounding — `list the exports from this file` correctly routes to MEDIUM instead of getting boosted to REASONING by "technical vocabulary" alone.
+Lynkr analyzes each request and routes it to the appropriate tier. Simple questions use fast models. Complex refactoring uses powerful models. The scorer combines anchor-embedding classification (WS7, payload-invariant) with the Jev routing judge (an optional typed second opinion over the four tiers, enabled by `TYPESAFE_API_KEY`; it replaced the earlier local qwen2.5:3b classifier, so no local Ollama is required) that catches topic-vs-difficulty confounding — `list the exports from this file` correctly routes to MEDIUM instead of getting boosted to REASONING by "technical vocabulary" alone.
 
 **Result:** 70-90% of requests use cheaper/faster models. Only hard problems hit expensive models. **15× reduction in expensive-tier over-routing** vs the anchor-only baseline on the 381-prompt eval set (0.6% vs ~15%).
 
@@ -553,7 +553,7 @@ Lynkr layers the following, in decreasing priority, to catch every miss LiteLLM 
 - Risk classifier (auth/middleware/credentials paths) → REASONING under config B
 - Agentic detector (`AUTONOMOUS` workflows) → REASONING minimum
 - Anchor-embedding classifier over 4 difficulty classes + FRONTIER_MIN_SIM floor
-- Local LLM classifier (qwen2.5:3b) reconciles borderline anchor calls
+- Jev routing judge (optional, `TYPESAFE_API_KEY`) reconciles borderline anchor calls — no local Ollama required; the earlier qwen2.5:3b classifier is kept dark
 - Envelope invariance — scores cleaned user text only, ignoring tool schemas / history / system-reminders
 
 LiteLLM's router reads the raw last message with no envelope-stripping, no verify-then-escalate cascade, no risk classifier, no agentic detection — its fallbacks trigger only on HTTP errors, never on a bad answer.

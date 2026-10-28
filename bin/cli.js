@@ -55,7 +55,7 @@ ${pkg.description}
 Usage:
   lynkr [options]                  Start the proxy server (default)
   lynkr start [options]            Alias for the above
-  lynkr init [options]             Interactive setup wizard (writes .env, pulls classifier model)
+  lynkr init [options]             Interactive setup wizard (writes .env, checks local endpoints)
   lynkr wrap <target> [options]    Wrap CLI tools through Lynkr proxy
   lynkr desktop-token <token>      Apply a Claude Pro/Max OAuth token to Claude Desktop's
                                     gateway profile (macOS only)
