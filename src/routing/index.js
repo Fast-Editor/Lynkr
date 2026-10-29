@@ -95,6 +95,7 @@ function _enabledProviders() {
   if (config.atlas?.apiKey) out.push('atlas');
   if (config.cheaperinference?.apiKey) out.push('cheaperinference');
   if (config.atmorouter?.apiKey) out.push('atmorouter');
+  if (config.runcrate?.apiKey) out.push('runcrate');
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) out.push('azure-openai');
   if (config.orcarouter?.apiKey) out.push('orcarouter');
   if (config.ollama?.endpoint) out.push('ollama');
@@ -142,6 +143,7 @@ function getBestCloudProvider() {
   if (config.atlas?.apiKey) return 'atlas';
   if (config.cheaperinference?.apiKey) return 'cheaperinference';
   if (config.atmorouter?.apiKey) return 'atmorouter';
+  if (config.runcrate?.apiKey) return 'runcrate';
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) return 'azure-openai';
   if (config.orcarouter?.apiKey) return 'orcarouter';
 

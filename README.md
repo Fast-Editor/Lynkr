@@ -222,6 +222,7 @@ Claude Code / Cursor / Codex / Cline / Continue
 | **Atlas Cloud** | Cloud | Qwen, DeepSeek, and other OpenAI-compatible models | $-$$$ |
 | **Cheaper Inference** | Cloud | GPT, Claude, Gemini, DeepSeek, and other OpenAI-compatible models | $-$$$ |
 | **AtmoRouter** | Cloud | Claude, GPT, Gemini, GLM, Kimi, Qwen, DeepSeek, and other OpenAI-compatible models | $-$$ |
+| **Runcrate** | Cloud | DeepSeek, GLM, Kimi, Qwen, gpt-oss, and other open-weight models | $-$$ |
 | **DeepSeek** | Cloud | DeepSeek R1, Reasoner | $ |
 | **Z.ai** | Cloud | GLM-4.7, GLM-4.5-Air | $ |
 | **Moonshot AI** | Cloud | Kimi K2.6, Kimi K3 | $ |

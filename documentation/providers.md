@@ -899,6 +899,41 @@ TIER_REASONING=atmorouter:ali/deepseek-v4.1-flash
 
 ---
 
+### 8d. Runcrate (OpenAI-Compatible)
+
+**Best for:** Using one Runcrate key for open-weight DeepSeek, GLM, Kimi, Qwen and gpt-oss models through Lynkr's static or tier-based routing
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=runcrate
+RUNCRATE_API_KEY=rc_live_your-runcrate-api-key
+RUNCRATE_MODEL=deepseek-ai/DeepSeek-V4.1-Flash
+RUNCRATE_ENDPOINT=https://api.runcrate.ai/v1/chat/completions
+```
+
+Create a key at [runcrate.ai/dashboard/api-keys](https://www.runcrate.ai/dashboard/api-keys) (keys start with `rc_live_`). The endpoint is OpenAI-compatible, so Lynkr converts Anthropic messages and tools to Chat Completions requests and transforms streamed OpenAI SSE events back to Anthropic events.
+
+Runcrate can also be selected per tier:
+
+```env
+TIER_SIMPLE=ollama:qwen2.5-coder:latest
+TIER_MEDIUM=runcrate:deepseek-ai/DeepSeek-V4.1-Flash
+TIER_COMPLEX=runcrate:zai-org/GLM-5.3
+TIER_REASONING=runcrate:moonshotai/Kimi-K2.6
+```
+
+`RUNCRATE_MODEL` is the static-routing default. A model named in `TIER_*` takes precedence for that tier. Model IDs carry the vendor prefix (`deepseek-ai/`, `zai-org/`, `Qwen/`, `moonshotai/`, `openai/`); the full list is public at `GET https://api.runcrate.ai/v1/models` and on the [model pricing page](https://www.runcrate.ai/inference/pricing).
+
+#### Behavior
+
+- Supports non-streaming and streaming Chat Completions
+- Supports Anthropic-format tools through Lynkr's existing OpenAI conversion path
+- Uses Bearer authentication and accepts a custom `RUNCRATE_ENDPOINT`
+- Does not automatically replay billable Chat Completions POST requests
+
+---
+
 ### 9. LM Studio (Local with GUI)
 
 **Best for:** Local models with graphical interface

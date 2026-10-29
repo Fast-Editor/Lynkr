@@ -147,6 +147,19 @@ async function getConfiguredProviders() {
     });
   }
 
+  // Check Runcrate (OpenAI-compatible Chat Completions)
+  if (config.runcrate?.apiKey) {
+    providers.push({
+      name: "runcrate",
+      type: "runcrate",
+      baseUrl: config.runcrate.endpoint || "https://api.runcrate.ai/v1/chat/completions",
+      enabled: true,
+      models: [
+        { id: config.runcrate.model || "deepseek-ai/DeepSeek-V4.1-Flash", name: "Configured Model" },
+      ]
+    });
+  }
+
   // Check OpenRouter
   if (config.openrouter?.apiKey) {
     providers.push({

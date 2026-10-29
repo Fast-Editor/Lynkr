@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "cheaperinference", "atmorouter", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "cheaperinference", "atmorouter", "runcrate", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -129,6 +129,11 @@ const cheaperInferenceEndpoint = process.env.CHEAPER_INFERENCE_ENDPOINT?.trim() 
 const atmoRouterApiKey = process.env.ATMOROUTER_API_KEY?.trim() || null;
 const atmoRouterModel = process.env.ATMOROUTER_MODEL?.trim() || "cbcn/glm-5.3";
 const atmoRouterEndpoint = process.env.ATMOROUTER_ENDPOINT?.trim() || "https://atmorouter.dev/v1/chat/completions";
+
+// Runcrate configuration (OpenAI-compatible Chat Completions)
+const runcrateApiKey = process.env.RUNCRATE_API_KEY?.trim() || null;
+const runcrateModel = process.env.RUNCRATE_MODEL?.trim() || "deepseek-ai/DeepSeek-V4.1-Flash";
+const runcrateEndpoint = process.env.RUNCRATE_ENDPOINT?.trim() || "https://api.runcrate.ai/v1/chat/completions";
 
 // llama.cpp configuration
 const llamacppEndpoint = process.env.LLAMACPP_ENDPOINT?.trim() || "http://localhost:8080";
@@ -368,6 +373,12 @@ if (modelProvider === "atmorouter" && !atmoRouterApiKey) {
   );
 }
 
+if (modelProvider === "runcrate" && !runcrateApiKey) {
+  throw new Error(
+    "Set RUNCRATE_API_KEY before starting the proxy.",
+  );
+}
+
 if (modelProvider === "orcarouter" && !orcaRouterApiKey) {
   throw new Error(
     "Set ORCAROUTER_API_KEY before starting the proxy.",
@@ -422,7 +433,7 @@ const tiersConfigured = !!(
 if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, cheaperinference, atmorouter, bedrock, orcarouter`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, cheaperinference, atmorouter, runcrate, bedrock, orcarouter`);
   }
   let fallbackMisconfigured = false;
   if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
@@ -444,6 +455,9 @@ if (fallbackEnabled && tiersConfigured) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "atmorouter" && !atmoRouterApiKey) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "runcrate" && !runcrateApiKey) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "orcarouter" && !orcaRouterApiKey) {
@@ -709,6 +723,11 @@ var config = {
     apiKey: atmoRouterApiKey,
     model: atmoRouterModel,
     endpoint: atmoRouterEndpoint,
+  },
+  runcrate: {
+    apiKey: runcrateApiKey,
+    model: runcrateModel,
+    endpoint: runcrateEndpoint,
   },
   llamacpp: {
     endpoint: llamacppEndpoint,
@@ -1225,6 +1244,9 @@ function reloadConfig() {
   config.atmorouter.apiKey = process.env.ATMOROUTER_API_KEY?.trim() || null;
   config.atmorouter.model = process.env.ATMOROUTER_MODEL?.trim() || "cbcn/glm-5.3";
   config.atmorouter.endpoint = process.env.ATMOROUTER_ENDPOINT?.trim() || "https://atmorouter.dev/v1/chat/completions";
+  config.runcrate.apiKey = process.env.RUNCRATE_API_KEY?.trim() || null;
+  config.runcrate.model = process.env.RUNCRATE_MODEL?.trim() || "deepseek-ai/DeepSeek-V4.1-Flash";
+  config.runcrate.endpoint = process.env.RUNCRATE_ENDPOINT?.trim() || "https://api.runcrate.ai/v1/chat/completions";
   config.bedrock.apiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null;
   config.zai.apiKey = process.env.ZAI_API_KEY?.trim() || null;
   config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";

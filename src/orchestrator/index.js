@@ -50,6 +50,8 @@ function getDestinationUrl(providerType) {
       return config.cheaperinference?.endpoint ?? 'https://api.cheaperinference.com/v1/chat/completions';
     case 'atmorouter':
       return config.atmorouter?.endpoint ?? 'https://atmorouter.dev/v1/chat/completions';
+    case 'runcrate':
+      return config.runcrate?.endpoint ?? 'https://api.runcrate.ai/v1/chat/completions';
     case 'llamacpp':
       return config.llamacpp?.endpoint ?? 'unknown';
     case 'lmstudio':
@@ -1221,7 +1223,7 @@ function sanitizePayload(payload) {
     } else {
       clean.tools = ensureAnthropicToolFormat(clean.tools);
     }
-  } else if (providerType === "azure-openai" || providerType === "openai" || providerType === "atlas" || providerType === "cheaperinference" || providerType === "atmorouter") {
+  } else if (providerType === "azure-openai" || providerType === "openai" || providerType === "atlas" || providerType === "cheaperinference" || providerType === "atmorouter" || providerType === "runcrate") {
     // Azure OpenAI / OpenAI-compatible providers support tools — keep Anthropic format; the
     // client converts to Chat Completions / Responses format. Without this
     // branch the unknown-provider catch-all below deletes the tools.
