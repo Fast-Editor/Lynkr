@@ -350,6 +350,8 @@ class ModelTierSelector {
         return config.cheaperinference?.model || null;
       case 'atmorouter':
         return config.atmorouter?.model || null;
+      case 'runcrate':
+        return config.runcrate?.model || null;
       case 'ollama':
         return config.ollama?.model || null;
       case 'openrouter':
