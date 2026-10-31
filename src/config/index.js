@@ -468,6 +468,12 @@ const defaultModel =
   (modelProvider === "azure-anthropic" ? "claude-opus-4-5" : "databricks-claude-sonnet-4-5");
 
 const port = Number.parseInt(process.env.PORT ?? "8080", 10);
+// Interface to bind. Default keeps today's behaviour (all interfaces); set 127.0.0.1 for a
+// loopback-only sidecar (e.g. when an editor embeds Lynkr). Not hot-reloadable.
+const bindHost = (process.env.LYNKR_BIND_HOST ?? "0.0.0.0").trim() || "0.0.0.0";
+// Optional API key required on /v1/*, /routing/*, /metrics* and /dashboard/api/* (see
+// src/middleware/api-key-auth.js). Empty/unset = open, exactly as before.
+const lynkrApiKey = (process.env.LYNKR_API_KEY ?? "").trim() || null;
 const sessionDbPath =
   process.env.SESSION_DB_PATH ?? path.join(process.cwd(), "data", "sessions.db");
 const workspaceRoot = path.resolve(process.env.WORKSPACE_ROOT ?? process.cwd());
@@ -652,6 +658,8 @@ const workerOffloadThresholdBytes = Number.parseInt(process.env.WORKER_OFFLOAD_T
 var config = {
   env: process.env.NODE_ENV ?? "production",
   port: Number.isNaN(port) ? 8080 : port,
+  bindHost,
+  apiKey: lynkrApiKey,
   databricks: {
     baseUrl: rawBaseUrl,
     apiKey,
@@ -1208,6 +1216,7 @@ function reloadConfig() {
   // Update mutable config values (those that can safely change at runtime)
   // API keys and endpoints
   config.databricks.apiKey = process.env.DATABRICKS_API_KEY;
+  config.apiKey = (process.env.LYNKR_API_KEY ?? "").trim() || null;
   config.azureAnthropic.apiKey = process.env.AZURE_ANTHROPIC_API_KEY ?? null;
   config.ollama.model = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:7b";
   config.openrouter.apiKey = process.env.OPENROUTER_API_KEY ?? null;
