@@ -1861,6 +1861,77 @@ async function invokeAtmoRouter(body) {
   return response;
 }
 
+async function invokeRuncrate(body) {
+  if (!config.runcrate?.apiKey) {
+    throw new Error("Runcrate API key is not configured.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.runcrate.endpoint || "https://api.runcrate.ai/v1/chat/completions";
+  const headers = {
+    "Authorization": `Bearer ${config.runcrate.apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+  if (body.system) {
+    messages.unshift({ role: "system", content: body.system });
+  }
+
+  const runcrateBody = {
+    model: body._suggestionModeModel || body._tierModel || config.runcrate.model || "deepseek-ai/DeepSeek-V4.1-Flash",
+    messages,
+    temperature: body.temperature ?? 0.7,
+    max_tokens: body.max_tokens ?? 16384,
+    top_p: body.top_p ?? 1.0,
+    stream: body.stream ?? false,
+  };
+
+  const toolsToSend = Array.isArray(body.tools) ? body.tools : [];
+
+  if (toolsToSend.length > 0) {
+    runcrateBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
+    runcrateBody.parallel_tool_calls = false;
+    runcrateBody.tool_choice = forwardToolChoice(body);
+  }
+
+  logger.debug({
+    endpoint,
+    model: runcrateBody.model,
+    hasTools: !!runcrateBody.tools,
+    toolCount: runcrateBody.tools?.length || 0,
+    temperature: runcrateBody.temperature,
+    max_tokens: runcrateBody.max_tokens,
+  }, "=== RUNCRATE REQUEST ===");
+
+  // Chat completions are billable POSTs, so Runcrate requests are never
+  // replayed automatically. Callers can retry explicitly with their own
+  // idempotency policy. maxRetriesOverride/retryableStatusesOverride stay at
+  // 0/[]: this does NOT retry the request itself, it only decides whether
+  // invokeModel's caller escalates to a DIFFERENT provider/tier on 429, same as
+  // invokeAtlas/invokeMoonshot/invokeOpenAI already do. Without this, a 429 here
+  // was silently handed back as a "successful" response and tier-fallback never
+  // got a chance to climb.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: runcrateBody,
+    maxRetriesOverride: 0,
+    retryableStatusesOverride: [],
+  }, "Runcrate");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`Runcrate rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  return response;
+}
+
 async function invokeLlamaCpp(body, _incomingHeaders = {}) {
   if (!config.llamacpp?.endpoint) {
     throw new Error("llama.cpp endpoint is not configured.");
@@ -3890,6 +3961,7 @@ const PROVIDER_INVOKERS = {
   atlas: invokeAtlas,
   cheaperinference: invokeCheaperInference,
   atmorouter: invokeAtmoRouter,
+  runcrate: invokeRuncrate,
   llamacpp: invokeLlamaCpp,
   lmstudio: invokeLMStudio,
   bedrock: invokeBedrock,
@@ -4827,6 +4899,7 @@ module.exports = {
   invokeAtlas,
   invokeCheaperInference,
   invokeAtmoRouter,
+  invokeRuncrate,
   invokeOrcaRouter,
   invokeCursor,
   PROVIDER_INVOKERS,
