@@ -125,6 +125,17 @@ const PROVIDERS = {
     ],
     defaultModel: 'cbcn/glm-5.3',
   },
+  runcrate: {
+    label: 'Runcrate (OpenAI-compatible)',
+    local: false,
+    creds: [
+      { key: 'RUNCRATE_API_KEY', label: 'Runcrate API key', secret: true },
+    ],
+    extras: [
+      { key: 'RUNCRATE_ENDPOINT', label: 'Chat Completions endpoint', default: 'https://api.runcrate.ai/v1/chat/completions' },
+    ],
+    defaultModel: 'deepseek-ai/DeepSeek-V4.1-Flash',
+  },
   openrouter: {
     label: 'OpenRouter (100+ models, one key)',
     local: false,
@@ -228,7 +239,7 @@ const PROVIDERS = {
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
-  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'cheaperinference', 'atmorouter', 'openrouter', 'edenai',
+  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'cheaperinference', 'atmorouter', 'runcrate', 'openrouter', 'edenai',
   'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu', 'fireworks', 'orcarouter',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
