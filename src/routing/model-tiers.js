@@ -352,6 +352,8 @@ class ModelTierSelector {
         return config.atmorouter?.model || null;
       case 'runcrate':
         return config.runcrate?.model || null;
+      case 'openscale':
+        return config.openscale?.model || null;
       case 'ollama':
         return config.ollama?.model || null;
       case 'openrouter':

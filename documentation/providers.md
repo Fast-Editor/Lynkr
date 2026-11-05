@@ -934,6 +934,42 @@ TIER_REASONING=runcrate:moonshotai/Kimi-K2.6
 
 ---
 
+### 8e. OpenScale (OpenAI-Compatible)
+
+**Best for:** Low-cost DeepSeek V4.1 Flash and GLM 5.3 Flash for agent workloads, through Lynkr's static or tier-based routing
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=openscale
+OPENSCALE_API_KEY=your-openscale-api-key
+OPENSCALE_MODEL=deepseek/deepseek-v4.1-flash
+OPENSCALE_ENDPOINT=https://api.openscale.so/v1/chat/completions
+```
+
+Create a key at [app.openscale.so/app/keys](https://app.openscale.so/app/keys). The endpoint is OpenAI-compatible, so Lynkr converts Anthropic messages and tools to Chat Completions requests and transforms streamed OpenAI SSE events back to Anthropic events.
+
+OpenScale can also be selected per tier:
+
+```env
+TIER_SIMPLE=openscale:deepseek/deepseek-v4.1-flash
+TIER_MEDIUM=openscale:deepseek/deepseek-v4.1-flash
+TIER_COMPLEX=openscale:z-ai/glm-5.3-flash
+TIER_REASONING=openscale:deepseek/deepseek-v4.1-flash
+```
+
+`OPENSCALE_MODEL` is the static-routing default. A model named in `TIER_*` takes precedence for that tier. The full model list, with context windows, limits and prices, is public at `GET https://api.openscale.so/v1/models`.
+
+#### Behavior
+
+- Supports non-streaming and streaming Chat Completions
+- Supports Anthropic-format tools through Lynkr's existing OpenAI conversion path
+- Relays model reasoning as `reasoning_content`
+- Uses Bearer authentication and accepts a custom `OPENSCALE_ENDPOINT`
+- Does not automatically replay billable Chat Completions POST requests
+
+---
+
 ### 9. LM Studio (Local with GUI)
 
 **Best for:** Local models with graphical interface

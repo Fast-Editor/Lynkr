@@ -9,7 +9,7 @@ const NATIVE_THINKING_BEDROCK_MODELS = [
   "claude-haiku",
 ];
 
-const REASONING_CONTENT_PROVIDERS = new Set(["moonshot", "openrouter", "edenai", "openai", "azure-openai", "atlas", "cheaperinference", "atmorouter", "runcrate", "orcarouter"]);
+const REASONING_CONTENT_PROVIDERS = new Set(["moonshot", "openrouter", "edenai", "openai", "azure-openai", "atlas", "cheaperinference", "atmorouter", "runcrate", "openscale", "orcarouter"]);
 
 function supportsNativeThinking(providerType, model) {
   if (NATIVE_THINKING_PROVIDERS.has(providerType)) return true;
