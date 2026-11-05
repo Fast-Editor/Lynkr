@@ -1932,6 +1932,72 @@ async function invokeRuncrate(body) {
   return response;
 }
 
+async function invokeOpenScale(body) {
+  if (!config.openscale?.apiKey) {
+    throw new Error("OpenScale API key is not configured.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.openscale.endpoint || "https://api.openscale.so/v1/chat/completions";
+  const headers = {
+    "Authorization": `Bearer ${config.openscale.apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+  if (body.system) {
+    messages.unshift({ role: "system", content: body.system });
+  }
+
+  const openScaleBody = {
+    model: body._suggestionModeModel || body._tierModel || config.openscale.model || "deepseek/deepseek-v4.1-flash",
+    messages,
+    temperature: body.temperature ?? 0.7,
+    max_tokens: body.max_tokens ?? 16384,
+    top_p: body.top_p ?? 1.0,
+    stream: body.stream ?? false,
+  };
+
+  const toolsToSend = Array.isArray(body.tools) ? body.tools : [];
+
+  if (toolsToSend.length > 0) {
+    openScaleBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
+    openScaleBody.parallel_tool_calls = false;
+    openScaleBody.tool_choice = forwardToolChoice(body);
+  }
+
+  logger.debug({
+    endpoint,
+    model: openScaleBody.model,
+    hasTools: !!openScaleBody.tools,
+    toolCount: openScaleBody.tools?.length || 0,
+    temperature: openScaleBody.temperature,
+    max_tokens: openScaleBody.max_tokens,
+  }, "=== OPENSCALE REQUEST ===");
+
+  // Chat completions are billable POSTs, so OpenScale requests are never
+  // replayed automatically (same policy as invokeAtmoRouter). A 429 is thrown
+  // so invokeModel's caller can escalate to a different provider/tier.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: openScaleBody,
+    maxRetriesOverride: 0,
+    retryableStatusesOverride: [],
+  }, "OpenScale");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`OpenScale rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  return response;
+}
+
 async function invokeLlamaCpp(body, _incomingHeaders = {}) {
   if (!config.llamacpp?.endpoint) {
     throw new Error("llama.cpp endpoint is not configured.");
@@ -3962,6 +4028,7 @@ const PROVIDER_INVOKERS = {
   cheaperinference: invokeCheaperInference,
   atmorouter: invokeAtmoRouter,
   runcrate: invokeRuncrate,
+  openscale: invokeOpenScale,
   llamacpp: invokeLlamaCpp,
   lmstudio: invokeLMStudio,
   bedrock: invokeBedrock,
@@ -4900,6 +4967,7 @@ module.exports = {
   invokeCheaperInference,
   invokeAtmoRouter,
   invokeRuncrate,
+  invokeOpenScale,
   invokeOrcaRouter,
   invokeCursor,
   PROVIDER_INVOKERS,

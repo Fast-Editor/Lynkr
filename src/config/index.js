@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "cheaperinference", "atmorouter", "runcrate", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "cheaperinference", "atmorouter", "runcrate", "openscale", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -134,6 +134,11 @@ const atmoRouterEndpoint = process.env.ATMOROUTER_ENDPOINT?.trim() || "https://a
 const runcrateApiKey = process.env.RUNCRATE_API_KEY?.trim() || null;
 const runcrateModel = process.env.RUNCRATE_MODEL?.trim() || "deepseek-ai/DeepSeek-V4.1-Flash";
 const runcrateEndpoint = process.env.RUNCRATE_ENDPOINT?.trim() || "https://api.runcrate.ai/v1/chat/completions";
+
+// OpenScale configuration (OpenAI-compatible Chat Completions)
+const openScaleApiKey = process.env.OPENSCALE_API_KEY?.trim() || null;
+const openScaleModel = process.env.OPENSCALE_MODEL?.trim() || "deepseek/deepseek-v4.1-flash";
+const openScaleEndpoint = process.env.OPENSCALE_ENDPOINT?.trim() || "https://api.openscale.so/v1/chat/completions";
 
 // llama.cpp configuration
 const llamacppEndpoint = process.env.LLAMACPP_ENDPOINT?.trim() || "http://localhost:8080";
@@ -379,6 +384,12 @@ if (modelProvider === "runcrate" && !runcrateApiKey) {
   );
 }
 
+if (modelProvider === "openscale" && !openScaleApiKey) {
+  throw new Error(
+    "Set OPENSCALE_API_KEY before starting the proxy.",
+  );
+}
+
 if (modelProvider === "orcarouter" && !orcaRouterApiKey) {
   throw new Error(
     "Set ORCAROUTER_API_KEY before starting the proxy.",
@@ -433,7 +444,7 @@ const tiersConfigured = !!(
 if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, cheaperinference, atmorouter, runcrate, bedrock, orcarouter`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, cheaperinference, atmorouter, runcrate, openscale, bedrock, orcarouter`);
   }
   let fallbackMisconfigured = false;
   if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
@@ -458,6 +469,9 @@ if (fallbackEnabled && tiersConfigured) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "runcrate" && !runcrateApiKey) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "openscale" && !openScaleApiKey) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "orcarouter" && !orcaRouterApiKey) {
@@ -728,6 +742,11 @@ var config = {
     apiKey: runcrateApiKey,
     model: runcrateModel,
     endpoint: runcrateEndpoint,
+  },
+  openscale: {
+    apiKey: openScaleApiKey,
+    model: openScaleModel,
+    endpoint: openScaleEndpoint,
   },
   llamacpp: {
     endpoint: llamacppEndpoint,
@@ -1247,6 +1266,9 @@ function reloadConfig() {
   config.runcrate.apiKey = process.env.RUNCRATE_API_KEY?.trim() || null;
   config.runcrate.model = process.env.RUNCRATE_MODEL?.trim() || "deepseek-ai/DeepSeek-V4.1-Flash";
   config.runcrate.endpoint = process.env.RUNCRATE_ENDPOINT?.trim() || "https://api.runcrate.ai/v1/chat/completions";
+  config.openscale.apiKey = process.env.OPENSCALE_API_KEY?.trim() || null;
+  config.openscale.model = process.env.OPENSCALE_MODEL?.trim() || "deepseek/deepseek-v4.1-flash";
+  config.openscale.endpoint = process.env.OPENSCALE_ENDPOINT?.trim() || "https://api.openscale.so/v1/chat/completions";
   config.bedrock.apiKey = process.env.AWS_BEDROCK_API_KEY?.trim() || null;
   config.zai.apiKey = process.env.ZAI_API_KEY?.trim() || null;
   config.zai.model = process.env.ZAI_MODEL?.trim() || "GLM-4.7";

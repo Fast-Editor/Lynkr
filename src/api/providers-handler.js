@@ -160,6 +160,19 @@ async function getConfiguredProviders() {
     });
   }
 
+  // Check OpenScale (OpenAI-compatible Chat Completions)
+  if (config.openscale?.apiKey) {
+    providers.push({
+      name: "openscale",
+      type: "openscale",
+      baseUrl: config.openscale.endpoint || "https://api.openscale.so/v1/chat/completions",
+      enabled: true,
+      models: [
+        { id: config.openscale.model || "deepseek/deepseek-v4.1-flash", name: "Configured Model" },
+      ]
+    });
+  }
+
   // Check OpenRouter
   if (config.openrouter?.apiKey) {
     providers.push({

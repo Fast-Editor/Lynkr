@@ -96,6 +96,7 @@ function _enabledProviders() {
   if (config.cheaperinference?.apiKey) out.push('cheaperinference');
   if (config.atmorouter?.apiKey) out.push('atmorouter');
   if (config.runcrate?.apiKey) out.push('runcrate');
+  if (config.openscale?.apiKey) out.push('openscale');
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) out.push('azure-openai');
   if (config.orcarouter?.apiKey) out.push('orcarouter');
   if (config.ollama?.endpoint) out.push('ollama');
@@ -144,6 +145,7 @@ function getBestCloudProvider() {
   if (config.cheaperinference?.apiKey) return 'cheaperinference';
   if (config.atmorouter?.apiKey) return 'atmorouter';
   if (config.runcrate?.apiKey) return 'runcrate';
+  if (config.openscale?.apiKey) return 'openscale';
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) return 'azure-openai';
   if (config.orcarouter?.apiKey) return 'orcarouter';
 

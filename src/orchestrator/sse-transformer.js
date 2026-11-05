@@ -43,6 +43,7 @@ const DEFAULT_OPENAI_SSE_PROVIDERS = [
   "cheaperinference",
   "atmorouter",
   "runcrate",
+  "openscale",
   "azure-openai",
   "openrouter",
   "databricks",
