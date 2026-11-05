@@ -29,6 +29,11 @@ function createApp() {
   const path = require('path');
   const fs   = require('fs');
 
+  // Optional API key (LYNKR_API_KEY) — mounted first so it also covers the dashboard JSON API and
+  // /metrics* registered below. Reads config.apiKey through a getter so a hot-reloaded .env applies.
+  const { createApiKeyAuth } = require('./middleware/api-key-auth');
+  app.use(createApiKeyAuth(() => config.apiKey));
+
   // Dashboard — registered first so it is never shadowed by the main router
   const DASHBOARD_HTML = path.resolve(__dirname, '../public/dashboard.html');
   app.get('/dashboard', (_req, res) => {
@@ -233,12 +238,15 @@ async function start() {
     }
   }
 
-  const server = app.listen(config.port, (err) => {
+  const bindHost = config.bindHost || "0.0.0.0";
+  const server = app.listen(config.port, bindHost, (err) => {
     // Express 5 invokes this callback on bind errors too (it wires the
     // callback to the server 'error' event) — without the guard, a failed
     // bind prints "listening" right before the EADDRINUSE failure.
     if (err) return;
-    console.log(`Claude→Databricks proxy listening on http://localhost:${config.port}`);
+    const shown = bindHost === "0.0.0.0" || bindHost === "::" ? "localhost" : bindHost;
+    console.log(`Claude→Databricks proxy listening on http://${shown}:${config.port} (bound to ${bindHost}${config.apiKey ? ", API key required" : ""})`);
+    logger.info({ port: config.port, bindHost, apiKeyRequired: Boolean(config.apiKey) }, "HTTP server bound");
   });
 
   // Surface bind failures to the caller. Without this, EADDRINUSE from a

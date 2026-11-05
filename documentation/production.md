@@ -15,6 +15,33 @@ Lynkr includes 16 production-ready features:
 
 ---
 
+## Security: binding and API key
+
+By default Lynkr listens on **all interfaces** and accepts **unauthenticated** requests — fine behind a
+firewall or inside Docker, not fine on a laptop or when an editor embeds Lynkr as a sidecar. Two settings
+close that gap:
+
+```bash
+# Bind to loopback only (restart required)
+LYNKR_BIND_HOST=127.0.0.1
+
+# Require a shared secret on the API (hot-reloads with .env)
+LYNKR_API_KEY=$(openssl rand -hex 32)
+```
+
+With `LYNKR_API_KEY` set, every request under `/v1/*`, `/routing/*`, `/metrics*` and `/dashboard/api/*`
+must carry the key as `x-api-key: <key>`, `api-key: <key>` or `Authorization: Bearer <key>`; otherwise
+Lynkr answers `401` (`authentication_error` in the Anthropic error shape, `invalid_api_key` on the OpenAI
+endpoints). `/health`, `/health/live` and `/health/ready` stay open for probes. Comparison is
+constant-time. A client that also carries an *upstream* OAuth bearer for subscription passthrough can keep
+it and put the Lynkr key in `x-api-key`. The dashboard HTML still loads, but its data calls need the key
+(use a browser extension that adds the header, or leave the key unset on trusted networks).
+
+Clients: `lynkr wrap` / `claude` → `ANTHROPIC_API_KEY=<key>` or `ANTHROPIC_AUTH_TOKEN`; OpenCode/Codex/Cursor →
+the provider's `apiKey`; curl → `-H "x-api-key: $LYNKR_API_KEY"`.
+
+---
+
 ## Reliability Features
 
 ### 1. Circuit Breaker Pattern
