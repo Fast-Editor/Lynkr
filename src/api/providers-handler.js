@@ -173,6 +173,19 @@ async function getConfiguredProviders() {
     });
   }
 
+  // Check Standard Compute (OpenAI-compatible Chat Completions)
+  if (config.standardcompute?.apiKey) {
+    providers.push({
+      name: "standardcompute",
+      type: "standardcompute",
+      baseUrl: config.standardcompute.endpoint || "https://api.stdcmpt.com/v1/chat/completions",
+      enabled: true,
+      models: [
+        { id: config.standardcompute.model || "StandardCompute", name: "Configured Model" },
+      ]
+    });
+  }
+
   // Check OpenRouter
   if (config.openrouter?.apiKey) {
     providers.push({
