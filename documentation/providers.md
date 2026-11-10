@@ -970,6 +970,42 @@ TIER_REASONING=openscale:deepseek/deepseek-v4.1-flash
 
 ---
 
+### 8f. UberLLM (OpenAI-Compatible)
+
+**Best for:** One key for Claude, GPT, Gemini, DeepSeek, GLM, Kimi and Qwen models, so each Lynkr tier can use a different vendor without a second account
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=uberllm
+UBERLLM_API_KEY=your-uberllm-api-key
+UBERLLM_MODEL=deepseek/deepseek-v4.1-flash
+UBERLLM_ENDPOINT=https://api.uberllm.dev/v1/chat/completions
+```
+
+Create a key at [uberllm.dev/signup](https://uberllm.dev/signup). The endpoint is OpenAI-compatible, so Lynkr converts Anthropic messages and tools to Chat Completions requests and transforms streamed OpenAI SSE events back to Anthropic events.
+
+UberLLM can also be selected per tier:
+
+```env
+TIER_SIMPLE=uberllm:deepseek/deepseek-v4.1-flash
+TIER_MEDIUM=uberllm:z-ai/glm-5.3-flash
+TIER_COMPLEX=uberllm:z-ai/glm-5.3
+TIER_REASONING=uberllm:anthropic/claude-sonnet-4.6
+```
+
+`UBERLLM_MODEL` is the static-routing default. A model named in `TIER_*` takes precedence for that tier. Model IDs carry the vendor prefix (`anthropic/`, `openai/`, `google/`, `deepseek/`, `z-ai/`, `moonshotai/`, `qwen/`); the full list is public at `GET https://api.uberllm.dev/v1/models` and per-model prices are at [uberllm.dev/models](https://uberllm.dev/models).
+
+#### Behavior
+
+- Supports non-streaming and streaming Chat Completions
+- Supports Anthropic-format tools through Lynkr's existing OpenAI conversion path
+- Relays model reasoning as `reasoning_content`
+- Uses Bearer authentication and accepts a custom `UBERLLM_ENDPOINT`
+- Does not automatically replay billable Chat Completions POST requests
+
+---
+
 ### 9. LM Studio (Local with GUI)
 
 **Best for:** Local models with graphical interface
