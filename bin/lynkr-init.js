@@ -147,6 +147,17 @@ const PROVIDERS = {
     ],
     defaultModel: 'deepseek/deepseek-v4.1-flash',
   },
+  uberllm: {
+    label: 'UberLLM (OpenAI-compatible)',
+    local: false,
+    creds: [
+      { key: 'UBERLLM_API_KEY', label: 'UberLLM API key', secret: true },
+    ],
+    extras: [
+      { key: 'UBERLLM_ENDPOINT', label: 'Chat Completions endpoint', default: 'https://api.uberllm.dev/v1/chat/completions' },
+    ],
+    defaultModel: 'deepseek/deepseek-v4.1-flash',
+  },
   openrouter: {
     label: 'OpenRouter (100+ models, one key)',
     local: false,
@@ -250,7 +261,7 @@ const PROVIDERS = {
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
-  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'cheaperinference', 'atmorouter', 'runcrate', 'openscale', 'openrouter', 'edenai',
+  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'cheaperinference', 'atmorouter', 'runcrate', 'openscale', 'uberllm', 'openrouter', 'edenai',
   'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu', 'fireworks', 'orcarouter',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];

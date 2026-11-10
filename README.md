@@ -224,6 +224,7 @@ Claude Code / Cursor / Codex / Cline / Continue
 | **AtmoRouter** | Cloud | Claude, GPT, Gemini, GLM, Kimi, Qwen, DeepSeek, and other OpenAI-compatible models | $-$$ |
 | **Runcrate** | Cloud | DeepSeek, GLM, Kimi, Qwen, gpt-oss, and other open-weight models | $-$$ |
 | **OpenScale** | Cloud | DeepSeek V4.1 Flash, GLM 5.3 Flash | $ |
+| **UberLLM** | Cloud | Claude, GPT, Gemini, DeepSeek, GLM, Kimi, Qwen, and other OpenAI-compatible models | $-$$$ |
 | **DeepSeek** | Cloud | DeepSeek R1, Reasoner | $ |
 | **Z.ai** | Cloud | GLM-4.7, GLM-4.5-Air | $ |
 | **Moonshot AI** | Cloud | Kimi K2.6, Kimi K3 | $ |

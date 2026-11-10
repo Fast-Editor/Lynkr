@@ -173,6 +173,19 @@ async function getConfiguredProviders() {
     });
   }
 
+  // Check UberLLM (OpenAI-compatible Chat Completions)
+  if (config.uberllm?.apiKey) {
+    providers.push({
+      name: "uberllm",
+      type: "uberllm",
+      baseUrl: config.uberllm.endpoint || "https://api.uberllm.dev/v1/chat/completions",
+      enabled: true,
+      models: [
+        { id: config.uberllm.model || "deepseek/deepseek-v4.1-flash", name: "Configured Model" },
+      ]
+    });
+  }
+
   // Check OpenRouter
   if (config.openrouter?.apiKey) {
     providers.push({
