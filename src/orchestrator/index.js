@@ -259,6 +259,7 @@ function ensureAnthropicToolFormat(tools) {
         name: tool.function.name,
         description: tool.function.description,
         input_schema: tool.function.parameters,
+        ...(typeof tool.function.strict === "boolean" ? { strict: tool.function.strict } : {}),
       };
     }
     // Ensure input_schema has required 'type' field
@@ -272,6 +273,7 @@ function ensureAnthropicToolFormat(tools) {
       name: tool.name || "unnamed_tool",
       description: tool.description || tool.name || "No description provided",
       input_schema,
+      ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {}),
     };
   });
 }
@@ -3338,6 +3340,8 @@ function toolResultCompressionAllowed(payload) {
 
 module.exports = {
   processMessage,
+  // Exported for unit testing of tool-format normalisation.
+  ensureAnthropicToolFormat,
   // Exported for unit testing of the client-profile gate on tool-result compression.
   toolResultCompressionAllowed,
   // Exported for unit testing of sanitizePayload tool handling.

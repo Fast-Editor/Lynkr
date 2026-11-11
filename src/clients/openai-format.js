@@ -198,15 +198,20 @@ function convertOpenAIToAnthropic(openaiRequest) {
   if (tools && tools.length > 0) {
     anthropicTools = tools
       .filter(tool => tool && tool.function && tool.function.name) // Filter out invalid tools
-      .map(tool => ({
-        name: tool.function.name,
-        description: tool.function.description || "",
-        input_schema: tool.function.parameters || {
-          type: "object",
-          properties: {},
-          required: []
-        }
-      }));
+      .map(tool => {
+        const converted = {
+          name: tool.function.name,
+          description: tool.function.description || "",
+          input_schema: tool.function.parameters || {
+            type: "object",
+            properties: {},
+            required: []
+          }
+        };
+        // Keep the strict-schema flag so it survives the round trip.
+        if (typeof tool.function.strict === "boolean") converted.strict = tool.function.strict;
+        return converted;
+      });
   }
 
   // Build Anthropic request
