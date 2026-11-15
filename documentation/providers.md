@@ -970,6 +970,42 @@ TIER_REASONING=openscale:deepseek/deepseek-v4.1-flash
 
 ---
 
+### 8f. Standard Compute (OpenAI-Compatible)
+
+**Best for:** One key for a routed model plus pinned open and frontier models, through Lynkr's static or tier-based routing
+
+#### Configuration
+
+```env
+MODEL_PROVIDER=standardcompute
+STANDARDCOMPUTE_API_KEY=your-standardcompute-api-key
+STANDARDCOMPUTE_MODEL=StandardCompute
+STANDARDCOMPUTE_ENDPOINT=https://api.stdcmpt.com/v1/chat/completions
+```
+
+Create a key at [standardcompute.com](https://standardcompute.com). The endpoint is OpenAI-compatible, so Lynkr converts Anthropic messages and tools to Chat Completions requests and transforms streamed OpenAI SSE events back to Anthropic events.
+
+The default model `StandardCompute` is routed: each request goes to the cheapest enabled model that can handle it, with automatic fallback. To pin a model, set its id instead. Standard Compute can also be selected per tier:
+
+```env
+TIER_SIMPLE=standardcompute:StandardCompute
+TIER_MEDIUM=standardcompute:deepseek/deepseek-v4.1-flash
+TIER_COMPLEX=standardcompute:z-ai/glm-5.3
+TIER_REASONING=standardcompute:moonshotai/kimi-k3
+```
+
+`STANDARDCOMPUTE_MODEL` is the static-routing default. A model named in `TIER_*` takes precedence for that tier. The full model list is public at `GET https://api.stdcmpt.com/v1/models`.
+
+#### Behavior
+
+- Supports non-streaming and streaming Chat Completions
+- Supports Anthropic-format tools through Lynkr's existing OpenAI conversion path
+- Relays model reasoning as `reasoning_content`
+- Uses Bearer authentication and accepts a custom `STANDARDCOMPUTE_ENDPOINT`
+- Does not automatically replay billable Chat Completions POST requests
+
+---
+
 ### 9. LM Studio (Local with GUI)
 
 **Best for:** Local models with graphical interface

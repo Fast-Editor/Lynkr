@@ -1998,6 +1998,72 @@ async function invokeOpenScale(body) {
   return response;
 }
 
+async function invokeStandardCompute(body) {
+  if (!config.standardcompute?.apiKey) {
+    throw new Error("Standard Compute API key is not configured.");
+  }
+
+  const {
+    convertAnthropicToolsToOpenRouter,
+    convertAnthropicMessagesToOpenRouter
+  } = require("./openrouter-utils");
+
+  const endpoint = config.standardcompute.endpoint || "https://api.stdcmpt.com/v1/chat/completions";
+  const headers = {
+    "Authorization": `Bearer ${config.standardcompute.apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  const messages = convertAnthropicMessagesToOpenRouter(body.messages || []);
+  if (body.system) {
+    messages.unshift({ role: "system", content: body.system });
+  }
+
+  const standardComputeBody = {
+    model: body._suggestionModeModel || body._tierModel || config.standardcompute.model || "StandardCompute",
+    messages,
+    temperature: body.temperature ?? 0.7,
+    max_tokens: body.max_tokens ?? 16384,
+    top_p: body.top_p ?? 1.0,
+    stream: body.stream ?? false,
+  };
+
+  const toolsToSend = Array.isArray(body.tools) ? body.tools : [];
+
+  if (toolsToSend.length > 0) {
+    standardComputeBody.tools = convertAnthropicToolsToOpenRouter(toolsToSend);
+    standardComputeBody.parallel_tool_calls = false;
+    standardComputeBody.tool_choice = forwardToolChoice(body);
+  }
+
+  logger.debug({
+    endpoint,
+    model: standardComputeBody.model,
+    hasTools: !!standardComputeBody.tools,
+    toolCount: standardComputeBody.tools?.length || 0,
+    temperature: standardComputeBody.temperature,
+    max_tokens: standardComputeBody.max_tokens,
+  }, "=== STANDARDCOMPUTE REQUEST ===");
+
+  // Chat completions are billable POSTs, so Standard Compute requests are never
+  // replayed automatically (same policy as invokeAtmoRouter). A 429 is thrown
+  // so invokeModel's caller can escalate to a different provider/tier.
+  const response = await performJsonRequest(endpoint, {
+    headers,
+    body: standardComputeBody,
+    maxRetriesOverride: 0,
+    retryableStatusesOverride: [],
+  }, "Standard Compute");
+
+  if (!response.ok && response.status === 429) {
+    const err = new Error(`Standard Compute rate-limited: ${String(response.json?.error?.message || '').slice(0, 120)}`);
+    err.status = 429;
+    throw err;
+  }
+
+  return response;
+}
+
 async function invokeLlamaCpp(body, _incomingHeaders = {}) {
   if (!config.llamacpp?.endpoint) {
     throw new Error("llama.cpp endpoint is not configured.");
@@ -4029,6 +4095,7 @@ const PROVIDER_INVOKERS = {
   atmorouter: invokeAtmoRouter,
   runcrate: invokeRuncrate,
   openscale: invokeOpenScale,
+  standardcompute: invokeStandardCompute,
   llamacpp: invokeLlamaCpp,
   lmstudio: invokeLMStudio,
   bedrock: invokeBedrock,
@@ -4968,6 +5035,7 @@ module.exports = {
   invokeAtmoRouter,
   invokeRuncrate,
   invokeOpenScale,
+  invokeStandardCompute,
   invokeOrcaRouter,
   invokeCursor,
   PROVIDER_INVOKERS,

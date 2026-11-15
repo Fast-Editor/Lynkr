@@ -354,6 +354,8 @@ class ModelTierSelector {
         return config.runcrate?.model || null;
       case 'openscale':
         return config.openscale?.model || null;
+      case 'standardcompute':
+        return config.standardcompute?.model || null;
       case 'ollama':
         return config.ollama?.model || null;
       case 'openrouter':

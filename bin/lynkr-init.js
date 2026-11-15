@@ -147,6 +147,17 @@ const PROVIDERS = {
     ],
     defaultModel: 'deepseek/deepseek-v4.1-flash',
   },
+  standardcompute: {
+    label: 'Standard Compute (OpenAI-compatible)',
+    local: false,
+    creds: [
+      { key: 'STANDARDCOMPUTE_API_KEY', label: 'Standard Compute API key', secret: true },
+    ],
+    extras: [
+      { key: 'STANDARDCOMPUTE_ENDPOINT', label: 'Chat Completions endpoint', default: 'https://api.stdcmpt.com/v1/chat/completions' },
+    ],
+    defaultModel: 'StandardCompute',
+  },
   openrouter: {
     label: 'OpenRouter (100+ models, one key)',
     local: false,
@@ -250,7 +261,7 @@ const PROVIDERS = {
 
 const PROVIDER_ORDER = [
   'ollama', 'llamacpp', 'lmstudio',
-  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'cheaperinference', 'atmorouter', 'runcrate', 'openscale', 'openrouter', 'edenai',
+  'azure-anthropic', 'azure-openai', 'openai', 'atlas', 'cheaperinference', 'atmorouter', 'runcrate', 'openscale', 'standardcompute', 'openrouter', 'edenai',
   'databricks', 'bedrock', 'vertex', 'zai', 'moonshot', 'baidu', 'fireworks', 'orcarouter',
 ];
 const TIERS = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING'];
