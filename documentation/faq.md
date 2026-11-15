@@ -166,6 +166,16 @@ export FALLBACK_PROVIDER=databricks
 
 ---
 
+### How do I switch models, or see which model answered?
+
+- **Switch:** set your client's model to `lynkr-simple`, `lynkr-medium`, `lynkr-complex` or `lynkr-reasoning` to pin that tier, or `lynkr-auto` for automatic routing (e.g. `claude --model lynkr-reasoning`, or `model = "lynkr-simple"` in Codex's `config.toml`).
+- **See:** add `lynkr-statusline` to Claude Code, set `LYNKR_VISIBLE_ROUTING=true` for a badge in every reply, or read the `X-Lynkr-Tier` / `X-Lynkr-Model` / `X-Lynkr-Provider` headers on `/v1/messages` responses.
+- **Per CLI:** give each client a different `lynkr-*` id and point those tiers at the models you want.
+
+See [Switching Models](model-switching.md) for details.
+
+---
+
 ### What is MODEL_PROVIDER and do I still need it?
 
 `MODEL_PROVIDER` sets a single static provider for all requests. When you set `MODEL_PROVIDER=ollama`, every request goes to Ollama regardless of complexity.

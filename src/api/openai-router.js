@@ -629,33 +629,34 @@ router.post("/chat/completions", async (req, res) => {
     }
     if (clientProfile) anthropicRequest._clientProfile = clientProfile;
 
-    // Explicit model/effort pin: Codex's model picker (or any OpenAI-format
-    // caller) can name a real OpenAI model + reasoning.effort combo that
-    // resolveTierForOpenAIModel recognizes. Mirrors router.js's model-id-pin
+    // Explicit tier pin: a Lynkr virtual tier id (`lynkr-simple` …
+    // `lynkr-reasoning`) in `model`, or a real OpenAI model + reasoning.effort
+    // combo from Codex's model picker. Mirrors router.js's model-id-pin
     // block for the Anthropic /v1/messages route — this one is needed
     // separately because these OpenAI-shaped handlers call
     // orchestrator.processMessage() directly and never go through router.js's
     // pin/classifier code at all. See ../routing/openai-model-slots.js.
     try {
-      const { resolveTierForOpenAIModel } = require("../routing/openai-model-slots");
+      const { resolveOpenAIRequestPin } = require("../routing/openai-model-slots");
       const _effort = req.body?.reasoning?.effort ?? req.body?.reasoning_effort ?? null;
-      const _pinTier = resolveTierForOpenAIModel(req.body?.model, _effort);
-      if (_pinTier) {
+      const _pin = resolveOpenAIRequestPin(req.body?.model, _effort);
+      if (_pin) {
         const { getModelTierSelector } = require("../routing");
-        const _sel = getModelTierSelector().selectModel(_pinTier, null);
+        const _sel = getModelTierSelector().selectModel(_pin.tier, null);
         anthropicRequest._forceProvider = _sel.provider;
         if (_sel.model) anthropicRequest._tierModel = _sel.model;
-        anthropicRequest._tierName = _pinTier;
-        anthropicRequest._forcedMethod = "openai_model_effort_pin";
+        anthropicRequest._tierName = _pin.tier;
+        anthropicRequest._forcedMethod = _pin.method;
         logger.debug({
           model: req.body?.model,
           effort: _effort,
-          tier: _pinTier,
+          tier: _pin.tier,
+          method: _pin.method,
           provider: _sel.provider,
-        }, "[OpenAI Router] Explicit model/effort pin — scoring bypassed");
+        }, "[OpenAI Router] Explicit tier pin — scoring bypassed");
       }
     } catch (err) {
-      logger.debug({ err: err.message }, "[OpenAI Router] model/effort pin failed");
+      logger.debug({ err: err.message }, "[OpenAI Router] tier pin failed");
     }
 
     const session = getSession(sessionId);
@@ -1968,30 +1969,31 @@ router.post("/responses", async (req, res) => {
     }
     if (clientProfile) anthropicRequest._clientProfile = clientProfile;
 
-    // Explicit model/effort pin — see the identical block in /chat/completions
-    // above for the full rationale. This is the route Codex Desktop actually
-    // uses (wire_api="responses"), so this is the one that matters for its
-    // model picker specifically.
+    // Explicit tier pin — see the identical block in /chat/completions above
+    // for the full rationale. This is the route Codex (CLI and Desktop)
+    // actually uses (wire_api="responses"), so this is the one that matters
+    // for its model picker and `model = "lynkr-…"` config specifically.
     try {
-      const { resolveTierForOpenAIModel } = require("../routing/openai-model-slots");
+      const { resolveOpenAIRequestPin } = require("../routing/openai-model-slots");
       const _effort = req.body?.reasoning?.effort ?? req.body?.reasoning_effort ?? null;
-      const _pinTier = resolveTierForOpenAIModel(req.body?.model, _effort);
-      if (_pinTier) {
+      const _pin = resolveOpenAIRequestPin(req.body?.model, _effort);
+      if (_pin) {
         const { getModelTierSelector } = require("../routing");
-        const _sel = getModelTierSelector().selectModel(_pinTier, null);
+        const _sel = getModelTierSelector().selectModel(_pin.tier, null);
         anthropicRequest._forceProvider = _sel.provider;
         if (_sel.model) anthropicRequest._tierModel = _sel.model;
-        anthropicRequest._tierName = _pinTier;
-        anthropicRequest._forcedMethod = "openai_model_effort_pin";
+        anthropicRequest._tierName = _pin.tier;
+        anthropicRequest._forcedMethod = _pin.method;
         logger.debug({
           model: req.body?.model,
           effort: _effort,
-          tier: _pinTier,
+          tier: _pin.tier,
+          method: _pin.method,
           provider: _sel.provider,
-        }, "[OpenAI Router] Explicit model/effort pin (responses) — scoring bypassed");
+        }, "[OpenAI Router] Explicit tier pin (responses) — scoring bypassed");
       }
     } catch (err) {
-      logger.debug({ err: err.message }, "[OpenAI Router] model/effort pin failed (responses)");
+      logger.debug({ err: err.message }, "[OpenAI Router] tier pin failed (responses)");
     }
 
     const session = getSession(sessionId);

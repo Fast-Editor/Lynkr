@@ -21,6 +21,7 @@ Connect Lynkr to your development tools:
 - **[Claude Code CLI Setup](claude-code-cli.md)** - Configure Claude Code CLI to use Lynkr
 - **[Claude Desktop Setup](claude-desktop.md)** - Route the Claude Desktop app through Lynkr (macOS gateway profile, model picker as tier selector)
 - **[Tier Pinning](tier-pinning.md)** - Use any desktop client's model picker as a routing tier selector (the generalized technique behind the Claude Desktop and Codex integrations)
+- **[Switching Models](model-switching.md)** - Pick a tier from any client with the `lynkr-*` model ids, see which model served each request (status line, badge, headers, dashboard), and give each CLI its own model
 - **[opencode Integration](opencode.md)** - Per-tier context windows via `lynkr run opencode` (picker doubles as tier pin; compaction always matches the serving model)
 - **[OpenMausBot Integration](openmausbot.md)** - Run OpenMausBot bots through Lynkr's OpenAI-compatible endpoint (engine config, client profile, no tool injection)
 - **[Context Window Header](context-window-header.md)** - `X-Lynkr-Context-Window`: the served model's real context window on every response, so clients can compact against the model actually serving them
