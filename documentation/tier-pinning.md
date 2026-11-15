@@ -28,7 +28,7 @@ Unrecognized ids/values always resolve to *no pin* (fall through to normal
 routing) — the resolver never guesses (see `documentation/claude-desktop.md`
 for the incident-shaped reasoning behind exact-match-only resolution).
 
-## Two client shapes, two mechanisms
+## Client shapes and their mechanisms
 
 ### 1. Gateway-advertised ids (Claude Desktop) — `src/routing/model-slots.js`
 
@@ -52,6 +52,30 @@ shown in the UI as effort labels like "Light"). Lynkr pins on the
 `src/api/openai-router.js` on both `/v1/chat/completions` and
 `/v1/responses`.
 
+### 3. Lynkr's own tier ids (any client) — `src/routing/model-slots.js`
+
+For clients whose model id you set yourself (a CLI flag, a config file, a
+custom-model entry in a picker), Lynkr accepts five virtual ids on **every**
+ingress — Anthropic `/v1/messages` and OpenAI `/v1/chat/completions` +
+`/v1/responses`:
+
+| `model` | Tier |
+|---|---|
+| `lynkr-auto` | none — full content-based routing |
+| `lynkr-simple` | `SIMPLE` |
+| `lynkr-medium` | `MEDIUM` |
+| `lynkr-complex` | `COMPLEX` |
+| `lynkr-reasoning` | `REASONING` |
+
+Matching is case-insensitive. On the OpenAI routes a virtual id outranks the
+Codex `(model, effort)` mapping above: Codex attaches a `reasoning.effort`
+to every request, so `lynkr-simple` + effort `high` pins SIMPLE, and
+`lynkr-auto` keeps content routing instead of letting the effort pin every
+turn. Resolution for the OpenAI routes lives in
+`resolveOpenAIRequestPin()` (`src/routing/openai-model-slots.js`). For
+per-client setups built on these ids see
+[model-switching.md](model-switching.md).
+
 ## Generalizing to a new client
 
 The pattern reduces to three questions:
@@ -69,9 +93,9 @@ The pattern reduces to three questions:
    content scoring. A picker pin is advisory-input-turned-explicit — an
    unmapped value must degrade to the default, never to a wrong pin.
 
-Both resolvers return `null` for anything unrecognized, and both feed the
-same downstream pin mechanism (`_forceProvider`), so a new client mapping is
-one small module + one resolver call at its ingress point.
+Every resolver returns `null` for anything unrecognized, and all of them
+feed the same downstream pin mechanism (`_forceProvider`), so a new client
+mapping is one small module + one resolver call at its ingress point.
 
 ## Scope and caveats
 

@@ -40,8 +40,18 @@
  *     handlers never go through — they call orchestrator.processMessage()
  *     directly).
  *
+ * Lynkr's own virtual tier ids (`lynkr-auto`, `lynkr-simple` …
+ * `lynkr-reasoning`, see ./model-slots.js VIRTUAL_TIER_IDS) are resolved
+ * here too, by resolveOpenAIRequestPin(), so an OpenAI-format client (Codex
+ * CLI, Cline, Continue, Kilo, …) can pin a tier by model id exactly like an
+ * Anthropic-format one. They take precedence over the (model, effort)
+ * mapping: naming a Lynkr tier is the most explicit pick a client can make,
+ * and Codex attaches a `reasoning.effort` to every request regardless.
+ *
  * @module routing/openai-model-slots
  */
+
+const { VIRTUAL_TIER_IDS } = require("./model-slots");
 
 // OpenAI's publicly documented naming convention for distilled/cheap model
 // variants — NOT confirmed present in this app's specific dropdown (its
@@ -79,4 +89,35 @@ function resolveTierForOpenAIModel(model, effort) {
   return null;
 }
 
-module.exports = { EFFORT_TIER, SMALL_MODEL_PATTERN, resolveTierForOpenAIModel };
+/**
+ * Resolve the tier pin an OpenAI-format request carries, and how it was
+ * picked. This is what the /chat/completions and /responses handlers call.
+ *
+ * Precedence:
+ *   1. A Lynkr virtual tier id in `model` — `lynkr-simple` … `lynkr-reasoning`
+ *      pin their tier (method `model_id_pin`, the same label router.js uses
+ *      for the Anthropic route). `lynkr-auto` is an explicit request for
+ *      content-based routing, so it returns null WITHOUT consulting the
+ *      effort mapping — otherwise the effort Codex sends on every request
+ *      would silently pin every "auto" turn.
+ *   2. The (model, effort) mapping of resolveTierForOpenAIModel() (method
+ *      `openai_model_effort_pin`).
+ *
+ * @param {string|null|undefined} model - body.model
+ * @param {string|null|undefined} effort - body.reasoning.effort / reasoning_effort
+ * @returns {{tier: string, method: string}|null} null when nothing pins —
+ *   caller should fall through to normal content scoring.
+ */
+function resolveOpenAIRequestPin(model, effort) {
+  if (typeof model === "string") {
+    const normalized = model.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(VIRTUAL_TIER_IDS, normalized)) {
+      const tier = VIRTUAL_TIER_IDS[normalized];
+      return tier ? { tier, method: "model_id_pin" } : null;
+    }
+  }
+  const tier = resolveTierForOpenAIModel(model, effort);
+  return tier ? { tier, method: "openai_model_effort_pin" } : null;
+}
+
+module.exports = { EFFORT_TIER, SMALL_MODEL_PATTERN, resolveTierForOpenAIModel, resolveOpenAIRequestPin };

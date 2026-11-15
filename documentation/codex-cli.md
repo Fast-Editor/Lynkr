@@ -152,6 +152,33 @@ enabled = true
 
 ---
 
+## Pinning a Routing Tier
+
+With tier routing enabled (all four `TIER_*` set), the `model` Codex sends
+can pin a tier instead of leaving the choice to content scoring:
+
+```toml
+# ~/.codex/config.toml
+model = "lynkr-reasoning"   # or lynkr-simple / lynkr-medium / lynkr-complex
+```
+
+Or per run: `codex -m lynkr-simple`.
+
+| `model` | Served by |
+|---|---|
+| `lynkr-auto` | Content-based tier routing (no pin) |
+| `lynkr-simple` | `TIER_SIMPLE` |
+| `lynkr-medium` | `TIER_MEDIUM` |
+| `lynkr-complex` | `TIER_COMPLEX` |
+| `lynkr-reasoning` | `TIER_REASONING` |
+
+A `lynkr-*` id wins over the `model_reasoning_effort` Codex sends with each
+request, and `lynkr-auto` turns off the effort-based pin entirely. Any other
+model id keeps the `(model, effort)` mapping described in
+[tier-pinning.md](tier-pinning.md). Both wire APIs behave the same.
+
+---
+
 ## Wire API Formats
 
 Codex supports two API formats:
