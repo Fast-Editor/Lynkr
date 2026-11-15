@@ -32,18 +32,18 @@ function convertAnthropicToolsToOpenRouter(anthropicTools) {
     // provider before routing picked this one, and re-wrapping strips the
     // name ({type:"function", function:{name:undefined}}).
     if (tool?.type === "function" && tool.function) return tool;
-    return {
-      type: "function",
-      function: {
-        name: tool.name,
-        description: tool.description || "",
-        parameters: tool.input_schema || {
-          type: "object",
-          properties: {},
-          required: []
-        }
+    const fn = {
+      name: tool.name,
+      description: tool.description || "",
+      parameters: tool.input_schema || {
+        type: "object",
+        properties: {},
+        required: []
       }
     };
+    // Keep the strict-schema flag so the upstream enforces the schema.
+    if (typeof tool.strict === "boolean") fn.strict = tool.strict;
+    return { type: "function", function: fn };
   });
 }
 
