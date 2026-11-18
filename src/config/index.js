@@ -62,7 +62,7 @@ function resolveConfigPath(targetPath) {
   return path.resolve(normalised);
 }
 
-const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "cheaperinference", "atmorouter", "runcrate", "openscale", "standardcompute", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
+const SUPPORTED_MODEL_PROVIDERS = new Set(["databricks", "azure-anthropic", "ollama", "openrouter", "edenai", "azure-openai", "openai", "atlas", "cheaperinference", "atmorouter", "runcrate", "openscale", "uberllm", "standardcompute", "llamacpp", "lmstudio", "bedrock", "zai", "vertex", "moonshot", "baidu", "fireworks", "orcarouter"]);
 const rawModelProvider = (process.env.MODEL_PROVIDER ?? "databricks").toLowerCase();
 
 // Validate MODEL_PROVIDER early with a clear error message
@@ -139,6 +139,11 @@ const runcrateEndpoint = process.env.RUNCRATE_ENDPOINT?.trim() || "https://api.r
 const openScaleApiKey = process.env.OPENSCALE_API_KEY?.trim() || null;
 const openScaleModel = process.env.OPENSCALE_MODEL?.trim() || "deepseek/deepseek-v4.1-flash";
 const openScaleEndpoint = process.env.OPENSCALE_ENDPOINT?.trim() || "https://api.openscale.so/v1/chat/completions";
+
+// UberLLM configuration (OpenAI-compatible Chat Completions)
+const uberllmApiKey = process.env.UBERLLM_API_KEY?.trim() || null;
+const uberllmModel = process.env.UBERLLM_MODEL?.trim() || "deepseek/deepseek-v4.1-flash";
+const uberllmEndpoint = process.env.UBERLLM_ENDPOINT?.trim() || "https://api.uberllm.dev/v1/chat/completions";
 
 // Standard Compute configuration (OpenAI-compatible Chat Completions).
 // "StandardCompute" is the routed model id; pinned ids come from GET /v1/models.
@@ -396,6 +401,12 @@ if (modelProvider === "openscale" && !openScaleApiKey) {
   );
 }
 
+if (modelProvider === "uberllm" && !uberllmApiKey) {
+  throw new Error(
+    "Set UBERLLM_API_KEY before starting the proxy.",
+  );
+}
+
 if (modelProvider === "standardcompute" && !standardComputeApiKey) {
   throw new Error(
     "Set STANDARDCOMPUTE_API_KEY before starting the proxy.",
@@ -456,7 +467,7 @@ const tiersConfigured = !!(
 if (fallbackEnabled && tiersConfigured) {
   const localProviders = ["ollama", "llamacpp", "lmstudio"];
   if (localProviders.includes(fallbackProvider)) {
-    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, cheaperinference, atmorouter, runcrate, openscale, standardcompute, bedrock, orcarouter`);
+    throw new Error(`FALLBACK_PROVIDER cannot be '${fallbackProvider}' (local providers should not be fallbacks). Use cloud providers: databricks, azure-anthropic, azure-openai, openrouter, edenai, openai, atlas, cheaperinference, atmorouter, runcrate, openscale, uberllm, standardcompute, bedrock, orcarouter`);
   }
   let fallbackMisconfigured = false;
   if (fallbackProvider === "databricks" && (!rawBaseUrl || !apiKey)) {
@@ -484,6 +495,9 @@ if (fallbackEnabled && tiersConfigured) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "openscale" && !openScaleApiKey) {
+    fallbackMisconfigured = true;
+  }
+  if (fallbackProvider === "uberllm" && !uberllmApiKey) {
     fallbackMisconfigured = true;
   }
   if (fallbackProvider === "standardcompute" && !standardComputeApiKey) {
@@ -762,6 +776,11 @@ var config = {
     apiKey: openScaleApiKey,
     model: openScaleModel,
     endpoint: openScaleEndpoint,
+  },
+  uberllm: {
+    apiKey: uberllmApiKey,
+    model: uberllmModel,
+    endpoint: uberllmEndpoint,
   },
   standardcompute: {
     apiKey: standardComputeApiKey,
@@ -1289,6 +1308,9 @@ function reloadConfig() {
   config.openscale.apiKey = process.env.OPENSCALE_API_KEY?.trim() || null;
   config.openscale.model = process.env.OPENSCALE_MODEL?.trim() || "deepseek/deepseek-v4.1-flash";
   config.openscale.endpoint = process.env.OPENSCALE_ENDPOINT?.trim() || "https://api.openscale.so/v1/chat/completions";
+  config.uberllm.apiKey = process.env.UBERLLM_API_KEY?.trim() || null;
+  config.uberllm.model = process.env.UBERLLM_MODEL?.trim() || "deepseek/deepseek-v4.1-flash";
+  config.uberllm.endpoint = process.env.UBERLLM_ENDPOINT?.trim() || "https://api.uberllm.dev/v1/chat/completions";
   config.standardcompute.apiKey = process.env.STANDARDCOMPUTE_API_KEY?.trim() || null;
   config.standardcompute.model = process.env.STANDARDCOMPUTE_MODEL?.trim() || "StandardCompute";
   config.standardcompute.endpoint = process.env.STANDARDCOMPUTE_ENDPOINT?.trim() || "https://api.stdcmpt.com/v1/chat/completions";
