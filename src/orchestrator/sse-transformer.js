@@ -45,6 +45,7 @@ const DEFAULT_OPENAI_SSE_PROVIDERS = [
   "runcrate",
   "openscale",
   "uberllm",
+  "standardcompute",
   "azure-openai",
   "openrouter",
   "databricks",

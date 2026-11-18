@@ -356,6 +356,8 @@ class ModelTierSelector {
         return config.openscale?.model || null;
       case 'uberllm':
         return config.uberllm?.model || null;
+      case 'standardcompute':
+        return config.standardcompute?.model || null;
       case 'ollama':
         return config.ollama?.model || null;
       case 'openrouter':

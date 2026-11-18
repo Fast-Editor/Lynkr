@@ -98,6 +98,7 @@ function _enabledProviders() {
   if (config.runcrate?.apiKey) out.push('runcrate');
   if (config.openscale?.apiKey) out.push('openscale');
   if (config.uberllm?.apiKey) out.push('uberllm');
+  if (config.standardcompute?.apiKey) out.push('standardcompute');
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) out.push('azure-openai');
   if (config.orcarouter?.apiKey) out.push('orcarouter');
   if (config.ollama?.endpoint) out.push('ollama');
@@ -148,6 +149,7 @@ function getBestCloudProvider() {
   if (config.runcrate?.apiKey) return 'runcrate';
   if (config.openscale?.apiKey) return 'openscale';
   if (config.uberllm?.apiKey) return 'uberllm';
+  if (config.standardcompute?.apiKey) return 'standardcompute';
   if (config.azureOpenAI?.endpoint && config.azureOpenAI?.apiKey) return 'azure-openai';
   if (config.orcarouter?.apiKey) return 'orcarouter';
 
