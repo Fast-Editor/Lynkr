@@ -307,7 +307,8 @@ describe("Cursor IDE Integration (OpenAI API Compatibility)", () => {
       };
 
       const anthropicRequest = convertOpenAIToAnthropic(openaiRequest);
-      assert.ok(anthropicRequest.max_tokens); // Should have default
+      // Left unset so the orchestrator applies its default output cap
+      assert.ok(!("max_tokens" in anthropicRequest));
       assert.ok(!anthropicRequest.temperature); // Should not exist if not provided
     });
 

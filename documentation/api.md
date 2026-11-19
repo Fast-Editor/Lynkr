@@ -69,7 +69,7 @@ curl -X POST http://localhost:8081/v1/messages \
 {
   model: string;              // Model name (e.g., "claude-3-5-sonnet-20241022")
   messages: Message[];        // Conversation history
-  max_tokens?: number;        // Max tokens to generate (default: 4096)
+  max_tokens?: number;        // Max tokens to generate (default: 16384)
   temperature?: number;       // 0.0-1.0 (default: 0.7)
   top_p?: number;            // 0.0-1.0 (default: 1.0)
   top_k?: number;            // Top-k sampling (default: null)
@@ -199,7 +199,8 @@ curl -X POST http://localhost:8081/v1/chat/completions \
 {
   model: string;              // Model name
   messages: Message[];        // Conversation history
-  max_tokens?: number;        // Max tokens to generate
+  max_completion_tokens?: number; // Max tokens to generate (default: 16384)
+  max_tokens?: number;        // Deprecated alias; max_completion_tokens wins if both are set
   temperature?: number;       // 0.0-2.0 (default: 0.7)
   top_p?: number;            // 0.0-1.0
   n?: number;                // Number of completions (default: 1)

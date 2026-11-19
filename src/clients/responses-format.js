@@ -9,6 +9,7 @@
 
 const logger = require("../logger");
 const { repairToolCallIds } = require("./tool-call-repair");
+const { resolveMaxOutputTokens } = require("./openai-format");
 
 /**
  * Convert Responses API request to Chat Completions format
@@ -16,7 +17,7 @@ const { repairToolCallIds } = require("./tool-call-repair");
  * @returns {Object} Chat Completions format request
  */
 function convertResponsesToChat(responsesRequest) {
-  const { input, instructions, model, max_tokens, temperature, top_p, tools, tool_choice, stream } = responsesRequest;
+  const { input, instructions, model, max_output_tokens, max_tokens, temperature, top_p, tools, tool_choice, stream } = responsesRequest;
 
   logger.info({
     inputType: typeof input,
@@ -227,7 +228,10 @@ function convertResponsesToChat(responsesRequest) {
   const result = {
     model: model || "gpt-4o",
     messages: messages,
-    max_tokens: max_tokens || 4096,
+    // The Responses API names the output cap `max_output_tokens`; `max_tokens`
+    // is still accepted from older callers. Left unset when neither is given
+    // so the orchestrator's default applies.
+    max_tokens: resolveMaxOutputTokens(max_output_tokens, max_tokens),
     temperature: temperature,
     top_p: top_p,
     tools: chatTools,
