@@ -10,6 +10,38 @@
 const logger = require("../logger");
 
 /**
+ * Turn an OpenAI tool call's `arguments` into an Anthropic tool_use `input`.
+ *
+ * Clients echo past tool calls back verbatim, so this sees whatever a model
+ * once produced: an empty string for a no-argument call, JSON cut off by an
+ * output-token limit, or an already-parsed object. Anthropic requires `input`
+ * to be an object; anything that does not parse to one becomes `{}` so a
+ * single bad call in the history cannot fail every later turn.
+ *
+ * @param {*} args - The tool call's `function.arguments`
+ * @param {string} [toolCallId] - For logging only
+ * @returns {Object} Tool input object
+ */
+function parseToolCallArguments(args, toolCallId) {
+  const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (isPlainObject(args)) return args;
+  if (args === undefined || args === null || (typeof args === "string" && !args.trim())) return {};
+  if (typeof args === "string") {
+    try {
+      const parsed = JSON.parse(args);
+      if (isPlainObject(parsed)) return parsed;
+    } catch {
+      // Not valid JSON — handled below
+    }
+  }
+  logger.warn({
+    toolCallId,
+    argumentsPreview: (typeof args === "string" ? args : JSON.stringify(args)).slice(0, 200)
+  }, "Tool call arguments are not a JSON object; using empty input");
+  return {};
+}
+
+/**
  * Convert OpenAI chat completion request to Anthropic messages format
  * @param {Object} openaiRequest - OpenAI format request
  * @returns {Object} Anthropic format request
@@ -122,18 +154,27 @@ function convertOpenAIToAnthropic(openaiRequest) {
         // Convert OpenAI tool_calls to Anthropic tool_use blocks
         const contentBlocks = [];
 
-        // Add text content if present
-        if (msg.content) {
-          contentBlocks.push({ type: "text", text: msg.content });
+        // Add text content if present. Array content was already converted
+        // to Anthropic blocks above; empty text blocks are rejected upstream.
+        if (typeof content === "string" && content) {
+          contentBlocks.push({ type: "text", text: content });
+        } else if (Array.isArray(content)) {
+          contentBlocks.push(...content.filter(part => part?.type !== "text" || part.text));
         }
 
         // Add tool use blocks
         for (const toolCall of msg.tool_calls) {
+          if (!toolCall?.function?.name) {
+            // Nothing to name the tool_use with; its result, if any, falls
+            // through to the orphaned-result handling below.
+            logger.warn({ toolCallId: toolCall?.id }, "Dropping assistant tool call without a function name");
+            continue;
+          }
           contentBlocks.push({
             type: "tool_use",
             id: toolCall.id,
             name: toolCall.function.name,
-            input: JSON.parse(toolCall.function.arguments)
+            input: parseToolCallArguments(toolCall.function.arguments, toolCall.id)
           });
         }
 
@@ -564,5 +605,6 @@ module.exports = {
   convertOpenAIToAnthropic,
   convertAnthropicToOpenAI,
   convertAnthropicStreamChunkToOpenAI,
-  mapStopReason
+  mapStopReason,
+  parseToolCallArguments
 };
