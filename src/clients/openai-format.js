@@ -10,12 +10,22 @@
 const logger = require("../logger");
 
 /**
+ * Pick the first usable output-token cap from the candidates, in order.
+ * Anything that is not a positive integer is ignored.
+ * @param {...*} candidates - Values from the request, most preferred first
+ * @returns {number|undefined} Output-token cap, or undefined when none is set
+ */
+function resolveMaxOutputTokens(...candidates) {
+  return candidates.find((value) => Number.isInteger(value) && value > 0);
+}
+
+/**
  * Convert OpenAI chat completion request to Anthropic messages format
  * @param {Object} openaiRequest - OpenAI format request
  * @returns {Object} Anthropic format request
  */
 function convertOpenAIToAnthropic(openaiRequest) {
-  const { messages, input, model, temperature, max_tokens, top_p, stream, tools, tool_choice } = openaiRequest;
+  const { messages, input, model, temperature, max_tokens, max_completion_tokens, top_p, stream, tools, tool_choice } = openaiRequest;
 
   // Cursor's inline edit uses "input" instead of "messages"
   const messageArray = messages || input;
@@ -218,9 +228,17 @@ function convertOpenAIToAnthropic(openaiRequest) {
   const anthropicRequest = {
     model: model || "claude-3-5-sonnet-20241022",
     messages: anthropicMessages,
-    max_tokens: max_tokens || 4096,
     stream: stream || false
   };
+
+  // Output cap: OpenAI deprecated `max_tokens` in favour of
+  // `max_completion_tokens`, which current SDKs send instead. When the client
+  // sets neither, leave it unset so the orchestrator applies the same default
+  // as /v1/messages rather than silently capping OpenAI clients lower.
+  const maxTokens = resolveMaxOutputTokens(max_completion_tokens, max_tokens);
+  if (maxTokens !== undefined) {
+    anthropicRequest.max_tokens = maxTokens;
+  }
 
   if (system) {
     anthropicRequest.system = system;
@@ -564,5 +582,6 @@ module.exports = {
   convertOpenAIToAnthropic,
   convertAnthropicToOpenAI,
   convertAnthropicStreamChunkToOpenAI,
-  mapStopReason
+  mapStopReason,
+  resolveMaxOutputTokens
 };
